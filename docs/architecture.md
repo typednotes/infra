@@ -8,6 +8,7 @@ Remote state, remote objects can be pulled from the remote service they live in.
 A target state can be defined, to set the desired state of the remote system.
 An engine can call the remote service to sync the current state and implement the target.
 To implement a target, objects defining states should allow state diffs.
+This is an object-level, structural diff computed over the Lean values themselves (which fields/objects differ and how), not a text/source-code diff of the `.lean` files they are defined in.
 
 ## Remote services
 
@@ -68,7 +69,11 @@ The idea is that each remote object can be defined locally in lean.
 Each lean state object definition can be persisted locally.
 A target state can be defined in a Lean source code and this code can be versioned in git.
 Dependent types should be used wherever possible to make impossible states or target states non-representable.
-Object defining the remote state or the state target can be diffed so the controller can use the diff to move to target.
+Object defining the remote state or the state target can be diffed so the controller can use the diff to move to target: an object-level, structural diff over the Lean values, not a text/source-code diff of the `.lean` files.
+
+Objects defining parts of the state or the target state:
+- should be diff-able at their structure level,
+- should be serializable/deserializable to/from JSON or JSONB.
 
 ## Inspirations
 

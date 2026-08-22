@@ -2,6 +2,11 @@ name = "infra"
 version = "0.1.0"
 defaultTargets = ["infra"]
 
+[[require]]
+name = "linen"
+git = "https://github.com/typednotes/linen"
+rev = "main"
+
 [[lean_lib]]
 name = "Infra"
 
