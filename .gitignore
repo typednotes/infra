@@ -3,5 +3,8 @@
 # local
 out/
 
+# persisted current-state cache (may hold secret values, see docs/persistence.md)
+.infra/
+
 # MacOS
 .DS_Store

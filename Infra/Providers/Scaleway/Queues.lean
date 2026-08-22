@@ -1,5 +1,6 @@
 import Infra.Core.Diff
 import Infra.Core.State
+import Lean.Data.Json
 
 /-
   Scaleway queues, no matching cross-cutting Abstraction. Defines its own
@@ -10,6 +11,7 @@ import Infra.Core.State
 namespace Infra.Providers.Scaleway.Queues
 
 open Infra.Core
+open Lean (ToJson FromJson)
 
 /-- Every field optional: unset means "use the provider default on create, or leave as-is". -/
 structure TargetState where
@@ -20,7 +22,7 @@ structure RemoteState where
   name              : String
   id                : String
   visibilityTimeout : Nat
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, ToJson, FromJson
 
 /-- `some v` means "call the API to set this field to `v`"; `none` means nothing to do. -/
 structure RemoteState.Delta where
@@ -45,6 +47,7 @@ instance : Keyed RemoteState where
   key s := { provider := "scaleway", service := "queues", id := s.id }
 
 class QueuesBackend (α : Type) where
+  listQueues  : α → IO (List (String × RemoteState))
   createQueue : α → TargetState → IO RemoteState
   updateQueue : α → RemoteState → RemoteState.Delta → IO RemoteState
   deleteQueue : α → RemoteState → IO Unit
@@ -52,6 +55,7 @@ class QueuesBackend (α : Type) where
 structure Backend where
 
 instance : QueuesBackend Backend where
+  listQueues _ := pure []
   createQueue _ t :=
     pure { name := t.name.getD "unnamed", id := "placeholder-id", visibilityTimeout := t.visibilityTimeout.getD 30 }
   updateQueue _ c d := pure (Diffable.apply (Target := TargetState) c d)

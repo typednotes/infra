@@ -15,6 +15,7 @@ open Infra.Core
 structure Backend where
 
 instance : ServerlessComputeBackend Backend where
+  listCompute _ := pure []
   createCompute _ t :=
     pure { name := t.name.getD "unnamed", id := "placeholder-id", runtime := t.runtime.getD "", status := "pending" }
   updateCompute _ c d := pure (Diffable.apply (Target := ComputeTarget) c d)

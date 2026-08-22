@@ -1,4 +1,5 @@
 import Infra.Core.Diff
+import Lean.Data.Json
 
 /-
   Serverless Postgres, abstracted across backends (`docs/architecture.md`'s Abstractions
@@ -10,6 +11,7 @@ import Infra.Core.Diff
 namespace Infra.Abstractions
 
 open Infra.Core
+open Lean (ToJson FromJson)
 
 /-- Every field optional: unset means "use the provider default on create, or leave as-is". -/
 structure PostgresTarget where
@@ -21,7 +23,7 @@ structure PostgresState where
   id       : String
   version  : String
   endpoint : String
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, ToJson, FromJson
 
 /-- `some v` means "call the API to set this field to `v`"; `none` means nothing to do.
     The all-`none` value, `({} : PostgresState.Delta)`, means the target is already realized.
@@ -42,6 +44,7 @@ instance : Diffable PostgresTarget PostgresState where
 /-- Mirrors Terraform/OpenTofu's provider CRUD contract; see `ObjectStoreBackend` for why
     there's no `readPostgres` here (that's `SyncEngine.pull`, not per-resource). -/
 class ServerlessPostgresBackend (α : Type) where
+  listPostgres   : α → IO (List (String × PostgresState))
   createPostgres : α → PostgresTarget → IO PostgresState
   updatePostgres : α → PostgresState → PostgresState.Delta → IO PostgresState
   deletePostgres : α → PostgresState → IO Unit

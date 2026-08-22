@@ -1,4 +1,5 @@
 import Infra.Core.Diff
+import Lean.Data.Json
 
 /-
   Secret management, abstracted across backends (`docs/architecture.md`'s Abstractions section).
@@ -9,6 +10,7 @@ import Infra.Core.Diff
 namespace Infra.Abstractions
 
 open Infra.Core
+open Lean (ToJson FromJson)
 
 /-- Every field optional: unset means "use the provider default on create, or leave as-is". -/
 structure SecretTarget where
@@ -19,7 +21,7 @@ structure SecretState where
   name  : String
   id    : String
   value : String
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, ToJson, FromJson
 
 /-- `some v` means "call the API to set this field to `v`"; `none` means nothing to do.
     The all-`none` value, `({} : SecretState.Delta)`, means the target is already realized. -/
@@ -39,6 +41,7 @@ instance : Diffable SecretTarget SecretState where
 /-- Mirrors Terraform/OpenTofu's provider CRUD contract; see `ObjectStoreBackend` for why
     there's no `readSecret` here (that's `SyncEngine.pull`, not per-resource). -/
 class SecretsBackend (α : Type) where
+  listSecrets  : α → IO (List (String × SecretState))
   createSecret : α → SecretTarget → IO SecretState
   updateSecret : α → SecretState → SecretState.Delta → IO SecretState
   deleteSecret : α → SecretState → IO Unit

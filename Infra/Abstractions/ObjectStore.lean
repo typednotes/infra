@@ -1,4 +1,5 @@
 import Infra.Core.Diff
+import Lean.Data.Json
 
 /-
   Object store, abstracted across backends (`docs/architecture.md`'s Abstractions section).
@@ -10,6 +11,7 @@ import Infra.Core.Diff
 namespace Infra.Abstractions
 
 open Infra.Core
+open Lean (ToJson FromJson)
 
 /-- Every field optional: unset means "use the provider default on create, or leave as-is". -/
 structure BucketTarget where
@@ -20,7 +22,7 @@ structure BucketState where
   name : String
   id   : String
   tags : List String
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, ToJson, FromJson
 
 /-- `some v` means "call the API to set this field to `v`"; `none` means nothing to do.
     The all-`none` value, `({} : BucketState.Delta)`, means the target is already realized. -/
@@ -43,6 +45,7 @@ instance : Diffable BucketTarget BucketState where
     the already-computed `Delta` so a real implementation can build one in-place API request
     instead of destroying and recreating the bucket. -/
 class ObjectStoreBackend (α : Type) where
+  listBuckets  : α → IO (List (String × BucketState))
   createBucket : α → BucketTarget → IO BucketState
   updateBucket : α → BucketState → BucketState.Delta → IO BucketState
   deleteBucket : α → BucketState → IO Unit
@@ -63,6 +66,21 @@ private def result := Diffable.apply current delta
 private def alreadyRealized : BucketTarget := { name := some "b" }  -- matches current.name
 private def noopDelta : BucketState.Delta := Diffable.diff alreadyRealized current
 #guard noopDelta = ({} : BucketState.Delta)  -- nothing to push
+
+-- Collection-level reconciliation: "new" only in targets, "gone" only in currents, "kept" in
+-- both (with a real field difference to reconcile).
+private def newBucket : BucketTarget := { name := some "n" }
+private def goneBucket : BucketState := { name := "g", id := "2", tags := [] }
+private def keptTarget : BucketTarget := { name := some "k2" }
+private def keptCurrent : BucketState := { name := "k", id := "3", tags := [] }
+
+private def collectionDelta : CollectionDelta BucketTarget BucketState :=
+  reconcile [("new", newBucket), ("kept", keptTarget)] [("gone", goneBucket), ("kept", keptCurrent)]
+
+#guard collectionDelta.toCreate.map Prod.fst = ["new"]     -- target-only key -> create
+#guard collectionDelta.toDelete.map Prod.fst = ["gone"]    -- current-only key -> delete
+#guard collectionDelta.toUpdate.map (fun (k, _, _) => k) = ["kept"]  -- shared key -> field diff
+#guard collectionDelta.toUpdate.map (fun (_, _, d) => d) = [({ name := some "k2" } : BucketState.Delta)]
 
 end Guards
 

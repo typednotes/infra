@@ -14,6 +14,7 @@ open Infra.Core
 structure Backend where
 
 instance : ObjectStoreBackend Backend where
+  listBuckets _ := pure []
   createBucket _ t := pure { name := t.name.getD "unnamed", id := "placeholder-id", tags := t.tags.getD [] }
   updateBucket _ c d := pure (Diffable.apply (Target := BucketTarget) c d)
   deleteBucket _ _ := pure ()

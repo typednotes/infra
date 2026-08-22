@@ -1,5 +1,6 @@
 import Infra.Core.Diff
 import Infra.Core.State
+import Lean.Data.Json
 
 /-
   Scaleway image registry (Container Registry), no matching cross-cutting Abstraction. Defines
@@ -10,6 +11,7 @@ import Infra.Core.State
 namespace Infra.Providers.Scaleway.ImageRegistry
 
 open Infra.Core
+open Lean (ToJson FromJson)
 
 /-- Every field optional: unset means "use the provider default on create, or leave as-is". -/
 structure TargetState where
@@ -21,7 +23,7 @@ structure RemoteState where
   id            : String
   tags          : List String
   repositoryUri : String
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, ToJson, FromJson
 
 /-- `some v` means "call the API to set this field to `v`"; `none` means nothing to do.
     `repositoryUri` isn't diffable: it's assigned by the provider on create, never set by a
@@ -43,6 +45,7 @@ instance : Keyed RemoteState where
   key s := { provider := "scaleway", service := "image-registry", id := s.id }
 
 class ImageRegistryBackend (α : Type) where
+  listRepositories : α → IO (List (String × RemoteState))
   createRepository : α → TargetState → IO RemoteState
   updateRepository : α → RemoteState → RemoteState.Delta → IO RemoteState
   deleteRepository : α → RemoteState → IO Unit
@@ -50,6 +53,7 @@ class ImageRegistryBackend (α : Type) where
 structure Backend where
 
 instance : ImageRegistryBackend Backend where
+  listRepositories _ := pure []
   createRepository _ t :=
     pure { name := t.name.getD "unnamed", id := "placeholder-id", tags := t.tags.getD [],
            repositoryUri := "placeholder.invalid/unnamed" }

@@ -1,4 +1,5 @@
 import Infra.Core.Diff
+import Lean.Data.Json
 
 /-
   Serverless compute, abstracted across backends (`docs/architecture.md`'s Abstractions
@@ -10,6 +11,7 @@ import Infra.Core.Diff
 namespace Infra.Abstractions
 
 open Infra.Core
+open Lean (ToJson FromJson)
 
 /-- Every field optional: unset means "use the provider default on create, or leave as-is". -/
 structure ComputeTarget where
@@ -21,7 +23,7 @@ structure ComputeState where
   id      : String
   runtime : String
   status  : String
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, ToJson, FromJson
 
 /-- `some v` means "call the API to set this field to `v`"; `none` means nothing to do.
     The all-`none` value, `({} : ComputeState.Delta)`, means the target is already realized.
@@ -42,6 +44,7 @@ instance : Diffable ComputeTarget ComputeState where
 /-- Mirrors Terraform/OpenTofu's provider CRUD contract; see `ObjectStoreBackend` for why
     there's no `readCompute` here (that's `SyncEngine.pull`, not per-resource). -/
 class ServerlessComputeBackend (α : Type) where
+  listCompute   : α → IO (List (String × ComputeState))
   createCompute : α → ComputeTarget → IO ComputeState
   updateCompute : α → ComputeState → ComputeState.Delta → IO ComputeState
   deleteCompute : α → ComputeState → IO Unit

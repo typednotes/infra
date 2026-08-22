@@ -14,6 +14,7 @@ open Infra.Core
 structure Backend where
 
 instance : SecretsBackend Backend where
+  listSecrets _ := pure []
   createSecret _ t := pure { name := t.name.getD "unnamed", id := "placeholder-id", value := t.value.getD "" }
   updateSecret _ c d := pure (Diffable.apply (Target := SecretTarget) c d)
   deleteSecret _ _ := pure ()

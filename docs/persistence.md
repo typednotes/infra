@@ -54,14 +54,33 @@ in front of the Lean source, rather than replacing it as the source of truth.
   A DB or other backend can then be added as a second implementation later without
   changing the callers.
 
-## Open questions
+## Resolved decisions
 
-- Should the current-state cache live in the same git repo as target state (so drift shows
-  up in `git diff`), or somewhere separate, possibly gitignored?
-- One file per object, or one file per service/module?
-- Is there a concrete scale or performance requirement yet, or should we default to plain
-  files and revisit only if it becomes a bottleneck?
+These were previously open questions; each is now settled and implemented in
+`Infra.Core.Persistence`.
+
+- **Location: a gitignored local directory, not the git working tree.** The cache lives
+  under `.infra/` (`.gitignore`d), not alongside target-state Lean source. Unlike target
+  state, the current-state cache can hold values pulled through `SecretsBackend` — committing
+  it would leak secrets into git history. This matches Terraform's own guidance against
+  committing `terraform.tfstate`. Drift is therefore not visible via `git diff`; surfacing it
+  is the diff engine's job (`Infra.Core.Diff`), not source control's.
+- **Layout: one JSON file per (provider, service), object-keyed by local resource key.**
+  `Persistence.statePath root provider service` resolves to
+  `<root>/<provider>/<service>.json`, e.g. `.infra/state/aws/object-store.json`. One file per
+  object would fragment into many trivially small files for no benefit; one file per provider
+  spanning multiple unrelated resource shapes can't be typed uniformly. Per-service is the
+  natural grain, since that's already the unit `Diffable` and the `*Backend` classes are keyed
+  on. Within a file, the JSON object's keys are each resource's local key (see
+  `docs/diff-semantics.md`'s collection-level section) — the same key a `Target` collection
+  uses to line up with this cached `Current` collection on the next pull/diff cycle.
+- **Backend: plain files, no DB, for now.** There's no concrete scale or concurrent-access
+  requirement yet (single operator, not a team or CI fleet sharing state). Plain files satisfy
+  today's need; the DB option from the section above remains available as a second
+  implementation behind the same `load`/`save` interface if that need materializes.
 
 # Decision
 
-We will serialize the state as JSON or JSONB to start with.
+We will serialize the state as JSON to start with (`Lean.Data.Json`'s `ToJson`/`FromJson`,
+via `deriving ToJson, FromJson` on each state structure). `Infra.Core.Persistence.load`/`save`
+implement the "small storage interface with a filesystem implementation" described above.

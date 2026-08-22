@@ -1,5 +1,6 @@
 import Infra.Core.Diff
 import Infra.Core.State
+import Lean.Data.Json
 
 /-
   Scaleway IAM, no matching cross-cutting Abstraction (`docs/architecture.md`'s Coverage
@@ -11,6 +12,7 @@ import Infra.Core.State
 namespace Infra.Providers.Scaleway.Iam
 
 open Infra.Core
+open Lean (ToJson FromJson)
 
 /-- Every field optional: unset means "use the provider default on create, or leave as-is". -/
 structure TargetState where
@@ -21,7 +23,7 @@ structure RemoteState where
   name       : String
   id         : String
   policyArns : List String
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, ToJson, FromJson
 -- a target has no id until created; RemoteState can't be constructed without one —
 -- another small instance of "impossible states non-representable"
 
@@ -46,6 +48,7 @@ instance : Keyed RemoteState where
 /-- Mirrors Terraform/OpenTofu's provider CRUD contract; see `Infra.Abstractions.ObjectStoreBackend`
     for why there's no `readIam` here (that's `SyncEngine.pull`, not per-resource). -/
 class IamBackend (α : Type) where
+  listIam   : α → IO (List (String × RemoteState))
   createIam : α → TargetState → IO RemoteState
   updateIam : α → RemoteState → RemoteState.Delta → IO RemoteState
   deleteIam : α → RemoteState → IO Unit
@@ -53,6 +56,7 @@ class IamBackend (α : Type) where
 structure Backend where
 
 instance : IamBackend Backend where
+  listIam _ := pure []
   createIam _ t := pure { name := t.name.getD "unnamed", id := "placeholder-id", policyArns := t.policyArns.getD [] }
   updateIam _ c d := pure (Diffable.apply (Target := TargetState) c d)
   deleteIam _ _ := pure ()

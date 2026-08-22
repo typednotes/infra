@@ -1,3 +1,5 @@
+import Std.Data.HashMap
+
 /-
   Object-level structural diff between a (partial) target state and a concrete current
   (remote) state, per `docs/architecture.md`'s "Definitions" section.
@@ -47,5 +49,32 @@ class Diffable (Target Current : Type) where
   apply                : Current → Delta → Current
   Satisfies            : Target → Current → Prop
   satisfies_apply_diff : ∀ t c, Satisfies t (apply c (diff t c))
+
+/-- Reconciling a keyed *collection* of target specs against a keyed collection of current
+    objects — see `docs/diff-semantics.md`. Matched by a local, user-assigned key (e.g.
+    `"my_bucket"`), analogous to Terraform's resource address: distinct from `Keyed`/
+    `ObjectKey`, which only exists for objects that already have a provider-assigned id.
+    Implements the three rules directly: a key present only in `targets` has nothing to
+    reconcile it against, so it must be created; a key present only in `currents` is no
+    longer wanted, so it must be deleted; a key present in both is reconciled at the field
+    level via the existing `Diffable.diff`. -/
+structure CollectionDelta (Target Current : Type) [Diffable Target Current] where
+  toCreate : List (String × Target)
+  toUpdate : List (String × Current × Diffable.Delta (Target := Target) (Current := Current))
+  toDelete : List (String × Current)
+
+/-- `toUpdate` includes every shared key, even when its computed `Delta` is the all-`none`
+    "nothing to push" value — callers already know to skip an empty `Delta` (see
+    `SyncEngine`), so reconciliation doesn't need a second notion of "unchanged". -/
+def reconcile [Diffable Target Current]
+    (targets  : List (String × Target))
+    (currents : List (String × Current)) :
+    CollectionDelta Target Current :=
+  let currentMap := Std.HashMap.ofList currents
+  let targetMap  := Std.HashMap.ofList targets
+  { toCreate := targets.filter fun (k, _) => !currentMap.contains k
+    toDelete := currents.filter fun (k, _) => !targetMap.contains k
+    toUpdate := targets.filterMap fun (k, t) =>
+      (currentMap.get? k).map fun c => (k, c, Diffable.diff t c) }
 
 end Infra.Core
