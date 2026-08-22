@@ -1,0 +1,7 @@
+/.lake
+
+# local
+out/
+
+# MacOS
+.DS_Store
