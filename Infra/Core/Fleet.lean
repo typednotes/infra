@@ -1,0 +1,81 @@
+import Infra.Specs.Basic
+
+/-
+  A fleet: the set of resources one target speaks about, across all the clouds it spans.
+-/
+
+namespace Infra.Core
+
+open Infra.Specs (SpecOf)
+
+/-- A key family: one finite, decidable key type per `(provider, kind)` pair.
+
+    Use `Nothing` for a pair this fleet does not manage. Because each `Key p k` is a genuine
+    `Finite` type rather than `String`, the cardinality of the fleet is a compile-time number
+    and exhaustiveness over keys is checked.
+
+    Indexed by `ProviderId` as well as `Kind` so one `Plan` can hold resources in several
+    clouds at once, with `Expr` references crossing between them. `SpecOf` is *not* so indexed,
+    which is what keeps specs portable. -/
+structure Keys where
+  Key    : ProviderId → Kind → Type
+  finite : ∀ p k, Finite (Key p k)
+  decEq  : ∀ p k, DecidableEq (Key p k)
+  /-- A stable string per key, for the on-disk cache. See `docs/persistence.md`. -/
+  name   : ∀ p k, Key p k → String
+
+attribute [instance] Keys.finite Keys.decEq
+
+/-- How many resources of this kind this fleet declares in this cloud. Known statically. -/
+@[reducible] def Keys.count (κ : Keys) (p : ProviderId) (k : Kind) : Nat := card (κ.Key p k)
+
+/-- The target state.
+
+    `assign` is TOTAL over `κ.Key p k`. That is the single decision doing most of the work
+    here:
+
+      * total  ⇒ no key can be forgotten, and `absent` is expressible, so DELETION is part of
+                 the target rather than an inference from omission. A partial map can only ever
+                 say "at least these".
+      * function ⇒ duplicate keys are unrepresentable.
+      * finite domain ⇒ cardinality is determined even when every field inside is `unknown`.
+                 Shape outside the modality, contents inside — a fleet may have three unknown
+                 handles, never an unknown number of instances.
+
+    `outside` is the disposition of keys not in this fleet's key types: `absent` = closed world
+    (garbage-collect), `unmanaged` = open world. -/
+structure Plan (κ : Keys) where
+  assign  : (p : ProviderId) → (k : Kind) → (key : κ.Key p k) →
+              Status (SpecOf.{1} k κ.Key Partial (Expr κ.Key))
+  outside : Status Unit
+
+/-- The observed world. `none` = the resource does not exist. -/
+structure World (κ : Keys) where
+  observed : (p : ProviderId) → (k : Kind) → κ.Key p k → Option (ObservedOf k)
+
+/-- Whether the world realises the target at one key.
+
+    Only the *extent* half is checked here (existence / non-existence). Checking that the
+    observed spec refines the target spec additionally requires a `Refines` instance for each
+    `SpecOf k`; see the ledger in `docs/diff-semantics.md` for why that is deferred — an
+    authored field holds an `Expr`, which contains functions and so has no decidable order
+    until it has been evaluated against a world. -/
+def satisfiesAt {κ : Keys} (T : Plan κ) (W : World κ)
+    (p : ProviderId) (k : Kind) (key : κ.Key p k) : Bool :=
+  match T.assign p k key, W.observed p k key with
+  | .unmanaged, _        => true
+  | .absent,    none     => true
+  | .absent,    some _   => false
+  | .present _, some _   => true
+  | .present _, none     => false
+
+/-- Whether the world realises the target everywhere. Decidable, because every key type is
+    `Finite`: fold over the enumerations. -/
+def satisfies {κ : Keys} (T : Plan κ) (W : World κ) : Bool :=
+  (Finite.elems (α := ProviderId)).all fun p =>
+    (Finite.elems (α := Kind)).all fun k =>
+      (Finite.elems (α := κ.Key p k)).all fun key => satisfiesAt T W p k key
+
+scoped notation:50 W " ⊨ " T => Infra.Core.satisfies T W = true
+
+end Infra.Core

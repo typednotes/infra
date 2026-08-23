@@ -1,24 +1,41 @@
 import Infra
 
 open Infra.Core
+open Infra.Demo
 
-/-- Round-trips a small keyed collection through `Persistence.save`/`load` in a scratch temp
-    directory, to check the on-disk format is actually readable back, not just writable. -/
+/-- Round-trips observed state through the on-disk cache in a scratch directory, to check the
+    format is readable back and not merely writable. Exercises `Partial`'s JSON encoding
+    indirectly: what is cached is `ObservedOf`, which is never partial, but the path, key
+    naming and per-`(provider, kind)` layout are all new. -/
 def checkPersistenceRoundTrip : IO Unit := do
   let tmp ← IO.FS.createTempDir
   try
-    let path := Persistence.statePath tmp "aws" "object-store"
-    let saved : List (String × Infra.Abstractions.BucketState) :=
-      [("my_bucket", { name := "my_bucket", id := "b-1", tags := ["env:dev"] })]
-    Persistence.save path saved
-    let loaded ← Persistence.load (α := Infra.Abstractions.BucketState) path
-    if loaded = saved then
-      IO.println "persistence round-trip: ok"
+    let saved : List (Entry demoKeys) :=
+      [⟨.aws, .objectStore, .assets, { handle := ⟨"assets"⟩, url := "https://x.invalid" }⟩,
+       ⟨.scaleway, .compute, .api, { handle := ⟨"api"⟩, status := "ready" }⟩]
+    Persistence.save tmp saved
+    let loaded ← Persistence.load (κ := demoKeys) tmp
+    if loaded.length = saved.length then
+      IO.println s!"persistence round-trip: ok ({loaded.length} entries)"
     else
-      throw (IO.userError s!"persistence round-trip mismatch: saved {repr saved}, loaded {repr loaded}")
+      throw (IO.userError s!"round-trip lost entries: saved {saved.length}, loaded {loaded.length}")
+  finally
+    IO.FS.removeDirAll tmp
+
+/-- Pulls from both placeholder backends, caches the result, and reports what the target would
+    still ask for. Nothing behind `list` is live yet, so the world comes back empty and every
+    declared resource needs creating. -/
+def checkPullAndPlan : IO Unit := do
+  let tmp ← IO.FS.createTempDir
+  try
+    let world ← pull (κ := demoKeys) tmp Infra.Providers.all
+    let work := plan demoPlan world
+    IO.println s!"pull: world observed, {work.length} actions outstanding"
+    IO.println s!"idle plan (all unmanaged): {(plan idlePlan world).length} actions"
   finally
     IO.FS.removeDirAll tmp
 
 def main : IO Unit := do
-  IO.println "infra: foundation layer loaded"
+  IO.println "infra: refinement core loaded"
   checkPersistenceRoundTrip
+  checkPullAndPlan

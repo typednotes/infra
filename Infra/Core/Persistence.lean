@@ -1,42 +1,66 @@
+import Infra.Core.Backend
 import Lean.Data.Json
 
 /-
-  Filesystem storage interface for cached current-state, resolving `docs/persistence.md`'s
-  "Decision" (serialize as JSON) and its open questions on layout/location: one JSON file per
-  (provider, service), object-keyed by each resource's local key (see `docs/diff-semantics.md`),
-  under a gitignored root (`.infra/state/` by convention — the caller picks `root`).
+  Caching the observed world on local disk.
+
+  One JSON file per `(provider, kind)`: an object mapping each fleet key's `Keys.name` to that
+  resource's serialised `ObservedOf`. Lives under a gitignored root because it can hold values
+  pulled through the `secrets` kind — see `docs/persistence.md`.
 -/
 
 namespace Infra.Core.Persistence
 
 open Lean (Json ToJson FromJson toJson fromJson?)
 
-def statePath (root : System.FilePath) (provider service : String) : System.FilePath :=
-  root / provider / s!"{service}.json"
+def statePath (root : System.FilePath) (p : ProviderId) (k : Kind) : System.FilePath :=
+  root / p.name / s!"{k.name}.json"
 
-/-- Reads a persisted keyed collection. A missing file means "nothing pulled yet" — not an
-    error, since this is exactly the state before the very first `pull`. -/
-def load [FromJson α] (path : System.FilePath) : IO (List (String × α)) := do
-  if ← path.pathExists then
-    let contents ← IO.FS.readFile path
-    let json ← match Json.parse contents with
-      | .ok j => pure j
-      | .error e => throw (IO.userError s!"{path}: {e}")
-    let obj ← match json.getObj? with
-      | .ok o => pure o
-      | .error e => throw (IO.userError s!"{path}: {e}")
-    match obj.toList.mapM fun (k, v) => (fromJson? v).map (k, ·) with
-    | .ok kvs => pure kvs
-    | .error e => throw (IO.userError s!"{path}: {e}")
-  else
-    pure []
+private def orThrow {α : Type} (path : System.FilePath) : Except String α → IO α
+  | .ok a    => pure a
+  | .error e => throw (IO.userError s!"{path}: {e}")
 
-/-- Writes a keyed collection, creating the parent directory if it doesn't exist yet. -/
-def save [ToJson α] (path : System.FilePath) (state : List (String × α)) : IO Unit := do
-  match path.parent with
-  | some dir => IO.FS.createDirAll dir
-  | none => pure ()
-  let json := Json.mkObj (state.map fun (k, v) => (k, toJson v))
-  IO.FS.writeFile path json.compress
+/-- The rows belonging to one `(provider, kind)`, as `(key name, observed)` pairs.
+
+    No dependent cast needed, unlike `worldOf`: the result type is a plain `String × Json`, so
+    the entry's own indices are enough to serialise it and `(p, k)` only has to filter. -/
+private def rowsAt {κ : Keys} (es : List (Entry κ)) (p : ProviderId) (k : Kind) :
+    List (String × Json) :=
+  es.filterMap fun e =>
+    match e with
+    | ⟨p', k', key', o⟩ =>
+      if p' = p ∧ k' = k then some (κ.name p' k' key', toJson o) else none
+
+/-- Writes only the `(provider, kind)` pairs that have something in them, so the cache doesn't
+    fill with empty files for every unused kind. -/
+def save {κ : Keys} (root : System.FilePath) (es : List (Entry κ)) : IO Unit := do
+  for p in Finite.elems (α := ProviderId) do
+    for k in Finite.elems (α := Kind) do
+      let rows := rowsAt es p k
+      unless rows.isEmpty do
+        let path := statePath root p k
+        if let some dir := path.parent then
+          IO.FS.createDirAll dir
+        IO.FS.writeFile path (Json.mkObj rows).compress
+
+/-- A missing file means "nothing cached yet" rather than an error — that is exactly the state
+    before the first pull. A cached name the current fleet no longer declares is skipped: the
+    key type is the source of truth about what the fleet contains, not the cache. -/
+def load {κ : Keys} (root : System.FilePath) : IO (List (Entry κ)) := do
+  let mut acc : List (Entry κ) := []
+  for p in Finite.elems (α := ProviderId) do
+    for k in Finite.elems (α := Kind) do
+      let path := statePath root p k
+      if ← path.pathExists then
+        let contents ← IO.FS.readFile path
+        let json ← orThrow path (Json.parse contents)
+        let obj ← orThrow path json.getObj?
+        for (nm, v) in obj.toList do
+          match (Finite.elems (α := κ.Key p k)).find? (fun key => κ.name p k key == nm) with
+          | some key =>
+            let o ← orThrow path (fromJson? (α := ObservedOf k) v)
+            acc := ⟨p, k, key, o⟩ :: acc
+          | none => pure ()
+  return acc
 
 end Infra.Core.Persistence

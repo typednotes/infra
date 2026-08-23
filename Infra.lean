@@ -1,23 +1,23 @@
 -- This module serves as the root of the `Infra` library.
 -- Import modules here that should be built as part of the library.
-import Infra.Core.Diff
-import Infra.Core.State
+
+-- Core, bottom-up: the two axes, then specs, then fleets, then the engine.
+import Infra.Core.Finite
+import Infra.Core.Refine
+import Infra.Core.Kind
+import Infra.Core.Expr
+import Infra.Core.Spec
+import Infra.Specs.Basic
+import Infra.Core.Fleet
+import Infra.Core.Action
+import Infra.Core.Backend
+import Infra.Core.Persistence
 import Infra.Core.Engine
+
+-- Authentication is orthogonal to the resource theory above.
 import Infra.Core.Auth
-import Infra.Abstractions.ObjectStore
-import Infra.Abstractions.Secrets
-import Infra.Abstractions.ServerlessPostgres
-import Infra.Abstractions.ServerlessCompute
 import Infra.Abstractions.Auth
-import Infra.Providers.Aws.ObjectStore
-import Infra.Providers.Aws.Secrets
-import Infra.Providers.Aws.Compute
-import Infra.Providers.Aws.Iam
-import Infra.Providers.Aws.Queues
-import Infra.Providers.Aws.ImageRegistry
-import Infra.Providers.Scaleway.ObjectStore
-import Infra.Providers.Scaleway.Secrets
-import Infra.Providers.Scaleway.Compute
-import Infra.Providers.Scaleway.Iam
-import Infra.Providers.Scaleway.Queues
-import Infra.Providers.Scaleway.ImageRegistry
+
+-- One backend per cloud.
+import Infra.Providers
+import Infra.Demo
