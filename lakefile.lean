@@ -138,3 +138,11 @@ lean_lib Infra
 @[default_target]
 lean_exe infra where
   root := `Main
+
+/-- `example/ScalewayPull.lean`: authenticate to Scaleway alone, pull, and
+    export what came back to `out/scaleway/` as JSON and as Lean. Compiled by
+    `lake build` like everything else, but only touches a network when run. -/
+@[default_target]
+lean_exe «scaleway-pull» where
+  srcDir := "example"
+  root := `ScalewayPull
