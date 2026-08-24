@@ -1,3 +1,4 @@
+import Infra.Core.Settle
 import Infra.Core.Fleet
 
 /-
@@ -16,29 +17,40 @@ inductive Action (κ : Keys) where
   | replace (p : ProviderId) (k : Kind) : κ.Key p k → Action κ   -- immutable field changed
   | delete  (p : ProviderId) (k : Kind) : κ.Key p k → Action κ
 
-/-- Per-field mutability. A differing `forcesReplace` field turns an update into
-    destroy-then-create: the *key* survives, the *handle* does not. -/
-inductive Mutability
-  | mutable
-  | forcesReplace
-  deriving Repr, DecidableEq
+/-- The environment a plan's expressions resolve against: whatever already
+    exists in the world. -/
+def envOfWorld {κ : Keys} (W : World κ) : Env κ.Key :=
+  fun p k key => (W.sighting p k key).map (·.observed)
 
-/-- The extent-level work-list: what must be created, deleted, or (existence being already
-    right) considered for update. Ordering is `HasDeps`' job, not this function's.
+/-- What must change for the world to realise the target.
 
-    Note `absent` at a key that does not exist yields nothing, and `unmanaged` yields nothing
-    either way — that is the whole point of `unmanaged` being ⊥. A plan whose every key is
-    `unmanaged` produces an empty work-list against any world. -/
+    Existence alone decides create and delete. For a resource that already
+    exists the decision needs its *configuration*, which is what `Sighting`
+    carries and what makes the third outcome — nothing to do — reachable at
+    all. Without it every existing resource looked like an update for ever.
+
+    A target that cannot be settled (it references something that does not
+    exist yet) is reported as an update rather than skipped: the reference will
+    resolve once its dependency is created, and silently dropping the action
+    would leave the resource unreconciled. -/
 def actions {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) :=
+  let env := envOfWorld W
   (Finite.elems (α := ProviderId)).flatMap fun p =>
     (Finite.elems (α := Kind)).flatMap fun k =>
       (Finite.elems (α := κ.Key p k)).filterMap fun key =>
-        match T.assign p k key, W.observed p k key with
+        match T.assign p k key, W.sighting p k key with
         | .unmanaged, _        => none
         | .absent,    none     => none
         | .absent,    some _   => some (.delete p k key)
         | .present _, none     => some (.create p k key)
-        | .present _, some _   => some (.update p k key)
+        | .present authored, some seen =>
+          match settleSpec k env authored with
+          | none        => some (.update p k key)
+          | some target =>
+            match repairOf k target seen.reported with
+            | none                 => none                      -- already right
+            | some .mutable        => some (.update p k key)
+            | some .forcesReplace  => some (.replace p k key)
 
 /-- The dependency edges of the creation graph.
 

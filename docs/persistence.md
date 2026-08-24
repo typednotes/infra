@@ -33,7 +33,11 @@ derived from the state types.
   guarantees on load unless paired with a validating decoder; not directly comparable to
   target-state Lean source without a second toolchain.
 
-**Recommendation: Option A, generated to be legible.** This matches the request directly —
+**Recommendation at the time: Option A, generated to be legible.** *Superseded — see
+"Decision" below: the cache is JSON.* Elaborating Lean to read a cache proved to buy nothing,
+since nothing but `infra` itself reads it, and `ToJson`/`FromJson` derive for free from the
+state structures. The reasoning is kept because the trade-off still stands if the cache ever
+needs to be human-edited. The original argument was that this matches the request directly —
 persist state as Lean source that can be elaborated, formatted so a human can read a
 snapshot next to the target definition. If elaboration cost on read becomes a real
 bottleneck at scale, a serialized index (Option B) can be layered in later as a read cache
@@ -76,6 +80,12 @@ These were previously open questions; each is now settled and implemented in
 - **Only `(provider, kind)` pairs with something in them get a file**, so the cache does not
   fill with empty objects for every unused kind. A missing file means "nothing cached yet",
   which is exactly the state before the first pull, and is not an error.
+- **Only half of a `Sighting` is cached.** A pulled resource carries both its
+  provider-computed `ObservedOf` and its `Reported` configuration; the cache
+  keeps the first. Configuration is re-read on every pull, so persisting it
+  would add a JSON codec per kind and buy nothing — and a loaded entry
+  genuinely has no reported half to offer, which is why `Persistence` uses a
+  distinct `CachedEntry` rather than pretending otherwise.
 - **What is cached is `ObservedOf`, never a target.** Observed state is provider-computed and so
   never `Partial`; targets live in Lean source under version control. `Partial` does have a JSON
   encoding (`unknown` ↦ `null`) for when a partially-known target does need serialising.

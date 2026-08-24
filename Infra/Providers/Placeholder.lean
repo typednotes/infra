@@ -26,10 +26,32 @@ def placeholderObserved : (k : Kind) → String → ObservedOf k
   | .s3Bucket,         id => { handle := ⟨id⟩, arn := "arn:placeholder", region := "eu-west-1" }
   | .scalewayFunction, id => { handle := ⟨id⟩, url := "https://placeholder.invalid/fn" }
 
+/-- Every optional field `unknown`: a placeholder has seen nothing, and
+    `unknown` is exactly "could not see". Reporting invented values would make
+    the engine believe a resource already matched its target. -/
+def placeholderReported : (k : Kind) → Handle k → Reported k
+  | .iam,              h => { name := h.raw, policies := .unknown }
+  | .objectStore,      h => { name := h.raw, versioning := .unknown, tags := .unknown }
+  | .compute,          h => { name := h.raw, runtime := .unknown, image := ""
+                              executionRole := .unknown, namespace' := .unknown
+                              handler := .unknown, memoryMb := .unknown
+                              timeoutSec := .unknown, env := .unknown }
+  | .queues,           h => { name := h.raw, visibilityTimeoutSec := .unknown }
+  | .secrets,          h => { name := h.raw, valueFrom := "" }
+  | .imageRegistry,    h => { name := h.raw, immutableTags := .unknown }
+  | .postgres,         h => { name := h.raw, instanceClass := "", masterUsername := ""
+                              masterPasswordSecret := "", version := .unknown
+                              storageGb := .unknown }
+  | .s3Bucket,         h => { name := h.raw, versioning := .unknown,
+                              objectLock := .unknown, region := .unknown }
+  | .scalewayFunction, h => { name := h.raw, runtime := "", namespace' := ""
+                              sourceBucket := .unknown }
+
 /-- A backend that talks to nothing. Both providers are this, for now, differing only in the
     identifier they stamp on what they claim to have created. -/
 def placeholderBackend (who : String) : Backend where
   list _ := pure []
+  read k h := pure (placeholderReported k h)
   create k _ := pure (placeholderObserved k s!"{who}-placeholder-id")
   update k h _ := pure (placeholderObserved k h.raw)
   delete _ _ := pure ()

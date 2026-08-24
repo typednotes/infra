@@ -11,6 +11,9 @@ import Infra.Specs.Basic
 import Infra.Core.Fleet
 import Infra.Core.Action
 import Infra.Core.Backend
+import Infra.Core.Diverge
+import Infra.Core.Settle
+import Infra.Core.Credentials
 import Infra.Core.Persistence
 import Infra.Core.Engine
 
@@ -19,5 +22,18 @@ import Infra.Core.Auth
 import Infra.Abstractions.Auth
 
 -- One backend per cloud.
+import Infra.Providers.JsonRead
+import Infra.Providers.Http
+import Infra.Providers.Aws.Sign
+import Infra.Providers.Aws.Protocols
+import Infra.Providers.Scaleway.Rest
+import Infra.Providers.Kinds.ObjectStore
+import Infra.Providers.Kinds.Queues
+import Infra.Providers.Kinds.ImageRegistry
+import Infra.Providers.Kinds.Secrets
+import Infra.Providers.Kinds.Compute
+import Infra.Providers.Kinds.Iam
+import Infra.Providers.Kinds.Postgres
+import Infra.Providers.Live
 import Infra.Providers
 import Infra.Demo

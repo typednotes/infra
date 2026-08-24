@@ -55,6 +55,21 @@ def eval {α : Type} (env : (p : ProviderId) → (k : Kind) → K p k → Observ
 def handle (p : ProviderId) (k : Kind) (r : K p k) : Expr K (Handle k) :=
   .map (observedHandle k) (.observed p k r)
 
+/-- Evaluate against an environment that may not know every reference.
+
+    `none` means a referenced resource has not been created yet, which during a
+    push is a schedule error rather than a failure of the expression — so the
+    caller gets to decide, instead of this having to demand a total
+    environment it cannot supply mid-apply. -/
+def eval? {α : Type} (env : (p : ProviderId) → (k : Kind) → K p k → Option (ObservedOf k)) :
+    Expr K α → Option α
+  | .lit a          => some a
+  | .observed p k r => env p k r
+  | .map f e        => (eval? env e).map f
+  | .ap f e         => match eval? env f, eval? env e with
+                       | some g, some x => some (g x)
+                       | _,      _      => none
+
 /-- The value of an expression that is already a literal.
 
     Keys are plan-time constants — you know which resource you mean when you write the target —

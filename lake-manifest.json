@@ -5,7 +5,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "5598cb81e08fa2ebb86f53ecf4382d85204d4610",
+   "rev": "590187d58deac9dd21620b60d5c254468e09314c",
    "name": "linen",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",

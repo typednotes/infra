@@ -72,6 +72,35 @@ loss of portability visible in the type.
 Authentication is orthogonal to all of this and stays where it was —
 `Infra/Core/Auth.lean` and `Infra/Abstractions/Auth.lean`, see `docs/authentication.md`.
 
+### Where portability actually stops
+
+Making a spec provider-independent does not make every *field* meaningful on
+every cloud, and three kinds of exception have shown up in practice. All are
+listed in `docs/providers.md`; the shapes are:
+
+- **A field one cloud cannot express.** Reported `unknown` there, and by the
+  rule in `docs/diff-semantics.md` `unknown` is never drift — so the target is
+  accepted and the field quietly unenforced. `iam.policies` on Scaleway is the
+  clearest case: AWS policy ARNs have no counterpart.
+- **A field one cloud requires and the other has no concept of.** Optional in
+  the spec, with the backend that needs it raising a named error.
+  `compute.executionRole` (Lambda) and `compute.namespace'` (Scaleway
+  Containers) point in opposite directions.
+- **A field that turned out to be vestigial.** `compute.runtime` became
+  advisory once compute was defined in terms of container images: the runtime
+  is baked into the image and neither cloud reports it.
+
+The alternative to naming these is a spec that looks portable and silently does
+the wrong thing on one cloud.
+
+### Secrets never live in a target
+
+Two decisions follow from the target being the committed source of truth:
+`secrets.valueFrom` names an *environment variable*, and
+`postgres.masterPasswordSecret` names a *secret*. Neither field can hold a
+value. The single place a value is read is Postgres creation, which needs a
+master password the spec deliberately does not carry.
+
 ## Fleets across several clouds
 
 A fleet's key family is indexed by provider as well as kind
@@ -115,5 +144,11 @@ Terraform/OpenTofu are sources of inspiration to the extend they don't use depen
 
 ## Authentication
 
-Basic authentication to a service happens by opening the browser.
-Later, other means of authentication will be used.
+The original intent was that "basic authentication to a service happens by opening the browser."
+That turned out not to be what either cloud wants: AWS and Scaleway are both driven by static
+API keys, so the browser flow in `Infra/Core/Auth.lean` is built but unused.
+
+What credentials actually do is a three-source chain — the CLIs' own config files, then the OS
+keychain, then environment variables — resolved in `docs/authentication.md` and implemented in
+`Infra/Core/Credentials.lean`. The browser flow stays for whenever AWS SSO or a Scaleway OAuth
+flow is added.

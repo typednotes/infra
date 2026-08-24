@@ -56,14 +56,64 @@ only requires exposing an `Infra.Core.OAuthConfig` — it deliberately doesn't f
 provider through the OAuth2 flow described above; a provider that only needs an API key
 can implement its own, much simpler, credential path outside `AuthBackend` entirely.
 
-## Open questions
+## Resolved: where credentials come from
 
-- Loopback listener (Option A) or manual code paste (Option B) — or both, chosen per
-  provider/environment?
-- Keychain (`System.Keychain`) or a config file for token storage — and if a config file,
-  where does it live relative to the `.infra/state/` question raised in
-  `docs/persistence.md`?
-- Do AWS and Scaleway both end up using `AuthBackend`/OAuth2 at all, or does one/both use
-  a separate, non-OAuth2 credential path from the start?
-- Token refresh: once a token expires, is refresh handled transparently by the engine, or
-  does it always re-open the browser?
+Three sources, tried in order, first hit wins. Implemented in
+`Infra/Core/Credentials.lean`.
+
+1. **The config files the official CLIs already write.**
+   `~/.aws/credentials` and `~/.aws/config` (INI, honouring `$AWS_PROFILE`),
+   and `~/.config/scw/config.yaml` (YAML). A machine where someone has run
+   `aws configure` or `scw init` should simply work.
+2. **The OS credential store**, via Linen's `System.Keychain`, under service
+   `infra` and account `aws`/`scaleway`. Stored as an INI body so the same
+   parser reads it as reads `~/.aws/credentials`, and so a human can inspect
+   the entry.
+3. **Environment variables** — `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
+   `AWS_REGION`/`AWS_SESSION_TOKEN` and `SCW_ACCESS_KEY`/`SCW_SECRET_KEY`/
+   `SCW_DEFAULT_REGION`. Last because they are the override of last resort and
+   the thing CI sets.
+
+Config files come first and the environment last, which is the opposite of the
+usual precedence. The reasoning: an explicitly-configured machine should not be
+silently overridden by a stale exported variable, and a developer who wants to
+override *deliberately* can unset the config or point `$AWS_PROFILE` elsewhere.
+
+Two extra identifiers travel with Scaleway credentials, because its API needs
+them and fails opaquely without: `default_project_id` (every create is
+project-scoped) and `default_organization_id` (IAM is organization-scoped).
+
+### Failure names every place it looked
+
+```
+$ infra plan
+no aws credentials found; tried:
+  - config file ~/.aws/credentials (profile [default])
+  - keychain service 'infra' account 'aws'
+  - environment AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+```
+
+A source that is merely *absent* falls through; a source that is **present but
+malformed** raises. Silently skipping a config file with a typo in it would look
+exactly like having no credentials at all.
+
+### Secrets never render
+
+`Credentials`' `Repr` redacts the secret key and any session token, so no
+`dbg_trace`, error message or log line can leak one by accident. This is
+checked, not merely intended — `infra check` asserts that formatting a loaded
+credential does not contain the secret.
+
+## Still open
+
+- **Loopback listener or manual paste** for an OAuth2 authorization code. Not
+  needed yet: both clouds authenticate with static keys, so
+  `Infra.Core.Auth`'s browser flow remains unused. It becomes relevant if AWS
+  SSO or a Scaleway OAuth flow is added.
+- **Token refresh.** Same: static keys do not expire, so nothing refreshes.
+  Temporary AWS credentials (`AWS_SESSION_TOKEN`) are *accepted* and signed
+  with, but this tool will not renew them when they lapse.
+- **Restricted INI and YAML readers.** The credential chain uses Linen's
+  `Data.Ini` and `Data.Yaml`, which are real parsers — but see
+  `docs/providers.md` for what each config format is actually relied upon to
+  contain.

@@ -7,6 +7,11 @@ import Lean.Data.Json
   One JSON file per `(provider, kind)`: an object mapping each fleet key's `Keys.name` to that
   resource's serialised `ObservedOf`. Lives under a gitignored root because it can hold values
   pulled through the `secrets` kind — see `docs/persistence.md`.
+
+  Only the *observed* half of a `Sighting` is cached, not the reported
+  configuration. The cache is a record of what was last seen; the configuration
+  is re-read on every pull anyway, so persisting it would add a JSON codec per
+  kind and buy nothing.
 -/
 
 namespace Infra.Core.Persistence
@@ -24,7 +29,7 @@ private def orThrow {α : Type} (path : System.FilePath) : Except String α → 
 
     No dependent cast needed, unlike `worldOf`: the result type is a plain `String × Json`, so
     the entry's own indices are enough to serialise it and `(p, k)` only has to filter. -/
-private def rowsAt {κ : Keys} (es : List (Entry κ)) (p : ProviderId) (k : Kind) :
+private def rowsAt {κ : Keys} (es : List (CachedEntry κ)) (p : ProviderId) (k : Kind) :
     List (String × Json) :=
   es.filterMap fun e =>
     match e with
@@ -33,7 +38,7 @@ private def rowsAt {κ : Keys} (es : List (Entry κ)) (p : ProviderId) (k : Kind
 
 /-- Writes only the `(provider, kind)` pairs that have something in them, so the cache doesn't
     fill with empty files for every unused kind. -/
-def save {κ : Keys} (root : System.FilePath) (es : List (Entry κ)) : IO Unit := do
+def save {κ : Keys} (root : System.FilePath) (es : List (CachedEntry κ)) : IO Unit := do
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
       let rows := rowsAt es p k
@@ -46,8 +51,8 @@ def save {κ : Keys} (root : System.FilePath) (es : List (Entry κ)) : IO Unit :
 /-- A missing file means "nothing cached yet" rather than an error — that is exactly the state
     before the first pull. A cached name the current fleet no longer declares is skipped: the
     key type is the source of truth about what the fleet contains, not the cache. -/
-def load {κ : Keys} (root : System.FilePath) : IO (List (Entry κ)) := do
-  let mut acc : List (Entry κ) := []
+def load {κ : Keys} (root : System.FilePath) : IO (List (CachedEntry κ)) := do
+  let mut acc : List (CachedEntry κ) := []
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
       let path := statePath root p k

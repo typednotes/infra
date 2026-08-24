@@ -1,4 +1,4 @@
-import Infra.Specs.Basic
+import Infra.Core.Stage
 
 /-
   A fleet: the set of resources one target speaks about, across all the clouds it spans.
@@ -49,9 +49,20 @@ structure Plan (κ : Keys) where
               Status (SpecOf.{1} k κ.Key Partial (Expr κ.Key))
   outside : Status Unit
 
+/-- What a backend saw at one key: the provider-computed state, and the
+    configuration actually in force.
+
+    Both are needed and neither substitutes for the other: `observed` carries
+    the handle and the fields only the cloud can assign, `reported` carries the
+    fields the target has an opinion about. Comparing a target against
+    `observed` alone can only ever decide whether a resource exists. -/
+structure Sighting (k : Kind) where
+  observed : ObservedOf k
+  reported : Reported k
+
 /-- The observed world. `none` = the resource does not exist. -/
 structure World (κ : Keys) where
-  observed : (p : ProviderId) → (k : Kind) → κ.Key p k → Option (ObservedOf k)
+  sighting : (p : ProviderId) → (k : Kind) → κ.Key p k → Option (Sighting k)
 
 /-- Whether the world realises the target at one key.
 
@@ -62,7 +73,7 @@ structure World (κ : Keys) where
     until it has been evaluated against a world. -/
 def satisfiesAt {κ : Keys} (T : Plan κ) (W : World κ)
     (p : ProviderId) (k : Kind) (key : κ.Key p k) : Bool :=
-  match T.assign p k key, W.observed p k key with
+  match T.assign p k key, W.sighting p k key with
   | .unmanaged, _        => true
   | .absent,    none     => true
   | .absent,    some _   => false

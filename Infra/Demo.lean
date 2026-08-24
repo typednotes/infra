@@ -81,7 +81,10 @@ def bucketSpec {K : ProviderId → Kind → Type} (nm : String) :
 
 def apiSpec {K : ProviderId → Kind → Type} : ComputeSpec K Partial (Expr K) where
   name       := .lit "api"
-  runtime    := .lit "python3.12"
+  runtime    := .known (.lit "python3.12")   -- advisory; never compared
+  image      := .lit "rg.fr-par.scw.cloud/demo/api:latest"
+  executionRole := .unknown                  -- AWS-only; Scaleway needs none
+  namespace' := .known (.lit "demo")         -- Scaleway placement
   handler    := .unknown
   memoryMb   := .known (.lit 512)
   timeoutSec := .unknown
@@ -95,6 +98,7 @@ def apiSpec {K : ProviderId → Kind → Type} : ComputeSpec K Partial (Expr K) 
 def ingestSpec : ScalewayFunctionSpec demoKey Partial (Expr demoKey) where
   name         := .lit "ingest"
   runtime      := .lit "python3.12"
+  namespace'   := .lit "demo"
   sourceBucket := .known (.lit (some Archive.cold))
 
 def demoPlan : Plan demoKeys where
@@ -104,7 +108,7 @@ def demoPlan : Plan demoKeys where
     | .scaleway, .compute,          _ => .present apiSpec
     | .aws,      .s3Bucket,         _ =>
         .present { name := .lit "cold", versioning := .unknown
-                   storageClass := .known (.lit "GLACIER"), region := .unknown }
+                   objectLock := .known (.lit true), region := .unknown }
     | .scaleway, .scalewayFunction, _ => .present ingestSpec
     | _,         _,                 _ => .unmanaged
   outside := .unmanaged
@@ -118,9 +122,31 @@ def idlePlan : Plan demoKeys where
 
 def emptyWorld : World demoKeys := worldOf []
 
-/-- A world where the AWS `assets` bucket exists but nothing else does. -/
+/-- A world where the AWS `assets` bucket exists and matches its target.
+
+    Its optional fields are `unknown` — the provider did not report them — and
+    `unknown` is deliberately *not* drift. So this bucket needs no action, which
+    is the case an extent-only comparison could never produce. -/
 def partialWorld : World demoKeys :=
-  worldOf [⟨.aws, .objectStore, .assets, { handle := ⟨"assets"⟩, url := "https://x.invalid" }⟩]
+  worldOf [⟨.aws, .objectStore, .assets,
+    { observed := { handle := ⟨"assets"⟩, url := "https://x.invalid" }
+      reported := { name := "assets", versioning := .unknown, tags := .unknown } }⟩]
+
+/-- The same bucket, but reporting versioning *off* while the target asks for
+    it on. A mutable field, so this is an update. -/
+def driftedWorld : World demoKeys :=
+  worldOf [⟨.aws, .objectStore, .assets,
+    { observed := { handle := ⟨"assets"⟩, url := "https://x.invalid" }
+      reported := { name := "assets", versioning := .known false, tags := .known [] } }⟩]
+
+/-- The AWS `cold` bucket exists with Object Lock off, while the target asks
+    for it on. Object Lock can only be set at creation, so this cannot be
+    repaired in place. -/
+def immutableDriftWorld : World demoKeys :=
+  worldOf [⟨.aws, .s3Bucket, .cold,
+    { observed := { handle := ⟨"cold"⟩, arn := "arn:aws:s3:::cold", region := "eu-west-1" }
+      reported := { name := "cold", versioning := .unknown
+                    objectLock := .known false, region := .known "eu-west-1" } }⟩]
 
 section Guards
 
@@ -134,10 +160,29 @@ section Guards
 #guard !(satisfies demoPlan emptyWorld)
 #guard (actions demoPlan emptyWorld).length = 7
 
--- One resource already exists, so it becomes an update rather than a create; the count is
--- unchanged because the work-list covers both.
-#guard (actions demoPlan partialWorld).length = 7
+-- One resource already exists *and already matches*, so it drops out of the
+-- work-list entirely: six actions, not seven. This is the case that makes a
+-- second apply come back empty, and the one an existence-only comparison could
+-- never produce.
+#guard (actions demoPlan partialWorld).length = 6
+
+-- Extent is still unsatisfied, because six other resources are missing.
 #guard satisfies demoPlan partialWorld = false
+
+-- A mutable field that disagrees is an update; the count returns to seven.
+#guard (actions demoPlan driftedWorld).length = 7
+#guard (actions demoPlan driftedWorld).any fun
+  | .update .aws .objectStore .assets => true
+  | _ => false
+
+-- An *immutable* field that disagrees is a replace, not a doomed update.
+-- Object Lock can only be set when the bucket is created.
+#guard (actions demoPlan immutableDriftWorld).any fun
+  | .replace .aws .s3Bucket .cold => true
+  | _ => false
+#guard !((actions demoPlan immutableDriftWorld).any fun
+  | .update .aws .s3Bucket .cold => true
+  | _ => false)
 
 -- The cross-cloud reference is discovered: a Scaleway function depends on an AWS bucket.
 #guard (HasDeps.deps (S := ScalewayFunctionSpec) ingestSpec).length = 1

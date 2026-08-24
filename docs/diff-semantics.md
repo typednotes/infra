@@ -131,11 +131,85 @@ collision site available for a diagnostic.
 
 ## Why there is no `Delta`
 
-An earlier core had a `Delta` type per state struct, computed by `diff` and consumed by
-`apply`. It is gone. With `⊑`, **the target is the patch**: what a target says is exactly what
-must be made true, and what it leaves `unknown` is exactly what must be left alone. The old
-`Delta` structs each had precisely their target's field set, which was the same observation
-without the theory behind it.
+An earlier core had a `Delta` type per state struct, computed by `diff` and
+consumed by `apply`. It is gone. With `⊑`, **the target is the patch**: what a
+target says is exactly what must be made true, and what it leaves `unknown` is
+exactly what must be left alone. The old `Delta` structs each had precisely
+their target's field set, which was the same observation without the theory.
+
+## From target to action
+
+Deciding what to do needs both halves of a `Sighting` — the provider-computed
+`ObservedOf` and the configuration actually in force, `Reported`. Existence
+alone can only ever produce create and delete.
+
+`Infra/Core/Diverge.lean` carries a per-kind table naming each field and
+whether it can be changed in place:
+
+```lean
+class Divergent (k : Kind) where
+  divergence : ProviderSpec k → Reported k → List (String × Mutability)
+```
+
+from which `repairOf` gives four outcomes:
+
+| divergence | outcome |
+|---|---|
+| empty | **nothing** — already right |
+| all `mutable` | `update` |
+| any `forcesReplace` | `replace` |
+| resource absent | `create` |
+
+The first row is the one an extent-only comparison could never produce, and it
+is what makes a second apply come back empty.
+
+### `unknown` is not drift
+
+A field the provider did not report contributes nothing to the divergence list.
+This is the same asymmetry the field level derives: the comparison runs
+*observed ⊑ target*, not the reverse. Treating "could not see" as "differs"
+would rewrite every resource on every apply — and several fields are genuinely
+unreportable (see `docs/providers.md`).
+
+### Lists compare as sets
+
+Tags, policies and environment variables come back in whatever order the
+service felt like. Positional comparison would report drift on untouched
+resources, for ever.
+
+## Settling: what a backend actually receives
+
+`Plan.assign` yields `SpecOf k κ.Key Partial (Expr κ.Key)`; `Backend.create`
+wants `ProviderSpec k = SpecOf k Resolved Conc Conc`. Two substitutions
+separate them:
+
+- `Partial → Conc`, which `Fillable.fill` has always done.
+- `Expr κ.Key → Conc`, **and** rewriting residual `κ.Key p k` references into
+  the `Handle k` the cloud assigned — which nothing did.
+
+`Infra/Core/Settle.lean` adds the second. It cannot be generic — Lean cannot
+traverse an arbitrary record's fields — so it is one instance per kind, like
+`Fillable`, `HasDeps` and `Divergent`. It is indexed by `Kind` rather than by
+`SpecShape` because the input sits at universe 1 and the output at universe 0;
+a shape-parameterised class would have to fix one.
+
+`settle` returns `Option`: a reference to a resource that does not exist yet is
+a scheduling fact, not a failure, and `push` creates dependencies first
+precisely so it becomes `some` in time.
+
+## Ordering
+
+`push` schedules creates by the `HasDeps` graph and deletions by its transpose
+— create B then A means delete A then B — which is why `Action` carries its
+direction rather than letting the scheduler infer it.
+
+The sort is Kahn's algorithm bounded by the step count. The bound is a genuine
+measure, not fuel: every round removes at least one step, so exhausting it means
+a cycle, and the same argument gives both termination and the diagnosis.
+
+Dry run is the default, and performs **no** backend IO — it returns before
+reaching one. `actions` derives deletions from the target, so a mistaken key
+type would otherwise destroy live resources on a first run.
 
 ## Ledger: what is a compile error, and what is not
 
@@ -150,44 +224,43 @@ without the theory behind it.
 | Missing required field | `Field .required` is unwrapped, so the structure literal is incomplete |
 | Conflicting status | `Status` has no ⊤ constructor |
 | Unknown-dependent shape | `Expr` has no `bind`, so cardinality can never depend on a post-apply value |
-| Unhandled kind | `SpecOf`, `ObservedOf`, `fillableOf` and `hasDepsOf` are total over `Kind` |
+| Unhandled kind | `SpecOf`, `ObservedOf`, `fillableOf`, `hasDepsOf`, `divergentOf`, `settleableOf` and `Live.lean` are all total over `Kind` |
 | Using a kind a provider lacks | that `(provider, kind)` pair's `Key` is `Nothing`, so there is no key to write down |
+| A secret in the target | `secrets.valueFrom` and `postgres.masterPasswordSecret` hold *names*; there is no field of either spec that can hold a value |
 
-**Decidable**, dischargeable with `(h : Assert … := by decide)` — still a compile error, but via
-evaluation rather than typing: acyclicity of the dependency graph, quota bounds such as
-`Assert (κ.count .aws .compute ≤ 20)`, name-format constraints.
+**Decidable**, dischargeable with `(h : Assert … := by decide)`: acyclicity,
+quota bounds such as `Assert (κ.count .aws .compute ≤ 20)`, name formats.
 
-**Genuinely runtime** — no type system reaches these: global uniqueness of bucket names, quota
-and capacity, eventual consistency, whether an `absent` resource is still referenced from
+**Genuinely runtime**: global uniqueness of bucket names, quota and capacity,
+eventual consistency, whether an `absent` resource is still referenced from
 outside the fleet.
 
 ### Known soft spots
 
-- **`Refines` is not given for spec structures.** `satisfies` therefore checks only the
-  *extent* half — existence and non-existence — not that the observed spec refines the target
-  spec. An authored field holds an `Expr`, which contains functions and so has no decidable
-  order until it has been evaluated against a world; the field-wise instance belongs at a
-  resolved stage. Until then a new spec field is silently not compared. A `deriving` handler
-  would fix the fragility; the alternative is the dependent-record encoding
-  `(fld : Fld k) → Partial (Ty fld)`, which derives `⊑` once and for all at the cost of
-  dot-notation.
-- **`LawfulMerge` has no instances yet** — `Merge` computes, but nothing proves it is a least
-  upper bound.
-- **Antisymmetry of `⊑` on `Plan`** needs `funext` plus antisymmetry at each kind. It holds; it
-  is not proved.
-- **`HasDeps` only sees literal references.** `Expr.asLit` reads a key back out of a `.lit`,
-  which is sound because keys are plan-time constants, but a reference smuggled through
-  `map`/`ap` would go unnoticed.
-- **No realisability check at the fleet level.** `Fillable` certifies that each *kind* can be
-  filled, but nothing yet forces a `Plan` through `fill` before apply.
+- **`Refines` is still not given for spec structures.** `Divergent` supersedes
+  it in practice — `realises` is derived from `divergence`, so the boolean and
+  the field list cannot disagree — but the `⊑` machinery is not what decides
+  reconciliation. A new spec field silently escapes comparison until it is
+  added to the kind's table.
+- **`LawfulMerge` has no instances.** `Merge` computes; nothing proves it is a
+  least upper bound.
+- **Antisymmetry of `⊑` on `Plan`** needs `funext` plus antisymmetry at each
+  kind. It holds; it is not proved.
+- **`HasDeps` only sees literal references.** `Expr.asLit` reads a key out of a
+  `.lit`, which is sound because keys are plan-time constants, but a reference
+  smuggled through `map`/`ap` would go unnoticed.
+- **Nothing forces a `Plan` through `fill` before apply.** `settleSpec` does
+  it, and `push` goes through `settleSpec`, but the type system does not
+  require that route.
+- **Unreportable fields are unenforced, not rejected.** A target asking for
+  something a cloud cannot express is accepted and quietly ignored; see
+  `docs/providers.md` for the list.
 
 ## Not yet adopted
 
-- **Executing the plan.** `actions` produces the work-list and `Action` carries its direction
-  explicitly, but nothing runs it. Ordering needs the creation DAG from `HasDeps` unioned with
-  the reversed deletion DAG; executing needs live provider clients. Neither exists yet.
-- **`Mutability.forcesReplace`** is defined but unused: no per-field mutability table means
-  `Action.replace` is never produced.
-- **Field-level constraints richer than "exact value or nothing"** — `AtLeast 4`, a region set,
-  a version range: targets a provider could satisfy several ways. `Refines` is general enough
-  to host them (nothing about the class demands flatness), but every current instance is flat.
+- **Parallel execution.** The scheduler orders; it does not fan out.
+- **Field-level constraints richer than "exact value or nothing"** — `AtLeast
+  4`, a region set, a version range: targets a provider could satisfy several
+  ways. `Refines` is general enough to host them; every instance is flat.
+- **Drift in fields no cloud reports** — secret values, master passwords. See
+  `docs/providers.md`; detecting these would mean holding plaintext.
