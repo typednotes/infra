@@ -29,6 +29,11 @@ jobs:
       # started failing the moment `Infra.Core.Credentials` pulled in
       # `System.Keychain`, with `keychain.c` unable to find
       # `libsecret/secret.h`.
+      #
+      # OpenSSL is needed for its *headers* only. Lean's toolchain bundles
+      # static `libssl.a`/`libcrypto.a` and links them into every executable
+      # itself, so `lakefile.lean` deliberately passes no OpenSSL link flags —
+      # see the comment there on why naming the system `.so` breaks the link.
       - name: Install native FFI dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config

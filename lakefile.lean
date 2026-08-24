@@ -31,16 +31,6 @@ def pkgConfigFlags (args : Array String) : IO (Array String) := do
       |>.filter (· != "")
   catch _ => return #[]
 
-/-- Link flags for a `pkg-config` package, including an explicit `-L` so a
-    keg-only Homebrew prefix resolves.
-
-    macOS only — see `pkgAbsoluteLibs` for why adding a search directory is
-    unsafe on Linux. -/
-def pkgLinkFlags (pkg : String) : IO (Array String) := do
-  let libs ← pkgConfigFlags #["--libs", pkg]
-  let libdir ← pkgConfigFlags #["--variable=libdir", pkg]
-  return (libdir.filter (· != "")).map ("-L" ++ ·) ++ libs
-
 /-- Link flags naming each library file outright, rather than adding its
     directory to the search path.
 
@@ -106,18 +96,35 @@ run_cmd do
       pure #["-ladvapi32", "-lcredui"]
     else
       pkgAbsoluteLibs "libsecret-1"
-  -- TLS and the SHA-256/HMAC behind SigV4 are OpenSSL-backed.
+  -- OpenSSL is deliberately absent, though `jose.o` and `tls.o` both reference
+  -- it. Lean already ends every executable link with its own
+  -- `LEANC_INTERNAL_LINKER_FLAGS`:
   --
-  -- macOS needs this explicitly: without pointing at Homebrew's OpenSSL, dyld
-  -- can bind these to the system's incompatible `libboringssl`, which links
-  -- cleanly and then crashes on the first TLS call.
+  --     -L <toolchain>/lib … -lgmp -luv -lssl -lcrypto
   --
-  -- Linux links it by absolute path for the same reason as libsecret: the
-  -- flags are needed (`jose.o` and `tls.o` reference OpenSSL), but the `-L`
-  -- that would come with them is what broke the CI link.
-  let ssl ← if System.Platform.isOSX then pkgLinkFlags "openssl"
-            else pkgAbsoluteLibs "openssl"
-  mkDef `nativeLinkArgs (keychain ++ ssl)
+  -- which resolves against the *static* `libssl.a`/`libcrypto.a` the release
+  -- toolchain bundles (`script/prepare-llvm-linux.sh`: `cp $OPENSSL/lib/libssl.a
+  -- $OPENSSL/lib/libcrypto.a stage1/lib/`). Those archives are already the
+  -- last thing on the line, which is exactly where an archive has to sit to
+  -- satisfy `liblinenffi.a` above it.
+  --
+  -- Naming the system OpenSSL as well is not merely redundant on Linux, it is
+  -- fatal. A current distro's `libssl.so`/`libcrypto.so` need
+  -- `stat@GLIBC_2.33`, `dlopen@GLIBC_2.34` and `__isoc23_strtol@GLIBC_2.38`,
+  -- while the glibc Lean bundles under `lib/glibc` predates all three — it
+  -- still has the `__libc_csu_init` that glibc 2.34 removed. Under lld's
+  -- default `--no-allow-shlib-undefined` that is an immediate link failure on
+  -- eighteen symbols no code here can reach.
+  --
+  -- Dropping it retires the macOS hazard too: the reason to point at
+  -- Homebrew's OpenSSL was that dyld could otherwise bind to the system's
+  -- incompatible `libboringssl` and crash on the first TLS call. A static
+  -- archive cannot be re-bound at runtime, so the failure mode is gone rather
+  -- than merely avoided.
+  --
+  -- The Linux CI still installs `libssl-dev`, for the *headers* Linen's
+  -- `jose.c`/`tls.c` compile against. Only the link flags are unnecessary.
+  mkDef `nativeLinkArgs keychain
 
 package infra where
   version := v!"0.1.0"
