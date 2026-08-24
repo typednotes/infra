@@ -8,6 +8,10 @@ on:
 jobs:
   build:
     strategy:
+      # Report both legs. The platform-specific link flags in `lakefile.lean`
+      # differ enough between them that a cancelled leg hides real information:
+      # the first CI failure here was Linux-only and cancelled macOS with it.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
