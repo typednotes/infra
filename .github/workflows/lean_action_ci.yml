@@ -7,8 +7,40 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v5
+      # Linen's FFI is a single `extern_lib`, so building it compiles *every*
+      # `.c` under its `ffi/` — libpq, OpenSSL, libsecret, SQLite, DuckDB —
+      # whether or not this package imports the corresponding module. `infra`
+      # therefore needs Linen's whole native dependency set to build at all,
+      # not merely the parts it uses (`System.Keychain` for credentials,
+      # `Crypto.SigV4` and TLS for the providers).
+      #
+      # These mirror linen's own CI, and keeping them in step matters: this job
+      # started failing the moment `Infra.Core.Credentials` pulled in
+      # `System.Keychain`, with `keychain.c` unable to find
+      # `libsecret/secret.h`.
+      - name: Install native FFI dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+      - name: Install native FFI dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libpq openssl pkg-config
+          # libpq/openssl are keg-only on Homebrew, so pkg-config needs an
+          # explicit PKG_CONFIG_PATH to find their .pc files — which is also
+          # how `lakefile.lean` resolves OpenSSL's link flags.
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix openssl)/lib/pkgconfig" >> "$GITHUB_ENV"
       - uses: leanprover/lean-action@v1
+      # `lake build` compiles the library and runs every `#guard`. This step
+      # additionally runs the offline self-checks: SigV4 against AWS's
+      # published vectors, the credential chain and its redaction, divergence,
+      # and push's dry-run ordering. No cloud credentials are needed, and none
+      # are available here.
+      - name: Run offline self-checks
+        run: lake exe infra check
