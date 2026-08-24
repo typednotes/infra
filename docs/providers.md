@@ -139,3 +139,18 @@ Verified offline, by `infra check`:
 **Not verified here**: the endpoint paths, field names and payload shapes in
 `Kinds/*.lean` — roughly 1,200 lines. Those can only be confirmed against real
 accounts. Signing correctness is established; *what* is being signed is not.
+
+**Verified against a real account**: Scaleway `.queues` — `list`, `create`,
+`read`, via `example/ScalewayQueue.lean` and `example/ScalewayPull.lean`. Two
+things were wrong until this was exercised live:
+
+- the endpoint was `sqs.mnq.{region}.scw.cloud`, which does not resolve at
+  all; the real host is `sqs.mnq.{region}.scaleway.com`
+  (`Infra.Providers.Aws.Protocols.sqsEndpoint`).
+- Scaleway's SQS-compatible API refuses the main Scaleway API key outright.
+  It needs a *dedicated* credential, minted after a one-time activation call
+  and cached in the OS keychain — see `Infra.Providers.Scaleway.Sqs`.
+
+Both were plausible-looking and both failed hard against the real API, which
+is exactly the risk this whole section exists to name for the other fifteen
+`(provider, kind)` pairs.

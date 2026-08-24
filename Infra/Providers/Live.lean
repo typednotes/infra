@@ -5,6 +5,7 @@ import Infra.Providers.Kinds.Secrets
 import Infra.Providers.Kinds.Compute
 import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
+import Infra.Providers.Scaleway.Sqs
 import Infra.Core.Backend
 
 /-
@@ -92,7 +93,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         { handle := ⟨n⟩, arn := s!"arn:aws:s3:::{n}", region := ep.region }
     | .queues => do
       let ep := sqsFor provider creds
-      return (← Queues.listQueues creds ep).map fun (name, url) =>
+      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+      return (← Queues.listQueues sqsCreds ep).map fun (name, url) =>
         { handle := ⟨name⟩, url }
     | .imageRegistry => do
       let entries ← match provider with
@@ -165,8 +167,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
                  timeoutSec := timeout, env }
     | .queues, h => do
       let ep := sqsFor provider creds
+      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
       return { name := h.raw
-               visibilityTimeoutSec := ← Queues.readVisibilityTimeout creds ep h.raw }
+               visibilityTimeoutSec := ← Queues.readVisibilityTimeout sqsCreds ep h.raw }
     -- `valueFrom` names an environment variable the cloud has never heard of,
     -- so it cannot be reported and is excluded from the divergence table. The
     -- value itself is never fetched: see the module note in `Kinds.Secrets`.
@@ -213,7 +216,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := ⟨spec.name⟩, arn := s!"arn:aws:s3:::{spec.name}", region := ep.region }
     | .queues, spec => do
       let ep := sqsFor provider creds
-      let url ← Queues.createQueue creds ep spec.name spec.visibilityTimeoutSec
+      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+      let url ← Queues.createQueue sqsCreds ep spec.name spec.visibilityTimeoutSec
       return { handle := ⟨spec.name⟩, url }
     | .imageRegistry, spec => do
       let uri ← match provider with
@@ -269,8 +273,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := h, arn := s!"arn:aws:s3:::{h.raw}", region := ep.region }
     | .queues, h, spec => do
       let ep := sqsFor provider creds
-      Queues.setVisibilityTimeout creds ep h.raw spec.visibilityTimeoutSec
-      return { handle := h, url := ← Queues.queueUrl creds ep h.raw }
+      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+      Queues.setVisibilityTimeout sqsCreds ep h.raw spec.visibilityTimeoutSec
+      return { handle := h, url := ← Queues.queueUrl sqsCreds ep h.raw }
     | .imageRegistry, h, spec => do
       match provider with
       | .aws =>
@@ -315,7 +320,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
   delete
     | .objectStore, h => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
     | .s3Bucket, h    => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
-    | .queues, h      => Queues.deleteQueue creds (sqsFor provider creds) h.raw
+    | .queues, h      => do
+      Queues.deleteQueue (← Scaleway.Sqs.credentialsFor provider creds) (sqsFor provider creds) h.raw
     | .imageRegistry, h =>
       match provider with
       | .aws      => ImageRegistry.Ecr.delete creds (ecrFor creds) h.raw

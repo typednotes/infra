@@ -146,3 +146,11 @@ lean_exe infra where
 lean_exe «scaleway-pull» where
   srcDir := "example"
   root := `ScalewayPull
+
+/-- `example/ScalewayQueue.lean`: declare and push a single Scaleway queue,
+    the `Keys`/`Plan`/`push` counterpart to `scaleway-pull`'s raw
+    `Backend.list`. -/
+@[default_target]
+lean_exe «scaleway-queue» where
+  srcDir := "example"
+  root := `ScalewayQueue

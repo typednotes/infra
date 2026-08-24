@@ -117,14 +117,18 @@ def fromScalewayFile (paths : Paths) : IO (Option Credentials) := do
   let str (k : String) : Option String := (doc.get? k).bind (·.asString?)
   let some accessKey := str "access_key" | return none
   let some secretKey := str "secret_key" | return none
-  return some { accessKey, secretKey, region := (str "default_region").getD "" }
+  return some
+    { accessKey, secretKey
+      region         := (str "default_region").getD ""
+      projectId      := str "default_project_id"
+      organizationId := str "default_organization_id" }
 
 -- ── Source 2: the OS credential store ──
 
 /-- The keychain service these entries live under. -/
 def keychainService : String := "infra"
 
-/-- Read credentials from the OS credential store.
+/-- Read credentials from an arbitrary keychain account under `keychainService`.
 
     Stored as an INI body — `access_key`, `secret_key`, `region`,
     optional `session_token` — so the same parser reads it as reads
@@ -132,9 +136,13 @@ def keychainService : String := "infra"
 
     A missing entry is `none`, not an error: on a machine with no keychain
     service at all the call fails, and that must fall through to the next
-    source rather than abort the chain. -/
-def fromKeychain (provider : ProviderId) : IO (Option Credentials) := do
-  let entry := System.Keychain.Entry.new keychainService provider.name
+    source rather than abort the chain.
+
+    Not every credential in the chain names a `ProviderId` — a dedicated
+    per-product credential (e.g. Scaleway's SQS-specific key, see
+    `Infra.Providers.Scaleway.Sqs`) needs its own account name. -/
+def fromKeychainAccount (account : String) : IO (Option Credentials) := do
+  let entry := System.Keychain.Entry.new keychainService account
   let raw ← try
       pure (some (← entry.getPassword))
     catch _ => pure none
@@ -149,11 +157,13 @@ def fromKeychain (provider : ProviderId) : IO (Option Credentials) := do
       region := (ini.lookupGlobal "region").getD ""
       sessionToken := ini.lookupGlobal "session_token" }
 
-/-- Write credentials to the OS credential store, for `infra login`-style
-    provisioning. The only function here that handles a secret in the writing
-    direction. -/
-def storeInKeychain (provider : ProviderId) (c : Credentials) : IO Unit := do
-  let entry := System.Keychain.Entry.new keychainService provider.name
+def fromKeychain (provider : ProviderId) : IO (Option Credentials) :=
+  fromKeychainAccount provider.name
+
+/-- Write credentials to an arbitrary keychain account under `keychainService`.
+    See `fromKeychainAccount`. -/
+def storeInKeychainAccount (account : String) (c : Credentials) : IO Unit := do
+  let entry := System.Keychain.Entry.new keychainService account
   let body := Data.Ini.render
     { globals :=
         [("access_key", c.accessKey), ("secret_key", c.secretKey), ("region", c.region)]
@@ -161,6 +171,12 @@ def storeInKeychain (provider : ProviderId) (c : Credentials) : IO Unit := do
             | some t => [("session_token", t)]
             | none   => []) }
   entry.setPassword body
+
+/-- Write credentials to the OS credential store, for `infra login`-style
+    provisioning. The only function here that handles a secret in the writing
+    direction. -/
+def storeInKeychain (provider : ProviderId) (c : Credentials) : IO Unit :=
+  storeInKeychainAccount provider.name c
 
 -- ── Source 3: the environment ──
 

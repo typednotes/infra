@@ -65,10 +65,20 @@ def checkCredentials : IO Unit := do
     IO.FS.writeFile paths.scwConfig
       "access_key: SCWXXXXXXXXXXXXXXXXX\n\
        secret_key: 7f0a4e33-1234-5678-9abc-def012345678\n\
-       default_region: fr-par\n"
+       default_region: fr-par\n\
+       default_project_id: 11111111-1111-1111-1111-111111111111\n\
+       default_organization_id: 22222222-2222-2222-2222-222222222222\n"
     let scw ← loadFrom paths .scaleway
     unless scw.accessKey == "SCWXXXXXXXXXXXXXXXXX" && scw.region == "fr-par" do
       throw (IO.userError "scaleway credentials not read from config.yaml")
+    -- `iam` and creation calls are organization-/project-scoped
+    -- (`docs/authentication.md`), so a config file that sets these two but
+    -- doesn't get them read back is a silent failure, not a missing feature.
+    unless scw.projectId == some "11111111-1111-1111-1111-111111111111" do
+      throw (IO.userError s!"scaleway project id not read from config.yaml: {scw.projectId}")
+    unless scw.organizationId == some "22222222-2222-2222-2222-222222222222" do
+      throw (IO.userError
+        s!"scaleway organization id not read from config.yaml: {scw.organizationId}")
 
     -- Secrets must not survive rendering: this is what stops a stray trace or
     -- an error message from leaking one.

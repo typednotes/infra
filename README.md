@@ -48,6 +48,30 @@ the OS keychain, or `SCW_ACCESS_KEY`/`SCW_SECRET_KEY` (see
 `docs/authentication.md`). Output lands under the gitignored `out/`, so it is
 safe to inspect and delete.
 
+## Example: declaring and pushing a Scaleway queue
+
+`example/ScalewayQueue.lean` is the counterpart to the one above: instead of
+listing what already exists, it declares a target — one Scaleway queue named
+`infra-example` — and pushes it through the same `Keys`/`Plan`/`push` path
+`infra` itself uses, again against Scaleway only.
+
+```
+$ lake exe scaleway-queue
+authenticating to Scaleway...
+authenticated (region fr-par)
+would CREATE scaleway/queues/infra-example
+(dry run — pass --apply to execute)
+
+$ lake exe scaleway-queue --apply
+authenticating to Scaleway...
+authenticated (region fr-par)
+CREATE scaleway/queues/infra-example ... ok
+```
+
+A real, billable resource in your Scaleway account — delete it from the
+Queues console when you are done. Re-running without `--apply` afterwards
+prints `nothing to do`, since the queue already matches the target.
+
 ## Documentation
 
 - `docs/architecture.md` — overall design and the portability rules

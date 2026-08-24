@@ -135,11 +135,16 @@ def ecrEndpoint (region : String) : Endpoint :=
   { host := s!"api.ecr.{region}.amazonaws.com", service := "ecr", region }
 
 /-- SQS. Scaleway's queues are SQS-compatible, so the same client serves both —
-    as with S3, only the host differs. -/
+    as with S3, only the host differs.
+
+    `scaleway.com`, not `scw.cloud`: unlike object storage, Messaging and
+    Queuing was never on the `scw.cloud` domain, and the old host here did not
+    resolve at all. Confirmed against Scaleway's own AWS-CLI connection guide
+    (`https://sqs.mnq.{region}.scaleway.com`). -/
 def sqsEndpoint (provider : ProviderId) (region : String) : Endpoint :=
   match provider with
-  | .aws      => { host := s!"sqs.{region}.amazonaws.com", service := "sqs", region }
-  | .scaleway => { host := s!"sqs.mnq.{region}.scw.cloud", service := "sqs", region }
+  | .aws      => { host := s!"sqs.{region}.amazonaws.com",      service := "sqs", region }
+  | .scaleway => { host := s!"sqs.mnq.{region}.scaleway.com", service := "sqs", region }
 
 /-- Invoke an operation. `target` is the wire name, e.g.
     `secretsmanager.CreateSecret`; `version` selects the JSON protocol flavour

@@ -83,6 +83,18 @@ Two extra identifiers travel with Scaleway credentials, because its API needs
 them and fails opaquely without: `default_project_id` (every create is
 project-scoped) and `default_organization_id` (IAM is organization-scoped).
 
+### Scaleway Queues is a detour from this chain
+
+Every other Scaleway kind is signed with the main access/secret key above.
+`.queues` cannot be: its SQS-compatible endpoint refuses that key outright and
+needs a *dedicated* credential, minted by calling Scaleway's own API
+(`activate-sqs` then `sqs-credentials`) using the main key once. That minted
+credential is cached under keychain service `infra`, account `scaleway-sqs` —
+a second, separate keychain entry from the `scaleway` one above — so it is
+provisioned once per machine rather than on every `push`. See
+`Infra.Providers.Scaleway.Sqs` and `docs/providers.md`'s "verified against a
+real account" note.
+
 ### Failure names every place it looked
 
 ```

@@ -89,17 +89,29 @@ def main : IO Unit := do
   IO.FS.createDirAll outDir
 
   let mut total := 0
+  let mut failed : List String := []
   for k in Finite.elems (α := Kind) do
-    let observed ← backend.list k
-    unless observed.isEmpty do
-      total := total + observed.length
-      let jsonPath := outDir / s!"{k.name}.json"
-      let leanPath := outDir / s!"{k.name}.lean"
-      IO.FS.writeFile jsonPath (jsonOf observed).pretty
-      IO.FS.writeFile leanPath (leanOf k observed)
-      IO.println s!"  {k.name}: {observed.length} resource(s) -> {jsonPath}, {leanPath}"
+    -- `docs/providers.md` is upfront that the endpoint paths and payload
+    -- shapes in `Kinds/*.lean` are unverified against real accounts. One
+    -- kind hitting that should not cost the resources every other kind
+    -- already came back with.
+    match ← (backend.list k).toBaseIO with
+    | .error e =>
+      failed := failed ++ [k.name]
+      IO.eprintln s!"  {k.name}: FAILED ({e})"
+    | .ok observed =>
+      unless observed.isEmpty do
+        total := total + observed.length
+        let jsonPath := outDir / s!"{k.name}.json"
+        let leanPath := outDir / s!"{k.name}.lean"
+        IO.FS.writeFile jsonPath (jsonOf observed).pretty
+        IO.FS.writeFile leanPath (leanOf k observed)
+        IO.println s!"  {k.name}: {observed.length} resource(s) -> {jsonPath}, {leanPath}"
 
   if total == 0 then
     IO.println s!"nothing found; wrote no files under {outDir}"
   else
     IO.println s!"done: {total} resource(s) across every kind Scaleway reported"
+  unless failed.isEmpty do
+    let names := String.intercalate ", " failed
+    IO.println s!"skipped, see errors above: {names}"
