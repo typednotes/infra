@@ -109,6 +109,43 @@ A source that is merely *absent* falls through; a source that is **present but
 malformed** raises. Silently skipping a config file with a typo in it would look
 exactly like having no credentials at all.
 
+An environment variable that is **set but empty counts as absent**
+(`normalizeEnv`). This is not pedantry: CI binds a variable to an undefined
+secret by setting it to the empty string — GitHub Actions does — so without
+this rule an unset secret produced credentials with an empty access key, and
+the first sign of trouble was a TLS handshake failure or an opaque provider
+error, neither of which points at the missing secret. Now the chain falls
+through to the message above.
+
+### Running in CI needs a CA bundle
+
+Not a credential problem, but it surfaces at the same moment and looks like
+one, so it belongs here. A live call from a CI runner can fail with:
+
+```
+uncaught exception: error:0A000086:SSL routines::certificate verify failed
+```
+
+Linen's TLS client calls `SSL_CTX_set_default_verify_paths`, which resolves
+against the *compile-time* `OPENSSLDIR` of the OpenSSL it was built against —
+and Lean's toolchain bundles a static OpenSSL whose `OPENSSLDIR` points at the
+machine that built it (`/opt/homebrew/etc/openssl@3` in the macOS toolchain).
+On a fresh runner that path does not exist, so there is no trust store and
+every certificate fails to verify.
+
+The fix is to point OpenSSL at the runner's own bundle, which
+`set_default_verify_paths` honours:
+
+```yaml
+- run: |
+    echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
+    echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
+```
+
+`infra`'s own CI never hit this because it runs only the offline self-checks;
+the first live call from CI is where it appears. See `typednotes-infra`'s
+workflows for a working example.
+
 ### Secrets never render
 
 `Credentials`' `Repr` redacts the secret key and any session token, so no

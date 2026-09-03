@@ -186,19 +186,41 @@ def envVars : ProviderId → (String × String × String × Option String)
                   some "AWS_SESSION_TOKEN")
   | .scaleway => ("SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_REGION", none)
 
+/-- "Set but empty" means unset.
+
+    The distinction matters more than it looks. A CI runner binds a variable to
+    an undefined secret by setting it to the *empty string* rather than leaving
+    it out — GitHub Actions does exactly this — so `IO.getEnv` returns
+    `some ""` and a naive read yields credentials with an empty access key.
+    Those fail much later, inside a TLS handshake or as an opaque provider
+    error, with nothing pointing at the cause. Treating empty as absent makes
+    the chain fall through to its not-found message, which names every place it
+    looked.
+
+    Pure, and separate from the `IO` that reads the variable, so the rule is
+    checkable by `#guard` — Lean has no `setenv`, so the environment source
+    itself cannot be driven from a self-check. -/
+def normalizeEnv : Option String → Option String
+  | some v => if v.trimAscii.isEmpty then none else some v
+  | none   => none
+
+/-- An environment variable, with `normalizeEnv` applied. -/
+private def getEnvNonEmpty (name : String) : IO (Option String) :=
+  normalizeEnv <$> IO.getEnv name
+
 def fromEnvironment (provider : ProviderId) : IO (Option Credentials) := do
   let (kv, sv, rv, tv) := envVars provider
-  let some accessKey ← IO.getEnv kv | return none
-  let some secretKey ← IO.getEnv sv | return none
-  let region := (← IO.getEnv rv).getD ""
+  let some accessKey ← getEnvNonEmpty kv | return none
+  let some secretKey ← getEnvNonEmpty sv | return none
+  let region := (← getEnvNonEmpty rv).getD ""
   let sessionToken ← match tv with
-    | some v => IO.getEnv v
+    | some v => getEnvNonEmpty v
     | none   => pure none
   let projectId ← match provider with
-    | .scaleway => IO.getEnv "SCW_DEFAULT_PROJECT_ID"
+    | .scaleway => getEnvNonEmpty "SCW_DEFAULT_PROJECT_ID"
     | .aws      => pure none
   let organizationId ← match provider with
-    | .scaleway => IO.getEnv "SCW_DEFAULT_ORGANIZATION_ID"
+    | .scaleway => getEnvNonEmpty "SCW_DEFAULT_ORGANIZATION_ID"
     | .aws      => pure none
   return some { accessKey, secretKey, region, sessionToken, projectId, organizationId }
 
@@ -271,5 +293,15 @@ def Credentials.requireRegion (c : Credentials) (provider : ProviderId) : IO Str
     throw (IO.userError
       s!"no region configured for {provider.name}; set {rv} or the region in its config file")
   return c.region
+
+/-! ## Self-checks -/
+
+-- An undefined CI secret arrives as `some ""`, and must read as absent, so the
+-- credential chain reports "not found" instead of building empty credentials
+-- that fail later inside a TLS handshake.
+#guard normalizeEnv (some "") = none
+#guard normalizeEnv (some "   ") = none
+#guard normalizeEnv none = none
+#guard normalizeEnv (some "SCWXXXXXXXXXXXXXXXXX") = some "SCWXXXXXXXXXXXXXXXXX"
 
 end Infra.Core
