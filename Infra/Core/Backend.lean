@@ -23,6 +23,17 @@ structure Backend where
   create : (k : Kind) → ProviderSpec k → IO (ObservedOf k)
   update : (k : Kind) → Handle k → ProviderSpec k → IO (ObservedOf k)
   delete : (k : Kind) → Handle k → IO Unit
+  /-- Read one secret's value.
+
+      The **only** inbound plaintext path in this interface, and deliberately
+      separate from `read`, which never fetches a value. Its only sanctioned
+      caller is `Engine.settleFor`, on the apply path, to resolve an
+      `Expr.secretValue` in a composed target; the planning path cannot reach
+      it at all (`envOfWorld` leaves `Env.secretValue` at its default). What it
+      returns is handed to one create/update call and never stored, cached, or
+      returned outward — the same discipline as
+      `Infra.Providers.Kinds.Postgres.fetchMasterPassword`. -/
+  secretValue : Handle .secrets → IO String
 
 /-- Every cloud the engine can reach. Total over `ProviderId`, matching `Plan.assign`'s
     totality over the same index. -/

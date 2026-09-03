@@ -18,9 +18,14 @@ inductive Action (κ : Keys) where
   | delete  (p : ProviderId) (k : Kind) : κ.Key p k → Action κ
 
 /-- The environment a plan's expressions resolve against: whatever already
-    exists in the world. -/
-def envOfWorld {κ : Keys} (W : World κ) : Env κ.Key :=
-  fun p k key => (W.sighting p k key).map (·.observed)
+    exists in the world.
+
+    Note what this deliberately omits: `Env.secretValue`. Taking its default
+    ("knows nothing") is what makes the planning path *structurally* unable to
+    hold a secret value — see `Env`'s doc comment. Only `Engine.settleFor`,
+    on the apply path, ever fills it in. -/
+def envOfWorld {κ : Keys} (W : World κ) : Env κ.Key where
+  observed p k key := (W.sighting p k key).map (·.observed)
 
 /-- What must change for the world to realise the target.
 
@@ -44,7 +49,12 @@ def actions {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) :=
         | .absent,    some _   => some (.delete p k key)
         | .present _, none     => some (.create p k key)
         | .present authored, some seen =>
-          match settleSpec k env authored with
+          -- Redacted, not empty: a composed value's *shape* must settle so the
+          -- spec reaches `repairOf` and the kind's own `Divergent` decides.
+          -- `.secrets` deliberately never compares its value, so a composed
+          -- secret is create-only and a second apply comes back empty — while
+          -- a genuinely missing *observation* still yields `.update` below.
+          match settleSpec k env.withRedactedSecrets authored with
           | none        => some (.update p k key)
           | some target =>
             match repairOf k target seen.reported with
@@ -58,43 +68,97 @@ def actions {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) :=
     plan is the creation DAG unioned with the reversed deletion DAG — which is why `Action`
     carries the direction explicitly rather than letting the scheduler infer it. -/
 class HasDeps (S : SpecShape.{1}) where
-  deps : {K : ProviderId → Kind → Type} → S K Partial (Expr K) →
-           List ((p : ProviderId) × (k : Kind) × K p k)
+  deps : {K : ProviderId → Kind → Type} → S K Partial (Expr K) → List (Dep K)
 
-/-- Portable specs carry no cross-resource references at all — a reference type `K p k` names a
-    provider, which is exactly what a portable spec must not do — so their dependency sets are
-    empty by construction, not by oversight. -/
-instance : HasDeps IamSpec           where deps _ := []
-instance : HasDeps ObjectStoreSpec   where deps _ := []
-instance : HasDeps ComputeSpec       where deps _ := []
-instance : HasDeps QueuesSpec        where deps _ := []
-instance : HasDeps SecretsSpec       where deps _ := []
-instance : HasDeps ImageRegistrySpec where deps _ := []
-instance : HasDeps PostgresSpec      where deps _ := []
-instance : HasDeps S3BucketSpec      where deps _ := []
+/-! ## Two readings, unioned
 
-/-- The one spec with a real edge — and it crosses clouds: a Scaleway function reading from an
-    AWS bucket. `Expr.asLit` is what reads the key back out; a key is a plan-time constant, so
-    it is always a literal. -/
+  A spec names another resource in two structurally different ways, and both
+  are dependency edges:
+
+  * **In a field's payload.** A *key-typed* field like `sourceBucket` holds
+    `Expr K (Option (K .aws .s3Bucket))` — the key is the value, so
+    `Expr.asLit` reads it back out. `Expr.deps` returns `[]` for these,
+    because there is no `.observed` node anywhere in `.lit (some key)`.
+  * **As a node in the expression.** `.observed` and `.secretValue` are
+    references *inside* an `Expr`, and `Expr.deps` is what finds them. These
+    can occur in any field of any kind, including a plain `Expr K String`.
+
+  So the two are not alternatives, and reading only one loses real edges.
+  Each instance below takes the union: `depsReq`/`depsOpt` over every field,
+  plus the payload read for the two kinds that have a key-typed field.
+
+  This is why the previous "portable specs have no dependencies by
+  construction" claim no longer holds: it was true while the only references
+  were key-typed (and so provider-naming, hence non-portable), but
+  `.secretValue` is a reference that lives in a `String` field, so any kind
+  can contribute an edge. -/
+
+/-- Reference nodes inside a required field. -/
+def depsReq {K : ProviderId → Kind → Type} {α : Type} (e : Expr K α) : List (Dep K) := e.deps
+
+/-- Reference nodes inside an optional field. An unspecified field names nothing. -/
+def depsOpt {K : ProviderId → Kind → Type} {α : Type} : Partial (Expr K α) → List (Dep K)
+  | .unknown => []
+  | .known e => e.deps
+
+instance : HasDeps IamSpec where
+  deps s := depsReq s.name ++ depsOpt s.policies
+
+instance : HasDeps ObjectStoreSpec where
+  deps s := depsReq s.name ++ depsOpt s.versioning ++ depsOpt s.tags
+
+instance : HasDeps ComputeSpec where
+  deps s := depsReq s.name ++ depsOpt s.runtime ++ depsReq s.image
+            ++ depsOpt s.executionRole ++ depsOpt s.namespace' ++ depsOpt s.handler
+            ++ depsOpt s.memoryMb ++ depsOpt s.timeoutSec ++ depsOpt s.env
+
+instance : HasDeps QueuesSpec where
+  deps s := depsReq s.name ++ depsOpt s.visibilityTimeoutSec
+
+/-- Now a real contributor: a composed `valueFrom` names the secrets and
+    resources its value is built from, which is what orders them before it. -/
+instance : HasDeps SecretsSpec where
+  deps s := depsReq s.name ++ depsReq s.valueFrom
+
+instance : HasDeps ImageRegistrySpec where
+  deps s := depsReq s.name ++ depsOpt s.immutableTags
+
+instance : HasDeps PostgresSpec where
+  deps s := depsReq s.name ++ depsOpt s.instanceClass ++ depsReq s.masterUsername
+            ++ depsReq s.masterPasswordSecret ++ depsOpt s.version ++ depsOpt s.storageGb
+            ++ depsOpt s.minCapacity ++ depsOpt s.maxCapacity
+
+instance : HasDeps S3BucketSpec where
+  deps s := depsReq s.name ++ depsOpt s.versioning ++ depsOpt s.objectLock
+            ++ depsOpt s.region
+
+/-- The cross-cloud edge — a Scaleway function reading from an AWS bucket —
+    and the first of the two key-typed *payload* reads. -/
 instance : HasDeps ScalewayFunctionSpec where
   deps s :=
-    match s.sourceBucket with
-    | .unknown => []
-    | .known e =>
-      match e.asLit with
-      | some (some key) => [⟨.aws, .s3Bucket, key⟩]
-      | _               => []
+    depsReq s.name ++ depsReq s.runtime ++ depsReq s.namespace'
+    ++ depsOpt s.sourceBucket
+    ++ (match s.sourceBucket with
+        | .unknown => []
+        | .known e =>
+          match e.asLit with
+          | some (some key) => [⟨.aws, .s3Bucket, key, .handle⟩]
+          | _               => [])
 
 /-- List-generalized version of `ScalewayFunctionSpec`'s single reference: every secret named in
     `secretEnv` is a dependency, same-cloud this time. -/
 instance : HasDeps ScalewayContainerSpec where
   deps s :=
-    match s.secretEnv with
-    | .unknown => []
-    | .known e =>
-      match e.asLit with
-      | some entries => entries.map fun entry => ⟨.scaleway, .secrets, entry.2⟩
-      | none         => []
+    depsReq s.name ++ depsReq s.namespace' ++ depsReq s.image
+    ++ depsOpt s.port ++ depsOpt s.minScale ++ depsOpt s.maxScale
+    ++ depsOpt s.memoryMb ++ depsOpt s.cpuLimit ++ depsOpt s.timeoutSec
+    ++ depsOpt s.env ++ depsOpt s.secretEnv
+    ++ (match s.secretEnv with
+        | .unknown => []
+        | .known e =>
+          match e.asLit with
+          | some entries => entries.map fun entry => ⟨.scaleway, .secrets, entry.2, .handle⟩
+          | none         => [])
 
 /-- Total over `Kind`, so a new kind cannot silently contribute no edges. -/
 @[reducible] def hasDepsOf : (k : Kind) → HasDeps (SpecOf.{1} k)

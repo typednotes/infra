@@ -228,6 +228,62 @@ def checkPush : IO Unit := do
 
   IO.println "push: ok (dry run, cross-cloud ordering, no-op and replace)"
 
+/-- Checks a composed secret: one apply, right order, and no leakage.
+
+    The placeholder backends' `secretValue` returns a canary string, so
+    "a secret value does not escape" is *tested* rather than asserted — if any
+    of the plan output, the apply log, or the on-disk cache ever contained a
+    real value, it would contain this one. -/
+def checkSecretComposition : IO Unit := do
+  let bs := Infra.Providers.all
+  let canary := "placeholder-secret-value"
+  let mentions (haystack needle : String) : Bool := (haystack.splitOn needle).length > 1
+
+  -- The whole fleet in one apply: three creates, no manual step in between.
+  let dry ← push bs composedPlan composedEmptyWorld {}
+  let creates := dry.filter (·.startsWith "would CREATE")
+  unless creates.length == 3 do
+    throw (IO.userError s!"expected 3 creates in one apply, got {creates.length}: {dry}")
+
+  -- Ordering: the composed secret reads the password *and* the database, so
+  -- both must be created before it. This is `HasDeps` seeing through `map`/`ap`.
+  let idx (needle : String) : Option Nat := dry.findIdx? (fun l => mentions l needle)
+  match idx "secrets/db-password", idx "postgres/main", idx "secrets/db-url" with
+  | some pw, some db, some url =>
+    unless pw < url && db < url do
+      throw (IO.userError s!"composed secret must be created last: {dry}")
+  | _, _, _ => throw (IO.userError s!"expected all three slots in the plan: {dry}")
+
+  -- A dry run must not read a secret at all, let alone print one.
+  for line in dry do
+    if mentions line canary then
+      throw (IO.userError s!"dry run leaked a secret value: {line}")
+
+  -- Applying really does resolve the value — and still must not log it.
+  let applied ← push bs composedPlan composedEmptyWorld { apply := true }
+  for line in applied do
+    if mentions line canary then
+      throw (IO.userError s!"apply log leaked a secret value: {line}")
+
+  -- Nor may it reach the on-disk cache.
+  let tmp ← IO.FS.createTempDir
+  try
+    let _ ← pull (κ := composedKeys) tmp bs
+    for entry in ← tmp.walkDir do
+      if mentions (← IO.FS.readFile entry) canary then
+        throw (IO.userError s!"cache leaked a secret value: {entry}")
+  finally
+    IO.FS.removeDirAll tmp
+
+  -- Create-only: a composed value cannot be compared, so once the resources
+  -- exist a second apply must ask for nothing. Without this, every plan would
+  -- show a perpetual UPDATE and churn a new secret version on every run.
+  let again ← push bs composedPlan composedAppliedWorld {}
+  unless again == ["nothing to do"] do
+    throw (IO.userError s!"second apply should be a no-op, got: {again}")
+
+  IO.println "composed secrets: ok (one apply, ordered, no leak, converges)"
+
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
 def selfCheck : IO Unit := do
@@ -237,6 +293,7 @@ def selfCheck : IO Unit := do
   checkCredentials
   checkSigning
   checkPush
+  checkSecretComposition
 
 /-- The dispatch itself lives in `Infra.Cli`, which is also what a declaration
     repo calls — so this binary exercises the same front end consumers get,

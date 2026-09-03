@@ -26,13 +26,13 @@ namespace Infra.Core
 
 open Infra.Specs
 
-/-- What a spec's references resolve against: the resources observed so far.
-
-    `none` for a resource not yet created, which is a scheduling fact rather
-    than an error — `push` creates dependencies first precisely so this becomes
-    `some` in time. -/
-abbrev Env (K : ProviderId → Kind → Type) :=
-  (p : ProviderId) → (k : Kind) → K p k → Option (ObservedOf k)
+/-
+  `Env` — what a spec's references resolve against — used to live here, and now
+  lives in `Infra.Core.Expr`, because `Expr.eval?` needs both of its lookups
+  (observed state, and secret values on the apply path only). Same namespace,
+  so every user below is unaffected; see that definition for why its
+  `secretValue` field is defaulted rather than required.
+-/
 
 /-- Resolve one field: evaluate the expression, and fail cleanly if it names
     something that does not exist yet. -/
@@ -50,7 +50,7 @@ def settleRef {K : ProviderId → Kind → Type}
     Option (Option (Handle k)) :=
   match r with
   | none     => some none                    -- said: nothing
-  | some key => (env p k key).map fun o => some (observedHandle k o)
+  | some key => (env.observed p k key).map fun o => some (observedHandle k o)
 
 /-- List-generalized `settleRef`: resolve every reference in a
     `(name, key)` list to a `(name, handle)` list. Unlike `settleRef`, there is no "said:
@@ -59,7 +59,8 @@ def settleRef {K : ProviderId → Kind → Type}
 def settleRefs {K : ProviderId → Kind → Type}
     (env : Env K) (p : ProviderId) (k : Kind) (refs : List (String × K p k)) :
     Option (List (String × Handle k)) :=
-  refs.mapM fun (name, key) => (env p k key).map fun o => (name, observedHandle k o)
+  refs.mapM fun (name, key) =>
+    (env.observed p k key).map fun o => (name, observedHandle k o)
 
 /-- Turn a filled spec into one a backend can act on. -/
 class Settleable (k : Kind) where

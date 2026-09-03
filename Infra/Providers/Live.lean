@@ -186,7 +186,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     -- `valueFrom` names an environment variable the cloud has never heard of,
     -- so it cannot be reported and is excluded from the divergence table. The
     -- value itself is never fetched: see the module note in `Kinds.Secrets`.
-    | .secrets, h          => pure { name := h.raw, valueFrom := "" }
+    | .secrets, h          => pure { name := h.raw, valueFrom := .fromEnv "" }
     | .imageRegistry, h => do
       let immutable ← match provider with
         | .aws      => ImageRegistry.Ecr.readImmutable creds (ecrFor creds) h.raw
@@ -258,7 +258,12 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .scaleway => ImageRegistry.Scw.create creds spec.name
       return { handle := ⟨spec.name⟩, repositoryUri := uri }
     | .secrets, spec => do
-      let value ← Secrets.valueFromEnv spec.valueFrom
+      -- `fromEnv` reads the operator's environment; `composed` was already
+      -- evaluated at settle time from post-apply state. Either way the value
+      -- goes straight into the one create call and is never stored.
+      let value ← match spec.valueFrom with
+        | .fromEnv v  => Secrets.valueFromEnv v
+        | .composed v => pure v
       let version ← match provider with
         | .aws      => Secrets.Asm.create creds (asmFor creds) spec.name value
         | .scaleway => Secrets.Scw.create creds spec.name value
@@ -340,7 +345,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         -- already as closely realised as this cloud allows.
         return { handle := h, repositoryUri := "" }
     | .secrets, h, spec => do
-      let value ← Secrets.valueFromEnv spec.valueFrom
+      let value ← match spec.valueFrom with
+        | .fromEnv v  => Secrets.valueFromEnv v
+        | .composed v => pure v
       let version ← match provider with
         | .aws      => Secrets.Asm.putValue creds (asmFor creds) h.raw value
         | .scaleway => Secrets.Scw.putValue creds h.raw value
@@ -410,6 +417,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .scaleway => Postgres.Rdb.delete creds h.raw
     | .scalewayFunction, h => Compute.Functions.delete creds h.raw
     | .scalewayContainer, h => Compute.Containers.delete creds h.raw
+  -- The one inbound plaintext path; see `Backend.secretValue`. `fetchValue`
+  -- already exists and is already the narrowly-scoped reader for both clouds.
+  secretValue h := Secrets.fetchValue provider creds h.raw
 
 /-- Both clouds, live, using each one's own credentials. -/
 def live (aws scaleway : Credentials) : Backends where

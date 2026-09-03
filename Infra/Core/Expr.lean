@@ -28,27 +28,63 @@ namespace Infra.Core
 inductive Expr (K : ProviderId → Kind → Type) : Type → Type 1 where
   | lit      {α : Type} : α → Expr K α
   | observed (p : ProviderId) (k : Kind) : K p k → Expr K (ObservedOf k)
+  /-- The *value* of one of this fleet's secrets, read at apply time.
+
+      `Expr K String` rather than `ObservedOf .secrets`, because nothing
+      observable carries a value — `.secrets`' `read` deliberately never
+      fetches one. This is what lets a target hold a composed value (a
+      connection string built from a password and a post-apply endpoint) as a
+      *function* rather than a literal, so it needs one apply instead of two.
+
+      Still `map`/`ap` only: the plan's shape does not depend on this, only a
+      field's value does, so the applicative-only rule above is intact. -/
+  | secretValue (p : ProviderId) : K p .secrets → Expr K String
   | map      {α β : Type} : (α → β) → Expr K α → Expr K β
   | ap       {α β : Type} : Expr K (α → β) → Expr K α → Expr K β
+
+/-- What a spec reads from a resource it names.
+
+    Tagged because the two have different costs: a handle is free, a value is
+    a plaintext read. `Infra.Core.needsSecretValues` uses this to tell whether
+    an action needs the one inbound plaintext path at all. -/
+inductive Need | handle | secretValue
+  deriving Repr, DecidableEq, BEq
+
+/-- One reference, and what it is read for. -/
+abbrev Dep (K : ProviderId → Kind → Type) :=
+  (p : ProviderId) × (k : Kind) × K p k × Need
+
+/-- What an expression can be evaluated against.
+
+    A structure rather than a bare function because `.secretValue` needs a
+    second, very different lookup. `secretValue` is **defaulted to "knows
+    nothing"**, which is what makes the planning path structurally unable to
+    hold a real one: `envOfWorld` builds an `Env` without mentioning the
+    field, so no amount of care is required to keep plaintext out of `plan`. -/
+structure Env (K : ProviderId → Kind → Type) where
+  observed    : (p : ProviderId) → (k : Kind) → K p k → Option (ObservedOf k)
+  secretValue : (p : ProviderId) → K p .secrets → Option String := fun _ _ => none
+
+/-- The only string the pure planning path can produce for a secret value. -/
+def Env.redacted : String := "<redacted>"
+
+/-- An environment that can settle a composed value's *shape* without access
+    to any real one — so a dry run exercises the same code path as an apply,
+    and still cannot print a secret. -/
+def Env.withRedactedSecrets {K : ProviderId → Kind → Type} (e : Env K) : Env K :=
+  { e with secretValue := fun _ _ => some Env.redacted }
 
 namespace Expr
 
 variable {K : ProviderId → Kind → Type}
 
 /-- Every reference this expression makes. Used for the dependency DAG. -/
-def deps {α : Type} : Expr K α → List ((p : ProviderId) × (k : Kind) × K p k)
-  | .lit _          => []
-  | .observed p k r => [⟨p, k, r⟩]
-  | .map _ e        => deps e
-  | .ap f e         => deps f ++ deps e
-
-/-- Evaluate, once every referenced resource has been observed. -/
-def eval {α : Type} (env : (p : ProviderId) → (k : Kind) → K p k → ObservedOf k) :
-    Expr K α → α
-  | .lit a          => a
-  | .observed p k r => env p k r
-  | .map f e        => f (eval env e)
-  | .ap f e         => (eval env f) (eval env e)
+def deps {α : Type} : Expr K α → List (Dep K)
+  | .lit _           => []
+  | .observed p k r  => [⟨p, k, r, .handle⟩]
+  | .secretValue p r => [⟨p, .secrets, r, .secretValue⟩]
+  | .map _ e         => deps e
+  | .ap f e          => deps f ++ deps e
 
 /-- The handle of a referenced resource — by far the commonest projection, so it gets a name
     rather than making every caller write the `map` out. -/
@@ -61,14 +97,14 @@ def handle (p : ProviderId) (k : Kind) (r : K p k) : Expr K (Handle k) :=
     push is a schedule error rather than a failure of the expression — so the
     caller gets to decide, instead of this having to demand a total
     environment it cannot supply mid-apply. -/
-def eval? {α : Type} (env : (p : ProviderId) → (k : Kind) → K p k → Option (ObservedOf k)) :
-    Expr K α → Option α
-  | .lit a          => some a
-  | .observed p k r => env p k r
-  | .map f e        => (eval? env e).map f
-  | .ap f e         => match eval? env f, eval? env e with
-                       | some g, some x => some (g x)
-                       | _,      _      => none
+def eval? {α : Type} (env : Env K) : Expr K α → Option α
+  | .lit a           => some a
+  | .observed p k r  => env.observed p k r
+  | .secretValue p r => env.secretValue p r
+  | .map f e         => (eval? env e).map f
+  | .ap f e          => match eval? env f, eval? env e with
+                        | some g, some x => some (g x)
+                        | _,      _      => none
 
 /-- The value of an expression that is already a literal.
 

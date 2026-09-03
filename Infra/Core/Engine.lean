@@ -84,7 +84,9 @@ private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
     (key : κ.Key p k) : List String :=
   match T.assign p k key with
   | .present authored =>
-    ((hasDepsOf k).deps authored).map fun d => slotId d.1 d.2.1 (κ.name d.1 d.2.1 d.2.2)
+    -- `d.2.2.1` is the key; `d.2.2.2` is the `Need` tag, which the schedule
+    -- ignores — a handle and a value are the same edge as far as order goes.
+    ((hasDepsOf k).deps authored).map fun d => slotId d.1 d.2.1 (κ.name d.1 d.2.1 d.2.2.1)
   | _ => []
 
 /-- One scheduling step. -/
@@ -144,12 +146,42 @@ def orderActions {κ : Keys} (T : Plan κ) (as : List (Action κ)) :
 structure PushOptions where
   apply : Bool := false
 
-/-- Settle a target for one slot against what exists so far. -/
-private def settleFor {κ : Keys} (T : Plan κ) (entries : List (Entry κ))
+/-- Settle a target for one slot against what exists so far.
+
+    **The only place a secret value enters the engine.** If this slot's spec
+    reads any (`Expr.secretValue`, tagged `Need.secretValue` by `HasDeps`),
+    each one is fetched here through `Backend.secretValue`, put in the `Env`
+    handed to `settleSpec`, and dropped when this function returns — the
+    resulting `ProviderSpec` goes straight to one create/update call. Nothing
+    is cached across actions: two resources reading one secret cost two reads,
+    deliberately, so no value outlives the call that needs it.
+
+    Fetching only for keys the spec actually names is what keeps a fleet with
+    no composed secrets from ever calling `Backend.secretValue`. -/
+private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List (Entry κ))
     (p : ProviderId) (k : Kind) (key : κ.Key p k) : IO (ProviderSpec k) := do
   match T.assign p k key with
   | .present authored =>
-    match settleSpec k (envOfWorld (worldOf entries)) authored with
+    let world := worldOf entries
+    let base := envOfWorld world
+    -- Secret values, for exactly the secrets this spec reads.
+    let wanted := ((hasDepsOf k).deps authored).filter fun d => d.2.2.2 == Need.secretValue
+    let mut values : List (ProviderId × String × String) := []
+    for d in wanted do
+      -- `Expr.deps` tags every `.secretValue` edge with `.secrets`, but that is
+      -- not visible in `d`'s type, so the handle is built from the name rather
+      -- than from `observedHandle`. Sound for the same reason `pullEntries`
+      -- matches on it: `Keys.name` *is* the cloud's physical identifier.
+      let nm := κ.name d.1 d.2.1 d.2.2.1
+      unless (world.sighting d.1 d.2.1 d.2.2.1).isSome do
+        throw (IO.userError
+          s!"{slotId p k (κ.name p k key)}: needs the value of {slotId d.1 d.2.1 nm}, \
+which does not exist yet")
+      values := (d.1, nm, ← (bs.backend d.1).secretValue ⟨nm⟩) :: values
+    let env : Env κ.Key :=
+      { base with secretValue := fun p' key' =>
+          (values.find? fun v => v.1 == p' && v.2.1 == κ.name p' .secrets key').map (·.2.2) }
+    match settleSpec k env authored with
     | some spec => return spec
     | none => throw (IO.userError
         s!"{slotId p k (κ.name p k key)}: a referenced resource does not exist yet")
@@ -170,13 +202,13 @@ private def remember {κ : Keys} (bs : Backends) (entries : List (Entry κ))
 private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     (entries : List (Entry κ)) : Action κ → IO (List (Entry κ))
   | .create p k key => do
-    let o ← (bs.backend p).create k (← settleFor T entries p k key)
+    let o ← (bs.backend p).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
   | .update p k key => do
     match (worldOf entries).sighting p k key with
     | some seen =>
       let o ← (bs.backend p).update k (observedHandle k seen.observed)
-        (← settleFor T entries p k key)
+        (← settleFor T bs entries p k key)
       remember bs entries p k key o
     | none => throw (IO.userError s!"{slotId p k (κ.name p k key)}: vanished before update")
   | .replace p k key => do
@@ -184,7 +216,7 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     match (worldOf entries).sighting p k key with
     | some seen => (bs.backend p).delete k (observedHandle k seen.observed)
     | none      => pure ()
-    let o ← (bs.backend p).create k (← settleFor T entries p k key)
+    let o ← (bs.backend p).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
   | .delete p k key => do
     match (worldOf entries).sighting p k key with

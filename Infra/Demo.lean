@@ -1,4 +1,5 @@
 import Infra.Providers
+import Infra.Core.Ergonomics
 
 /-
   A worked fleet, and the checks that the design claims actually hold.
@@ -117,6 +118,131 @@ def demoPlan : Plan demoKeys where
 def idlePlan : Plan demoKeys where
   assign _ _ _ := .unmanaged
   outside := .unmanaged
+
+/-! ## A second fleet: a composed secret, in one apply
+
+  The fleet above is hand-rolled, to show what a `Keys`/`Plan` *is*. This one
+  is written the way a real consumer project should write one — with
+  `Infra.Core.Ergonomics`' combinators — and exists to exercise the thing
+  hand-rolling cannot demonstrate: a secret whose value is *computed at apply
+  time* from another secret's value and a resource that does not exist yet.
+
+  A database URL needs the master password and the endpoint the cloud assigns
+  on creation. Composing it by hand would mean two applies with an operator
+  pasting a connection string in between. Instead the target holds the
+  **function**, as `map`/`ap` over `.secretValue` and `.observed`, and
+  `HasDeps` turns both references into ordering edges — so one apply creates
+  the password, then the database, then the URL secret.
+
+  Note what is *not* here: any plaintext. `dbUrl` names no value, and
+  `secretsAreSound` below is what checks that mechanically. -/
+
+def composedNames : List String := ["db-password", "db-url"]
+
+def composedKeys : Keys := Keys.build fun
+  | .scaleway, .secrets  => .named composedNames
+  | .scaleway, .postgres => .named ["main"]
+  | _,         _         => .unused
+
+/-- Referenced by name, checked at elaboration: a typo here does not compile. -/
+def dbPasswordKey : composedKeys.Key .scaleway .secrets :=
+  NamedKey.of composedNames "db-password"
+def dbUrlKey : composedKeys.Key .scaleway .secrets :=
+  NamedKey.of composedNames "db-url"
+def mainDbKey : composedKeys.Key .scaleway .postgres :=
+  NamedKey.of ["main"] "main"
+
+def mainDbSpec : PostgresSpec composedKeys.Key Partial (Expr composedKeys.Key) :=
+  PostgresSpec.serverless "main" "dbadmin" "db-password" 1 4
+
+/-- The composed value. `.secretValue` supplies the password, `.observed`
+    supplies the endpoint, and neither is known when this is written down. -/
+def dbUrlExpr : Expr composedKeys.Key String :=
+  .ap (.map (fun pw (o : ObservedOf .postgres) =>
+              s!"postgres://dbadmin:{pw}@{o.endpoint}/main")
+            (.secretValue .scaleway dbPasswordKey))
+      (.observed .scaleway .postgres mainDbKey)
+
+def composedSecretsAssign :=
+  Keys.assignFromNamed (κ := composedKeys) .scaleway .secrets
+    [ ("db-password", .present { name := "db-password"
+                                 valueFrom := fromEnv "DB_PASSWORD" })
+    , ("db-url",      .present { name := "db-url"
+                                 valueFrom := composed dbUrlExpr }) ]
+
+def composedPostgresAssign :=
+  Keys.assignFromNamed (κ := composedKeys) .scaleway .postgres
+    [ ("main", .present mainDbSpec) ]
+
+def composedPlan : Plan composedKeys where
+  assign
+    | .scaleway, .secrets,  key => composedSecretsAssign key
+    | .scaleway, .postgres, key => composedPostgresAssign key
+    | _,         _,         _   => .unmanaged
+  outside := .unmanaged
+
+def composedEmptyWorld : World composedKeys := worldOf []
+
+/-- The same fleet, already applied: all three resources exist and match.
+
+    Used to check that a composed secret is **create-only**. Its value cannot
+    be compared (no cloud reports one), so once it exists there is nothing to
+    reconcile and a second apply must ask for nothing. The optional reported
+    fields are `unknown` — not observed — and `unknown` is never drift. -/
+def composedAppliedWorld : World composedKeys :=
+  worldOf
+    [ ⟨.scaleway, .secrets, dbPasswordKey,
+        { observed := { handle := ⟨"db-password"⟩, version := "1" }
+          reported := { name := "db-password", valueFrom := .fromEnv "" } }⟩
+    , ⟨.scaleway, .secrets, dbUrlKey,
+        { observed := { handle := ⟨"db-url"⟩, version := "1" }
+          reported := { name := "db-url", valueFrom := .fromEnv "" } }⟩
+    , ⟨.scaleway, .postgres, mainDbKey,
+        { observed := { handle := ⟨"main"⟩, endpoint := "main.db.invalid:5432" }
+          reported := { name := "main", instanceClass := .unknown
+                        masterUsername := "dbadmin", masterPasswordSecret := ""
+                        version := .unknown, storageGb := .unknown
+                        minCapacity := .unknown, maxCapacity := .unknown } }⟩ ]
+
+section ComposedGuards
+
+/- Both references are found, and tagged for what they are read for: the
+    password as a *value*, the database as a *handle*. The `.secretValue` tag
+    is what tells the engine this action needs the one inbound plaintext path
+    at all. -/
+#guard dbUrlExpr.deps.length = 2
+#guard dbUrlExpr.deps.any (fun d => d.2.2.2 == Need.secretValue)
+#guard dbUrlExpr.deps.any (fun d => d.2.1 == Kind.postgres)
+
+/- Three resources, three creates — in *one* apply. -/
+#guard (actions composedPlan composedEmptyWorld).length = 3
+
+/- No plaintext anywhere in the fleet. This is the decidable replacement for
+    what used to be a structural guarantee. -/
+#guard composedPlan.secretsAreSound
+
+/- …and it actually rejects the two ways a plaintext value could be written:
+    directly, and laundered through `map` so it is no longer a bare literal. -/
+#guard ¬ ({ name := "leak", valueFrom := .lit (.composed "hunter2") } :
+  SecretsSpec composedKeys.Key Partial (Expr composedKeys.Key)).sourceIsSound
+#guard ¬ ({ name := "leak", valueFrom := composed (.lit "hunter2") } :
+  SecretsSpec composedKeys.Key Partial (Expr composedKeys.Key)).sourceIsSound
+
+/- An env-var reference is sound, and a composed value over real references is
+    sound — so the check is not just refusing everything. -/
+#guard ({ name := "ok", valueFrom := fromEnv "DB_PASSWORD" } :
+  SecretsSpec composedKeys.Key Partial (Expr composedKeys.Key)).sourceIsSound
+#guard ({ name := "ok", valueFrom := composed dbUrlExpr } :
+  SecretsSpec composedKeys.Key Partial (Expr composedKeys.Key)).sourceIsSound
+
+/- `Repr` must not print a composed value: this is what keeps one out of a
+    stray trace or error message. -/
+#guard ((toString (repr (SecretSource.composed "CANARY"))).splitOn "CANARY").length == 1
+
+/- This fleet is Scaleway-only, so AWS is never authenticated or called. -/
+#guard composedKeys.providers = [.scaleway]
+
+end ComposedGuards
 
 /-! ## Worlds -/
 

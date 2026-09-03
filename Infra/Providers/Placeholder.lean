@@ -38,7 +38,7 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
                               handler := .unknown, memoryMb := .unknown
                               timeoutSec := .unknown, env := .unknown }
   | .queues,           h => { name := h.raw, visibilityTimeoutSec := .unknown }
-  | .secrets,          h => { name := h.raw, valueFrom := "" }
+  | .secrets,          h => { name := h.raw, valueFrom := .fromEnv "" }
   | .imageRegistry,    h => { name := h.raw, immutableTags := .unknown }
   | .postgres,         h => { name := h.raw, instanceClass := .unknown, masterUsername := ""
                               masterPasswordSecret := "", version := .unknown
@@ -61,5 +61,9 @@ def placeholderBackend (who : String) : Backend where
   create k _ := pure (placeholderObserved k s!"{who}-placeholder-id")
   update k h _ := pure (placeholderObserved k h.raw)
   delete _ _ := pure ()
+  -- A canary rather than `""`: the offline self-checks assert this string
+  -- never appears in plan output, apply logs, or the `.infra/` cache, which is
+  -- how "a composed secret's value does not leak" is actually tested.
+  secretValue _ := pure s!"{who}-placeholder-secret-value"
 
 end Infra.Providers

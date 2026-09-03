@@ -94,6 +94,22 @@ def satisfiesAt {κ : Keys} (T : Plan κ) (W : World κ)
   | .present _, some _   => true
   | .present _, none     => false
 
+/-- Whether every secret this plan declares is honest about where its value
+    comes from — no plaintext written into the committed target.
+
+    `Expr.secretValue` made "a secret in the target" *expressible*, where it
+    used to be structurally impossible, so this is the decidable replacement:
+    a fleet writes `#guard myPlan.secretsAreSound` (or the `fleet` declaration
+    emits it) and gets the guarantee back at compile time. Decidable because
+    every key type is `Finite`. See `SecretsSpec.sourceIsSound` for the
+    per-secret rule and `docs/diff-semantics.md`'s ledger for the tier change. -/
+def Plan.secretsAreSound {κ : Keys} (T : Plan κ) : Bool :=
+  (Finite.elems (α := ProviderId)).all fun p =>
+    (Finite.elems (α := κ.Key p .secrets)).all fun key =>
+      match T.assign p .secrets key with
+      | .present s => s.sourceIsSound
+      | _          => true
+
 /-- Whether the world realises the target everywhere. Decidable, because every key type is
     `Finite`: fold over the enumerations. -/
 def satisfies {κ : Keys} (T : Plan κ) (W : World κ) : Bool :=

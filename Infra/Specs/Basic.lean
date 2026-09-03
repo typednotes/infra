@@ -81,23 +81,55 @@ structure QueuesSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
   name                : Field .required o f String
   visibilityTimeoutSec : Field .optional o f Nat
 
+/-- Where a secret's value comes from.
+
+    Two constructors rather than two optional fields, so "exactly one of these"
+    is *structural* rather than a decidable side condition that nothing forces
+    — the same reasoning that makes `PostgresSpec.classic`/`serverless` smart
+    constructors preferable to `hasCapacityChoice` alone.
+
+    Neither constructor is meant to hold a plaintext secret from the committed
+    target. `fromEnv` names a variable read at apply time. `composed` carries a
+    value *computed* at apply time from post-apply state — the point being that
+    the target holds the function, not the result. A plaintext constant
+    smuggled in as `composed "hunter2"` is representable but caught by
+    `SecretsSpec.sourceIsSound`; see `docs/diff-semantics.md`'s ledger. -/
+inductive SecretSource
+  | fromEnv  (varName : String)
+  | composed (value   : String)
+  deriving DecidableEq, BEq
+  -- Deliberately NOT deriving `Repr`/`ToJson`/`FromJson`: see the `Repr`
+  -- instance below, and `Kind.lean` for why nothing serialises this.
+
+/-- Redacting, exactly as `Credentials`' own `Repr` does — so a stray trace or
+    error message cannot print a composed value. -/
+instance : Repr SecretSource where
+  reprPrec
+    | .fromEnv v,  _ => f!"SecretSource.fromEnv {repr v}"
+    | .composed _, _ => f!"SecretSource.composed <redacted>"
+
 /-- A secret.
 
-    `valueFrom` names an **environment variable**, never the value itself: a
-    literal here would be a plaintext secret in the file that is meant to be
-    committed. Apply reads the variable at the moment it is needed, so the
-    value never enters the target, the `.infra/` cache, or any log.
+    `valueFrom` names an **environment variable**, or describes a value composed
+    at apply time — never the value itself as a literal: plaintext here would be
+    a secret in the file that is meant to be committed. Apply resolves it at the
+    moment it is needed, so the value never enters the target, the `.infra/`
+    cache, or any log.
 
     Nothing reads the value back. `read` reports only what the cloud will say
     without handing over plaintext, which means a value changed outside this
     tool is **not** detected as drift — an accepted limitation, and the price
     of never pulling secrets into the engine. The cloud's own version
-    identifier is carried in `ObservedOf`, where computed state belongs. -/
+    identifier is carried in `ObservedOf`, where computed state belongs.
+
+    That same limitation is what makes a `composed` secret **create-only**: its
+    value cannot be compared, so it is never drift, and a second apply asks for
+    nothing. Rotating one is an explicit action, not a reconciliation. -/
 structure SecretsSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
   name      : Field .required o f String
-  /-- The name of an environment variable holding the value. -/
-  valueFrom : Field .required o f String
+  /-- An environment variable's name, or a value composed at apply time. -/
+  valueFrom : Field .required o f SecretSource
 
 structure ImageRegistrySpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
@@ -139,6 +171,41 @@ structure PostgresSpec (K : ProviderId → Kind → Type) (o : Type u → Type u
   minCapacity          : Field .optional o f Nat
   /-- Serverless capacity ceiling — see `minCapacity`. -/
   maxCapacity          : Field .optional o f Nat
+
+/-- `valueFrom := fromEnv "SECRETS_MASTER_KEY"`.
+
+    A helper rather than a bare `.fromEnv`, because dot-notation resolves
+    against the *expected* type's head — which is `Expr`, not `SecretSource` —
+    so `.fromEnv` alone does not elaborate under the wrapper. -/
+def fromEnv {K : ProviderId → Kind → Type} (varName : String) : Expr K SecretSource :=
+  .lit (.fromEnv varName)
+
+/-- `valueFrom := composed (someExprOverPostApplyState)`.
+
+    The argument is an `Expr`, so what the target stores is the *recipe*. Its
+    references become dependency edges via `HasDeps SecretsSpec`, which is what
+    orders the resources it reads from before this secret is created. -/
+def composed {K : ProviderId → Kind → Type} (e : Expr K String) : Expr K SecretSource :=
+  .map SecretSource.composed e
+
+/-- Whether this secret's source is honest about where its value comes from.
+
+    An env-var name is a literal and references nothing. A composed value must
+    depend on at least one post-apply value — so a plaintext constant, whether
+    written directly as `.lit (.composed "hunter2")` or laundered through
+    `composed (.lit "hunter2")`, has no dependencies and is rejected.
+
+    This is the decidable replacement for what used to be a structural
+    guarantee ("no field of this spec can hold a value"). Use it fleet-wide via
+    `Plan.secretsAreSound`. -/
+def SecretsSpec.sourceIsSound {K : ProviderId → Kind → Type}
+    (s : SecretsSpec K Partial (Expr K)) : Bool :=
+  match s.valueFrom.asLit, s.valueFrom.deps with
+  | some (.fromEnv _),  []     => true
+  | some (.composed _), _      => false   -- plaintext, written directly
+  | none,               []     => false   -- plaintext, laundered through `map`
+  | none,               _ :: _ => true
+  | some (.fromEnv _),  _ :: _ => false
 
 /-- Whether an authored postgres target picked one of the two capacity shapes: a fixed
     `instanceClass`, or both `minCapacity` and `maxCapacity`. Neither being set makes the target
