@@ -7,6 +7,7 @@ import Infra.Core.Refine
 import Infra.Core.Kind
 import Infra.Core.Expr
 import Infra.Core.Spec
+import Infra.Core.Coe
 import Infra.Specs.Basic
 import Infra.Core.Fleet
 import Infra.Core.Ergonomics
@@ -37,4 +38,9 @@ import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
 import Infra.Providers.Live
 import Infra.Providers
+
+-- The command-line front end, so a declaration repo's `Main` is a call rather
+-- than a copy of the dispatch.
+import Infra.Cli
+
 import Infra.Demo

@@ -23,6 +23,12 @@ def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
   let mut acc : List (Entry κ) := []
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
+      -- A pair with no keys cannot be claimed by this fleet, so listing it
+      -- could only produce rows that are immediately dropped. Skipping it is
+      -- not just an optimisation: it is what lets an all-Scaleway fleet run
+      -- without ever calling AWS, and so without AWS credentials.
+      if (Finite.elems (α := κ.Key p k)).isEmpty then
+        continue
       let observed ← (bs.backend p).list k
       for key in Finite.elems (α := κ.Key p k) do
         match observed.find? (fun o => (observedHandle k o).raw == κ.name p k key) with

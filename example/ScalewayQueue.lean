@@ -47,8 +47,8 @@ def exampleKeys : Keys where
   name   _ _ _ := "infra-example"
 
 def exampleQueueSpec {K : ProviderId → Kind → Type} : QueuesSpec K Partial (Expr K) where
-  name                 := .lit "infra-example"
-  visibilityTimeoutSec := .known (.lit 30)
+  name                 := "infra-example"
+  visibilityTimeoutSec := 30
 
 def examplePlan : Plan exampleKeys where
   assign

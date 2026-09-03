@@ -29,6 +29,20 @@ attribute [instance] Keys.finite Keys.decEq
 /-- How many resources of this kind this fleet declares in this cloud. Known statically. -/
 @[reducible] def Keys.count (κ : Keys) (p : ProviderId) (k : Kind) : Nat := card (κ.Key p k)
 
+/-- Whether this fleet can name anything at all in a provider.
+
+    False exactly when every one of the provider's key types is empty, in which
+    case the fleet cannot declare, plan, or push anything there — so its
+    credentials are never needed and its API is never called. This is what
+    makes a single-cloud fleet genuinely single-cloud rather than
+    a two-cloud fleet with one half left `.unused`. -/
+def Keys.uses (κ : Keys) (p : ProviderId) : Bool :=
+  (Finite.elems (α := Kind)).any fun k => κ.count p k != 0
+
+/-- The providers this fleet actually declares resources in. -/
+def Keys.providers (κ : Keys) : List ProviderId :=
+  (Finite.elems (α := ProviderId)).filter κ.uses
+
 /-- The target state.
 
     `assign` is TOTAL over `κ.Key p k`. That is the single decision doing most of the work

@@ -1,4 +1,5 @@
 import Infra.Core.Spec
+import Infra.Core.Coe
 
 /-
   One spec per `Kind`.
@@ -373,6 +374,39 @@ private def NoKeys : ProviderId → Kind → Type := fun _ _ => Nothing
             masterPasswordSecret := .lit "master-pw", version := .unknown, storageGb := .unknown
             minCapacity := .unknown, maxCapacity := .unknown } :
     PostgresSpec NoKeys Partial (Expr NoKeys)).hasCapacityChoice
+
+/-! ### Authoring a field without naming its wrappers
+
+  `Infra.Core.Coe` lets a bare value stand for `.lit v` on a required field and
+  for `.known (.lit v)` on an optional one. These check the *result*, not just
+  that it elaborates: each coerced field must be indistinguishable from the
+  explicit form it replaces. `String`, `Bool`, a list and a numeral are all
+  covered, because numerals reach the field by a different route (`OfNat`,
+  which Lean tries before any coercion) than everything else. -/
+
+private def coerced : ObjectStoreSpec NoKeys Partial (Expr NoKeys) where
+  name       := "assets"
+  versioning := true
+  tags       := [("team", "infra")]
+
+#guard (coerced.name matches .lit "assets")
+#guard (coerced.versioning matches .known (.lit true))
+#guard (coerced.tags matches .known (.lit [("team", "infra")]))
+
+private def coercedNumeral : QueuesSpec NoKeys Partial (Expr NoKeys) where
+  name                 := "infra-example"
+  visibilityTimeoutSec := 30
+
+#guard (coercedNumeral.visibilityTimeoutSec matches .known (.lit 30))
+
+/-- `.unknown` deliberately has no coercion: "not specifying this" stays
+    visible, and must still be writable alongside coerced fields. -/
+private def coercedWithHole : ObjectStoreSpec NoKeys Partial (Expr NoKeys) where
+  name       := "cold"
+  versioning := .unknown
+  tags       := [("team", "infra")]
+
+#guard (coercedWithHole.versioning matches .unknown)
 end
 
 end Infra.Specs

@@ -75,18 +75,18 @@ def demoKeys : Keys where
 
 def bucketSpec {K : ProviderId → Kind → Type} (nm : String) :
     ObjectStoreSpec K Partial (Expr K) where
-  name       := .lit nm
-  versioning := .known (.lit true)
+  name       := nm
+  versioning := true
   tags       := .unknown          -- not yet said; `Fillable` will default it
 
 def apiSpec {K : ProviderId → Kind → Type} : ComputeSpec K Partial (Expr K) where
-  name       := .lit "api"
-  runtime    := .known (.lit "python3.12")   -- advisory; never compared
-  image      := .lit "rg.fr-par.scw.cloud/demo/api:latest"
+  name       := "api"
+  runtime    := "python3.12"                 -- advisory; never compared
+  image      := "rg.fr-par.scw.cloud/demo/api:latest"
   executionRole := .unknown                  -- AWS-only; Scaleway needs none
-  namespace' := .known (.lit "demo")         -- Scaleway placement
+  namespace' := "demo"                       -- Scaleway placement
   handler    := .unknown
-  memoryMb   := .known (.lit 512)
+  memoryMb   := 512
   timeoutSec := .unknown
   env        := .unknown
 
@@ -96,10 +96,10 @@ def apiSpec {K : ProviderId → Kind → Type} : ComputeSpec K Partial (Expr K) 
   bucket — a reference crossing clouds inside one target. -/
 
 def ingestSpec : ScalewayFunctionSpec demoKey Partial (Expr demoKey) where
-  name         := .lit "ingest"
-  runtime      := .lit "python3.12"
-  namespace'   := .lit "demo"
-  sourceBucket := .known (.lit (some Archive.cold))
+  name         := "ingest"
+  runtime      := "python3.12"
+  namespace'   := "demo"
+  sourceBucket := some Archive.cold
 
 def demoPlan : Plan demoKeys where
   assign
@@ -107,8 +107,8 @@ def demoPlan : Plan demoKeys where
     | .scaleway, .objectStore,      b => .present (bucketSpec (demoName .scaleway .objectStore b))
     | .scaleway, .compute,          _ => .present apiSpec
     | .aws,      .s3Bucket,         _ =>
-        .present { name := .lit "cold", versioning := .unknown
-                   objectLock := .known (.lit true), region := .unknown }
+        .present { name := "cold", versioning := .unknown
+                   objectLock := true, region := .unknown }
     | .scaleway, .scalewayFunction, _ => .present ingestSpec
     | _,         _,                 _ => .unmanaged
   outside := .unmanaged

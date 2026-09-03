@@ -228,9 +228,6 @@ def checkPush : IO Unit := do
 
   IO.println "push: ok (dry run, cross-cloud ordering, no-op and replace)"
 
-/-- Where the observed-state cache lives. Gitignored: see `docs/persistence.md`. -/
-def cacheRoot : System.FilePath := ".infra"
-
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
 def selfCheck : IO Unit := do
@@ -241,40 +238,8 @@ def selfCheck : IO Unit := do
   checkSigning
   checkPush
 
-def usage : String := String.intercalate "\n"
-  [ "usage: infra [check | plan | pull | push [--apply]]"
-  , ""
-  , "  check           run the offline self-checks (default)"
-  , "  pull            observe both clouds and cache what is there"
-  , "  plan            show what would change, without changing anything"
-  , "  push            same as plan — a dry run"
-  , "  push --apply    actually reconcile"
-  ]
-
-/-- Live commands need credentials for both clouds; the failure names every
-    place that was searched. -/
-def withLive (act : Infra.Core.Backends → IO Unit) : IO Unit := do
-  act (← Infra.Providers.liveFromEnvironment)
-
-def main (args : List String) : IO UInt32 := do
-  match args with
-  | [] | ["check"] => selfCheck; return 0
-  | ["pull"] =>
-    withLive fun bs => do
-      let world ← pull (κ := demoKeys) cacheRoot bs
-      let outstanding := plan demoPlan world
-      IO.println s!"pulled; {outstanding.length} action(s) outstanding"
-    return 0
-  | ["plan"] | ["push"] =>
-    withLive fun bs => do
-      let world ← pull (κ := demoKeys) cacheRoot bs
-      for line in ← push bs demoPlan world {} do IO.println line
-    return 0
-  | ["push", "--apply"] =>
-    withLive fun bs => do
-      let world ← pull (κ := demoKeys) cacheRoot bs
-      for line in ← push bs demoPlan world { apply := true } do IO.println line
-    return 0
-  | _ =>
-    IO.eprintln usage
-    return 2
+/-- The dispatch itself lives in `Infra.Cli`, which is also what a declaration
+    repo calls — so this binary exercises the same front end consumers get,
+    rather than a parallel copy of it. -/
+def main (args : List String) : IO UInt32 :=
+  Infra.Cli.run "infra" demoPlan selfCheck (args := args)

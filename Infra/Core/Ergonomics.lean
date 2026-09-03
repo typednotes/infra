@@ -185,4 +185,16 @@ private def testKeys : Keys := Keys.build testTable
 #guard namesNodup testNames = true
 #guard namesNodup ["dup", "dup"] = false
 
+/-! ### A single-cloud fleet is genuinely single-cloud
+
+  `Keys.uses`/`Keys.providers` are what let `Infra.Cli` authenticate only the
+  clouds a fleet declares into, and what let `pullEntries` skip the rest
+  entirely. `testTable` names resources in AWS only, so Scaleway must not
+  appear — otherwise a one-cloud fleet would still demand the other cloud's
+  credentials, which is the bug these exist to fix. -/
+
+#guard testKeys.uses .aws = true
+#guard testKeys.uses .scaleway = false
+#guard testKeys.providers = [.aws]
+
 end Infra.Core
