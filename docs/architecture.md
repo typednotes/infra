@@ -111,6 +111,20 @@ resource that does not exist yet). `HasDeps` turns both into ordering edges,
 so one apply creates the password, then the database, then the secret that
 reads them.
 
+Because that composition is the whole point and its `map`/`ap` spelling is
+pure plumbing, it is written the way `s!` is:
+
+```lean
+composed expr!"postgres://admin:{secretValueOf dbPassword}@{endpointOf mainDb}/main"
+```
+
+`expr!` (`Infra/Core/Compose.lean`) expands to exactly the `map`/`ap` chain,
+so nothing is added to `Expr` and no evaluation rule changes. The applicative
+restriction is not loosened, only made invisible — there is still nowhere in
+the syntax to branch on an unknown value. `Infra/Demo.lean` keeps the
+hand-written chain next to the `expr!` version and `#guard`s that they agree
+on both their dependency edges and their evaluated string.
+
 What that does **not** allow is a plaintext value in the committed file. It is
 now *expressible* (`.lit (.composed "hunter2")`), so it is checked rather than
 impossible: `SecretsSpec.sourceIsSound` rejects a composed value with no

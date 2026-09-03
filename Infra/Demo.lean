@@ -1,6 +1,7 @@
 import Infra.Providers
 import Infra.Core.Ergonomics
 import Infra.Core.Declare
+import Infra.Core.Compose
 import Infra.Core.Engine
 
 /-
@@ -157,9 +158,18 @@ def mainDbKey : composedKeys.Key .scaleway .postgres :=
 def mainDbSpec : PostgresSpec composedKeys.Key Partial (Expr composedKeys.Key) :=
   PostgresSpec.serverless "main" "dbadmin" "db-password" 1 4
 
-/-- The composed value. `.secretValue` supplies the password, `.observed`
-    supplies the endpoint, and neither is known when this is written down. -/
+/-- The composed value: the password supplies one hole, the not-yet-assigned
+    endpoint the other, and neither is known when this is written down.
+
+    `expr!` is `s!` for plan-time strings — it expands to the `map`/`ap` chain
+    spelled out in `dbUrlExprByHand` below, which is kept alongside it so the
+    guards can check the two agree. -/
 def dbUrlExpr : Expr composedKeys.Key String :=
+  expr!"postgres://dbadmin:{secretValueOf dbPasswordKey}@{endpointOf mainDbKey}/main"
+
+/-- The same value, written out. Retained only as the thing `expr!` is checked
+    against; a fleet should use `expr!`. -/
+def dbUrlExprByHand : Expr composedKeys.Key String :=
   .ap (.map (fun pw (o : ObservedOf .postgres) =>
               s!"postgres://dbadmin:{pw}@{o.endpoint}/main")
             (.secretValue .scaleway dbPasswordKey))
@@ -223,10 +233,7 @@ fleet viaMacro where
     { valueFrom := fromEnv "DB_PASSWORD" }
   resource scaleway secrets "db-url"
     { valueFrom := composed
-        (.ap (.map (fun pw (o : ObservedOf .postgres) =>
-                     s!"postgres://dbadmin:{pw}@{o.endpoint}/main")
-                   (.secretValue .scaleway macroDbPassword))
-             (.observed .scaleway .postgres macroMainDb)) }
+        expr!"postgres://dbadmin:{secretValueOf macroDbPassword}@{endpointOf macroMainDb}/main" }
   resource scaleway postgres "main" as macroMainDb
     { masterUsername := "dbadmin"
     , masterPasswordSecret := "db-password"
@@ -265,6 +272,25 @@ section ComposedGuards
 #guard dbUrlExpr.deps.length = 2
 #guard dbUrlExpr.deps.any (fun d => d.2.2.2 == Need.secretValue)
 #guard dbUrlExpr.deps.any (fun d => d.2.1 == Kind.postgres)
+
+/- `expr!` must be sugar and nothing more: the same references, read for the
+   same reasons, in the same order as the hand-written `map`/`ap` chain — and
+   the same string once evaluated. `deps` is what the scheduler uses, so
+   agreeing on it is what makes the ordering identical. -/
+#guard dbUrlExpr.deps.map (fun d => (d.1, d.2.1, d.2.2.2))
+     = dbUrlExprByHand.deps.map (fun d => (d.1, d.2.1, d.2.2.2))
+
+/- Same value, too. Evaluated against an environment that supplies both
+   unknowns, the two must produce the same string. -/
+private def probeEnv : Env composedKeys.Key where
+  observed p k key :=
+    match p, k with
+    | .scaleway, .postgres => some { handle := ⟨"main"⟩, endpoint := "db.invalid:5432" }
+    | _,         _         => none
+  secretValue _ _ := some "s3cret"
+
+#guard dbUrlExpr.eval? probeEnv = some "postgres://dbadmin:s3cret@db.invalid:5432/main"
+#guard dbUrlExpr.eval? probeEnv = dbUrlExprByHand.eval? probeEnv
 
 /- Three resources, three creates — in *one* apply. -/
 #guard (actions composedPlan composedEmptyWorld).length = 3
