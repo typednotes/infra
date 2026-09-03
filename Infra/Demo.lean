@@ -283,7 +283,7 @@ section ComposedGuards
 /- Same value, too. Evaluated against an environment that supplies both
    unknowns, the two must produce the same string. -/
 private def probeEnv : Env composedKeys.Key where
-  observed p k key :=
+  observed p k _key :=
     match p, k with
     | .scaleway, .postgres => some { handle := ⟨"main"⟩, endpoint := "db.invalid:5432" }
     | _,         _         => none
