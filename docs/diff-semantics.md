@@ -220,6 +220,7 @@ type would otherwise destroy live resources on a first run.
 | Dangling reference | a reference is `κ.Key p k`, an index into this very fleet; there is no "not found" case |
 | Mistyped reference | `Handle` and `Key` are `Kind`-indexed |
 | Duplicate key | `Plan.assign` is a function |
+| Duplicate key, structurally | a hand-rolled `inductive` key type (`Infra/Demo.lean`'s style): constructors are structurally distinct |
 | Forgotten key | `assign` is total over a `Finite` domain |
 | Missing required field | `Field .required` is unwrapped, so the structure literal is incomplete |
 | Conflicting status | `Status` has no ⊤ constructor |
@@ -229,7 +230,27 @@ type would otherwise destroy live resources on a first run.
 | A secret in the target | `secrets.valueFrom` and `postgres.masterPasswordSecret` hold *names*; there is no field of either spec that can hold a value |
 
 **Decidable**, dischargeable with `(h : Assert … := by decide)`: acyclicity,
-quota bounds such as `Assert (κ.count .aws .compute ≤ 20)`, name formats.
+quota bounds such as `Assert (κ.count .aws .compute ≤ 20)`, name formats,
+and — for `Infra.Core.Ergonomics`'s `NamedKey` — duplicate resource *names*.
+`Infra/Demo.lean`'s hand-rolled `inductive` keys get "no duplicate key" for
+free from constructor distinctness (the row above); `NamedKey (names : List
+String)` is `Fin names.length` underneath, so two equal strings in `names`
+would give two distinct keys the same `Keys.name`, and `KeySpec.named`'s
+`Assert (namesNodup names)` is what catches that at the call site instead. A
+consumer project that wants the stronger, unconditional guarantee can still
+write a hand-rolled `inductive` — `NamedKey` trades that for less boilerplate,
+not the other way round.
+
+**Decidable, but not embeddable in the structure**: `PostgresSpec.hasCapacityChoice` — "at least
+one of `instanceClass` or `{minCapacity, maxCapacity}` is set" — is a decidable `Bool` function,
+same tier as the row above, but it cannot become a proof *field* on `PostgresSpec` the way
+`KeySpec.named`'s check is a proof argument to a constructor. `PostgresSpec` is instantiated at
+both the authoring stage (`o = Partial`, where `.isKnown` is meaningful) and the settled stage
+(`o = Conc`, where optionality has already been erased); a field only well-typed at one stage
+doesn't typecheck across both. The fix is a standalone function plus two smart constructors
+(`PostgresSpec.classic`/`PostgresSpec.serverless`) that most authors use instead of ever seeing
+the raw literal — the check stays available as `Assert spec.hasCapacityChoice` for anyone who
+writes the structure literal directly.
 
 **Genuinely runtime**: global uniqueness of bucket names, quota and capacity,
 eventual consistency, whether an `absent` resource is still referenced from
@@ -255,6 +276,15 @@ outside the fleet.
 - **Unreportable fields are unenforced, not rejected.** A target asking for
   something a cloud cannot express is accepted and quietly ignored; see
   `docs/providers.md` for the list.
+- **`Plan.outside` is declared but not consumed.** Nothing in `satisfiesAt`,
+  `satisfies`, `actions`, or `pullEntries` reads it — a key type's absence
+  from `Keys.build`'s table (`Nothing`) is what actually leaves a resource
+  alone today, regardless of what `outside` is set to, and `.absent`'s
+  documented "closed-world garbage-collect" is not implemented anywhere. This
+  has been raised with the user and is intentionally left alone pending a
+  decision, per `AGENTS.md`; `Infra.Core.Ergonomics`'s `Keys.build` gives the
+  real scoping mechanism (an unlisted `(provider, kind)` pair, or an unlisted
+  name within one) and documents it as such rather than pointing at `outside`.
 
 ## Not yet adopted
 

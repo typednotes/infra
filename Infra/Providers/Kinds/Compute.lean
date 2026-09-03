@@ -196,6 +196,87 @@ def delete (creds : Credentials) (name : String) : IO Unit := do
   let id ← requireId creds name
   discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/containers/{id}")
 
+/-! ### The richer surface `.scalewayContainer` needs
+
+  Everything below is additional to what the portable `.compute` kind's `list`/`read`/
+  `create`/`update` above already use — it reuses their private helpers (`prefix'`,
+  `listRaw`, `requireId`, `namespaceId`, `envObject`, `envOf`) rather than re-resolving
+  names to ids a second way. `delete` above is already enough; there is nothing kind-specific
+  to add to it.
+
+  **Unconfirmed against the real API**: `port`/`min_scale`/`max_scale`/`cpu_limit` follow the
+  naming convention `memory_limit`/`timeout`/`environment_variables`/`registry_image` above
+  already assume, but none of this has been checked against a real deployment — see
+  `docs/providers.md`. Secret-bound environment variables are even less certain: this assumes
+  Scaleway wants the plaintext value at `secret_environment_variables`, following the
+  plaintext-at-set-time assumption `Kinds.Secrets.fetchValue` documents. -/
+
+/-- Render secret-backed environment variables as a JSON array. Each value has already been
+    read once by `Kinds.Secrets.fetchValue` and is passed straight through. -/
+private def secretEnvArray (secretEnv : List (String × String)) : Value :=
+  .array (secretEnv.map fun (k, v) => .object [("key", .string k), ("value", .string v)]).toArray
+
+/-- The domain alongside the name, which `list` above does not need. -/
+def listFull (creds : Credentials) : IO (List (String × String)) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
+  return (arrayField reply "containers").filterMap fun c =>
+    match stringField c "name" with
+    | some n => some (n, (stringField c "domain_name").getD "")
+    | none   => none
+
+/-- Every field `.scalewayContainer` can report, beyond what `read` above needs for the
+    portable `.compute` kind. -/
+def readFull (creds : Credentials) (name : String) :
+    IO (Partial Nat × Partial Nat × Partial Nat × Partial Nat × Partial Nat × Partial Nat ×
+        Partial (List (String × String)) × String) := do
+  let id ← requireId creds name
+  let c ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{id}")
+  let optNat (field : String) : Partial Nat :=
+    match natField c field with
+    | some n => .known n
+    | none   => .unknown
+  let env := match field c "environment_variables" with
+    | some e => Partial.known (envOf e)
+    | none   => .unknown
+  return (optNat "port", optNat "min_scale", optNat "max_scale", optNat "memory_limit",
+          optNat "cpu_limit", optNat "timeout", env, (stringField c "registry_image").getD "")
+
+def createFull (creds : Credentials) (name image ns : String)
+    (port minScale maxScale memoryMb cpuLimit timeoutSec : Nat)
+    (env secretEnv : List (String × String)) : IO String := do
+  let nsId ← namespaceId creds ns
+  let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/containers")
+    (payload := some (.object
+      [ ("namespace_id", .string nsId)
+      , ("name", .string name)
+      , ("registry_image", .string image)
+      , ("port", .number (Float.ofNat port))
+      , ("min_scale", .number (Float.ofNat minScale))
+      , ("max_scale", .number (Float.ofNat maxScale))
+      , ("memory_limit", .number (Float.ofNat memoryMb))
+      , ("cpu_limit", .number (Float.ofNat cpuLimit))
+      , ("timeout", .string s!"{timeoutSec}s")
+      , ("environment_variables", envObject env)
+      , ("secret_environment_variables", secretEnvArray secretEnv) ]))
+  return (stringField reply "domain_name").getD ""
+
+def updateFull (creds : Credentials) (name image : String)
+    (port minScale maxScale memoryMb cpuLimit timeoutSec : Nat)
+    (env secretEnv : List (String × String)) : IO String := do
+  let id ← requireId creds name
+  let reply ← Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/containers/{id}")
+    (payload := some (.object
+      [ ("registry_image", .string image)
+      , ("port", .number (Float.ofNat port))
+      , ("min_scale", .number (Float.ofNat minScale))
+      , ("max_scale", .number (Float.ofNat maxScale))
+      , ("memory_limit", .number (Float.ofNat memoryMb))
+      , ("cpu_limit", .number (Float.ofNat cpuLimit))
+      , ("timeout", .string s!"{timeoutSec}s")
+      , ("environment_variables", envObject env)
+      , ("secret_environment_variables", secretEnvArray secretEnv) ]))
+  return (stringField reply "domain_name").getD ""
+
 end Containers
 
 -- ══════════════════════════════════════════════════════════════

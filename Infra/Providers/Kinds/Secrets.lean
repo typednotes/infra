@@ -41,6 +41,43 @@ def valueFromEnv (varName : String) : IO String := do
   | none   => throw (IO.userError
       s!"secret value not available: environment variable '{varName}' is not set")
 
+/-- Read a secret's value directly, for binding it into another resource's environment (see
+    `Kinds.Compute`'s `.scalewayContainer` support). Narrowly scoped exactly like
+    `Kinds.Postgres.fetchMasterPassword`: read once, hand straight to the create/update call
+    that needs it, never stored or returned any further than that — the module note above
+    about values only ever travelling outward does not apply to this one function.
+
+    **Unconfirmed against the real API**: whether Scaleway's actual secret-binding mechanism
+    for containers wants the plaintext value at all, or a native reference that never leaves
+    Secret Manager. This assumes the former — see `docs/providers.md`. -/
+def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : String) :
+    IO String := do
+  if secretName.isEmpty then
+    throw (IO.userError "a secretEnv reference points at an unnamed secret")
+  match provider with
+  | .aws =>
+    let ep := Json.secretsEndpoint creds.region
+    let reply ← Json.call creds ep "secretsmanager.GetSecretValue"
+      (.object [("SecretId", .string secretName)])
+    match stringField reply "SecretString" with
+    | some v => return v
+    | none   => throw (IO.userError s!"secret '{secretName}' holds no string value")
+  | .scaleway =>
+    -- Scaleway returns the value base64-encoded from a versioned endpoint.
+    let pfx := Scaleway.regionalPrefix "secret-manager" "v1beta1" creds.region
+    let listing ← Scaleway.call creds "GET" (pfx ++ "/secrets")
+    match (arrayField listing "secrets").find? (fun s => stringField s "name" == some secretName) with
+    | none => throw (IO.userError s!"scaleway secrets: no secret named '{secretName}'")
+    | some s =>
+      let id := (stringField s "id").getD ""
+      let reply ← Scaleway.call creds "GET" (pfx ++ s!"/secrets/{id}/versions/latest/access")
+      match stringField reply "data" with
+      | some encoded =>
+        match Data.Base64.decode encoded with
+        | some bytes => return String.fromUTF8! bytes
+        | none       => throw (IO.userError s!"secret '{secretName}': value is not valid base64")
+      | none => throw (IO.userError s!"secret '{secretName}' holds no data")
+
 -- ══════════════════════════════════════════════════════════════
 -- AWS Secrets Manager
 -- ══════════════════════════════════════════════════════════════

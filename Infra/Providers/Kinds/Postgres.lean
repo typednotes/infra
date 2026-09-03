@@ -227,4 +227,44 @@ def delete (creds : Credentials) (name : String) : IO Unit := do
 
 end Rdb
 
+-- ══════════════════════════════════════════════════════════════
+-- Scaleway Serverless SQL Database
+-- ══════════════════════════════════════════════════════════════
+
+/- Routed to when a `PostgresSpec`'s `instanceClass` is unset (see `PostgresSpec.serverless` and
+   `Infra.Providers.Live`'s `.postgres` branch).
+
+   **Genuinely unimplemented.** Scaleway Serverless SQL Database's real endpoint paths, payload
+   field names, and capacity units are not verified against any account — see
+   `docs/providers.md`. `list`/`read` report honestly (nothing known, matching `unknown`'s
+   meaning throughout this codebase); mutations raise a named "not yet implemented" error rather
+   than guess at a shape that only looks like it works, because a create that silently does
+   nothing would make the engine believe a database exists when it does not.
+
+   AWS's serverless counterpart, Aurora Serverless v2, has no analogous namespace here at all:
+   `Live.lean` raises directly rather than routing through a stub, since there is no partial
+   RDS-based path to reuse the way there is for `list`/`read` on Scaleway's classic RDB. -/
+namespace ServerlessSql
+
+def list (_creds : Credentials) : IO (List (String × String)) := pure []
+
+def read (_creds : Credentials) (_name : String) :
+    IO (String × String × Partial String × Partial Nat) :=
+  pure ("", "", .unknown, .unknown)
+
+private def unimplemented {α : Type} (op : String) : IO α :=
+  throw (IO.userError s!"scaleway serverless sql database: {op} is not yet implemented")
+
+def create (_creds : Credentials) (_name _masterUsername _password _engineVersion : String)
+    (_minCapacity _maxCapacity : Nat) : IO String :=
+  unimplemented "create"
+
+def modify (_creds : Credentials) (_name : String) (_minCapacity _maxCapacity : Nat) : IO Unit :=
+  unimplemented "modify"
+
+def delete (_creds : Credentials) (_name : String) : IO Unit :=
+  unimplemented "delete"
+
+end ServerlessSql
+
 end Infra.Providers.Kinds.Postgres

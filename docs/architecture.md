@@ -108,6 +108,31 @@ A fleet's key family is indexed by provider as well as kind
 once, with references crossing between them. `Infra/Demo.lean` has a Scaleway function reading
 from an AWS bucket in a single `Plan`.
 
+## Declaring a fleet
+
+A fleet needs a `Keys` (one `Finite`+`DecidableEq` key type per `(provider, kind)` pair) and a
+`Plan` (a `Status` assignment total over that key type — see `docs/diff-semantics.md`).
+`Infra/Demo.lean` builds both by hand: a bespoke `inductive` enum and a hand-proved `Finite`
+instance per resource-set, a `(provider, kind) → key-type` match, a `name` match, and an
+`assign` match arm per resource. That is a demonstration of what a `Keys`/`Plan` *are*, not the
+recommended way to write one for a real project — it is proportionate ceremony for one demo
+fleet and disproportionate for dozens of real resources.
+
+`Infra/Core/Ergonomics.lean` is the recommended pattern for a consumer project (see
+`typednotes-infra`): `Keys.build (table : ProviderId → Kind → KeySpec)` replaces the
+`Key`/`finite`/`decEq`/`name` quadruple with one table, where each row is either `.unused`
+(the pair's key type is `Nothing`) or `.named [ ... ]` (the pair's key type is `NamedKey`, a
+generic `List String`-backed key generated once rather than per resource-set).
+`Keys.assignFromNamed` similarly replaces a hand-written `match` arm per resource with a
+name-indexed association list.
+
+**This table is the scoping mechanism** the project's `AGENTS.md` calls for ("the ability to
+scope what's managed vs. left alone"): a `(provider, kind)` pair left `.unused`, or a resource
+name simply not listed under a pair that is used, has no key for `Plan.assign` to mention it
+by — so whatever exists there in the cloud is left alone unconditionally, independent of
+`Plan.outside` (see that field's status in `docs/diff-semantics.md`'s known soft spots). There
+is no separate "unmanaged within a kind" flag, and none is needed.
+
 ## Basic local system services
 
 Basic file manipulation, network, and other IO use:

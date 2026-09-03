@@ -29,13 +29,21 @@ import Infra.Core.Backend
   Serverless Containers, which is the pairing the container-image decision
   implies.
 
-  `.iam` and `.postgres` on both, again two implementations each.
+  `.iam` and `.postgres` on both, again two implementations each. `.postgres` additionally routes
+  between a classic managed instance and a serverless one on whether the settled spec's
+  `instanceClass` is set: classic goes to RDS/RDB as before; serverless goes to a named "not
+  implemented" error on AWS (Aurora Serverless v2), and to the honestly stubbed
+  `Kinds.Postgres.ServerlessSql` on Scaleway.
 
   `.scalewayFunction` on Scaleway, whose `sourceBucket` reference is passed to
   the function as a `SOURCE_BUCKET` environment variable — the cross-cloud
   dependency edge doing real work.
 
-  **All sixteen `(provider, kind)` pairs.** The catch-all that used to refuse
+  `.scalewayContainer` on Scaleway, same-cloud references this time:
+  `secretEnv` names `.secrets` resources whose values are read once at apply
+  (`Kinds.Secrets.fetchValue`) and bound as environment variables.
+
+  **All eighteen `(provider, kind)` pairs.** The catch-all that used to refuse
   unimplemented kinds is gone, because Lean reported it as unreachable — every
   branch of every field is now a real implementation. Adding a `Kind` will make
   this file fail to compile until it is handled, which is the guarantee that
@@ -129,6 +137,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .scaleway =>
         return (← Compute.Functions.list creds).map fun (n, url) => { handle := ⟨n⟩, url }
       | .aws => return []      -- Scaleway-only kind
+    | .scalewayContainer => do
+      match provider with
+      | .scaleway =>
+        return (← Compute.Containers.listFull creds).map fun (n, url) => { handle := ⟨n⟩, url }
+      | .aws => return []      -- Scaleway-only kind
 
   read
     | .objectStore, h => do
@@ -184,9 +197,14 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .aws      => Postgres.Rds.read creds (rdsFor creds) h.raw
         | .scaleway => Postgres.Rdb.read creds h.raw
       -- `masterPasswordSecret` is our bookkeeping, not the database's: it is
-      -- never reported and never compared.
-      return { name := h.raw, instanceClass := cls, masterUsername := user
-               masterPasswordSecret := "", version := ver, storageGb := storage }
+      -- never reported and never compared. `cls` is `""` both for "not found"
+      -- and for a genuinely classless (serverless) instance — neither Rds.read
+      -- nor Rdb.read distinguish them, so both read as `unknown` here, same as
+      -- every other field this backend cannot see.
+      let instanceClass : Partial String := if cls.isEmpty then .unknown else .known cls
+      return { name := h.raw, instanceClass, masterUsername := user
+               masterPasswordSecret := "", version := ver, storageGb := storage
+               minCapacity := .unknown, maxCapacity := .unknown }
     | .scalewayFunction, h => do
       match provider with
       | .scaleway =>
@@ -200,6 +218,21 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         return { name := h.raw, runtime, namespace' := "", sourceBucket := bucket }
       | .aws => return { name := h.raw, runtime := "", namespace' := ""
                          sourceBucket := .unknown }
+    -- `secretEnv` is read once at apply and handed straight to the API, so
+    -- it cannot be reported back and is excluded from the divergence table
+    -- — same limitation as `.secrets`' own `valueFrom`.
+    | .scalewayContainer, h => do
+      match provider with
+      | .scaleway =>
+        let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image) ←
+          Compute.Containers.readFull creds h.raw
+        return { name := h.raw, namespace' := "", image
+                 port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env
+                 secretEnv := .unknown }
+      | .aws => return { name := h.raw, namespace' := "", image := ""
+                         port := .unknown, minScale := .unknown, maxScale := .unknown
+                         memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
+                         env := .unknown, secretEnv := .unknown }
 
   create
     | .objectStore, spec => do
@@ -248,15 +281,35 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     | .postgres, spec => do
       -- The one place a secret value is read; see `Kinds.Postgres`.
       let password ← Postgres.fetchMasterPassword provider creds spec.masterPasswordSecret
-      let host ← match provider with
-        | .aws => Postgres.Rds.create creds (rdsFor creds) spec.name spec.instanceClass
-                    spec.masterUsername password spec.version spec.storageGb
-        | .scaleway => Postgres.Rdb.create creds spec.name spec.instanceClass
-                         spec.masterUsername password spec.version spec.storageGb
+      -- Routed on `instanceClass` being set, not on a separate spec flag: `Fillable`'s `""`
+      -- sentinel is what `PostgresSpec.serverless` leaves behind, same convention as every
+      -- other "said: nothing" default in this codebase.
+      let host ←
+        if spec.instanceClass.isEmpty then
+          match provider with
+          | .aws => throw (IO.userError
+              "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
+          | .scaleway => Postgres.ServerlessSql.create creds spec.name spec.masterUsername
+                           password spec.version spec.minCapacity spec.maxCapacity
+        else
+          match provider with
+          | .aws => Postgres.Rds.create creds (rdsFor creds) spec.name spec.instanceClass
+                      spec.masterUsername password spec.version spec.storageGb
+          | .scaleway => Postgres.Rdb.create creds spec.name spec.instanceClass
+                           spec.masterUsername password spec.version spec.storageGb
       return { handle := ⟨spec.name⟩, endpoint := host }
     | .scalewayFunction, spec => do
       let url ← Compute.Functions.create creds spec.name spec.runtime spec.namespace'
                   spec.sourceBucket
+      return { handle := ⟨spec.name⟩, url }
+    | .scalewayContainer, spec => do
+      -- The one place a `.scalewayContainer` reads a secret's value; see
+      -- `Kinds.Secrets.fetchValue`.
+      let secretVals ← spec.secretEnv.mapM fun (name, h) => do
+        return (name, ← Secrets.fetchValue .scaleway creds h.raw)
+      let url ← Compute.Containers.createFull creds spec.name spec.image spec.namespace'
+                  spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
+                  spec.timeoutSec spec.env secretVals
       return { handle := ⟨spec.name⟩, url }
 
   update
@@ -309,13 +362,26 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         -- nothing to send: see the module note in `Kinds.Iam`.
         return { handle := h, arn := "" }
     | .postgres, h, spec => do
-      match provider with
-      | .aws => Postgres.Rds.modify creds (rdsFor creds) h.raw spec.instanceClass spec.storageGb
-      | .scaleway => Postgres.Rdb.modify creds h.raw spec.instanceClass
+      if spec.instanceClass.isEmpty then
+        match provider with
+        | .aws => throw (IO.userError
+            "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
+        | .scaleway => Postgres.ServerlessSql.modify creds h.raw spec.minCapacity spec.maxCapacity
+      else
+        match provider with
+        | .aws => Postgres.Rds.modify creds (rdsFor creds) h.raw spec.instanceClass spec.storageGb
+        | .scaleway => Postgres.Rdb.modify creds h.raw spec.instanceClass
       return { handle := h, endpoint := "" }
     | .scalewayFunction, h, spec => do
       Compute.Functions.update creds h.raw spec.sourceBucket
       return { handle := h, url := "" }
+    | .scalewayContainer, h, spec => do
+      let secretVals ← spec.secretEnv.mapM fun (name, sh) => do
+        return (name, ← Secrets.fetchValue .scaleway creds sh.raw)
+      let url ← Compute.Containers.updateFull creds h.raw spec.image
+                  spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
+                  spec.timeoutSec spec.env secretVals
+      return { handle := h, url }
 
   delete
     | .objectStore, h => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
@@ -343,6 +409,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .aws      => Postgres.Rds.delete creds (rdsFor creds) h.raw
       | .scaleway => Postgres.Rdb.delete creds h.raw
     | .scalewayFunction, h => Compute.Functions.delete creds h.raw
+    | .scalewayContainer, h => Compute.Containers.delete creds h.raw
 
 /-- Both clouds, live, using each one's own credentials. -/
 def live (aws scaleway : Credentials) : Backends where

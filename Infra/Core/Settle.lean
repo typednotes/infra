@@ -52,6 +52,15 @@ def settleRef {K : ProviderId → Kind → Type}
   | none     => some none                    -- said: nothing
   | some key => (env p k key).map fun o => some (observedHandle k o)
 
+/-- List-generalized `settleRef`: resolve every reference in a
+    `(name, key)` list to a `(name, handle)` list. Unlike `settleRef`, there is no "said:
+    nothing" case here — every entry names a real secret, so a missing observation fails the
+    whole list, exactly like `settleField`. -/
+def settleRefs {K : ProviderId → Kind → Type}
+    (env : Env K) (p : ProviderId) (k : Kind) (refs : List (String × K p k)) :
+    Option (List (String × Handle k)) :=
+  refs.mapM fun (name, key) => (env p k key).map fun o => (name, observedHandle k o)
+
 /-- Turn a filled spec into one a backend can act on. -/
 class Settleable (k : Kind) where
   settle : {K : ProviderId → Kind → Type} → Env K →
@@ -107,7 +116,9 @@ instance : Settleable .postgres where
              masterUsername := ← settleField env s.masterUsername
              masterPasswordSecret := ← settleField env s.masterPasswordSecret
              version := ← settleField env s.version
-             storageGb := ← settleField env s.storageGb }
+             storageGb := ← settleField env s.storageGb
+             minCapacity := ← settleField env s.minCapacity
+             maxCapacity := ← settleField env s.maxCapacity }
 
 instance : Settleable .s3Bucket where
   settle env s := do
@@ -126,17 +137,35 @@ instance : Settleable .scalewayFunction where
              namespace' := ← settleField env s.namespace'
              sourceBucket := ← settleRef env .aws .s3Bucket refKey }
 
+/-- List-generalized version of `scalewayFunction`'s single reference: every `secretEnv` entry
+    must resolve, same-cloud this time. -/
+instance : Settleable .scalewayContainer where
+  settle env s := do
+    let refs ← settleField env s.secretEnv
+    return { name := ← settleField env s.name
+             namespace' := ← settleField env s.namespace'
+             image := ← settleField env s.image
+             port := ← settleField env s.port
+             minScale := ← settleField env s.minScale
+             maxScale := ← settleField env s.maxScale
+             memoryMb := ← settleField env s.memoryMb
+             cpuLimit := ← settleField env s.cpuLimit
+             timeoutSec := ← settleField env s.timeoutSec
+             env := ← settleField env s.env
+             secretEnv := ← settleRefs env .scaleway .secrets refs }
+
 /-- Total over `Kind`, so a new kind cannot be forgotten here. -/
 @[reducible] def settleableOf : (k : Kind) → Settleable k
-  | .iam              => inferInstanceAs (Settleable .iam)
-  | .objectStore      => inferInstanceAs (Settleable .objectStore)
-  | .compute          => inferInstanceAs (Settleable .compute)
-  | .queues           => inferInstanceAs (Settleable .queues)
-  | .secrets          => inferInstanceAs (Settleable .secrets)
-  | .imageRegistry    => inferInstanceAs (Settleable .imageRegistry)
-  | .postgres         => inferInstanceAs (Settleable .postgres)
-  | .s3Bucket         => inferInstanceAs (Settleable .s3Bucket)
-  | .scalewayFunction => inferInstanceAs (Settleable .scalewayFunction)
+  | .iam               => inferInstanceAs (Settleable .iam)
+  | .objectStore       => inferInstanceAs (Settleable .objectStore)
+  | .compute           => inferInstanceAs (Settleable .compute)
+  | .queues            => inferInstanceAs (Settleable .queues)
+  | .secrets           => inferInstanceAs (Settleable .secrets)
+  | .imageRegistry     => inferInstanceAs (Settleable .imageRegistry)
+  | .postgres          => inferInstanceAs (Settleable .postgres)
+  | .s3Bucket          => inferInstanceAs (Settleable .s3Bucket)
+  | .scalewayFunction  => inferInstanceAs (Settleable .scalewayFunction)
+  | .scalewayContainer => inferInstanceAs (Settleable .scalewayContainer)
 
 /-- Fill defaults and resolve references in one step: the whole journey from
     what was authored to what a backend receives. -/

@@ -46,6 +46,7 @@ def reprObserved : (k : Kind) → ObservedOf k → String
   | .postgres,         o => toString (repr o)
   | .s3Bucket,         o => toString (repr o)
   | .scalewayFunction, o => toString (repr o)
+  | .scalewayContainer, o => toString (repr o)
 
 /-- The `def` name and `Kind` constructor to write into the generated Lean
     file for each kind. -/
@@ -59,6 +60,7 @@ def declFor : Kind → String × String
   | .postgres         => ("pulledPostgres", "postgres")
   | .s3Bucket         => ("pulledS3Bucket", "s3Bucket")
   | .scalewayFunction => ("pulledScalewayFunction", "scalewayFunction")
+  | .scalewayContainer => ("pulledScalewayContainer", "scalewayContainer")
 
 /-- One resource per array element, exactly what a `pull`-cached file would
     hold for this kind (`Infra.Core.Persistence.rowsAt`). -/

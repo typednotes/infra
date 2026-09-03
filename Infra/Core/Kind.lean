@@ -48,25 +48,27 @@ inductive Kind
   -- provider-local: the escape hatch to concepts closer to one provider
   | s3Bucket
   | scalewayFunction
+  | scalewayContainer
   deriving Repr, DecidableEq, BEq
 
 instance : Finite Kind where
   elems :=
     [.iam, .objectStore, .compute, .queues, .secrets, .imageRegistry, .postgres,
-     .s3Bucket, .scalewayFunction]
+     .s3Bucket, .scalewayFunction, .scalewayContainer]
   complete := by intro a; cases a <;> simp
   nodup := by decide
 
 def Kind.name : Kind → String
-  | .iam              => "iam"
-  | .objectStore      => "object-store"
-  | .compute          => "compute"
-  | .queues           => "queues"
-  | .secrets          => "secrets"
-  | .imageRegistry    => "image-registry"
-  | .postgres         => "postgres"
-  | .s3Bucket         => "s3-bucket"
-  | .scalewayFunction => "scaleway-function"
+  | .iam                => "iam"
+  | .objectStore        => "object-store"
+  | .compute            => "compute"
+  | .queues             => "queues"
+  | .secrets            => "secrets"
+  | .imageRegistry      => "image-registry"
+  | .postgres           => "postgres"
+  | .s3Bucket           => "s3-bucket"
+  | .scalewayFunction   => "scaleway-function"
+  | .scalewayContainer  => "scaleway-container"
 
 /-- The *physical* identifier, assigned by the provider at create time.
 
@@ -128,17 +130,23 @@ structure ScalewayFunctionObserved where
   url    : String
   deriving Repr, DecidableEq, ToJson, FromJson
 
+structure ScalewayContainerObserved where
+  handle : Handle .scalewayContainer
+  url    : String
+  deriving Repr, DecidableEq, ToJson, FromJson
+
 /-- Dispatch. Total over `Kind`, so adding a kind without observed state is a compile error. -/
 @[reducible] def ObservedOf : Kind → Type
-  | .iam              => IamObserved
-  | .objectStore      => ObjectStoreObserved
-  | .compute          => ComputeObserved
-  | .queues           => QueuesObserved
-  | .secrets          => SecretsObserved
-  | .imageRegistry    => ImageRegistryObserved
-  | .postgres         => PostgresObserved
-  | .s3Bucket         => S3BucketObserved
-  | .scalewayFunction => ScalewayFunctionObserved
+  | .iam               => IamObserved
+  | .objectStore       => ObjectStoreObserved
+  | .compute           => ComputeObserved
+  | .queues            => QueuesObserved
+  | .secrets           => SecretsObserved
+  | .imageRegistry     => ImageRegistryObserved
+  | .postgres          => PostgresObserved
+  | .s3Bucket          => S3BucketObserved
+  | .scalewayFunction  => ScalewayFunctionObserved
+  | .scalewayContainer => ScalewayContainerObserved
 
 /-- The handle of an observed resource, whichever kind it is.
 
@@ -146,41 +154,44 @@ structure ScalewayFunctionObserved where
     an `ObservedOf k` would resolve `o.handle` to this function rather than to the underlying
     structure projection, and it would recurse into itself. -/
 def observedHandle : (k : Kind) → ObservedOf k → Handle k
-  | .iam,              o => IamObserved.handle o
-  | .objectStore,      o => ObjectStoreObserved.handle o
-  | .compute,          o => ComputeObserved.handle o
-  | .queues,           o => QueuesObserved.handle o
-  | .secrets,          o => SecretsObserved.handle o
-  | .imageRegistry,    o => ImageRegistryObserved.handle o
-  | .postgres,         o => PostgresObserved.handle o
-  | .s3Bucket,         o => S3BucketObserved.handle o
-  | .scalewayFunction, o => ScalewayFunctionObserved.handle o
+  | .iam,               o => IamObserved.handle o
+  | .objectStore,       o => ObjectStoreObserved.handle o
+  | .compute,           o => ComputeObserved.handle o
+  | .queues,            o => QueuesObserved.handle o
+  | .secrets,           o => SecretsObserved.handle o
+  | .imageRegistry,     o => ImageRegistryObserved.handle o
+  | .postgres,          o => PostgresObserved.handle o
+  | .s3Bucket,          o => S3BucketObserved.handle o
+  | .scalewayFunction,  o => ScalewayFunctionObserved.handle o
+  | .scalewayContainer, o => ScalewayContainerObserved.handle o
 
 instance : (k : Kind) → ToJson (ObservedOf k)
-  | .iam              => inferInstanceAs (ToJson IamObserved)
-  | .objectStore      => inferInstanceAs (ToJson ObjectStoreObserved)
-  | .compute          => inferInstanceAs (ToJson ComputeObserved)
-  | .queues           => inferInstanceAs (ToJson QueuesObserved)
-  | .secrets          => inferInstanceAs (ToJson SecretsObserved)
-  | .imageRegistry    => inferInstanceAs (ToJson ImageRegistryObserved)
-  | .postgres         => inferInstanceAs (ToJson PostgresObserved)
-  | .s3Bucket         => inferInstanceAs (ToJson S3BucketObserved)
-  | .scalewayFunction => inferInstanceAs (ToJson ScalewayFunctionObserved)
+  | .iam               => inferInstanceAs (ToJson IamObserved)
+  | .objectStore       => inferInstanceAs (ToJson ObjectStoreObserved)
+  | .compute           => inferInstanceAs (ToJson ComputeObserved)
+  | .queues            => inferInstanceAs (ToJson QueuesObserved)
+  | .secrets           => inferInstanceAs (ToJson SecretsObserved)
+  | .imageRegistry     => inferInstanceAs (ToJson ImageRegistryObserved)
+  | .postgres          => inferInstanceAs (ToJson PostgresObserved)
+  | .s3Bucket          => inferInstanceAs (ToJson S3BucketObserved)
+  | .scalewayFunction  => inferInstanceAs (ToJson ScalewayFunctionObserved)
+  | .scalewayContainer => inferInstanceAs (ToJson ScalewayContainerObserved)
 
 instance : (k : Kind) → FromJson (ObservedOf k)
-  | .iam              => inferInstanceAs (FromJson IamObserved)
-  | .objectStore      => inferInstanceAs (FromJson ObjectStoreObserved)
-  | .compute          => inferInstanceAs (FromJson ComputeObserved)
-  | .queues           => inferInstanceAs (FromJson QueuesObserved)
-  | .secrets          => inferInstanceAs (FromJson SecretsObserved)
-  | .imageRegistry    => inferInstanceAs (FromJson ImageRegistryObserved)
-  | .postgres         => inferInstanceAs (FromJson PostgresObserved)
-  | .s3Bucket         => inferInstanceAs (FromJson S3BucketObserved)
-  | .scalewayFunction => inferInstanceAs (FromJson ScalewayFunctionObserved)
+  | .iam               => inferInstanceAs (FromJson IamObserved)
+  | .objectStore       => inferInstanceAs (FromJson ObjectStoreObserved)
+  | .compute           => inferInstanceAs (FromJson ComputeObserved)
+  | .queues            => inferInstanceAs (FromJson QueuesObserved)
+  | .secrets           => inferInstanceAs (FromJson SecretsObserved)
+  | .imageRegistry     => inferInstanceAs (FromJson ImageRegistryObserved)
+  | .postgres          => inferInstanceAs (FromJson PostgresObserved)
+  | .s3Bucket          => inferInstanceAs (FromJson S3BucketObserved)
+  | .scalewayFunction  => inferInstanceAs (FromJson ScalewayFunctionObserved)
+  | .scalewayContainer => inferInstanceAs (FromJson ScalewayContainerObserved)
 
 section Guards
 
-#guard card Kind = 9
+#guard card Kind = 10
 #guard card ProviderId = 2
 #guard card Nothing = 0
 

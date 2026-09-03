@@ -9,6 +9,7 @@ import Infra.Core.Expr
 import Infra.Core.Spec
 import Infra.Specs.Basic
 import Infra.Core.Fleet
+import Infra.Core.Ergonomics
 import Infra.Core.Action
 import Infra.Core.Backend
 import Infra.Core.Diverge

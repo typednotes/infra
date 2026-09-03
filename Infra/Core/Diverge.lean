@@ -117,7 +117,7 @@ instance : Divergent .imageRegistry where
 instance : Divergent .postgres where
   divergence t r :=
     divergesReq "name" .forcesReplace t.name r.name
-    ++ divergesReq "instanceClass" .mutable t.instanceClass r.instanceClass
+    ++ diverges "instanceClass" .mutable t.instanceClass r.instanceClass
     -- The master user cannot be renamed after creation.
     ++ divergesReq "masterUsername" .forcesReplace t.masterUsername r.masterUsername
     -- Which secret holds the password is our bookkeeping, not the database's:
@@ -125,6 +125,11 @@ instance : Divergent .postgres where
     ++ diverges "version" .mutable t.version r.version
     -- Managed Postgres storage can grow but not shrink; growth is in place.
     ++ diverges "storageGb" .mutable t.storageGb r.storageGb
+    -- Unverified whether either cloud allows adjusting serverless capacity bounds on a live
+    -- instance; assumed mutable like `storageGb` until confirmed against a real account — see
+    -- `docs/providers.md`.
+    ++ diverges "minCapacity" .mutable t.minCapacity r.minCapacity
+    ++ diverges "maxCapacity" .mutable t.maxCapacity r.maxCapacity
 
 instance : Divergent .s3Bucket where
   divergence t r :=
@@ -143,17 +148,36 @@ instance : Divergent .scalewayFunction where
     ++ divergesReq "namespace" .forcesReplace t.namespace' r.namespace'
     ++ diverges "sourceBucket" .mutable t.sourceBucket r.sourceBucket
 
+instance : Divergent .scalewayContainer where
+  divergence t r :=
+    divergesReq "name" .forcesReplace t.name r.name
+    -- A container cannot move namespace, same as `scalewayFunction`.
+    ++ divergesReq "namespace" .forcesReplace t.namespace' r.namespace'
+    ++ divergesReq "image" .mutable t.image r.image
+    ++ diverges "port" .mutable t.port r.port
+    ++ diverges "minScale" .mutable t.minScale r.minScale
+    ++ diverges "maxScale" .mutable t.maxScale r.maxScale
+    ++ diverges "memoryMb" .mutable t.memoryMb r.memoryMb
+    ++ diverges "cpuLimit" .mutable t.cpuLimit r.cpuLimit
+    ++ diverges "timeoutSec" .mutable t.timeoutSec r.timeoutSec
+    ++ divergesSet "env" .mutable pairKey t.env r.env
+    -- `secretEnv` is read once at apply and handed straight to the API (see
+    -- `docs/providers.md`); nothing reports whether the currently-bound value
+    -- differs from the target, so it is not compared — same limitation as
+    -- `SecretsSpec.valueFrom` above.
+
 /-- Total over `Kind`, so a new kind cannot silently compare as always-equal. -/
 @[reducible] def divergentOf : (k : Kind) → Divergent k
-  | .iam              => inferInstanceAs (Divergent .iam)
-  | .objectStore      => inferInstanceAs (Divergent .objectStore)
-  | .compute          => inferInstanceAs (Divergent .compute)
-  | .queues           => inferInstanceAs (Divergent .queues)
-  | .secrets          => inferInstanceAs (Divergent .secrets)
-  | .imageRegistry    => inferInstanceAs (Divergent .imageRegistry)
-  | .postgres         => inferInstanceAs (Divergent .postgres)
-  | .s3Bucket         => inferInstanceAs (Divergent .s3Bucket)
-  | .scalewayFunction => inferInstanceAs (Divergent .scalewayFunction)
+  | .iam               => inferInstanceAs (Divergent .iam)
+  | .objectStore       => inferInstanceAs (Divergent .objectStore)
+  | .compute           => inferInstanceAs (Divergent .compute)
+  | .queues            => inferInstanceAs (Divergent .queues)
+  | .secrets           => inferInstanceAs (Divergent .secrets)
+  | .imageRegistry     => inferInstanceAs (Divergent .imageRegistry)
+  | .postgres          => inferInstanceAs (Divergent .postgres)
+  | .s3Bucket          => inferInstanceAs (Divergent .s3Bucket)
+  | .scalewayFunction  => inferInstanceAs (Divergent .scalewayFunction)
+  | .scalewayContainer => inferInstanceAs (Divergent .scalewayContainer)
 
 /-- The fields of a resource that disagree with its target. -/
 def divergence (k : Kind) (t : ProviderSpec k) (r : Reported k) :

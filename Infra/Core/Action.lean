@@ -85,16 +85,28 @@ instance : HasDeps ScalewayFunctionSpec where
       | some (some key) => [⟨.aws, .s3Bucket, key⟩]
       | _               => []
 
+/-- List-generalized version of `ScalewayFunctionSpec`'s single reference: every secret named in
+    `secretEnv` is a dependency, same-cloud this time. -/
+instance : HasDeps ScalewayContainerSpec where
+  deps s :=
+    match s.secretEnv with
+    | .unknown => []
+    | .known e =>
+      match e.asLit with
+      | some entries => entries.map fun entry => ⟨.scaleway, .secrets, entry.2⟩
+      | none         => []
+
 /-- Total over `Kind`, so a new kind cannot silently contribute no edges. -/
 @[reducible] def hasDepsOf : (k : Kind) → HasDeps (SpecOf.{1} k)
-  | .iam              => inferInstanceAs (HasDeps IamSpec)
-  | .objectStore      => inferInstanceAs (HasDeps ObjectStoreSpec)
-  | .compute          => inferInstanceAs (HasDeps ComputeSpec)
-  | .queues           => inferInstanceAs (HasDeps QueuesSpec)
-  | .secrets          => inferInstanceAs (HasDeps SecretsSpec)
-  | .imageRegistry    => inferInstanceAs (HasDeps ImageRegistrySpec)
-  | .postgres         => inferInstanceAs (HasDeps PostgresSpec)
-  | .s3Bucket         => inferInstanceAs (HasDeps S3BucketSpec)
-  | .scalewayFunction => inferInstanceAs (HasDeps ScalewayFunctionSpec)
+  | .iam               => inferInstanceAs (HasDeps IamSpec)
+  | .objectStore       => inferInstanceAs (HasDeps ObjectStoreSpec)
+  | .compute           => inferInstanceAs (HasDeps ComputeSpec)
+  | .queues            => inferInstanceAs (HasDeps QueuesSpec)
+  | .secrets           => inferInstanceAs (HasDeps SecretsSpec)
+  | .imageRegistry     => inferInstanceAs (HasDeps ImageRegistrySpec)
+  | .postgres          => inferInstanceAs (HasDeps PostgresSpec)
+  | .s3Bucket          => inferInstanceAs (HasDeps S3BucketSpec)
+  | .scalewayFunction  => inferInstanceAs (HasDeps ScalewayFunctionSpec)
+  | .scalewayContainer => inferInstanceAs (HasDeps ScalewayContainerSpec)
 
 end Infra.Core

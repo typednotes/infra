@@ -113,16 +113,79 @@ structure ImageRegistrySpec (K : ProviderId → Kind → Type) (o : Type u → T
     either.
 
     A secret *name* is a plain `String`, so this stays portable — unlike a
-    typed reference, which would have to name a provider. -/
+    typed reference, which would have to name a provider.
+
+    Classic and serverless share one structure rather than splitting into two kinds: `instanceClass`
+    picks a classic managed instance; `minCapacity`/`maxCapacity` pick a serverless one. Exactly one
+    of the two should be set — `PostgresSpec.classic`/`PostgresSpec.serverless` build one shape each
+    without a proof obligation, and `PostgresSpec.hasCapacityChoice` is there for anyone writing the
+    raw structure literal instead. See its doc comment for why that check cannot live in the
+    structure itself. -/
 structure PostgresSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
   name                 : Field .required o f String
-  instanceClass        : Field .required o f String
+  /-- Set for a classic managed instance; leave unset and set `minCapacity`/`maxCapacity` instead
+      for a serverless one. -/
+  instanceClass        : Field .optional o f String
   masterUsername       : Field .required o f String
   /-- The name of a secret holding the master password, not the password. -/
   masterPasswordSecret : Field .required o f String
   version              : Field .optional o f String
   storageGb            : Field .optional o f Nat
+  /-- Serverless capacity floor, in the cloud's own capacity units (AWS Aurora Serverless v2
+      ACUs; Scaleway Serverless SQL Database's own unit, unconfirmed — see `docs/providers.md`).
+      Set together with `maxCapacity` for a serverless target, and leave `instanceClass` unset. -/
+  minCapacity          : Field .optional o f Nat
+  /-- Serverless capacity ceiling — see `minCapacity`. -/
+  maxCapacity          : Field .optional o f Nat
+
+/-- Whether an authored postgres target picked one of the two capacity shapes: a fixed
+    `instanceClass`, or both `minCapacity` and `maxCapacity`. Neither being set makes the target
+    unrealisable by either backend.
+
+    This can't be a proof field on `PostgresSpec` itself: the structure is instantiated across
+    both the authoring stage (`o = Partial`, where `.isKnown` makes sense) and the settled stage
+    (`o = Conc`, where optionality has already been erased and there is nothing left to ask).
+    A field typed to only exist at one stage doesn't typecheck, so this lives as a standalone,
+    decidable `Bool`-valued function instead — usable as a `by decide` check
+    (`Assert spec.hasCapacityChoice`) by anyone writing the raw structure literal, the way
+    `Infra.Core.Ergonomics`'s `KeySpec.named` checks `namesNodup`. -/
+def PostgresSpec.hasCapacityChoice {K : ProviderId → Kind → Type}
+    (s : PostgresSpec K Partial (Expr K)) : Bool :=
+  s.instanceClass.isKnown || (s.minCapacity.isKnown && s.maxCapacity.isKnown)
+
+/-- A classic, fixed-capacity managed instance. The complement of `PostgresSpec.serverless` —
+    see `hasCapacityChoice`. -/
+def PostgresSpec.classic {K : ProviderId → Kind → Type}
+    (name masterUsername masterPasswordSecret instanceClass : Expr K String)
+    (version : Partial (Expr K String) := .unknown)
+    (storageGb : Partial (Expr K Nat) := .unknown) :
+    PostgresSpec K Partial (Expr K) where
+  name := name
+  instanceClass := .known instanceClass
+  masterUsername := masterUsername
+  masterPasswordSecret := masterPasswordSecret
+  version := version
+  storageGb := storageGb
+  minCapacity := .unknown
+  maxCapacity := .unknown
+
+/-- A serverless instance: capacity bounds instead of a fixed `instanceClass`. The complement of
+    `PostgresSpec.classic` — see `hasCapacityChoice`. -/
+def PostgresSpec.serverless {K : ProviderId → Kind → Type}
+    (name masterUsername masterPasswordSecret : Expr K String)
+    (minCapacity maxCapacity : Expr K Nat)
+    (version : Partial (Expr K String) := .unknown)
+    (storageGb : Partial (Expr K Nat) := .unknown) :
+    PostgresSpec K Partial (Expr K) where
+  name := name
+  instanceClass := .unknown
+  masterUsername := masterUsername
+  masterPasswordSecret := masterPasswordSecret
+  version := version
+  storageGb := storageGb
+  minCapacity := .known minCapacity
+  maxCapacity := .known maxCapacity
 
 /-! ## Provider-local kinds -/
 
@@ -158,19 +221,43 @@ structure ScalewayFunctionSpec (K : ProviderId → Kind → Type) (o : Type u �
       exist before the function is created. -/
   sourceBucket : Field .optional o f (Option (K .aws .s3Bucket))
 
+/-- A Scaleway Serverless Container. Like `ScalewayFunctionSpec`, provider-local because it
+    references other resources — here, secrets to bind as environment variables, which the
+    portable `.compute` kind forbids by design (see `ComputeSpec`'s doc comment). -/
+structure ScalewayContainerSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
+    (f : Type → Type u) where
+  name       : Field .required o f String
+  /-- Serverless Containers groups containers into a namespace, same as
+      `ScalewayFunctionSpec.namespace'`. Required: this kind is Scaleway-only. -/
+  namespace' : Field .required o f String
+  image      : Field .required o f String
+  port       : Field .optional o f Nat
+  minScale   : Field .optional o f Nat
+  maxScale   : Field .optional o f Nat
+  memoryMb   : Field .optional o f Nat
+  cpuLimit   : Field .optional o f Nat
+  timeoutSec : Field .optional o f Nat
+  env        : Field .optional o f (List (String × String))
+  /-- Environment variables whose values come from `.secrets` resources in this fleet, rather
+      than literal strings. Each pair is an env-var name and a reference to a secret. The
+      real Scaleway secret-binding mechanism is unconfirmed — see `Infra/Providers/Live.lean`
+      and `docs/providers.md`. -/
+  secretEnv  : Field .optional o f (List (String × K .scaleway .secrets))
+
 /-! ## Dispatch -/
 
 /-- Total over `Kind`, so adding a kind without a spec is a compile error. -/
 @[reducible] def SpecOf : Kind → SpecShape.{u}
-  | .iam              => IamSpec
-  | .objectStore      => ObjectStoreSpec
-  | .compute          => ComputeSpec
-  | .queues           => QueuesSpec
-  | .secrets          => SecretsSpec
-  | .imageRegistry    => ImageRegistrySpec
-  | .postgres         => PostgresSpec
-  | .s3Bucket         => S3BucketSpec
-  | .scalewayFunction => ScalewayFunctionSpec
+  | .iam               => IamSpec
+  | .objectStore       => ObjectStoreSpec
+  | .compute           => ComputeSpec
+  | .queues            => QueuesSpec
+  | .secrets           => SecretsSpec
+  | .imageRegistry     => ImageRegistrySpec
+  | .postgres          => PostgresSpec
+  | .s3Bucket          => S3BucketSpec
+  | .scalewayFunction  => ScalewayFunctionSpec
+  | .scalewayContainer => ScalewayContainerSpec
 
 /-! ## Realisability -/
 
@@ -214,14 +301,19 @@ instance : Fillable SecretsSpec where
 instance : Fillable ImageRegistrySpec where
   fill s := { name := s.name, immutableTags := s.immutableTags.getD (.lit false) }
 
+/-- `instanceClass` and the capacity fields default to `.lit ""`/`.lit 0` — unset sentinels,
+    same convention as every other "said: nothing" default here. `Live.lean` routes between the
+    classic and serverless backends on whether the settled `instanceClass` is empty. -/
 instance : Fillable PostgresSpec where
   fill s :=
     { name                 := s.name
-      instanceClass        := s.instanceClass
+      instanceClass        := s.instanceClass.getD (.lit "")
       masterUsername       := s.masterUsername
       masterPasswordSecret := s.masterPasswordSecret
       version              := s.version.getD (.lit "16")
-      storageGb            := s.storageGb.getD (.lit 10) }
+      storageGb            := s.storageGb.getD (.lit 10)
+      minCapacity          := s.minCapacity.getD (.lit 0)
+      maxCapacity          := s.maxCapacity.getD (.lit 0) }
 
 instance : Fillable S3BucketSpec where
   fill s :=
@@ -239,16 +331,48 @@ instance : Fillable ScalewayFunctionSpec where
       namespace'   := s.namespace'
       sourceBucket := s.sourceBucket.getD (.lit none) }
 
+/-- `secretEnv` defaults to `.lit []` — no secret-backed env vars — matching the
+    "said: nothing" convention `sourceBucket` established above. -/
+instance : Fillable ScalewayContainerSpec where
+  fill s :=
+    { name       := s.name
+      namespace' := s.namespace'
+      image      := s.image
+      port       := s.port.getD (.lit 8080)
+      minScale   := s.minScale.getD (.lit 0)
+      maxScale   := s.maxScale.getD (.lit 1)
+      memoryMb   := s.memoryMb.getD (.lit 256)
+      cpuLimit   := s.cpuLimit.getD (.lit 140)
+      timeoutSec := s.timeoutSec.getD (.lit 30)
+      env        := s.env.getD (.lit [])
+      secretEnv  := s.secretEnv.getD (.lit []) }
+
 /-- Total over `Kind`, so a kind whose spec has no defaults cannot be forgotten. -/
 @[reducible] def fillableOf : (k : Kind) → Fillable (SpecOf.{1} k)
-  | .iam              => inferInstanceAs (Fillable IamSpec)
-  | .objectStore      => inferInstanceAs (Fillable ObjectStoreSpec)
-  | .compute          => inferInstanceAs (Fillable ComputeSpec)
-  | .queues           => inferInstanceAs (Fillable QueuesSpec)
-  | .secrets          => inferInstanceAs (Fillable SecretsSpec)
-  | .imageRegistry    => inferInstanceAs (Fillable ImageRegistrySpec)
-  | .postgres         => inferInstanceAs (Fillable PostgresSpec)
-  | .s3Bucket         => inferInstanceAs (Fillable S3BucketSpec)
-  | .scalewayFunction => inferInstanceAs (Fillable ScalewayFunctionSpec)
+  | .iam               => inferInstanceAs (Fillable IamSpec)
+  | .objectStore       => inferInstanceAs (Fillable ObjectStoreSpec)
+  | .compute           => inferInstanceAs (Fillable ComputeSpec)
+  | .queues            => inferInstanceAs (Fillable QueuesSpec)
+  | .secrets           => inferInstanceAs (Fillable SecretsSpec)
+  | .imageRegistry     => inferInstanceAs (Fillable ImageRegistrySpec)
+  | .postgres          => inferInstanceAs (Fillable PostgresSpec)
+  | .s3Bucket          => inferInstanceAs (Fillable S3BucketSpec)
+  | .scalewayFunction  => inferInstanceAs (Fillable ScalewayFunctionSpec)
+  | .scalewayContainer => inferInstanceAs (Fillable ScalewayContainerSpec)
+
+/-! ## Self-checks -/
+
+section
+private def NoKeys : ProviderId → Kind → Type := fun _ _ => Nothing
+
+#guard (PostgresSpec.classic (K := NoKeys)
+  (.lit "db") (.lit "admin") (.lit "master-pw") (.lit "db.t3.micro")).hasCapacityChoice
+#guard (PostgresSpec.serverless (K := NoKeys)
+  (.lit "db") (.lit "admin") (.lit "master-pw") (.lit 1) (.lit 4)).hasCapacityChoice
+#guard ¬ ({ name := .lit "db", instanceClass := .unknown, masterUsername := .lit "admin"
+            masterPasswordSecret := .lit "master-pw", version := .unknown, storageGb := .unknown
+            minCapacity := .unknown, maxCapacity := .unknown } :
+    PostgresSpec NoKeys Partial (Expr NoKeys)).hasCapacityChoice
+end
 
 end Infra.Specs

@@ -25,6 +25,7 @@ def placeholderObserved : (k : Kind) → String → ObservedOf k
   | .postgres,         id => { handle := ⟨id⟩, endpoint := "placeholder.invalid:5432" }
   | .s3Bucket,         id => { handle := ⟨id⟩, arn := "arn:placeholder", region := "eu-west-1" }
   | .scalewayFunction, id => { handle := ⟨id⟩, url := "https://placeholder.invalid/fn" }
+  | .scalewayContainer, id => { handle := ⟨id⟩, url := "https://placeholder.invalid/container" }
 
 /-- Every optional field `unknown`: a placeholder has seen nothing, and
     `unknown` is exactly "could not see". Reporting invented values would make
@@ -39,13 +40,18 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .queues,           h => { name := h.raw, visibilityTimeoutSec := .unknown }
   | .secrets,          h => { name := h.raw, valueFrom := "" }
   | .imageRegistry,    h => { name := h.raw, immutableTags := .unknown }
-  | .postgres,         h => { name := h.raw, instanceClass := "", masterUsername := ""
+  | .postgres,         h => { name := h.raw, instanceClass := .unknown, masterUsername := ""
                               masterPasswordSecret := "", version := .unknown
-                              storageGb := .unknown }
+                              storageGb := .unknown, minCapacity := .unknown
+                              maxCapacity := .unknown }
   | .s3Bucket,         h => { name := h.raw, versioning := .unknown,
                               objectLock := .unknown, region := .unknown }
   | .scalewayFunction, h => { name := h.raw, runtime := "", namespace' := ""
                               sourceBucket := .unknown }
+  | .scalewayContainer, h => { name := h.raw, namespace' := "", image := ""
+                               port := .unknown, minScale := .unknown, maxScale := .unknown
+                               memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
+                               env := .unknown, secretEnv := .unknown }
 
 /-- A backend that talks to nothing. Both providers are this, for now, differing only in the
     identifier they stamp on what they claim to have created. -/
