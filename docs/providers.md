@@ -47,9 +47,10 @@ file to compile.
 | `secrets` | Secrets Manager | Secret Manager | no |
 | `compute` | Lambda (image) | Serverless Containers | no |
 | `iam` | IAM users | IAM applications | no |
-| `postgres` | RDS | Managed Database | no |
+| `postgres` | RDS | Managed Database | no — and routed on shape: a set `instanceClass` means a classic instance, capacity bounds mean serverless (AWS raises a named error; Scaleway's Serverless SQL Database is stubbed) |
 | `s3Bucket` | S3 | — | AWS-only kind |
 | `scalewayFunction` | — | Serverless Functions | Scaleway-only kind |
+| `scalewayContainer` | — | Serverless Containers | Scaleway-only kind; the portable `compute` kind cannot bind secret-backed env vars |
 
 Two kinds need no per-cloud code at all, because both clouds speak the same
 API. That is the portability claim actually paying off, and `infra check`
@@ -79,18 +80,33 @@ named error rather than passing through an unhelpful API message:
 
 ## Secrets only travel outward
 
-`secrets.valueFrom` names an environment variable, read at apply time. `read`
-calls `DescribeSecret`, never `GetSecretValue`, so plaintext never enters a
-`Sighting` or the `.infra/` cache.
+`secrets.valueFrom` is a `SecretSource`. `fromEnv` names an environment
+variable, read at apply time. `read` calls `DescribeSecret`, never
+`GetSecretValue`, and reports `valueFrom := .fromEnv ""`, so plaintext never
+enters a `Sighting` or the `.infra/` cache.
 
-There is exactly one exception, `Kinds/Postgres.fetchMasterPassword`: both RDS
-and RDB demand a master password at creation, and the spec holds only the
-secret's name. The value is fetched once, passed straight to the create call,
-and never returned or stored.
+There are exactly two inbound paths, both narrow, both apply-time only:
 
-The consequence, in both cases: **a value changed outside this tool is not
+- `Kinds/Postgres.fetchMasterPassword` — both RDS and RDB demand a master
+  password at creation, and the spec holds only the secret's name.
+- `Backend.secretValue` (`Kinds/Secrets.fetchValue`) — for a
+  `SecretSource.composed` value, whose only caller is `Engine.settleFor`. It
+  fetches only the secrets a spec actually names, so a fleet with no composed
+  secrets never calls it.
+
+Both fetch once, pass straight to a single create/update call, and never
+return or store what they read. The planning path cannot reach either:
+`Env.secretValue` defaults to knowing nothing and `actions` settles against a
+redacted environment, so a dry run has no value to leak. The placeholder
+backend returns a canary string, and `lake exe infra check` asserts it appears
+in neither plan output, apply logs, nor the on-disk cache.
+
+The consequence, in every case: **a value changed outside this tool is not
 detected as drift.** Detecting it would mean holding plaintext in the engine,
-which is a far worse trade than missing a drift.
+which is a far worse trade than missing a drift. For a composed secret this
+also means it is **create-only** — its value cannot be compared, so once it
+exists a second apply asks for nothing, and rotation is an explicit act rather
+than a reconciliation.
 
 ## Identity
 
@@ -135,6 +151,32 @@ Verified offline, by `infra check`:
 - `push` dry-run ordering, including that an AWS bucket is scheduled before the
   Scaleway function referencing it.
 - The credential chain, redaction, and the not-found message.
+- Composed secrets: three resources created in one apply, ordered so the
+  composed secret comes after both the password it reads and the database
+  whose endpoint it needs; no secret value in plan output, apply log, or the
+  cache; and a second apply is a no-op, since a composed secret is create-only.
+- That the `fleet` command produces a fleet indistinguishable from the
+  hand-written equivalent — same cardinalities, providers, names, and ordered
+  action list.
+
+**Not verified against any account, and load-bearing for `secretEnv`**: how
+Scaleway Serverless Containers actually binds a secret to an environment
+variable. It is implemented against the plaintext-at-set-time assumption,
+using the same narrowly-scoped read as everything else here, so if the real
+mechanism turns out to be a native reference the backend simplifies and the
+Lean types do not change. First thing to check live.
+
+**Not verified**: Scaleway's Serverless SQL Database API shape, which is why
+`Postgres.ServerlessSql` is honestly stubbed rather than guessed at, and
+whether either cloud permits adjusting serverless capacity bounds in place
+(assumed mutable, like `storageGb`).
+
+**Not verified, and checked only against docs**: whether Serverless Containers
+can pull from `ghcr.io` directly. Scaleway's documentation says public
+external registries work but discourages them for production ("uncontrolled
+rate limiting"), and does not support private ones at all — so
+`typednotes-infra` mirrors its image into Scaleway Container Registry instead.
+No live test has confirmed either half of that.
 
 **Not verified here**: the endpoint paths, field names and payload shapes in
 `Kinds/*.lean` — roughly 1,200 lines. Those can only be confirmed against real

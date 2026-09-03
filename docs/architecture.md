@@ -96,10 +96,36 @@ the wrong thing on one cloud.
 ### Secrets never live in a target
 
 Two decisions follow from the target being the committed source of truth:
-`secrets.valueFrom` names an *environment variable*, and
-`postgres.masterPasswordSecret` names a *secret*. Neither field can hold a
-value. The single place a value is read is Postgres creation, which needs a
-master password the spec deliberately does not carry.
+`secrets.valueFrom` names an *environment variable* (`SecretSource.fromEnv`),
+and `postgres.masterPasswordSecret` names a *secret*. Neither field holds a
+value.
+
+There is one deliberate extension, `SecretSource.composed`, and it is worth
+being precise about what it does and does not allow. A secret whose value is
+built from post-apply state — a connection string needing both a master
+password and the endpoint a cloud assigns at creation — used to require two
+`push --apply` runs with an operator composing the string by hand in between.
+A target can now hold the *function* instead, written as `map`/`ap` over
+`Expr.secretValue` (another of the fleet's secrets) and `Expr.observed` (a
+resource that does not exist yet). `HasDeps` turns both into ordering edges,
+so one apply creates the password, then the database, then the secret that
+reads them.
+
+What that does **not** allow is a plaintext value in the committed file. It is
+now *expressible* (`.lit (.composed "hunter2")`), so it is checked rather than
+impossible: `SecretsSpec.sourceIsSound` rejects a composed value with no
+dependencies, and `Plan.secretsAreSound` lifts it over a fleet. See
+`docs/diff-semantics.md`'s ledger for the tier change, which was a real
+weakening and is recorded as one.
+
+Values are read in exactly two places, both narrow and both on the apply path:
+`Kinds.Postgres.fetchMasterPassword` for database creation, and
+`Backend.secretValue`, whose only caller is `Engine.settleFor`. Neither stores
+what it reads. The planning path cannot reach either — `Env.secretValue`
+defaults to knowing nothing and `actions` settles against a redacted
+environment — so a dry run cannot print a secret because it never has one.
+Nothing observed, cached, or reported carries a value either, which is also
+why a composed secret can never be diffed: it is create-only.
 
 ## Fleets across several clouds
 
@@ -118,13 +144,49 @@ instance per resource-set, a `(provider, kind) → key-type` match, a `name` mat
 recommended way to write one for a real project — it is proportionate ceremony for one demo
 fleet and disproportionate for dozens of real resources.
 
-`Infra/Core/Ergonomics.lean` is the recommended pattern for a consumer project (see
-`typednotes-infra`): `Keys.build (table : ProviderId → Kind → KeySpec)` replaces the
-`Key`/`finite`/`decEq`/`name` quadruple with one table, where each row is either `.unused`
-(the pair's key type is `Nothing`) or `.named [ ... ]` (the pair's key type is `NamedKey`, a
-generic `List String`-backed key generated once rather than per resource-set).
-`Keys.assignFromNamed` similarly replaces a hand-written `match` arm per resource with a
-name-indexed association list.
+There are three ways to write one, in increasing order of sugar. All produce
+the same `Keys`/`Plan`, and all keep the same guarantees — see
+`docs/diff-semantics.md`.
+
+**1. By hand.** `Infra/Demo.lean`'s `demoKeys`/`demoPlan`, above. Use it when
+you want the strongest form of "no duplicate keys": a hand-rolled `inductive`
+key type gets that from constructor distinctness, unconditionally.
+
+**2. With the combinators in `Infra/Core/Ergonomics.lean`.**
+`Keys.build (table : ProviderId → Kind → KeySpec)` replaces the
+`Key`/`finite`/`decEq`/`name` quadruple with one table, where each row is
+either `.unused` (the pair's key type is `Nothing`) or `.named [ ... ]` (the
+pair's key type is `NamedKey`, a generic `List String`-backed key generated
+once rather than per resource-set). `Keys.assignFromNamed` similarly replaces
+a hand-written `match` arm per resource with a name-indexed association list.
+`Infra/Specs/Build.lean` gives one builder per `Kind` whose optional fields
+default to `.unknown`, and `Infra/Core/Coe.lean` lets a bare value stand for
+`.lit v` / `.known (.lit v)` — so a resource is one function call with the
+fields you actually mean.
+
+**3. With the `fleet` command** (`Infra/Core/Declare.lean`), which is the
+recommended default for a consumer project:
+
+```lean
+fleet myFleet where
+  resource scaleway secrets "db-password" as dbPassword
+    { valueFrom := fromEnv "DB_PASSWORD" }
+  resource scaleway postgres "main" as mainDb
+    { masterUsername := "dbadmin", masterPasswordSecret := "db-password"
+      minCapacity := 1, maxCapacity := 4 }
+```
+
+This exists for one reason the other two cannot address: a resource's name
+would otherwise be written three or four times — a name list, a key
+abbreviation, the spec's own `name` field, an `assign` entry — with only two
+of them coupled by a check. Here the name list is derived from the resources.
+It is the only piece of metaprogramming in the library, deliberately confined
+to the `Keys`/`Plan` wiring, which genuinely cannot be a function because the
+key type must exist before the specs that reference it and is itself derived
+from them. Everything else stayed an ordinary function so that this could stay
+small; it expands to the level-2 combinators, so errors point at your own
+code. `Infra/Demo.lean` declares one fleet at both levels and `#guard`s that
+the results agree.
 
 **This table is the scoping mechanism** the project's `AGENTS.md` calls for ("the ability to
 scope what's managed vs. left alone"): a `(provider, kind)` pair left `.unused`, or a resource
