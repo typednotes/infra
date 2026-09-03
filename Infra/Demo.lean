@@ -1,5 +1,7 @@
 import Infra.Providers
 import Infra.Core.Ergonomics
+import Infra.Core.Declare
+import Infra.Core.Engine
 
 /-
   A worked fleet, and the checks that the design claims actually hold.
@@ -203,6 +205,56 @@ def composedAppliedWorld : World composedKeys :=
                         masterUsername := "dbadmin", masterPasswordSecret := ""
                         version := .unknown, storageGb := .unknown
                         minCapacity := .unknown, maxCapacity := .unknown } }⟩ ]
+
+/-! ## The same fleet again, via `fleet`
+
+  `composedKeys`/`composedPlan` above are written by hand with the
+  `Ergonomics` combinators. This declares what should be the *same* fleet with
+  `Infra.Core.Declare`'s `fleet` command, so the guards below can check that
+  the command is only sugar — that it produces a fleet indistinguishable from
+  the one a person would write.
+
+  Note `db-url` references `mainDb`, which is declared *after* it: every `as`
+  abbreviation is emitted before any spec, so declaration order does not
+  constrain reference order. -/
+
+fleet viaMacro where
+  resource scaleway secrets "db-password" as macroDbPassword
+    { valueFrom := fromEnv "DB_PASSWORD" }
+  resource scaleway secrets "db-url"
+    { valueFrom := composed
+        (.ap (.map (fun pw (o : ObservedOf .postgres) =>
+                     s!"postgres://dbadmin:{pw}@{o.endpoint}/main")
+                   (.secretValue .scaleway macroDbPassword))
+             (.observed .scaleway .postgres macroMainDb)) }
+  resource scaleway postgres "main" as macroMainDb
+    { masterUsername := "dbadmin"
+    , masterPasswordSecret := "db-password"
+    , minCapacity := 1
+    , maxCapacity := 4 }
+
+section MacroGuards
+
+/- Same shape as the hand-written fleet: same buckets, same cardinalities,
+   same names, same single cloud. -/
+#guard viaMacro.keys.count .scaleway .secrets = composedKeys.count .scaleway .secrets
+#guard viaMacro.keys.count .scaleway .postgres = composedKeys.count .scaleway .postgres
+#guard viaMacro.keys.count .aws .secrets = 0
+#guard viaMacro.keys.providers = composedKeys.providers
+#guard viaMacro.keys.name .scaleway .secrets macroDbPassword = "db-password"
+
+/- Same plan: the same number of actions, and the same ordered slots — which
+   is what would break if the generated `HasDeps` edges differed, since the
+   composed secret must still come last. -/
+#guard (actions viaMacro.plan (worldOf [])).length
+     = (actions composedPlan composedEmptyWorld).length
+#guard ((actions viaMacro.plan (worldOf [])).map Action.slot)
+     = ((actions composedPlan composedEmptyWorld).map Action.slot)
+
+/- And the same soundness: no plaintext smuggled in by the expansion. -/
+#guard viaMacro.plan.secretsAreSound
+
+end MacroGuards
 
 section ComposedGuards
 
