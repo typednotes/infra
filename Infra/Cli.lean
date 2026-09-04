@@ -9,7 +9,7 @@ import Infra.Providers
   The command-line front end, as library code.
 
   A declaration repo declares a fleet; it should not also have to reimplement
-  `check | pull | plan | apply`, decide which clouds to authenticate,
+  `check | refresh | plan | apply`, decide which clouds to authenticate,
   or remember that a dry run is the default. All of that lives here and is
   parameterised by the fleet, so a consumer's `Main.lean` is a call rather than
   a copy — this file exists because `infra`'s own `Main.lean` and
@@ -142,12 +142,12 @@ def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Un
     "For the real thing: `plan` (reads), then `apply` (changes).")
 
 def usage (exe : String) : String := String.intercalate "\n"
-  [ s!"usage: {exe} [check | pull | plan | apply]"
+  [ s!"usage: {exe} [check | refresh | plan | apply]"
   , ""
-  , "  check    run the offline self-checks (default)"
-  , "  pull     observe the declared clouds and cache what is there"
-  , "  plan     show what would change, without changing anything"
-  , "  apply    actually reconcile"
+  , "  check      run the offline self-checks (default)"
+  , "  refresh    observe the declared clouds and cache what is there"
+  , "  plan       show what would change, without changing anything"
+  , "  apply      actually reconcile"
   ]
 
 /-- The whole front end for one fleet.
@@ -178,7 +178,13 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
     act bs
   match args with
   | [] | ["check"] => selfCheck; return 0
-  | ["pull"] =>
+  -- `refresh` rather than `pull`: it is Terraform's name for exactly this
+  -- (observe reality, record it), and it deliberately has no destructive
+  -- counterpart that rhymes with it — `pull`/`push` would differ by one
+  -- character while differing completely in consequence. Terraform's own
+  -- `state pull`/`state push` mean something else again: moving a state file
+  -- to and from a remote backend.
+  | ["refresh"] =>
     withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
       IO.println s!"pulled; {(plan target world).length} action(s) outstanding"

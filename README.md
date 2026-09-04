@@ -60,7 +60,7 @@ keychain / environment-variable chain it tries, in that order.
 
 ```sh
 lake exe infra check     # offline self-checks (default, no cloud)
-lake exe infra pull      # observe both clouds, cache to .infra/
+lake exe infra refresh   # observe both clouds, cache to .infra/
 lake exe infra plan      # show what would change, no changes made
 lake exe infra apply     # actually reconcile
 ```

@@ -156,7 +156,7 @@ resource's handle against `Keys.name`. So the handle is always a *name*.
 
 ```
 infra check            # offline self-checks; the default
-infra pull             # observe both clouds, cache to .infra/
+infra refresh          # observe both clouds, cache to .infra/
 infra plan             # what would change
 infra push             # same as plan — a dry run
 infra apply     # actually reconcile
