@@ -48,11 +48,8 @@ private def version : String := "2010-05-08"
 private def members (root : Text.XML.Element) (result container : String) :
     List Text.XML.Element :=
   match root.child result with
-  | none => []
-  | some r =>
-    match r.child container with
-    | none   => []
-    | some c => c.named "member"
+  | none   => []
+  | some r => Query.listItems r container "member"
 
 def list (creds : Credentials) : IO (List (String × String)) := do
   let root ← Query.call creds Query.iamEndpoint "ListUsers" version

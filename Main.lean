@@ -3,6 +3,16 @@ import Infra
 open Infra.Core
 open Infra.Demo
 
+/-- Whether `needle` occurs in `haystack`. Used by the leak checks, which are
+    the only reason this file needs a substring test — one copy, so the four
+    call sites cannot drift. -/
+private def mentions (haystack needle : String) : Bool :=
+  (haystack.splitOn needle).length > 1
+
+/-- Where a slot first appears in a rendered plan, for the ordering checks. -/
+private def slotIdx (lines : List String) (needle : String) : Option Nat :=
+  lines.findIdx? fun l => mentions l needle
+
 /-- Round-trips observed state through the on-disk cache in a scratch directory, to check the
     format is readable back and not merely writable. Exercises `Partial`'s JSON encoding
     indirectly: what is cached is `ObservedOf`, which is never partial, but the path, key
@@ -82,7 +92,6 @@ def checkCredentials : IO Unit := do
 
     -- Secrets must not survive rendering: this is what stops a stray trace or
     -- an error message from leaking one.
-    let mentions (haystack needle : String) : Bool := (haystack.splitOn needle).length > 1
     let shown := toString aws
     if mentions shown "wJalrXUtnFEMI" then
       throw (IO.userError "Credentials rendering leaked the secret key")
@@ -203,9 +212,7 @@ def checkPush : IO Unit := do
   -- Ordering: the Scaleway function references the AWS bucket, so the bucket
   -- must be created first. This is the dependency DAG doing its job, and it
   -- crosses clouds.
-  let idx (needle : String) : Option Nat :=
-    (dry.findIdx? (fun l => (l.splitOn needle).length > 1))
-  match idx "aws/s3-bucket/cold", idx "scaleway/scaleway-function/ingest" with
+  match slotIdx dry "aws/s3-bucket/cold", slotIdx dry "scaleway/scaleway-function/ingest" with
   | some bucket, some fn =>
     unless bucket < fn do
       throw (IO.userError s!"bucket must be created before the function that reads it: {dry}")
@@ -218,7 +225,7 @@ def checkPush : IO Unit := do
 
   -- An immutable field that disagrees is a replace, not an update.
   let immutable ← push bs demoPlan immutableDriftWorld {}
-  unless immutable.any (fun l => (l.splitOn "REPLACE aws/s3-bucket/cold").length > 1) do
+  unless immutable.any (mentions · "REPLACE aws/s3-bucket/cold") do
     throw (IO.userError s!"expected a replace for the object-lock change: {immutable}")
 
   -- An idle plan asks for nothing at all.
@@ -237,7 +244,6 @@ def checkPush : IO Unit := do
 def checkSecretComposition : IO Unit := do
   let bs := Infra.Providers.all
   let canary := "placeholder-secret-value"
-  let mentions (haystack needle : String) : Bool := (haystack.splitOn needle).length > 1
 
   -- The whole fleet in one apply: three creates, no manual step in between.
   let dry ← push bs composedPlan composedEmptyWorld {}

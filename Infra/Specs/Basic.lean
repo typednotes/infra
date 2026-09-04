@@ -200,12 +200,13 @@ def composed {K : ProviderId → Kind → Type} (e : Expr K String) : Expr K Sec
     `Plan.secretsAreSound`. -/
 def SecretsSpec.sourceIsSound {K : ProviderId → Kind → Type}
     (s : SecretsSpec K Partial (Expr K)) : Bool :=
-  match s.valueFrom.asLit, s.valueFrom.deps with
-  | some (.fromEnv _),  []     => true
-  | some (.composed _), _      => false   -- plaintext, written directly
-  | none,               []     => false   -- plaintext, laundered through `map`
-  | none,               _ :: _ => true
-  | some (.fromEnv _),  _ :: _ => false
+  -- One scrutinee, not a pair: `asLit` answers `some` only for `.lit`, whose
+  -- `deps` is `[]` by construction, so the cases that pair the two up cannot
+  -- both be informative.
+  match s.valueFrom.asLit with
+  | some (.fromEnv _)  => true
+  | some (.composed _) => false                     -- plaintext, written directly
+  | none               => !s.valueFrom.deps.isEmpty -- `map`-wrapped: needs a reference
 
 /-- Whether an authored postgres target picked one of the two capacity shapes: a fixed
     `instanceClass`, or both `minCapacity` and `maxCapacity`. Neither being set makes the target

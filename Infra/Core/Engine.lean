@@ -84,9 +84,10 @@ private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
     (key : κ.Key p k) : List String :=
   match T.assign p k key with
   | .present authored =>
-    -- `d.2.2.1` is the key; `d.2.2.2` is the `Need` tag, which the schedule
-    -- ignores — a handle and a value are the same edge as far as order goes.
-    ((hasDepsOf k).deps authored).map fun d => slotId d.1 d.2.1 (κ.name d.1 d.2.1 d.2.2.1)
+    -- The `Need` tag is ignored here: a handle and a value are the same edge
+    -- as far as ordering goes.
+    ((hasDepsOf k).deps authored).map fun d =>
+      slotId d.provider d.kind (κ.name d.provider d.kind d.key)
   | _ => []
 
 /-- One scheduling step. -/
@@ -165,19 +166,22 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
     let world := worldOf entries
     let base := envOfWorld world
     -- Secret values, for exactly the secrets this spec reads.
-    let wanted := ((hasDepsOf k).deps authored).filter fun d => d.2.2.2 == Need.secretValue
+    let wanted := ((hasDepsOf k).deps authored).filter fun d => d.need == Need.secretValue
     let mut values : List (ProviderId × String × String) := []
     for d in wanted do
       -- `Expr.deps` tags every `.secretValue` edge with `.secrets`, but that is
-      -- not visible in `d`'s type, so the handle is built from the name rather
+      -- not visible in `d.kind`, so the handle is built from the name rather
       -- than from `observedHandle`. Sound for the same reason `pullEntries`
       -- matches on it: `Keys.name` *is* the cloud's physical identifier.
-      let nm := κ.name d.1 d.2.1 d.2.2.1
-      unless (world.sighting d.1 d.2.1 d.2.2.1).isSome do
+      let nm := κ.name d.provider d.kind d.key
+      unless (world.sighting d.provider d.kind d.key).isSome do
         throw (IO.userError
-          s!"{slotId p k (κ.name p k key)}: needs the value of {slotId d.1 d.2.1 nm}, \
-which does not exist yet")
-      values := (d.1, nm, ← (bs.backend d.1).secretValue ⟨nm⟩) :: values
+          s!"{slotId p k (κ.name p k key)}: needs the value of \
+{slotId d.provider d.kind nm}, which does not exist yet")
+      -- Deduplicated: a spec naming one secret twice would otherwise pay for
+      -- two plaintext reads, which is the most expensive call to repeat.
+      unless values.any (fun v => v.1 == d.provider && v.2.1 == nm) do
+        values := (d.provider, nm, ← (bs.backend d.provider).secretValue ⟨nm⟩) :: values
     let env : Env κ.Key :=
       { base with secretValue := fun p' key' =>
           (values.find? fun v => v.1 == p' && v.2.1 == κ.name p' .secrets key').map (·.2.2) }

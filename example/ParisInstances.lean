@@ -153,25 +153,12 @@ fleet paris where
            (name := "web-1") (imageId := al2023Paris)
            (instanceType := "t3.nano") (securityGroup := web))).length = 1
 
-/-- What a bare `lake exe paris-instances` does: the plan against the
-    placeholder backends. Offline, credential-free, and free of charge. -/
-def demo : IO Unit := do
-  IO.println "paris: two t3.nano behind one security group\n"
-  for line in ← push Infra.Providers.all paris.plan (worldOf []) {} do
-    IO.println line
-  IO.println "\nThe group is scheduled first. Not because the file lists it"
-  IO.println "first — because each instance's `securityGroup` is a reference,"
-  IO.println "and an instance cannot even be settled until it resolves."
-  IO.println "\nThat was the placeholder backend — nothing was contacted."
-  IO.println "For the real thing: `plan` (reads), then `push --apply` (creates)."
-
-/-- Its own cache root, like `scaleway-queue`'s: this fleet's key family is not
-    the demo fleet's, and two different shapes must never be read as if they
-    were the same. -/
-def cacheRoot : System.FilePath := ".infra" / "paris"
-
-/-- `check` (the default) stays offline. `plan` reads the account; `push
-    --apply` creates **real, billable** instances that run until terminated. -/
+/-- `check` (the default) stays offline: `Infra.Cli.run`'s own `offlinePlan`
+    shows the plan from the placeholder backends. `plan` reads the account;
+    `push --apply` creates **real, billable** instances that run until
+    terminated. -/
 def main (args : List String) : IO UInt32 := do
-  Infra.Cli.run "paris-instances" paris.plan demo
-    (accounts := ← Infra.Cli.Accounts.fromEnv) (cacheRoot := cacheRoot) (args := args)
+  Infra.Cli.run "paris-instances" paris.plan
+    (selfCheck := Infra.Cli.offlinePlan paris.plan
+      "paris: two t3.nano behind one security group")
+    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)

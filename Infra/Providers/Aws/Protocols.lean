@@ -103,6 +103,28 @@ def iamEndpoint : Endpoint :=
 def rdsEndpoint (region : String) : Endpoint :=
   { host := s!"rds.{region}.amazonaws.com", service := "rds", region }
 
+def ec2Endpoint (region : String) : Endpoint :=
+  { host := s!"ec2.{region}.amazonaws.com", service := "ec2", region }
+
+/-- STS is global and always signs `us-east-1`, the same rule as `iamEndpoint`
+    and for the same reason: signing it regionally is a common mistake, so the
+    region is fixed here rather than passed in. -/
+def stsEndpoint : Endpoint :=
+  { host := "sts.amazonaws.com", service := "sts", region := "us-east-1" }
+
+/-- The elements of a nested list in a Query response.
+
+    Every Query-protocol service wraps collections the same way — a container
+    element holding repeated children — and only the two tag names differ.
+    `Iam`, `Postgres` and `Ec2` each had their own copy of this before it was
+    hoisted here; the leaf tag varies (`member`, `DBInstance`, `item`), the
+    walk does not. -/
+def listItems (parent : Text.XML.Element) (container leaf : String) :
+    List Text.XML.Element :=
+  match parent.child container with
+  | none   => []
+  | some c => c.named leaf
+
 /-- Render a form body. Uses the same strict encoder as the signer, so the
     body that is hashed is byte-for-byte the body that is sent. -/
 def formBody (params : List (String × String)) : ByteArray :=

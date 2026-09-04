@@ -87,7 +87,7 @@ private def lambdaFor (creds : Credentials) : Endpoint := RestJson.lambdaEndpoin
 private def rdsFor (creds : Credentials) : Endpoint := Query.rdsEndpoint creds.region
 
 /-- The S3 endpoint this cloud uses for a bucket-shaped kind. -/
-private def ec2For (creds : Credentials) : Endpoint := Ec2.endpoint creds.region
+private def ec2For (creds : Credentials) : Endpoint := Query.ec2Endpoint creds.region
 
 private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
   S3.endpoint provider creds.region
@@ -178,15 +178,15 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
                objectLock := ← ObjectStore.readObjectLock creds ep h.raw
                region := .known ep.region }
     | .securityGroup, h => do
-      let (description, ingress) ← Ec2.SecurityGroup.read creds (ec2For creds) h.raw
+      let (_, description, ingress) ← Ec2.SecurityGroup.read creds (ec2For creds) h.raw
       return { name := h.raw, description, ingress }
     | .awsInstance, h => do
-      let r ← Ec2.Instance'.read creds (ec2For creds) h.raw
+      let (imageId, instanceType, group, keyName, subnetId) ←
+        Ec2.Instance'.read creds (ec2For creds) h.raw
       -- The security group comes back as a *name*, which is exactly what the
       -- settled spec holds, so the two are directly comparable.
-      return { name := h.raw, imageId := r.1, instanceType := r.2.1
-               securityGroup := ⟨r.2.2.1⟩, keyName := r.2.2.2.1
-               subnetId := r.2.2.2.2 }
+      return { name := h.raw, imageId, instanceType
+               securityGroup := ⟨group⟩, keyName, subnetId }
     -- Nothing was read, so nothing is claimed. `unknown` is exactly that, and
     -- is why an unimplemented kind cannot masquerade as already matching.
     | .iam, h => do
@@ -274,9 +274,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       ObjectStore.putTags creds ep spec.name spec.tags
       return { handle := ⟨spec.name⟩, url := ObjectStore.bucketUrl ep spec.name }
     | .securityGroup, spec => do
-      let (groupId, vpcId) ← Ec2.SecurityGroup.create creds (ec2For creds)
+      -- `CreateSecurityGroup` does not report the VPC, so that stays blank
+      -- until the next `pull` observes it.
+      let groupId ← Ec2.SecurityGroup.create creds (ec2For creds)
         spec.name spec.description spec.ingress
-      return { handle := ⟨spec.name⟩, groupId, vpcId }
+      return { handle := ⟨spec.name⟩, groupId, vpcId := "" }
     | .awsInstance, spec => do
       -- `spec.securityGroup` is a settled `Handle .securityGroup`, i.e. the
       -- group's name; the backend resolves it to an id.
@@ -379,13 +381,12 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     | .awsInstance, h, spec => do
       let ep := ec2For creds
       let group : Handle .securityGroup := spec.securityGroup
-      match (← Ec2.Instance'.list creds ep).find? (fun i => i.1 == h.raw) with
+      match ← Ec2.Instance'.byName creds ep h.raw with
       | none => throw (IO.userError
           s!"instance '{h.raw}' disappeared between plan and apply")
-      | some found =>
-        Ec2.Instance'.update creds ep found.2.1 spec.name group.raw
-        return { handle := ⟨spec.name⟩, instanceId := found.2.1
-                 privateIp := found.2.2.1, state := found.2.2.2 }
+      | some (instanceId, privateIp, state) =>
+        Ec2.Instance'.update creds ep instanceId spec.name group.raw
+        return { handle := ⟨spec.name⟩, instanceId, privateIp, state }
     | .s3Bucket, h, spec => do
       let ep := s3For provider creds
       -- Only versioning is mutable here; Object Lock and region are not, which
@@ -463,9 +464,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       -- not an error: `delete` is reached from a plan, and EC2 keeps reporting
       -- a terminated instance for a while after it is really finished.
       let ep := ec2For creds
-      match (← Ec2.Instance'.list creds ep).find? (fun i => i.1 == h.raw) with
-      | none       => pure ()
-      | some found => Ec2.Instance'.delete creds ep found.2.1
+      match ← Ec2.Instance'.byName creds ep h.raw with
+      | none                    => pure ()
+      | some (instanceId, _, _) => Ec2.Instance'.delete creds ep instanceId
     | .queues, h      => do
       Queues.deleteQueue (← Scaleway.Sqs.credentialsFor provider creds) (sqsFor provider creds) h.raw
     | .imageRegistry, h =>

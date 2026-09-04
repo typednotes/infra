@@ -213,6 +213,24 @@ instance : (k : Kind) → ToJson (ObservedOf k)
   | .scalewayFunction  => inferInstanceAs (ToJson ScalewayFunctionObserved)
   | .scalewayContainer => inferInstanceAs (ToJson ScalewayContainerObserved)
 
+/-- `Repr` per kind, alongside the two JSON instances and for the same reason:
+    `ObservedOf` is a `def`, so a generic instance cannot be found through it.
+    Without this every caller wanting to print observed state writes its own
+    twelve-branch dispatch — `example/ScalewayPull.lean` did. -/
+instance : (k : Kind) → Repr (ObservedOf k)
+  | .iam               => inferInstanceAs (Repr IamObserved)
+  | .objectStore       => inferInstanceAs (Repr ObjectStoreObserved)
+  | .compute           => inferInstanceAs (Repr ComputeObserved)
+  | .queues            => inferInstanceAs (Repr QueuesObserved)
+  | .secrets           => inferInstanceAs (Repr SecretsObserved)
+  | .imageRegistry     => inferInstanceAs (Repr ImageRegistryObserved)
+  | .postgres          => inferInstanceAs (Repr PostgresObserved)
+  | .s3Bucket          => inferInstanceAs (Repr S3BucketObserved)
+  | .securityGroup     => inferInstanceAs (Repr SecurityGroupObserved)
+  | .awsInstance       => inferInstanceAs (Repr AwsInstanceObserved)
+  | .scalewayFunction  => inferInstanceAs (Repr ScalewayFunctionObserved)
+  | .scalewayContainer => inferInstanceAs (Repr ScalewayContainerObserved)
+
 instance : (k : Kind) → FromJson (ObservedOf k)
   | .iam               => inferInstanceAs (FromJson IamObserved)
   | .objectStore       => inferInstanceAs (FromJson ObjectStoreObserved)

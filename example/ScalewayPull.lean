@@ -33,23 +33,6 @@ open Lean (Json toJson)
     artifact in this repo lands in. -/
 def outDir : System.FilePath := "out" / "scaleway"
 
-/-- `Repr (ObservedOf k)` isn't generic in `k` the way `ToJson (ObservedOf k)`
-    is (`Infra.Core.Kind` only declares the latter), so dispatch by hand — one
-    branch per kind, same as `Infra.Core.observedHandle`. -/
-def reprObserved : (k : Kind) → ObservedOf k → String
-  | .iam,              o => toString (repr o)
-  | .objectStore,      o => toString (repr o)
-  | .compute,          o => toString (repr o)
-  | .queues,           o => toString (repr o)
-  | .secrets,          o => toString (repr o)
-  | .imageRegistry,    o => toString (repr o)
-  | .postgres,         o => toString (repr o)
-  | .s3Bucket,         o => toString (repr o)
-  | .securityGroup,    o => toString (repr o)
-  | .awsInstance,      o => toString (repr o)
-  | .scalewayFunction, o => toString (repr o)
-  | .scalewayContainer, o => toString (repr o)
-
 /-- The `def` name and `Kind` constructor to write into the generated Lean
     file for each kind. -/
 def declFor : Kind → String × String
@@ -76,7 +59,7 @@ def jsonOf {k : Kind} (observed : List (ObservedOf k)) : Json :=
     reported instead of typed in as a fixture. -/
 def leanOf (k : Kind) (observed : List (ObservedOf k)) : String :=
   let (defName, ctor) := declFor k
-  let entries := String.intercalate ",\n  " (observed.map (reprObserved k))
+  let entries := String.intercalate ",\n  " (observed.map fun o => toString (repr o))
   s!"import Infra\n\n\
 open Infra.Core\n\n\
 /-- {observed.length} `{k.name}` resource(s), pulled live from Scaleway.\n\

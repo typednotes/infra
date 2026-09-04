@@ -157,21 +157,8 @@ fleet crossCloud where
            (name := "reindex") (runtime := "python3.12")
            (namespace' := "typednotes") (sourceBucket := some archive))).length = 1
 
-/-- What a bare invocation does: the plan, from the placeholder backends. -/
-def demo : IO Unit := do
-  IO.println "cross-cloud: a plan spanning AWS and Scaleway\n"
-  for line in ← push Infra.Providers.all crossCloud.plan (worldOf []) {} do
-    IO.println line
-  IO.println "\nNote the order: the AWS bucket is created before the Scaleway"
-  IO.println "function that reads it. Nothing above declares that order — it"
-  IO.println "falls out of `sourceBucket` being a reference."
-  IO.println "\nThat was the placeholder backend — neither cloud was contacted."
-  IO.println "For the real thing: `plan`, then `push --apply`."
-
-/-- Its own cache root: this fleet's key family is not any other's, and two
-    different shapes must never be read as if they were the same. -/
-def cacheRoot : System.FilePath := ".infra" / "cross-cloud"
-
 def main (args : List String) : IO UInt32 := do
-  Infra.Cli.run "cross-cloud" crossCloud.plan demo
-    (accounts := ← Infra.Cli.Accounts.fromEnv) (cacheRoot := cacheRoot) (args := args)
+  Infra.Cli.run "cross-cloud" crossCloud.plan
+    (selfCheck := Infra.Cli.offlinePlan crossCloud.plan
+      "cross-cloud: a plan spanning AWS and Scaleway")
+    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)

@@ -35,6 +35,13 @@ import Infra.Core.Spec
   numeral, whose type is itself a metavariable: `[(80, "any")]` needs
   `([(80, "any")] : List (Nat × String))` for the same reason.
 
+  An `EmptyCollection (Expr K α)` instance was tried for the `[]` case and
+  removed: `[]` elaborates to `List.nil`, not to `EmptyCollection`, so the
+  instance only bought `∅` as a second spelling and did nothing at all for the
+  numeral case. Closing these properly needs a numeral/collection
+  accommodation in the same spirit as `instOfNatExpr`, not another instance
+  beside it.
+
   Dot-notation also does not see through the wrapper: at an expected type of
   `Expr K SecretSource`, `.foo` resolves against `Expr`, not `SecretSource`.
   Payload constructors therefore need qualifying, or a helper.

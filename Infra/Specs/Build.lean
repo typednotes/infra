@@ -147,23 +147,46 @@ def scalewayContainer (name : Expr K String) (namespace' : Expr K String)
   { name, namespace', image, port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec,
     env, secretEnv }
 
-/-- Total over `Kind`, so adding one fails *here* rather than leaving it with
-    no builder and `Infra.Core.Declare`'s `fleet` command unable to name it.
+/-- Total over `Kind`, and checking the *correspondence* rather than just that
+    the names exist.
 
-    Ten separate `def`s cannot be checked for completeness the way `fillableOf`
-    is; this restores that, cheaply, by forcing each builder to be mentioned. -/
+    Each branch ascribes the builder's result type, so renaming a builder, or
+    changing which kind's spec it returns, fails here — a bare `let _ := @iam`
+    would only have asserted that something called `iam` was in scope. That
+    matters because `Infra.Core.Declare`'s `fleet` command resolves
+    `Infra.Specs.Build ++ k.getId` by name: without this, a rename would break
+    every `fleet` declaration in every consumer repo with an unknown-identifier
+    error from inside a macro expansion.
+
+    Ten separate `def`s cannot be a `Kind`-indexed table the way `fillableOf`
+    is — their arities differ — so this is the cheap substitute. -/
 @[reducible] def buildersAreTotal : Kind → Unit
-  | .iam               => let _ := @iam; ()
-  | .objectStore       => let _ := @objectStore; ()
-  | .compute           => let _ := @compute; ()
-  | .queues            => let _ := @queues; ()
-  | .secrets           => let _ := @secrets; ()
-  | .imageRegistry     => let _ := @imageRegistry; ()
-  | .postgres          => let _ := @postgres; ()
-  | .s3Bucket          => let _ := @s3Bucket; ()
-  | .securityGroup     => let _ := @securityGroup; ()
-  | .awsInstance       => let _ := @awsInstance; ()
-  | .scalewayFunction  => let _ := @scalewayFunction; ()
-  | .scalewayContainer => let _ := @scalewayContainer; ()
+  | .iam               => let _ : ∀ {K}, Expr K String → _ → IamSpec K Partial (Expr K) :=
+                            @iam; ()
+  | .objectStore       => let _ : ∀ {K}, Expr K String → _ → _ →
+                            ObjectStoreSpec K Partial (Expr K) := @objectStore; ()
+  | .compute           => let _ : ∀ {K}, Expr K String → Expr K String → _ → _ → _ → _ → _ →
+                            _ → _ → ComputeSpec K Partial (Expr K) := @compute; ()
+  | .queues            => let _ : ∀ {K}, Expr K String → _ → QueuesSpec K Partial (Expr K) :=
+                            @queues; ()
+  | .secrets           => let _ : ∀ {K}, Expr K String → Expr K SecretSource →
+                            SecretsSpec K Partial (Expr K) := @secrets; ()
+  | .imageRegistry     => let _ : ∀ {K}, Expr K String → _ →
+                            ImageRegistrySpec K Partial (Expr K) := @imageRegistry; ()
+  | .postgres          => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
+                            Expr K Nat → Expr K Nat → _ → _ →
+                            PostgresSpec K Partial (Expr K) := @postgres; ()
+  | .s3Bucket          => let _ : ∀ {K}, Expr K String → _ → _ → _ →
+                            S3BucketSpec K Partial (Expr K) := @s3Bucket; ()
+  | .securityGroup     => let _ : ∀ {K}, Expr K String → Expr K String → _ →
+                            SecurityGroupSpec K Partial (Expr K) := @securityGroup; ()
+  | .awsInstance       => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
+                            Expr K (K .aws .securityGroup) → _ → _ →
+                            AwsInstanceSpec K Partial (Expr K) := @awsInstance; ()
+  | .scalewayFunction  => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String → _ →
+                            ScalewayFunctionSpec K Partial (Expr K) := @scalewayFunction; ()
+  | .scalewayContainer => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
+                            _ → _ → _ → _ → _ → _ → _ → _ →
+                            ScalewayContainerSpec K Partial (Expr K) := @scalewayContainer; ()
 
 end Infra.Specs.Build

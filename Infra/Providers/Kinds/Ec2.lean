@@ -45,18 +45,12 @@ open Infra.Core
 open Infra.Providers
 open Infra.Providers.Aws
 
-/-- EC2 lives at a regional endpoint and signs as `ec2`. -/
-def endpoint (region : String) : Endpoint :=
-  { host := s!"ec2.{region}.amazonaws.com", service := "ec2", region }
-
 private def version : String := "2016-11-15"
 
-/-- `item` children of a named list element — the shape every EC2 Query
-    response uses for a collection. -/
+/-- EC2 always wraps collections in `item` children, so this is
+    `Query.listItems` with the leaf tag fixed. -/
 private def items (parent : Text.XML.Element) (name : String) : List Text.XML.Element :=
-  match parent.child name with
-  | none   => []
-  | some c => c.named "item"
+  Query.listItems parent name "item"
 
 -- ══════════════════════════════════════════════════════════════
 -- Security groups
@@ -73,21 +67,25 @@ def list (creds : Credentials) (ep : Endpoint) : IO (List (String × String × S
     | none   => none
 
 /-- The group's own id, by name. Needed by `awsInstance`, which references a
-    group by name but must launch with `SecurityGroupId`. -/
+    group by name but must launch with `SecurityGroupId`.
+
+    Filtered server-side. Scanning an unfiltered `list` client-side would pull
+    every group in the region to find one, on every instance create. -/
 def idOf (creds : Credentials) (ep : Endpoint) (name : String) : IO (Option String) := do
-  let groups ← list creds ep
-  return (groups.find? fun g => g.1 == name).map (·.2.1)
+  let root ← Query.call creds ep "DescribeSecurityGroups" version
+    [("GroupName.1", name)]
+  return (items root "securityGroupInfo").head?.bind (·.childText "groupId")
 
 /-- Description and inbound TCP rules, by name. Rules the spec cannot express
     — anything that is not a single TCP port with a CIDR — are dropped rather
     than misreported, which is why `ingress` diverging can mean "the cloud has
     a rule this tool cannot see". -/
 def read (creds : Credentials) (ep : Endpoint) (name : String) :
-    IO (String × Partial (List (Nat × String))) := do
+    IO (String × String × Partial (List (Nat × String))) := do
   let root ← Query.call creds ep "DescribeSecurityGroups" version
     [("GroupName.1", name)]
   match (items root "securityGroupInfo").head? with
-  | none   => return ("", .unknown)
+  | none   => return ("", "", .unknown)
   | some g =>
     let description := (g.childText "groupDescription").getD ""
     let rules := (items g "ipPermissions").flatMap fun perm =>
@@ -95,23 +93,33 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
       | some "tcp", some port =>
         (items perm "ipRanges").filterMap fun r => (r.childText "cidrIp").map (port, ·)
       | _, _ => []
-    return (description, .known rules)
+    return ((g.childText "groupId").getD "", description, .known rules)
+
+/-- Authorize one inbound TCP port from one CIDR.
+
+    Shared by `create` and `update` so the parameter names exist once: they are
+    unverified against a real account, and the first correction should not have
+    to be made twice. -/
+private def authorize (creds : Credentials) (ep : Endpoint) (groupId : String)
+    (port : Nat) (cidr : String) : IO Unit := do
+  let _ ← Query.call creds ep "AuthorizeSecurityGroupIngress" version
+    [ ("GroupId", groupId), ("IpPermissions.1.IpProtocol", "tcp")
+    , ("IpPermissions.1.FromPort", toString port)
+    , ("IpPermissions.1.ToPort", toString port)
+    , ("IpPermissions.1.IpRanges.1.CidrIp", cidr) ]
 
 /-- Create the group, then authorize its rules. Two calls, because
-    `CreateSecurityGroup` takes no rules. -/
+    `CreateSecurityGroup` takes no rules. Returns the new group's id; the VPC
+    is not reported by this call, and the caller says so rather than having a
+    blank threaded back through here. -/
 def create (creds : Credentials) (ep : Endpoint)
-    (name description : String) (ingress : List (Nat × String)) :
-    IO (String × String) := do
+    (name description : String) (ingress : List (Nat × String)) : IO String := do
   let root ← Query.call creds ep "CreateSecurityGroup" version
     [("GroupName", name), ("GroupDescription", description)]
   let groupId := (root.childText "groupId").getD ""
   for (port, cidr) in ingress do
-    let _ ← Query.call creds ep "AuthorizeSecurityGroupIngress" version
-      [ ("GroupId", groupId), ("IpPermissions.1.IpProtocol", "tcp")
-      , ("IpPermissions.1.FromPort", toString port)
-      , ("IpPermissions.1.ToPort", toString port)
-      , ("IpPermissions.1.IpRanges.1.CidrIp", cidr) ]
-  return (groupId, "")
+    authorize creds ep groupId port cidr
+  return groupId
 
 /-- Authorize any rule in the target that the cloud does not already have.
 
@@ -119,19 +127,15 @@ def create (creds : Credentials) (ep : Endpoint)
     rather than re-authorized, because EC2 rejects a duplicate outright. -/
 def update (creds : Credentials) (ep : Endpoint) (name : String)
     (ingress : List (Nat × String)) : IO String := do
-  let (_, existing) ← read creds ep name
-  let have' := match existing with | .known rs => rs | .unknown => []
-  match ← idOf creds ep name with
-  | none => throw (IO.userError s!"security group '{name}' disappeared between plan and apply")
-  | some groupId =>
-    for (port, cidr) in ingress do
-      unless have'.contains (port, cidr) do
-        let _ ← Query.call creds ep "AuthorizeSecurityGroupIngress" version
-          [ ("GroupId", groupId), ("IpPermissions.1.IpProtocol", "tcp")
-          , ("IpPermissions.1.FromPort", toString port)
-          , ("IpPermissions.1.ToPort", toString port)
-          , ("IpPermissions.1.IpRanges.1.CidrIp", cidr) ]
-    return groupId
+  -- One describe, not two: `read` already returns the id alongside the rules.
+  let (groupId, _, existing) ← read creds ep name
+  if groupId.isEmpty then
+    throw (IO.userError s!"security group '{name}' disappeared between plan and apply")
+  let have' := existing.getD []
+  for (port, cidr) in ingress do
+    unless have'.contains (port, cidr) do
+      authorize creds ep groupId port cidr
+  return groupId
 
 def delete (creds : Credentials) (ep : Endpoint) (name : String) : IO Unit := do
   let _ ← Query.call creds ep "DeleteSecurityGroup" version [("GroupName", name)]
@@ -167,6 +171,25 @@ def list (creds : Credentials) (ep : Endpoint) :
       | some n => some (n, (i.childText "instanceId").getD "",
                         (i.childText "privateIpAddress").getD "", state)
       | none   => none
+
+/-- The live instance carrying this `Name` tag, as `(id, privateIp, state)`.
+
+    Filtered server-side by the tag, and shared by `Live.lean`'s `update` and
+    `delete`, which both need an instance id and only have a name. Doing it
+    here rather than in the dispatch layer keeps the "terminated does not
+    count" rule in one place, next to `list`'s copy of the same reasoning. -/
+def byName (creds : Credentials) (ep : Endpoint) (name : String) :
+    IO (Option (String × String × String)) := do
+  let root ← Query.call creds ep "DescribeInstances" version
+    [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
+  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
+  return instances.findSome? fun i =>
+    let state := match i.child "instanceState" with
+      | some st => (st.childText "name").getD ""
+      | none    => ""
+    if state == "terminated" || state == "shutting-down" then none
+    else some ((i.childText "instanceId").getD "",
+               (i.childText "privateIpAddress").getD "", state)
 
 /-- Instance type, image, security group name and launch-time placement, by
     `Name` tag. The security group is reported by *name*, matching how the

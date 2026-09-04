@@ -79,11 +79,8 @@ private def version : String := "2014-10-31"
 
 private def instances (root : Text.XML.Element) (result : String) : List Text.XML.Element :=
   match root.child result with
-  | none => []
-  | some r =>
-    match r.child "DBInstances" with
-    | none   => []
-    | some c => c.named "DBInstance"
+  | none   => []
+  | some r => Query.listItems r "DBInstances" "DBInstance"
 
 def list (creds : Credentials) (ep : Endpoint) : IO (List (String × String)) := do
   let root ← Query.call creds ep "DescribeDBInstances" version

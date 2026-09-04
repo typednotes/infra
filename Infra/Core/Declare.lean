@@ -99,6 +99,15 @@ elab_rules : command
         | none => buckets := buckets.push (p, k, #[entry])
       | _ => throwErrorAt r "malformed resource declaration"
 
+    -- The name-list identifier is a pure function of the bucket, so it is
+    -- recomputed where needed rather than kept in an array that has to stay
+    -- index-aligned with `buckets`.
+    let nameId := fun (p k : Ident) =>
+      mkIdentFrom fleetName (fleetName.getId ++ `names ++ p.getId ++ k.getId)
+    -- `matchAltExpr` coerces to `matchAlt`, but not through the antiquotation,
+    -- so the cast is spelled once here instead of at each of four sites.
+    let alt := fun (a : TSyntax ``Lean.Parser.Term.matchAltExpr) =>
+      (⟨a.raw⟩ : TSyntax ``Lean.Parser.Term.matchAlt)
     let keysId  := mkIdentFrom fleetName (fleetName.getId ++ `keys)
     let tableId := mkIdentFrom fleetName (fleetName.getId ++ `table)
     let planId  := mkIdentFrom fleetName (fleetName.getId ++ `plan)
@@ -106,23 +115,18 @@ elab_rules : command
     -- 1. One name list per bucket. `KeySpec.named`'s `namesNodup` auto-param
     --    is checked against these, so a duplicate name fails at elaboration.
     let mut cmds : Array (TSyntax `command) := #[]
-    let mut nameListIds : Array Ident := #[]
     for (p, k, entries) in buckets do
-      let id := mkIdentFrom fleetName (fleetName.getId ++ `names ++ p.getId ++ k.getId)
-      nameListIds := nameListIds.push id
       let strs := entries.map (·.1)
-      cmds := cmds.push (← `(def $id : List String := [$strs,*]))
+      cmds := cmds.push (← `(def $(nameId p k) : List String := [$strs,*]))
 
     -- 2. The table, then the `Keys`. Buckets not declared are `.unused`, which
     --    is what leaves everything else in the account alone, unconditionally.
     let mut tableAlts : Array (TSyntax ``Lean.Parser.Term.matchAlt) := #[]
-    for i in [0:buckets.size] do
-      let (p, k, _) := buckets[i]!
-      let names := nameListIds[i]!
-      tableAlts := tableAlts.push ⟨(← `(Lean.Parser.Term.matchAltExpr|
-        | .$p:ident, .$k:ident => Infra.Core.KeySpec.named $names)).raw⟩
-    tableAlts := tableAlts.push ⟨(← `(Lean.Parser.Term.matchAltExpr|
-      | _, _ => Infra.Core.KeySpec.unused)).raw⟩
+    for (p, k, _) in buckets do
+      tableAlts := tableAlts.push (alt (← `(Lean.Parser.Term.matchAltExpr|
+        | .$p:ident, .$k:ident => Infra.Core.KeySpec.named $(nameId p k))))
+    tableAlts := tableAlts.push (alt (← `(Lean.Parser.Term.matchAltExpr|
+      | _, _ => Infra.Core.KeySpec.unused)))
     cmds := cmds.push (← `(
       def $tableId : Infra.Core.ProviderId → Infra.Core.Kind → Infra.Core.KeySpec :=
         fun p k => match p, k with $tableAlts:matchAlt*))
@@ -131,14 +135,12 @@ elab_rules : command
 
     -- 3. Every `as` abbreviation, all of them before any spec, so a resource
     --    may reference one declared later in the block.
-    for i in [0:buckets.size] do
-      let (p, k, entries) := buckets[i]!
-      let names := nameListIds[i]!
+    for (p, k, entries) in buckets do
       for (nm, al, _) in entries do
         if let some a := al then
           cmds := cmds.push (← `(
             abbrev $a : ($keysId).Key .$p:ident .$k:ident :=
-              Infra.Core.NamedKey.of $names $nm))
+              Infra.Core.NamedKey.of $(nameId p k) $nm))
 
     -- 4. The plan: one `assignFromNamed` bucket per row, plus the total
     --    `.unmanaged` fallback for every pair this fleet does not declare.
@@ -147,7 +149,7 @@ elab_rules : command
       let mut pairs : Array Term := #[]
       for (nm, _, fields) in entries do
         -- `name` comes from the declaration's own label, never written twice.
-        let mut args : Array Syntax := #[mkNamedArg (mkIdent `name) (← `($nm))]
+        let mut args : Array Syntax := #[mkNamedArg (mkIdent `name) nm]
         for f in fields do
           match f with
           | `(fleetField| $fid:ident := $v:term) =>
@@ -157,11 +159,11 @@ elab_rules : command
         let call : Term := ⟨mkNode ``Lean.Parser.Term.app
           #[mkIdent (`Infra.Specs.Build ++ k.getId), mkNullNode args]⟩
         pairs := pairs.push (← `(($nm, Infra.Core.Status.present $call)))
-      assignAlts := assignAlts.push ⟨(← `(Lean.Parser.Term.matchAltExpr|
+      assignAlts := assignAlts.push (alt (← `(Lean.Parser.Term.matchAltExpr|
         | .$p:ident, .$k:ident =>
-            Infra.Core.Keys.assignFromNamed (κ := $keysId) .$p:ident .$k:ident [$pairs,*])).raw⟩
-    assignAlts := assignAlts.push ⟨(← `(Lean.Parser.Term.matchAltExpr|
-      | _, _ => fun _ => Infra.Core.Status.unmanaged)).raw⟩
+            Infra.Core.Keys.assignFromNamed (κ := $keysId) .$p:ident .$k:ident [$pairs,*])))
+    assignAlts := assignAlts.push (alt (← `(Lean.Parser.Term.matchAltExpr|
+      | _, _ => fun _ => Infra.Core.Status.unmanaged)))
     cmds := cmds.push (← `(
       def $planId : Infra.Core.Plan $keysId where
         assign := fun p k => match p, k with $assignAlts:matchAlt*

@@ -50,9 +50,17 @@ inductive Expr (K : ProviderId → Kind → Type) : Type → Type 1 where
 inductive Need | handle | secretValue
   deriving Repr, DecidableEq, BEq
 
-/-- One reference, and what it is read for. -/
-abbrev Dep (K : ProviderId → Kind → Type) :=
-  (p : ProviderId) × (k : Kind) × K p k × Need
+/-- One reference, and what it is read for.
+
+    A structure rather than a nested sigma so that reading one does not mean
+    counting projections: `d.key` and `d.need` say what `d.2.2.1` and `d.2.2.2`
+    used to need a comment to explain. The anonymous constructor still accepts
+    the positional form, so `⟨p, k, key, .handle⟩` is unchanged. -/
+structure Dep (K : ProviderId → Kind → Type) where
+  provider : ProviderId
+  kind     : Kind
+  key      : K provider kind
+  need     : Need
 
 /-- What an expression can be evaluated against.
 

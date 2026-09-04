@@ -253,8 +253,8 @@ section MacroGuards
 /- Same plan: the same number of actions, and the same ordered slots — which
    is what would break if the generated `HasDeps` edges differed, since the
    composed secret must still come last. -/
-#guard (actions viaMacro.plan (worldOf [])).length
-     = (actions composedPlan composedEmptyWorld).length
+-- The ordered slot lists agreeing implies the counts do, so only the stronger
+-- claim is stated.
 #guard ((actions viaMacro.plan (worldOf [])).map Action.slot)
      = ((actions composedPlan composedEmptyWorld).map Action.slot)
 
@@ -270,15 +270,15 @@ section ComposedGuards
     is what tells the engine this action needs the one inbound plaintext path
     at all. -/
 #guard dbUrlExpr.deps.length = 2
-#guard dbUrlExpr.deps.any (fun d => d.2.2.2 == Need.secretValue)
-#guard dbUrlExpr.deps.any (fun d => d.2.1 == Kind.postgres)
+#guard dbUrlExpr.deps.any (fun d => d.need == Need.secretValue)
+#guard dbUrlExpr.deps.any (fun d => d.kind == Kind.postgres)
 
 /- `expr!` must be sugar and nothing more: the same references, read for the
    same reasons, in the same order as the hand-written `map`/`ap` chain — and
    the same string once evaluated. `deps` is what the scheduler uses, so
    agreeing on it is what makes the ordering identical. -/
-#guard dbUrlExpr.deps.map (fun d => (d.1, d.2.1, d.2.2.2))
-     = dbUrlExprByHand.deps.map (fun d => (d.1, d.2.1, d.2.2.2))
+#guard dbUrlExpr.deps.map (fun d => (d.provider, d.kind, d.need))
+     = dbUrlExprByHand.deps.map (fun d => (d.provider, d.kind, d.need))
 
 /- Same value, too. Evaluated against an environment that supplies both
    unknowns, the two must produce the same string. -/
@@ -391,7 +391,7 @@ section Guards
 -- The cross-cloud reference is discovered: a Scaleway function depends on an AWS bucket.
 #guard (HasDeps.deps (S := ScalewayFunctionSpec) ingestSpec).length = 1
 #guard (HasDeps.deps (S := ScalewayFunctionSpec) ingestSpec).any
-         (fun d => d.1 = ProviderId.aws && d.2.1 = Kind.s3Bucket)
+         (fun d => d.provider = ProviderId.aws && d.kind = Kind.s3Bucket)
 
 -- Portable specs have no references at all — by construction, not by oversight.
 #guard (HasDeps.deps (S := ObjectStoreSpec) (bucketSpec (K := demoKey) "assets")).isEmpty

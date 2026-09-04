@@ -27,10 +27,6 @@ open Infra.Core
 open Infra.Providers
 open Infra.Providers.Aws
 
-/-- STS is global and always signs `us-east-1`, the same rule as IAM. -/
-def stsEndpoint : Endpoint :=
-  { host := "sts.amazonaws.com", service := "sts", region := "us-east-1" }
-
 /-- The AWS account these credentials belong to, and the ARN of the principal.
 
     `GetCallerIdentity` is the right call for this and no other: it needs no
@@ -38,7 +34,7 @@ def stsEndpoint : Endpoint :=
     and it works identically for an IAM user, an assumed role and an Identity
     Center session. -/
 def awsCaller (creds : Credentials) : IO (String × String) := do
-  let root ← Query.call creds stsEndpoint "GetCallerIdentity" "2011-06-15"
+  let root ← Query.call creds Query.stsEndpoint "GetCallerIdentity" "2011-06-15"
   match root.child "GetCallerIdentityResult" with
   | none => throw (IO.userError "sts GetCallerIdentity returned no result")
   | some r =>
@@ -54,7 +50,7 @@ def awsCaller (creds : Credentials) : IO (String × String) := do
     "could not establish", which the caller treats as a failure, not a pass. -/
 def scalewayOwner (creds : Credentials) : IO (Option String) := do
   let attempt ← (do
-    let prefix' := "/iam/v1alpha1"
+    let prefix' := Scaleway.globalPrefix "iam" "v1alpha1"
     let reply ← Scaleway.call creds "GET" s!"{prefix'}/api-keys/{creds.accessKey}"
     return JsonRead.stringField reply "organization_id").toBaseIO
   match attempt with

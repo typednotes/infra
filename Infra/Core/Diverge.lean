@@ -147,7 +147,10 @@ instance : Divergent .securityGroup where
     ++ divergesReq "description" .forcesReplace t.description r.description
     -- Rules can be authorized on a live group. Compared as a set, since the
     -- order EC2 reports them in is not the order they were given.
-    ++ divergesSet "ingress" .mutable (fun (port, cidr) => s!"{port}:{cidr}")
+    -- `pairKey` rather than a bespoke separator: it uses `\u0000`, chosen so a
+    -- key containing the separator cannot collide, and that only stays true
+    -- while there is one copy of it.
+    ++ divergesSet "ingress" .mutable (fun (port, cidr) => pairKey (toString port, cidr))
          t.ingress r.ingress
 
 instance : Divergent .awsInstance where

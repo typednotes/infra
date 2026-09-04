@@ -61,7 +61,7 @@ def observedOf {p : ProviderId} {k : Kind} (key : K p k) : Expr K (ObservedOf k)
 /-- A database's endpoint — the commonest projection by far, and the reason
     composed values exist at all, so it gets a name. -/
 def endpointOf {p : ProviderId} (key : K p .postgres) : Expr K String :=
-  .map (fun o => o.endpoint) (.observed p .postgres key)
+  (observedOf key).map (·.endpoint)
 
 /-- A plan-time string built from literals and post-apply values.
 

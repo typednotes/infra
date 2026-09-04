@@ -3,6 +3,7 @@ import Infra.Core.Credentials
 import Infra.Providers.Live
 import Infra.Providers.Placeholder
 import Infra.Providers.Kinds.Identity
+import Infra.Providers
 
 /-
   The command-line front end, as library code.
@@ -52,64 +53,82 @@ def liveFor (κ : Keys) : IO (Backends × (ProviderId → Option Credentials)) :
 
 /-- Which accounts a fleet is for.
 
-    Stated by the declaration repo, not by this library: `infra` has no opinion
-    about whose accounts it is pointed at, but a *fleet* does. Either field left
-    `none` means "do not check this cloud", which is the right default for a
-    fleet that does not use it. -/
+    A total function over `ProviderId` rather than one named field per cloud:
+    the enum is `Finite` and the rest of the library already treats it
+    uniformly (`Keys.providers`, `Credentials.envVars`), so a third cloud
+    should be a row rather than a third copy of the check below. `none` for a
+    provider means "do not check it", which is the right default for one a
+    fleet does not use. -/
 structure Accounts where
-  /-- The 12-digit AWS account id. -/
-  aws : Option String := none
-  /-- The Scaleway organization (owner) id. -/
-  scaleway : Option String := none
+  expect : ProviderId → Option String := fun _ => none
+
+/-- The environment variable naming the expected account for each cloud,
+    alongside `Credentials.envVars` in spirit. -/
+def Accounts.envVar : ProviderId → String
+  | .aws      => "INFRA_EXPECT_AWS_ACCOUNT"
+  | .scaleway => "INFRA_EXPECT_SCALEWAY_ORG"
 
 /-- The accounts named by the environment, for a fleet that cannot hardcode
     them.
 
     A *declaration* repo should write its account ids down — they are part of
-    what it declares, and hardcoding them is the point. `infra`'s own examples
-    cannot: they ship with the library, so an id baked into one would make it
-    refuse to run for anybody but its author. This reads
-    `INFRA_EXPECT_AWS_ACCOUNT` and `INFRA_EXPECT_SCALEWAY_ORG` instead, and an
-    unset variable means "do not check that cloud" — so an example still runs
-    unguarded by default, and gains the guard the moment someone says which
-    account they mean. -/
+    what it declares. `infra`'s own examples cannot: they ship with the
+    library, so an id baked into one would make it refuse to run for anybody
+    but its author. An unset variable means "do not check that cloud", so an
+    example still runs unguarded by default and gains the guard the moment
+    someone says which account they mean. -/
 def Accounts.fromEnv : IO Accounts := do
-  return { aws := normalizeEnv (← IO.getEnv "INFRA_EXPECT_AWS_ACCOUNT")
-           scaleway := normalizeEnv (← IO.getEnv "INFRA_EXPECT_SCALEWAY_ORG") }
+  let mut table : List (ProviderId × String) := []
+  for p in Finite.elems (α := ProviderId) do
+    if let some v := normalizeEnv (← IO.getEnv (Accounts.envVar p)) then
+      table := (p, v) :: table
+  return { expect := fun p => (table.find? fun e => e.1 == p).map (·.2) }
 
 /-- Refuse to go further unless the credentials in force point where the fleet
     says they should.
 
     Runs before anything is listed, so a fleet aimed at the wrong account fails
     in one call rather than after proposing to create it somewhere else. Only
-    the clouds the fleet actually uses are checked, and only those it names an
-    id for — a claim that cannot be established is a failure, never a pass. -/
+    the clouds the fleet actually declares into are checked (`κ.providers`),
+    and only those it names an id for — a claim that cannot be established is a
+    failure, never a pass. -/
 def checkAccounts (κ : Keys) (want : Accounts) (creds : ProviderId → Option Credentials) :
     IO Unit := do
-  if κ.uses .aws then
-    if let some expected := want.aws then
-      match creds .aws with
-      | none => throw (IO.userError "aws is declared but has no credentials")
-      | some c =>
-        let (actual, arn) ← Infra.Providers.Kinds.Identity.awsCaller c
-        unless actual == expected do
-          throw (IO.userError s!"wrong AWS account: credentials are for {actual} \
-({arn}), but this fleet is declared for {expected}")
-        IO.println s!"aws: account {actual} ok"
-  if κ.uses .scaleway then
-    if let some expected := want.scaleway then
-      match creds .scaleway with
-      | none => throw (IO.userError "scaleway is declared but has no credentials")
-      | some c =>
-        match ← Infra.Providers.Kinds.Identity.scalewayOwner c with
-        | none => throw (IO.userError
-            "could not establish which Scaleway organization these credentials belong to; \
-set default_organization_id (or SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
-        | some actual =>
-          unless actual == expected do
-            throw (IO.userError s!"wrong Scaleway organization: credentials are for \
-{actual}, but this fleet is declared for {expected}")
-          IO.println s!"scaleway: organization {actual} ok"
+  for p in κ.providers do
+    let some expected := want.expect p | continue
+    let some c := creds p
+      | throw (IO.userError s!"{p.name} is declared but has no credentials")
+    -- Per-cloud only in *how* the answer is obtained: AWS asks STS, Scaleway
+    -- reads the API key's own record. Both answer the same question, and
+    -- "could not establish" is a failure for both.
+    let (actual, detail) ← match p with
+      | .aws =>
+        let (account, arn) ← Infra.Providers.Kinds.Identity.awsCaller c
+        pure (some account, s!" ({arn})")
+      | .scaleway =>
+        pure (← Infra.Providers.Kinds.Identity.scalewayOwner c, "")
+    let some actual := actual
+      | throw (IO.userError s!"could not establish which {p.name} account these \
+credentials belong to; for Scaleway, set default_organization_id (or \
+SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
+    unless actual == expected do
+      throw (IO.userError s!"wrong {p.name} account: credentials are for \
+{actual}{detail}, but this fleet is declared for {expected}")
+    IO.println s!"{p.name}: {actual} ok"
+
+/-- The plan, against the placeholder backends: what a bare invocation shows.
+
+    Offline, credential-free and free of charge, which is what makes it a safe
+    default for `run`'s `selfCheck`. Every example had its own copy of this
+    loop plus a hand-written "that was the placeholder backend" trailer; the
+    trailer names the real subcommands, so it belongs next to `usage` where
+    those are defined rather than in three files that can drift from it. -/
+def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Unit := do
+  unless headline.isEmpty do IO.println s!"{headline}\n"
+  for line in ← push Infra.Providers.all target (worldOf []) {} do
+    IO.println line
+  IO.println "\nThat was the placeholder backend — no cloud was contacted."
+  IO.println "For the real thing: `plan` (reads), then `push --apply` (changes)."
 
 def usage (exe : String) : String := String.intercalate "\n"
   [ s!"usage: {exe} [check | plan | pull | push [--apply]]"
@@ -129,10 +148,16 @@ def usage (exe : String) : String := String.intercalate "\n"
     `accounts` is which accounts the fleet is for. Every live command verifies
     it before touching anything — see `checkAccounts`. Omitting it means no
     check, which is the old behaviour and a worse default: a fleet that names
-    its accounts cannot be applied into someone else's. -/
-def run {κ : Keys} (exe : String) (target : Plan κ) (selfCheck : IO Unit)
+    its accounts cannot be applied into someone else's.
+
+    `cacheRoot` defaults to `.infra/<exe>`, not `.infra`: two fleets have
+    different key families and their caches must never be read as if they were
+    the same shape. Making that structural means a second fleet cannot forget
+    to override it. -/
+def run {κ : Keys} (exe : String) (target : Plan κ)
+    (selfCheck : IO Unit := offlinePlan target)
     (accounts : Accounts := {})
-    (cacheRoot : System.FilePath := defaultCacheRoot) (args : List String) :
+    (cacheRoot : System.FilePath := defaultCacheRoot / exe) (args : List String) :
     IO UInt32 := do
   let withLive (act : Backends → IO Unit) : IO Unit := do
     let (bs, creds) ← liveFor κ
@@ -145,15 +170,13 @@ def run {κ : Keys} (exe : String) (target : Plan κ) (selfCheck : IO Unit)
       let world ← pull (κ := κ) cacheRoot bs
       IO.println s!"pulled; {(plan target world).length} action(s) outstanding"
     return 0
-  | ["plan"] | ["push"] =>
+  -- One branch: the three spellings differ only in the `apply` flag, which is
+  -- exactly how `Infra.Core.push` itself is parameterised.
+  | ["plan"] | ["push"] | ["push", "--apply"] =>
     withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
-      for line in ← push bs target world {} do IO.println line
-    return 0
-  | ["push", "--apply"] =>
-    withLive fun bs => do
-      let world ← pull (κ := κ) cacheRoot bs
-      for line in ← push bs target world { apply := true } do IO.println line
+      let opts := { apply := args == ["push", "--apply"] : PushOptions }
+      for line in ← push bs target world opts do IO.println line
     return 0
   | _ =>
     IO.eprintln (usage exe)

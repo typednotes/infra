@@ -42,19 +42,6 @@ fleet exampleQueue where
   resource scaleway queues "infra-example"
     { visibilityTimeoutSec := 30 }
 
-/-- Own cache root, gitignored the same way as `.infra/` — a separate
-    directory because this fleet's key family is not `Infra.Demo.demoKeys`'s,
-    and the two must never be read as if they were the same shape. -/
-def cacheRoot : System.FilePath := ".infra" / "example-queue"
-
-/-- What a bare invocation does: the plan, from the placeholder backends. No
-    credentials, no network, nothing created. -/
-def demo : IO Unit := do
-  for line in ← push Infra.Providers.all exampleQueue.plan (worldOf []) {} do
-    IO.println line
-  IO.println "\nThat was the placeholder backend — Scaleway was not contacted."
-  IO.println "For the real thing: `plan`, then `push --apply`."
-
 def main (args : List String) : IO UInt32 := do
-  Infra.Cli.run "scaleway-queue" exampleQueue.plan demo
-    (accounts := ← Infra.Cli.Accounts.fromEnv) (cacheRoot := cacheRoot) (args := args)
+  Infra.Cli.run "scaleway-queue" exampleQueue.plan
+    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)

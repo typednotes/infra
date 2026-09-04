@@ -101,6 +101,36 @@ def depsOpt {K : ProviderId → Kind → Type} {α : Type} : Partial (Expr K α)
   | .unknown => []
   | .known e => e.deps
 
+/-- The key held *in* a required key-typed field's payload.
+
+    `p` and `k` come from the field's own type, so a caller cannot write down a
+    provider/kind pair that disagrees with what the field declares — which the
+    three hand-written copies of this could. -/
+def depsKey {K : ProviderId → Kind → Type} {p : ProviderId} {k : Kind}
+    (e : Expr K (K p k)) : List (Dep K) :=
+  match e.asLit with
+  | some key => [⟨p, k, key, .handle⟩]
+  | none     => []
+
+/-- The key held in an *optional* key-typed field's payload, where "said:
+    nothing" is a real case. -/
+def depsKeyOpt {K : ProviderId → Kind → Type} {p : ProviderId} {k : Kind} :
+    Partial (Expr K (Option (K p k))) → List (Dep K)
+  | .unknown => []
+  | .known e =>
+    match e.asLit with
+    | some (some key) => [⟨p, k, key, .handle⟩]
+    | _               => []
+
+/-- Every key held in a *list*-of-references payload. -/
+def depsKeys {K : ProviderId → Kind → Type} {p : ProviderId} {k : Kind} :
+    Partial (Expr K (List (String × K p k))) → List (Dep K)
+  | .unknown => []
+  | .known e =>
+    match e.asLit with
+    | some entries => entries.map fun entry => ⟨p, k, entry.2, .handle⟩
+    | none         => []
+
 instance : HasDeps IamSpec where
   deps s := depsReq s.name ++ depsOpt s.policies
 
@@ -137,13 +167,7 @@ instance : HasDeps S3BucketSpec where
 instance : HasDeps ScalewayFunctionSpec where
   deps s :=
     depsReq s.name ++ depsReq s.runtime ++ depsReq s.namespace'
-    ++ depsOpt s.sourceBucket
-    ++ (match s.sourceBucket with
-        | .unknown => []
-        | .known e =>
-          match e.asLit with
-          | some (some key) => [⟨.aws, .s3Bucket, key, .handle⟩]
-          | _               => [])
+    ++ depsOpt s.sourceBucket ++ depsKeyOpt s.sourceBucket
 
 /-- A security group references nothing; it is what gets referenced. -/
 instance : HasDeps SecurityGroupSpec where
@@ -156,10 +180,8 @@ instance : HasDeps SecurityGroupSpec where
 instance : HasDeps AwsInstanceSpec where
   deps s :=
     depsReq s.name ++ depsReq s.imageId ++ depsReq s.instanceType
-    ++ depsReq s.securityGroup ++ depsOpt s.keyName ++ depsOpt s.subnetId
-    ++ (match s.securityGroup.asLit with
-        | some key => [⟨.aws, .securityGroup, key, .handle⟩]
-        | none     => [])
+    ++ depsReq s.securityGroup ++ depsKey s.securityGroup
+    ++ depsOpt s.keyName ++ depsOpt s.subnetId
 
 /-- List-generalized version of `ScalewayFunctionSpec`'s single reference: every secret named in
     `secretEnv` is a dependency, same-cloud this time. -/
@@ -168,13 +190,7 @@ instance : HasDeps ScalewayContainerSpec where
     depsReq s.name ++ depsReq s.namespace' ++ depsReq s.image
     ++ depsOpt s.port ++ depsOpt s.minScale ++ depsOpt s.maxScale
     ++ depsOpt s.memoryMb ++ depsOpt s.cpuLimit ++ depsOpt s.timeoutSec
-    ++ depsOpt s.env ++ depsOpt s.secretEnv
-    ++ (match s.secretEnv with
-        | .unknown => []
-        | .known e =>
-          match e.asLit with
-          | some entries => entries.map fun entry => ⟨.scaleway, .secrets, entry.2, .handle⟩
-          | none         => [])
+    ++ depsOpt s.env ++ depsOpt s.secretEnv ++ depsKeys s.secretEnv
 
 /-- Total over `Kind`, so a new kind cannot silently contribute no edges. -/
 @[reducible] def hasDepsOf : (k : Kind) → HasDeps (SpecOf.{1} k)
