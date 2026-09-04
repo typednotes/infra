@@ -18,8 +18,8 @@ surprise.
   Scaleway's `scalewayFunction`, `scalewayContainer`) fills the gap without
   weakening the portable kind's guarantees.
 - **Diffing is a Lean function, not a side effect.** Plan vs. observed state
-  is compared structurally over the Lean values themselves; `push` prints
-  what it would do and never mutates a cloud unless `--apply` is passed.
+  is compared structurally over the Lean values themselves; `plan` prints
+  what it would do and only `apply` changes anything.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
@@ -59,15 +59,17 @@ lake exe infra check   # offline self-checks; no cloud, no credentials needed
 keychain / environment-variable chain it tries, in that order.
 
 ```sh
-lake exe infra check           # offline self-checks (default, no cloud)
-lake exe infra pull            # observe both clouds, cache to .infra/
-lake exe infra plan            # show what would change, no changes made
-lake exe infra push            # same as plan — a dry run
-lake exe infra push --apply    # actually reconcile
+lake exe infra check     # offline self-checks (default, no cloud)
+lake exe infra pull      # observe both clouds, cache to .infra/
+lake exe infra plan      # show what would change, no changes made
+lake exe infra apply     # actually reconcile
 ```
 
-`push` without `--apply` never touches a cloud. Treat `--apply` like you
-would `terraform apply`: read the plan first.
+`plan` never touches a cloud. Treat `apply` like you would `terraform apply`:
+read the plan first. Output is coloured by verb when stdout is a terminal —
+green to create, yellow to update, magenta to replace, red to delete — and
+plain when piped, so a redirect or a CI step summary stays free of escape
+codes. `NO_COLOR` disables it, `FORCE_COLOR` forces it on.
 
 ## Examples
 
@@ -109,7 +111,7 @@ $ lake exe scaleway-queue          # offline: the plan, from placeholders
 would CREATE scaleway/queues/infra-example
 (dry run — pass --apply to execute)
 
-$ lake exe scaleway-queue push --apply
+$ lake exe scaleway-queue apply
 CREATE scaleway/queues/infra-example ... ok
 ```
 
@@ -159,8 +161,8 @@ names are globally unique, so change them before applying.
 ### All three share one entry point
 
 A bare invocation is offline: it plans against the placeholder backends, needs
-no credentials and creates nothing. `plan` reads the real account; `push
---apply` changes it. That is `Infra.Cli.run`, the same front end `infra`'s own
+no credentials and creates nothing. `plan` reads the real account; `apply`
+changes it. That is `Infra.Cli.run`, the same front end `infra`'s own
 binary and a consumer repo both use — the examples deliberately contain no
 argument parsing, credential loading or backend wiring of their own.
 

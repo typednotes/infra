@@ -159,7 +159,7 @@ infra check            # offline self-checks; the default
 infra pull             # observe both clouds, cache to .infra/
 infra plan             # what would change
 infra push             # same as plan — a dry run
-infra push --apply     # actually reconcile
+infra apply     # actually reconcile
 ```
 
 Dry run is the default and performs **no** backend IO — it returns before

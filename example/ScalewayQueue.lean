@@ -25,7 +25,7 @@ import Infra
 
       lake exe scaleway-queue              -- offline: the plan, from placeholders
       lake exe scaleway-queue plan         -- reads the account
-      lake exe scaleway-queue push --apply -- actually creates the queue
+      lake exe scaleway-queue apply        -- actually creates the queue
 
   A real, billable queue, in whatever region your credentials name. Delete it
   from the Queues console when you are done — removing the line above

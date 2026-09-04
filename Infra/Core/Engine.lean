@@ -1,5 +1,6 @@
 import Infra.Core.Backend
 import Infra.Core.Persistence
+import Infra.Core.Ansi
 
 /-
   The sync loop: observe the world, work out what has to change, and — when
@@ -79,6 +80,21 @@ def Action.slot {κ : Keys} : Action κ → String
 /-- A human-readable line for a plan. -/
 def Action.render {κ : Keys} (a : Action κ) : String := s!"{a.verb} {a.slot}"
 
+/-- The colour each verb earns, by how much it costs to get wrong.
+
+    Creating is safe, updating is reversible, replacing destroys and recreates,
+    deleting just destroys — so they run green, yellow, magenta, red. -/
+def Action.colour {κ : Keys} : Action κ → String
+  | .create ..  => Ansi.green
+  | .update ..  => Ansi.yellow
+  | .replace .. => Ansi.magenta
+  | .delete ..  => Ansi.red
+
+/-- `render`, with the verb coloured. Identical to `render` when `colour` is
+    off, which is what keeps a rendered plan matchable as plain text. -/
+def Action.renderStyled {κ : Keys} (colour : Bool) (a : Action κ) : String :=
+  s!"{Ansi.style colour a.colour a.verb} {a.slot}"
+
 /-- The slots a resource's spec references, if the plan wants it present. -/
 private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
     (key : κ.Key p k) : List String :=
@@ -146,6 +162,11 @@ def orderActions {κ : Keys} (T : Plan κ) (as : List (Action κ)) :
     resources on a first run. -/
 structure PushOptions where
   apply : Bool := false
+  /-- Colour the rendered lines. **Off by default**, deliberately: every
+      existing caller — including `infra check`, which matches rendered lines
+      as plain text — keeps getting plain strings, and only a caller that knows
+      it is talking to a terminal turns it on. See `Infra.Core.Ansi`. -/
+  colour : Bool := false
 
 /-- Settle a target for one slot against what exists so far.
 
@@ -239,15 +260,16 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
   if work.isEmpty then
-    return ["nothing to do"]
+    return [Ansi.style opts.colour Ansi.dim "nothing to do"]
   if !opts.apply then
-    return (work.map fun a => s!"would {a.render}") ++
-      ["(dry run — pass --apply to execute)"]
+    return (work.map fun a =>
+        Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
+      [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
   let mut entries ← pullEntries (κ := κ) bs
   let mut log : List String := []
   for a in work do
     entries ← runAction bs T entries a
-    log := s!"{a.render} ... ok" :: log
+    log := s!"{a.renderStyled opts.colour} {Ansi.style opts.colour Ansi.green "... ok"}" :: log
   return log.reverse
 
 end Infra.Core

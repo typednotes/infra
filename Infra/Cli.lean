@@ -9,7 +9,7 @@ import Infra.Providers
   The command-line front end, as library code.
 
   A declaration repo declares a fleet; it should not also have to reimplement
-  `check | pull | plan | push [--apply]`, decide which clouds to authenticate,
+  `check | pull | plan | apply`, decide which clouds to authenticate,
   or remember that a dry run is the default. All of that lives here and is
   parameterised by the fleet, so a consumer's `Main.lean` is a call rather than
   a copy — this file exists because `infra`'s own `Main.lean` and
@@ -100,8 +100,8 @@ def Accounts.fromEnv : IO Accounts := do
     the clouds the fleet actually declares into are checked (`κ.providers`),
     and only those it names an id for — a claim that cannot be established is a
     failure, never a pass. -/
-def checkAccounts (κ : Keys) (want : Accounts) (creds : ProviderId → Option Credentials) :
-    IO Unit := do
+def checkAccounts (κ : Keys) (want : Accounts) (creds : ProviderId → Option Credentials)
+    (colour : Bool := false) : IO Unit := do
   for p in κ.providers do
     let some expected := want.expect p | continue
     let some c := creds p
@@ -122,7 +122,7 @@ SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
     unless actual == expected do
       throw (IO.userError s!"wrong {p.name} account: credentials are for \
 {actual}{detail}, but this fleet is declared for {expected}")
-    IO.println s!"{p.name}: {actual} ok"
+    IO.println s!"{p.name}: {actual} {Ansi.style colour Ansi.green "ok"}"
 
 /-- The plan, against the placeholder backends: what a bare invocation shows.
 
@@ -132,20 +132,22 @@ SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
     trailer names the real subcommands, so it belongs next to `usage` where
     those are defined rather than in three files that can drift from it. -/
 def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Unit := do
-  unless headline.isEmpty do IO.println s!"{headline}\n"
-  for line in ← push Infra.Providers.all target (worldOf []) {} do
+  let colour ← Ansi.wanted
+  unless headline.isEmpty do IO.println s!"{Ansi.style colour Ansi.bold headline}\n"
+  for line in ← push Infra.Providers.all target (worldOf []) { colour } do
     IO.println line
-  IO.println "\nThat was the placeholder backend — no cloud was contacted."
-  IO.println "For the real thing: `plan` (reads), then `push --apply` (changes)."
+  IO.println (Ansi.style colour Ansi.dim
+    "\nThat was the placeholder backend — no cloud was contacted.")
+  IO.println (Ansi.style colour Ansi.dim
+    "For the real thing: `plan` (reads), then `apply` (changes).")
 
 def usage (exe : String) : String := String.intercalate "\n"
-  [ s!"usage: {exe} [check | plan | pull | push [--apply]]"
+  [ s!"usage: {exe} [check | pull | plan | apply]"
   , ""
-  , "  check           run the offline self-checks (default)"
-  , "  pull            observe the declared clouds and cache what is there"
-  , "  plan            show what would change, without changing anything"
-  , "  push            same as plan — a dry run"
-  , "  push --apply    actually reconcile"
+  , "  check    run the offline self-checks (default)"
+  , "  pull     observe the declared clouds and cache what is there"
+  , "  plan     show what would change, without changing anything"
+  , "  apply    actually reconcile"
   ]
 
 /-- The whole front end for one fleet.
@@ -167,9 +169,12 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
     (accounts : Accounts := {})
     (cacheRoot : System.FilePath := defaultCacheRoot / exe) (args : List String) :
     IO UInt32 := do
+  -- Resolved once, at the edge: whether stdout is a terminal is a property of
+  -- this invocation, not of a plan, so the engine is told rather than asking.
+  let colour ← Ansi.wanted
   let withLive (act : Backends → IO Unit) : IO Unit := do
     let (bs, creds) ← liveFor κ
-    checkAccounts κ accounts creds
+    checkAccounts κ accounts creds colour
     act bs
   match args with
   | [] | ["check"] => selfCheck; return 0
@@ -178,12 +183,14 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
       let world ← pull (κ := κ) cacheRoot bs
       IO.println s!"pulled; {(plan target world).length} action(s) outstanding"
     return 0
-  -- One branch: the three spellings differ only in the `apply` flag, which is
-  -- exactly how `Infra.Core.push` itself is parameterised.
-  | ["plan"] | ["push"] | ["push", "--apply"] =>
+  -- One branch, because the two commands differ only in the `apply` flag —
+  -- which is exactly how `Infra.Core.push` is parameterised, so a plan is the
+  -- same function stopping one step earlier rather than a second
+  -- implementation that could disagree with it.
+  | ["plan"] | ["apply"] =>
     withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
-      let opts := { apply := args == ["push", "--apply"] : PushOptions }
+      let opts := { apply := args == ["apply"], colour : PushOptions }
       for line in ← push bs target world opts do IO.println line
     return 0
   | _ =>

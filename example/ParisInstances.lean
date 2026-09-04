@@ -33,7 +33,7 @@ import Infra
 
       lake exe paris-instances                # offline: the plan, from placeholders
       lake exe paris-instances plan           # reads the real account
-      lake exe paris-instances push --apply   # CREATES REAL, BILLABLE INSTANCES
+      lake exe paris-instances apply          # CREATES REAL, BILLABLE INSTANCES
 
   A bare invocation is offline, credential-free and free of charge. The live
   commands need AWS credentials **and a region** — the region is what puts
@@ -162,7 +162,7 @@ fleet paris where
 
 /-- `check` (the default) stays offline: `Infra.Cli.run`'s own `offlinePlan`
     shows the plan from the placeholder backends. `plan` reads the account;
-    `push --apply` creates **real, billable** instances that run until
+    `apply` creates **real, billable** instances that run until
     terminated. -/
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "paris-instances" paris.plan

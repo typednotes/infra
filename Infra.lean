@@ -3,6 +3,7 @@
 
 -- Core, bottom-up: the two axes, then specs, then fleets, then the engine.
 import Infra.Core.Finite
+import Infra.Core.Ansi
 import Infra.Core.Refine
 import Infra.Core.Kind
 import Infra.Core.Expr

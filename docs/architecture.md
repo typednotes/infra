@@ -107,7 +107,7 @@ There is one deliberate extension, `SecretSource.composed`, and it is worth
 being precise about what it does and does not allow. A secret whose value is
 built from post-apply state — a connection string needing both a master
 password and the endpoint a cloud assigns at creation — used to require two
-`push --apply` runs with an operator composing the string by hand in between.
+`apply` runs with an operator composing the string by hand in between.
 A target can now hold the *function* instead, written as `map`/`ap` over
 `Expr.secretValue` (another of the fleet's secrets) and `Expr.observed` (a
 resource that does not exist yet). `HasDeps` turns both into ordering edges,

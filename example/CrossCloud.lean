@@ -22,7 +22,7 @@ import Infra
 
       lake exe cross-cloud                # offline: the plan, from placeholders
       lake exe cross-cloud plan           # reads BOTH accounts
-      lake exe cross-cloud push --apply   # creates real resources in both
+      lake exe cross-cloud apply          # creates real resources in both
 
   A bare invocation is offline and free. Unlike every other example here, the
   live commands need **both** clouds' credentials, because the fleet genuinely

@@ -249,7 +249,7 @@ changed that, and the honest statement is now weaker.
 
 The reason for the change: a secret whose value is composed from post-apply
 state — a connection string needing a master password and the endpoint a cloud
-assigns at creation — previously took two `push --apply` runs with an operator
+assigns at creation — previously took two `apply` runs with an operator
 composing the string in between. A target can now hold the *function* instead
 (`map`/`ap` over `.secretValue` and `.observed`), which is one apply and no
 manual step. The applicative-only rule is intact: the plan's *shape* still
