@@ -154,3 +154,12 @@ lean_exe «scaleway-pull» where
 lean_exe «scaleway-queue» where
   srcDir := "example"
   root := `ScalewayQueue
+
+/-- `example/CrossCloud.lean`: one fleet spanning both clouds, with a
+    reference crossing between them. Unlike the two above it runs against the
+    placeholder backends, so it needs no credentials and touches no network —
+    it is there to be read and compiled, not to provision anything. -/
+@[default_target]
+lean_exe «cross-cloud» where
+  srcDir := "example"
+  root := `CrossCloud
