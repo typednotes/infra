@@ -40,6 +40,7 @@ import Infra.Providers.Kinds.Compute
 import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
 import Infra.Providers.Kinds.Ec2
+import Infra.Providers.Kinds.Identity
 import Infra.Providers.Live
 import Infra.Providers
 
