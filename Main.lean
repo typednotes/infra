@@ -191,7 +191,18 @@ Signature=21cccf6f70b4372af8e137af9b15333d9485d91e393b87fc2b9e034f8ef7a77d"
   unless rawErr.message == "upstream exploded" do
     throw (IO.userError s!"raw error body lost: {rawErr.message}")
 
-  IO.println "signing: ok (S3 and Query vectors, shared endpoints, both error dialects)"
+  -- `Content-MD5` on S3 bucket-configuration writes. Checked against
+  -- `openssl dgst -md5 -binary | base64` rather than against this
+  -- implementation: a wrong integrity header is worse than a missing one,
+  -- because S3 would reject the body as corrupt rather than as unsigned.
+  unless Infra.Providers.Aws.S3.contentMd5 ByteArray.empty == "1B2M2Y8AsgTpgAmY7PhCfg==" do
+    throw (IO.userError
+      s!"Content-MD5 of empty: {Infra.Providers.Aws.S3.contentMd5 ByteArray.empty}")
+  unless Infra.Providers.Aws.S3.contentMd5 "abc".toUTF8 == "kAFQmDzST7DWlj99KOF/cg==" do
+    throw (IO.userError
+      s!"Content-MD5 of \"abc\": {Infra.Providers.Aws.S3.contentMd5 "abc".toUTF8}")
+
+  IO.println "signing: ok (S3 and Query vectors, Content-MD5, both error dialects)"
 
 /-- Checks `push`'s planning and ordering without touching a cloud.
 

@@ -1,5 +1,7 @@
 import Infra.Providers.Aws.Sign
 import Linen.Data.Json.Encode
+import Linen.Data.Base64
+import Linen.Crypto.MD5
 
 /-
   The four wire dialects AWS actually speaks.
@@ -70,6 +72,22 @@ def bucketPath (bucket : Option String) : String :=
   | some b => "/" ++ b
   | none   => "/"
 
+/-- `Content-MD5` for a request body: base64 of its MD5 digest.
+
+    S3 requires an integrity header — `Content-MD5` or one of the
+    `x-amz-checksum-*` family — on the bucket-configuration writes
+    (`PutBucketVersioning`, `PutBucketTagging`, and their relatives). Without
+    one they are refused outright:
+
+        HTTP 400 InvalidRequest: Missing required header for this request:
+        Content-MD5 OR x-amz-checksum-*
+
+    It is not the same thing as SigV4's `x-amz-content-sha256`, which is a
+    signing input rather than an integrity declaration, so having one does not
+    satisfy the other. -/
+def contentMd5 (body : ByteArray) : String :=
+  Data.Base64.encode (Crypto.MD5.hash body)
+
 /-- Issue an S3 call. `path` is signed exactly as sent — S3 does not
     double-encode. -/
 def call (creds : Credentials) (ep : Endpoint) (method : String)
@@ -77,7 +95,8 @@ def call (creds : Credentials) (ep : Endpoint) (method : String)
     (body : ByteArray := ByteArray.empty)
     (headers : List (String × String) := []) : IO Response :=
   Aws.call creds ep method (bucketPath bucket) query
-    (if body.isEmpty then headers else ("Content-Type", "application/xml") :: headers)
+    (if body.isEmpty then headers
+     else ("Content-Type", "application/xml") :: ("Content-MD5", contentMd5 body) :: headers)
     body (doubleEncodePath := false)
 
 /-- Issue an S3 call and parse its XML reply. -/

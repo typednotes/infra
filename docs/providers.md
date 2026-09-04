@@ -118,6 +118,30 @@ Rules the spec cannot express — anything that is not a single TCP port with a
 CIDR — are dropped by `read` rather than misreported, so `ingress` diverging
 can also mean "the cloud has a rule this tool cannot see".
 
+## S3 requires an integrity header on configuration writes
+
+A bucket-configuration write with a body — `PutBucketVersioning`,
+`PutBucketTagging` and relatives — is refused without `Content-MD5` or one of
+the `x-amz-checksum-*` family:
+
+```
+HTTP 400 InvalidRequest: Missing required header for this request:
+Content-MD5 OR x-amz-checksum-*
+```
+
+`S3.call` now adds `Content-MD5` (base64 of the body's MD5) whenever there is a
+body. Note this is *not* the same thing as SigV4's `x-amz-content-sha256`,
+which is a signing input rather than an integrity declaration, so having one
+never satisfied the other — which is why signing was verified and these calls
+still failed.
+
+The digest is checked offline against `openssl dgst -md5 -binary | base64`
+rather than against this implementation, because a *wrong* integrity header is
+worse than a missing one: S3 would reject the body as corrupt instead of as
+unsigned, which reads like a very different bug.
+
+Found by running `cross-cloud apply` against a real account.
+
 ## Secrets only travel outward
 
 `secrets.valueFrom` is a `SecretSource`. `fromEnv` names an environment
@@ -189,7 +213,8 @@ Verified offline, by `infra check`:
 - Divergence: `unknown` is not drift; a mutable difference is an update; an
   immutable one is a `replace`.
 - `push` dry-run ordering, including that an AWS bucket is scheduled before the
-  Scaleway function referencing it.
+  Scaleway function referencing it, and that a teardown reverses it.
+- `Content-MD5` for S3 configuration writes, against `openssl`'s digests.
 - The credential chain, redaction, and the not-found message.
 - Composed secrets: three resources created in one apply, ordered so the
   composed secret comes after both the password it reads and the database
