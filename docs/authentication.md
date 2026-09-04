@@ -120,6 +120,29 @@ the first sign of trouble was a TLS handshake failure or an opaque provider
 error, neither of which points at the missing secret. Now the chain falls
 through to the message above.
 
+### A missing region is caught by name
+
+Every endpoint is built from `Credentials.region`, so an empty one produces a
+malformed host — `ec2..amazonaws.com` — and the failure surfaces from the
+network layer as:
+
+```
+uncaught exception: connect: invalid address or hostname resolution failed
+```
+
+which says nothing about the cause. `Credentials.requireRegion` existed for
+exactly this and was called from nowhere; `Infra.Cli.liveFor` now calls it for
+every provider a fleet declares into, before any request is attempted, so the
+error names the variable instead:
+
+```
+no region configured for aws; set AWS_REGION or the region in its config file
+```
+
+Exporting `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` without `AWS_REGION`
+is the easy way to hit this, since the config-file source usually supplies the
+region and the environment source does not have to.
+
 ### Running in CI needs a CA bundle
 
 Not a credential problem, but it surfaces at the same moment and looks like

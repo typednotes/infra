@@ -44,7 +44,15 @@ def defaultCacheRoot : System.FilePath := ".infra"
 def liveFor (κ : Keys) : IO (Backends × (ProviderId → Option Credentials)) := do
   let mut creds : List (ProviderId × Credentials) := []
   for p in κ.providers do
-    creds := (p, ← Credentials.load p) :: creds
+    let c ← Credentials.load p
+    -- Every endpoint is built from the region, so an empty one produces a
+    -- malformed host (`ec2..amazonaws.com`) and surfaces as
+    -- "hostname resolution failed" — an error that says nothing about the
+    -- missing variable. `requireRegion` names it instead, and this is the one
+    -- funnel every live command passes through, so checking here covers all
+    -- of them before any call is attempted.
+    let _ ← c.requireRegion p
+    creds := (p, c) :: creds
   let lookup := fun p => (creds.find? fun c => c.1 == p).map (·.2)
   return ({ backend := fun p =>
     match lookup p with

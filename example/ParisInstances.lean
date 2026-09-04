@@ -36,8 +36,15 @@ import Infra
       lake exe paris-instances push --apply   # CREATES REAL, BILLABLE INSTANCES
 
   A bare invocation is offline, credential-free and free of charge. The live
-  commands need AWS credentials. To have them refuse to run against the wrong
-  account — worth doing before creating anything billable:
+  commands need AWS credentials **and a region** — the region is what puts
+  this fleet in Paris (see point 3 below), and nothing in the declaration
+  supplies it:
+
+      export AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…
+      export AWS_REGION=eu-west-3
+
+  To have them refuse to run against the wrong account — worth doing before
+  creating anything billable:
 
       export INFRA_EXPECT_AWS_ACCOUNT=<your-account-id>
 
