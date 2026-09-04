@@ -112,6 +112,21 @@ def s3Bucket (name : Expr K String)
     S3BucketSpec K Partial (Expr K) :=
   { name, versioning, objectLock, region }
 
+def securityGroup (name : Expr K String) (description : Expr K String)
+    (ingress : Partial (Expr K (List (Nat × String))) := .unknown) :
+    SecurityGroupSpec K Partial (Expr K) :=
+  { name, description, ingress }
+
+/-- Note that `securityGroup` has no default: it is required, so an instance
+    cannot be built without naming one. That is the whole point of the kind —
+    see `AwsInstanceSpec`. -/
+def awsInstance (name : Expr K String) (imageId : Expr K String)
+    (instanceType : Expr K String) (securityGroup : Expr K (K .aws .securityGroup))
+    (keyName : Partial (Expr K String) := .unknown)
+    (subnetId : Partial (Expr K String) := .unknown) :
+    AwsInstanceSpec K Partial (Expr K) :=
+  { name, imageId, instanceType, securityGroup, keyName, subnetId }
+
 def scalewayFunction (name : Expr K String) (runtime : Expr K String)
     (namespace' : Expr K String)
     (sourceBucket : Partial (Expr K (Option (K .aws .s3Bucket))) := .unknown) :
@@ -146,6 +161,8 @@ def scalewayContainer (name : Expr K String) (namespace' : Expr K String)
   | .imageRegistry     => let _ := @imageRegistry; ()
   | .postgres          => let _ := @postgres; ()
   | .s3Bucket          => let _ := @s3Bucket; ()
+  | .securityGroup     => let _ := @securityGroup; ()
+  | .awsInstance       => let _ := @awsInstance; ()
   | .scalewayFunction  => let _ := @scalewayFunction; ()
   | .scalewayContainer => let _ := @scalewayContainer; ()
 

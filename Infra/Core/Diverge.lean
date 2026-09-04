@@ -140,6 +140,32 @@ instance : Divergent .s3Bucket where
     -- A bucket cannot move region.
     ++ diverges "region" .forcesReplace t.region r.region
 
+instance : Divergent .securityGroup where
+  divergence t r :=
+    divergesReq "name" .forcesReplace t.name r.name
+    -- EC2 has no API for changing a group's description after creation.
+    ++ divergesReq "description" .forcesReplace t.description r.description
+    -- Rules can be authorized on a live group. Compared as a set, since the
+    -- order EC2 reports them in is not the order they were given.
+    ++ divergesSet "ingress" .mutable (fun (port, cidr) => s!"{port}:{cidr}")
+         t.ingress r.ingress
+
+instance : Divergent .awsInstance where
+  divergence t r :=
+    -- The `Name` tag, which `CreateTags` can change on a live instance.
+    divergesReq "name" .mutable t.name r.name
+    -- A running instance cannot change image.
+    ++ divergesReq "imageId" .forcesReplace t.imageId r.imageId
+    -- EC2 *can* resize a stopped instance, but this tool never stops one, so
+    -- the honest classification for what it will actually do is replace — and
+    -- a plan says REPLACE before anything is applied. See `docs/providers.md`.
+    ++ divergesReq "instanceType" .forcesReplace t.instanceType r.instanceType
+    -- `ModifyInstanceAttribute` reassigns groups on a running instance.
+    ++ divergesReq "securityGroup" .mutable t.securityGroup r.securityGroup
+    -- Both are launch-time only.
+    ++ diverges "keyName" .forcesReplace t.keyName r.keyName
+    ++ diverges "subnetId" .forcesReplace t.subnetId r.subnetId
+
 instance : Divergent .scalewayFunction where
   divergence t r :=
     divergesReq "name" .forcesReplace t.name r.name
@@ -176,6 +202,8 @@ instance : Divergent .scalewayContainer where
   | .imageRegistry     => inferInstanceAs (Divergent .imageRegistry)
   | .postgres          => inferInstanceAs (Divergent .postgres)
   | .s3Bucket          => inferInstanceAs (Divergent .s3Bucket)
+  | .securityGroup     => inferInstanceAs (Divergent .securityGroup)
+  | .awsInstance       => inferInstanceAs (Divergent .awsInstance)
   | .scalewayFunction  => inferInstanceAs (Divergent .scalewayFunction)
   | .scalewayContainer => inferInstanceAs (Divergent .scalewayContainer)
 

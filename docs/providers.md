@@ -25,7 +25,7 @@ diagnosis; `SignatureDoesNotMatch` is.
 | Dialect | Shape | Used by |
 |---|---|---|
 | S3 (REST-XML) | bucket in the path, XML reply | object storage, `s3Bucket` |
-| Query | `POST /` form body, XML reply | IAM, RDS |
+| Query | `POST /` form body, XML reply | IAM, RDS, EC2 |
 | AWS-JSON | `POST /` + `X-Amz-Target` | Secrets Manager, ECR, SQS |
 | REST-JSON | method and path carry meaning | Lambda |
 | Scaleway REST | `api.scaleway.com`, `X-Auth-Token` | everything Scaleway-native |
@@ -35,7 +35,7 @@ All four AWS dialects sign identically, which is why signing lives once in
 
 ## Coverage
 
-All sixteen `(provider, kind)` pairs are implemented. `Live.lean` has no
+All `(provider, kind)` pairs are implemented. `Live.lean` has no
 catch-all: Lean reported one as unreachable, so adding a `Kind` now fails that
 file to compile.
 
@@ -49,6 +49,8 @@ file to compile.
 | `iam` | IAM users | IAM applications | no |
 | `postgres` | RDS | Managed Database | no — and routed on shape: a set `instanceClass` means a classic instance, capacity bounds mean serverless (AWS raises a named error; Scaleway's Serverless SQL Database is stubbed) |
 | `s3Bucket` | S3 | — | AWS-only kind |
+| `securityGroup` | EC2 security groups | — | AWS-only kind |
+| `awsInstance` | EC2 instances | — | AWS-only kind; the portable `compute` kind is serverless-shaped and cannot carry a required network reference |
 | `scalewayFunction` | — | Serverless Functions | Scaleway-only kind |
 | `scalewayContainer` | — | Serverless Containers | Scaleway-only kind; the portable `compute` kind cannot bind secret-backed env vars |
 
@@ -77,6 +79,36 @@ named error rather than passing through an unhelpful API message:
 
 - `compute.executionRole` — Lambda requires an execution role ARN.
 - `compute.namespace'` — Serverless Containers requires a namespace.
+
+## EC2: what these two kinds do and do not do
+
+Both are keyed by a name a person chooses, never by an AWS-assigned id, because
+`Keys.name` has to be writable in the target before the resource exists
+(`Engine.pullEntries` matches it against `observedHandle`). A security group is
+keyed by `GroupName`; an instance by its **`Name` tag**, which `create` sets
+immediately after `RunInstances`. The `sg-…` and `i-…` ids are post-apply
+values and live in `ObservedOf`, which is where `delete` and `update` read them
+from.
+
+`awsInstance.securityGroup` is the library's **only required reference**. An
+instance therefore always contributes a dependency edge, cannot be declared
+without a group, and cannot be settled until that group exists — see
+`example/ParisInstances.lean`.
+
+Two deliberate limitations, both visible in a plan before anything is applied:
+
+- **`instanceType` is `forcesReplace`.** EC2 can resize a *stopped* instance,
+  but doing it in place means stop → poll until stopped → modify → start, a
+  state machine this backend does not have. Replace is the honest description
+  of what this tool will actually do, and the plan says REPLACE.
+- **Ingress rules are only ever added.** `update` authorizes rules the target
+  has and the cloud does not; revoking one the cloud has and the target does
+  not is not implemented. The divergence is still *reported*, so a plan is
+  honest about wanting a change it will only partly make.
+
+Rules the spec cannot express — anything that is not a single TCP port with a
+CIDR — are dropped by `read` rather than misreported, so `ingress` diverging
+can also mean "the cloud has a rule this tool cannot see".
 
 ## Secrets only travel outward
 
@@ -158,6 +190,17 @@ Verified offline, by `infra check`:
 - That the `fleet` command produces a fleet indistinguishable from the
   hand-written equivalent — same cardinalities, providers, names, and ordered
   action list.
+
+**Not verified against any account, and the newest of the lot**: every EC2
+endpoint path, parameter name and response shape in `Kinds/Ec2.lean` —
+`DescribeSecurityGroups`, `CreateSecurityGroup`,
+`AuthorizeSecurityGroupIngress`, `DeleteSecurityGroup`, `DescribeInstances`,
+`RunInstances`, `CreateTags`, `ModifyInstanceAttribute`, `TerminateInstances`.
+The Query protocol itself is shared with RDS and IAM and its signing is
+verified offline; the parameter names above are not. `RunInstances` resolves
+the referenced group's name to an id via `DescribeSecurityGroups` first, so
+that `SecurityGroupId` is used rather than the name-based parameter, which only
+works in a default VPC — also unverified.
 
 **Not verified against any account, and load-bearing for `secretEnv`**: how
 Scaleway Serverless Containers actually binds a secret to an environment

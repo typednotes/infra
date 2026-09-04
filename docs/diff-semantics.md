@@ -223,6 +223,7 @@ type would otherwise destroy live resources on a first run.
 | Duplicate key, structurally | a hand-rolled `inductive` key type (`Infra/Demo.lean`'s style): constructors are structurally distinct |
 | Forgotten key | `assign` is total over a `Finite` domain |
 | Missing required field | `Field .required` is unwrapped, so the structure literal is incomplete |
+| A resource that needs another but names none | a *required* reference — `awsInstance.securityGroup` is `Field .required` holding `K .aws .securityGroup`, so an instance with no security group is not a value that exists |
 | Conflicting status | `Status` has no ⊤ constructor |
 | Unknown-dependent shape | `Expr` has no `bind`, so cardinality can never depend on a post-apply value |
 | Unhandled kind | `SpecOf`, `ObservedOf`, `fillableOf`, `hasDepsOf`, `divergentOf`, `settleableOf` and `Live.lean` are all total over `Kind` |

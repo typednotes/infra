@@ -145,6 +145,22 @@ instance : HasDeps ScalewayFunctionSpec where
           | some (some key) => [⟨.aws, .s3Bucket, key, .handle⟩]
           | _               => [])
 
+/-- A security group references nothing; it is what gets referenced. -/
+instance : HasDeps SecurityGroupSpec where
+  deps s := depsReq s.name ++ depsReq s.description ++ depsOpt s.ingress
+
+/-- The second key-typed *payload* read, and the only **required** one in the
+    library: `securityGroup` is not an `Option`, so unlike `sourceBucket` there
+    is no "said: nothing" case to fall through — an instance always contributes
+    exactly this edge, which is what guarantees its group is created first. -/
+instance : HasDeps AwsInstanceSpec where
+  deps s :=
+    depsReq s.name ++ depsReq s.imageId ++ depsReq s.instanceType
+    ++ depsReq s.securityGroup ++ depsOpt s.keyName ++ depsOpt s.subnetId
+    ++ (match s.securityGroup.asLit with
+        | some key => [⟨.aws, .securityGroup, key, .handle⟩]
+        | none     => [])
+
 /-- List-generalized version of `ScalewayFunctionSpec`'s single reference: every secret named in
     `secretEnv` is a dependency, same-cloud this time. -/
 instance : HasDeps ScalewayContainerSpec where
@@ -170,6 +186,8 @@ instance : HasDeps ScalewayContainerSpec where
   | .imageRegistry     => inferInstanceAs (HasDeps ImageRegistrySpec)
   | .postgres          => inferInstanceAs (HasDeps PostgresSpec)
   | .s3Bucket          => inferInstanceAs (HasDeps S3BucketSpec)
+  | .securityGroup     => inferInstanceAs (HasDeps SecurityGroupSpec)
+  | .awsInstance       => inferInstanceAs (HasDeps AwsInstanceSpec)
   | .scalewayFunction  => inferInstanceAs (HasDeps ScalewayFunctionSpec)
   | .scalewayContainer => inferInstanceAs (HasDeps ScalewayContainerSpec)
 

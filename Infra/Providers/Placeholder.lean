@@ -24,6 +24,9 @@ def placeholderObserved : (k : Kind) → String → ObservedOf k
   | .imageRegistry,    id => { handle := ⟨id⟩, repositoryUri := "placeholder.invalid/repo" }
   | .postgres,         id => { handle := ⟨id⟩, endpoint := "placeholder.invalid:5432" }
   | .s3Bucket,         id => { handle := ⟨id⟩, arn := "arn:placeholder", region := "eu-west-1" }
+  | .securityGroup,    id => { handle := ⟨id⟩, groupId := "sg-placeholder", vpcId := "vpc-placeholder" }
+  | .awsInstance,      id => { handle := ⟨id⟩, instanceId := "i-placeholder"
+                               privateIp := "10.0.0.1", state := "running" }
   | .scalewayFunction, id => { handle := ⟨id⟩, url := "https://placeholder.invalid/fn" }
   | .scalewayContainer, id => { handle := ⟨id⟩, url := "https://placeholder.invalid/container" }
 
@@ -46,6 +49,10 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
                               maxCapacity := .unknown }
   | .s3Bucket,         h => { name := h.raw, versioning := .unknown,
                               objectLock := .unknown, region := .unknown }
+  | .securityGroup,    h => { name := h.raw, description := "", ingress := .unknown }
+  | .awsInstance,      h => { name := h.raw, imageId := "", instanceType := ""
+                              securityGroup := ⟨""⟩, keyName := .unknown
+                              subnetId := .unknown }
   | .scalewayFunction, h => { name := h.raw, runtime := "", namespace' := ""
                               sourceBucket := .unknown }
   | .scalewayContainer, h => { name := h.raw, namespace' := "", image := ""

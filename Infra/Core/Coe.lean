@@ -31,7 +31,9 @@ import Infra.Core.Spec
   An *empty* `[]` and a bare `none` do not, because their own type is a
   metavariable and instance search will not assign one, so no chain is found.
   Write the type (`([] : List String)`) or the wrappers (`.known (.lit [])`).
-  A non-empty list literal is fine, as is `some x`.
+  `some x` is fine, and so is a non-empty list — *unless* it contains a
+  numeral, whose type is itself a metavariable: `[(80, "any")]` needs
+  `([(80, "any")] : List (Nat × String))` for the same reason.
 
   Dot-notation also does not see through the wrapper: at an expected type of
   `Expr K SecretSource`, `.foo` resolves against `Expr`, not `SecretSource`.

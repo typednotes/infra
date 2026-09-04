@@ -47,6 +47,8 @@ inductive Kind
   | postgres
   -- provider-local: the escape hatch to concepts closer to one provider
   | s3Bucket
+  | securityGroup
+  | awsInstance
   | scalewayFunction
   | scalewayContainer
   deriving Repr, DecidableEq, BEq
@@ -54,7 +56,7 @@ inductive Kind
 instance : Finite Kind where
   elems :=
     [.iam, .objectStore, .compute, .queues, .secrets, .imageRegistry, .postgres,
-     .s3Bucket, .scalewayFunction, .scalewayContainer]
+     .s3Bucket, .securityGroup, .awsInstance, .scalewayFunction, .scalewayContainer]
   complete := by intro a; cases a <;> simp
   nodup := by decide
 
@@ -67,6 +69,8 @@ def Kind.name : Kind → String
   | .imageRegistry      => "image-registry"
   | .postgres           => "postgres"
   | .s3Bucket           => "s3-bucket"
+  | .securityGroup      => "security-group"
+  | .awsInstance        => "aws-instance"
   | .scalewayFunction   => "scaleway-function"
   | .scalewayContainer  => "scaleway-container"
 
@@ -125,6 +129,32 @@ structure S3BucketObserved where
   region : String
   deriving Repr, DecidableEq, ToJson, FromJson
 
+/-- A security group, identified by its *name*.
+
+    `handle` is `GroupName`, not `sg-…`: `Keys.name` has to equal whatever
+    `observedHandle` returns (see `Engine.pullEntries`), and a fleet has to be
+    able to write that identifier down before the resource exists. The
+    AWS-assigned id is carried alongside, which is what `awsInstance` needs
+    when it references one. -/
+structure SecurityGroupObserved where
+  handle  : Handle .securityGroup
+  groupId : String
+  vpcId   : String
+  deriving Repr, DecidableEq, ToJson, FromJson
+
+/-- An EC2 instance, identified by its `Name` tag.
+
+    Same reasoning as `SecurityGroupObserved`: the instance id is assigned at
+    launch and so cannot be a fleet key, whereas the `Name` tag is chosen by
+    whoever declares it. `instanceId` is the real handle for API calls and
+    lives here, where post-apply values belong. -/
+structure AwsInstanceObserved where
+  handle     : Handle .awsInstance
+  instanceId : String
+  privateIp  : String
+  state      : String
+  deriving Repr, DecidableEq, ToJson, FromJson
+
 structure ScalewayFunctionObserved where
   handle : Handle .scalewayFunction
   url    : String
@@ -145,6 +175,8 @@ structure ScalewayContainerObserved where
   | .imageRegistry     => ImageRegistryObserved
   | .postgres          => PostgresObserved
   | .s3Bucket          => S3BucketObserved
+  | .securityGroup     => SecurityGroupObserved
+  | .awsInstance       => AwsInstanceObserved
   | .scalewayFunction  => ScalewayFunctionObserved
   | .scalewayContainer => ScalewayContainerObserved
 
@@ -162,6 +194,8 @@ def observedHandle : (k : Kind) → ObservedOf k → Handle k
   | .imageRegistry,     o => ImageRegistryObserved.handle o
   | .postgres,          o => PostgresObserved.handle o
   | .s3Bucket,          o => S3BucketObserved.handle o
+  | .securityGroup,     o => SecurityGroupObserved.handle o
+  | .awsInstance,       o => AwsInstanceObserved.handle o
   | .scalewayFunction,  o => ScalewayFunctionObserved.handle o
   | .scalewayContainer, o => ScalewayContainerObserved.handle o
 
@@ -174,6 +208,8 @@ instance : (k : Kind) → ToJson (ObservedOf k)
   | .imageRegistry     => inferInstanceAs (ToJson ImageRegistryObserved)
   | .postgres          => inferInstanceAs (ToJson PostgresObserved)
   | .s3Bucket          => inferInstanceAs (ToJson S3BucketObserved)
+  | .securityGroup     => inferInstanceAs (ToJson SecurityGroupObserved)
+  | .awsInstance       => inferInstanceAs (ToJson AwsInstanceObserved)
   | .scalewayFunction  => inferInstanceAs (ToJson ScalewayFunctionObserved)
   | .scalewayContainer => inferInstanceAs (ToJson ScalewayContainerObserved)
 
@@ -186,12 +222,14 @@ instance : (k : Kind) → FromJson (ObservedOf k)
   | .imageRegistry     => inferInstanceAs (FromJson ImageRegistryObserved)
   | .postgres          => inferInstanceAs (FromJson PostgresObserved)
   | .s3Bucket          => inferInstanceAs (FromJson S3BucketObserved)
+  | .securityGroup     => inferInstanceAs (FromJson SecurityGroupObserved)
+  | .awsInstance       => inferInstanceAs (FromJson AwsInstanceObserved)
   | .scalewayFunction  => inferInstanceAs (FromJson ScalewayFunctionObserved)
   | .scalewayContainer => inferInstanceAs (FromJson ScalewayContainerObserved)
 
 section Guards
 
-#guard card Kind = 10
+#guard card Kind = 12
 #guard card ProviderId = 2
 #guard card Nothing = 0
 

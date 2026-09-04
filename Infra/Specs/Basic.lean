@@ -314,6 +314,50 @@ structure ScalewayContainerSpec (K : ProviderId → Kind → Type) (o : Type u �
 
 /-! ## Dispatch -/
 
+/-- An EC2 security group. AWS-only: security groups are a VPC concept with no
+    Scaleway counterpart, so this is a provider-local kind.
+
+    `description` is required because `CreateSecurityGroup` demands one, and it
+    cannot be changed afterwards. -/
+structure SecurityGroupSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
+    (f : Type → Type u) where
+  name        : Field .required o f String
+  description : Field .required o f String
+  /-- Inbound TCP rules, as `(port, CIDR)`. Only TCP, and only single ports —
+      enough to be useful and honest about what the backend actually sends;
+      anything richer belongs in a future revision rather than being implied
+      by a field that is only half-supported. -/
+  ingress     : Field .optional o f (List (Nat × String))
+
+/-- An EC2 instance. AWS-only, and the *reason* `compute` cannot cover it:
+    `compute` is deliberately serverless-shaped, because a required network
+    reference would make that kind undeployable on serverless functions (see
+    `docs/architecture.md`).
+
+    **This is the only spec in the library with a required reference**, and it
+    is the interesting part: an instance with no security group is not a thing
+    this tool can be asked for. There is no `Option`, no default, and no
+    validation pass — the structure literal is incomplete without one, so the
+    unrealisable target is rejected where it is written.
+
+    `name` is the instance's `Name` tag, not an instance id. An id is assigned
+    at launch, so it could never be a fleet key; the tag is chosen by whoever
+    declares the instance, which is what `Keys.name` needs. See
+    `AwsInstanceObserved`. -/
+structure AwsInstanceSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
+    (f : Type → Type u) where
+  name          : Field .required o f String
+  /-- The AMI to launch. Immutable: changing it replaces the instance. -/
+  imageId       : Field .required o f String
+  instanceType  : Field .required o f String
+  /-- The security group this instance sits in — required, and a reference
+      into this very fleet, so it can neither be omitted nor dangle. -/
+  securityGroup : Field .required o f (K .aws .securityGroup)
+  /-- An existing EC2 key pair. Optional: an instance can launch without SSH
+      access, and this tool does not create key pairs. -/
+  keyName       : Field .optional o f String
+  subnetId      : Field .optional o f String
+
 /-- Total over `Kind`, so adding a kind without a spec is a compile error. -/
 @[reducible] def SpecOf : Kind → SpecShape.{u}
   | .iam               => IamSpec
@@ -324,6 +368,8 @@ structure ScalewayContainerSpec (K : ProviderId → Kind → Type) (o : Type u �
   | .imageRegistry     => ImageRegistrySpec
   | .postgres          => PostgresSpec
   | .s3Bucket          => S3BucketSpec
+  | .securityGroup     => SecurityGroupSpec
+  | .awsInstance       => AwsInstanceSpec
   | .scalewayFunction  => ScalewayFunctionSpec
   | .scalewayContainer => ScalewayContainerSpec
 
@@ -415,6 +461,25 @@ instance : Fillable ScalewayContainerSpec where
       env        := s.env.getD (.lit [])
       secretEnv  := s.secretEnv.getD (.lit []) }
 
+/-- `ingress := []` is the safe default: a group that lets nothing in. -/
+instance : Fillable SecurityGroupSpec where
+  fill s :=
+    { name        := s.name
+      description := s.description
+      ingress     := s.ingress.getD (.lit []) }
+
+/-- Note what has no default: `securityGroup`. A required field never reaches
+    `Fillable`, which is what makes the existence of this instance a
+    certificate that every well-typed instance target is launchable. -/
+instance : Fillable AwsInstanceSpec where
+  fill s :=
+    { name          := s.name
+      imageId       := s.imageId
+      instanceType  := s.instanceType
+      securityGroup := s.securityGroup
+      keyName       := s.keyName.getD (.lit "")
+      subnetId      := s.subnetId.getD (.lit "") }
+
 /-- Total over `Kind`, so a kind whose spec has no defaults cannot be forgotten. -/
 @[reducible] def fillableOf : (k : Kind) → Fillable (SpecOf.{1} k)
   | .iam               => inferInstanceAs (Fillable IamSpec)
@@ -425,6 +490,8 @@ instance : Fillable ScalewayContainerSpec where
   | .imageRegistry     => inferInstanceAs (Fillable ImageRegistrySpec)
   | .postgres          => inferInstanceAs (Fillable PostgresSpec)
   | .s3Bucket          => inferInstanceAs (Fillable S3BucketSpec)
+  | .securityGroup     => inferInstanceAs (Fillable SecurityGroupSpec)
+  | .awsInstance       => inferInstanceAs (Fillable AwsInstanceSpec)
   | .scalewayFunction  => inferInstanceAs (Fillable ScalewayFunctionSpec)
   | .scalewayContainer => inferInstanceAs (Fillable ScalewayContainerSpec)
 

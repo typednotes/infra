@@ -155,6 +155,15 @@ lean_exe «scaleway-queue» where
   srcDir := "example"
   root := `ScalewayQueue
 
+/-- `example/ParisInstances.lean`: two EC2 instances behind one security
+    group, demonstrating the library's only *required* cross-resource
+    reference — an instance with no security group is not representable.
+    Placeholder-backed, so it costs nothing to run. -/
+@[default_target]
+lean_exe «paris-instances» where
+  srcDir := "example"
+  root := `ParisInstances
+
 /-- `example/CrossCloud.lean`: one fleet spanning both clouds, with a
     reference crossing between them. Unlike the two above it runs against the
     placeholder backends, so it needs no credentials and touches no network —

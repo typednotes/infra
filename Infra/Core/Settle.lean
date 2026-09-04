@@ -62,6 +62,16 @@ def settleRefs {K : ProviderId → Kind → Type}
   refs.mapM fun (name, key) =>
     (env.observed p k key).map fun o => (name, observedHandle k o)
 
+/-- Resolve a **required** reference field to a handle.
+
+    The counterpart to `settleRef`, and the difference is the missing "said:
+    nothing" case: a required reference always names something, so this either
+    resolves or fails, with no `Option (Option _)` to unpick. Used by
+    `awsInstance`, whose security group is not optional. -/
+def settleRefReq {K : ProviderId → Kind → Type}
+    (env : Env K) (p : ProviderId) (k : Kind) (key : K p k) : Option (Handle k) :=
+  (env.observed p k key).map fun o => observedHandle k o
+
 /-- Turn a filled spec into one a backend can act on. -/
 class Settleable (k : Kind) where
   settle : {K : ProviderId → Kind → Type} → Env K →
@@ -128,6 +138,26 @@ instance : Settleable .s3Bucket where
              objectLock := ← settleField env s.objectLock
              region := ← settleField env s.region }
 
+instance : Settleable .securityGroup where
+  settle env s := do
+    return { name := ← settleField env s.name
+             description := ← settleField env s.description
+             ingress := ← settleField env s.ingress }
+
+/-- Like `scalewayFunction`, this can genuinely fail — and unconditionally so,
+    because its reference is required: an instance cannot be settled until its
+    security group exists. That is exactly the dependency `HasDeps` reports, so
+    `push` will have created the group first. -/
+instance : Settleable .awsInstance where
+  settle env s := do
+    let groupKey ← settleField env s.securityGroup
+    return { name := ← settleField env s.name
+             imageId := ← settleField env s.imageId
+             instanceType := ← settleField env s.instanceType
+             securityGroup := ← settleRefReq env .aws .securityGroup groupKey
+             keyName := ← settleField env s.keyName
+             subnetId := ← settleField env s.subnetId }
+
 /-- The one instance that can genuinely fail: `sourceBucket` names another
     resource, so settling it needs that resource to exist already. -/
 instance : Settleable .scalewayFunction where
@@ -165,6 +195,8 @@ instance : Settleable .scalewayContainer where
   | .imageRegistry     => inferInstanceAs (Settleable .imageRegistry)
   | .postgres          => inferInstanceAs (Settleable .postgres)
   | .s3Bucket          => inferInstanceAs (Settleable .s3Bucket)
+  | .securityGroup     => inferInstanceAs (Settleable .securityGroup)
+  | .awsInstance       => inferInstanceAs (Settleable .awsInstance)
   | .scalewayFunction  => inferInstanceAs (Settleable .scalewayFunction)
   | .scalewayContainer => inferInstanceAs (Settleable .scalewayContainer)
 

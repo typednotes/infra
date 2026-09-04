@@ -5,6 +5,7 @@ import Infra.Providers.Kinds.Secrets
 import Infra.Providers.Kinds.Compute
 import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
+import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Scaleway.Sqs
 import Infra.Core.Backend
 
@@ -43,7 +44,12 @@ import Infra.Core.Backend
   `secretEnv` names `.secrets` resources whose values are read once at apply
   (`Kinds.Secrets.fetchValue`) and bound as environment variables.
 
-  **All eighteen `(provider, kind)` pairs.** The catch-all that used to refuse
+  `.securityGroup` and `.awsInstance` on AWS over the EC2 Query API — the
+  pair that carries the library's only *required* reference, so an instance is
+  always scheduled after the group it names. Scaleway's half of both returns
+  `[]`: they are AWS-only kinds.
+
+  **Every `(provider, kind)` pair.** The catch-all that used to refuse
   unimplemented kinds is gone, because Lean reported it as unreachable — every
   branch of every field is now a real implementation. Adding a `Kind` will make
   this file fail to compile until it is handled, which is the guarantee that
@@ -81,6 +87,8 @@ private def lambdaFor (creds : Credentials) : Endpoint := RestJson.lambdaEndpoin
 private def rdsFor (creds : Credentials) : Endpoint := Query.rdsEndpoint creds.region
 
 /-- The S3 endpoint this cloud uses for a bucket-shaped kind. -/
+private def ec2For (creds : Credentials) : Endpoint := Ec2.endpoint creds.region
+
 private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
   S3.endpoint provider creds.region
 
@@ -99,6 +107,20 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       let ep := s3For provider creds
       return (← ObjectStore.listBuckets creds ep).map fun n =>
         { handle := ⟨n⟩, arn := s!"arn:aws:s3:::{n}", region := ep.region }
+    | .securityGroup => do
+      match provider with
+      | .scaleway => return []            -- AWS-only kind
+      | .aws =>
+        let groups ← Ec2.SecurityGroup.list creds (ec2For creds)
+        return groups.map fun g => { handle := ⟨g.1⟩, groupId := g.2.1, vpcId := g.2.2 }
+    | .awsInstance => do
+      match provider with
+      | .scaleway => return []            -- AWS-only kind
+      | .aws =>
+        let insts ← Ec2.Instance'.list creds (ec2For creds)
+        return insts.map fun i =>
+          { handle := ⟨i.1⟩, instanceId := i.2.1
+            privateIp := i.2.2.1, state := i.2.2.2 }
     | .queues => do
       let ep := sqsFor provider creds
       let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
@@ -155,6 +177,16 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
                versioning := ← ObjectStore.readVersioning creds ep h.raw
                objectLock := ← ObjectStore.readObjectLock creds ep h.raw
                region := .known ep.region }
+    | .securityGroup, h => do
+      let (description, ingress) ← Ec2.SecurityGroup.read creds (ec2For creds) h.raw
+      return { name := h.raw, description, ingress }
+    | .awsInstance, h => do
+      let r ← Ec2.Instance'.read creds (ec2For creds) h.raw
+      -- The security group comes back as a *name*, which is exactly what the
+      -- settled spec holds, so the two are directly comparable.
+      return { name := h.raw, imageId := r.1, instanceType := r.2.1
+               securityGroup := ⟨r.2.2.1⟩, keyName := r.2.2.2.1
+               subnetId := r.2.2.2.2 }
     -- Nothing was read, so nothing is claimed. `unknown` is exactly that, and
     -- is why an unimplemented kind cannot masquerade as already matching.
     | .iam, h => do
@@ -241,6 +273,22 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       ObjectStore.putVersioning creds ep spec.name spec.versioning
       ObjectStore.putTags creds ep spec.name spec.tags
       return { handle := ⟨spec.name⟩, url := ObjectStore.bucketUrl ep spec.name }
+    | .securityGroup, spec => do
+      let (groupId, vpcId) ← Ec2.SecurityGroup.create creds (ec2For creds)
+        spec.name spec.description spec.ingress
+      return { handle := ⟨spec.name⟩, groupId, vpcId }
+    | .awsInstance, spec => do
+      -- `spec.securityGroup` is a settled `Handle .securityGroup`, i.e. the
+      -- group's name; the backend resolves it to an id.
+      -- Bound with its type rather than projected inline: `spec.securityGroup`
+      -- reaches `Handle` through the reducible `Resolved`, and chaining `.raw`
+      -- straight onto it makes the code generator emit "invalid projection".
+      let group : Handle .securityGroup := spec.securityGroup
+      let r ← Ec2.Instance'.create creds (ec2For creds)
+        spec.name spec.imageId spec.instanceType group.raw
+        spec.keyName spec.subnetId
+      return { handle := ⟨spec.name⟩, instanceId := r.1
+               privateIp := r.2.1, state := r.2.2 }
     | .s3Bucket, spec => do
       let ep := s3For provider creds
       -- Object Lock is a creation-time header: it cannot be turned on later.
@@ -323,6 +371,21 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       ObjectStore.putVersioning creds ep h.raw spec.versioning
       ObjectStore.putTags creds ep h.raw spec.tags
       return { handle := h, url := ObjectStore.bucketUrl ep h.raw }
+    | .securityGroup, h, spec => do
+      -- Additive: a rule present in the cloud but absent from the target is
+      -- left alone. See `Kinds/Ec2.lean` and `docs/providers.md`.
+      let groupId ← Ec2.SecurityGroup.update creds (ec2For creds) h.raw spec.ingress
+      return { handle := h, groupId, vpcId := "" }
+    | .awsInstance, h, spec => do
+      let ep := ec2For creds
+      let group : Handle .securityGroup := spec.securityGroup
+      match (← Ec2.Instance'.list creds ep).find? (fun i => i.1 == h.raw) with
+      | none => throw (IO.userError
+          s!"instance '{h.raw}' disappeared between plan and apply")
+      | some found =>
+        Ec2.Instance'.update creds ep found.2.1 spec.name group.raw
+        return { handle := ⟨spec.name⟩, instanceId := found.2.1
+                 privateIp := found.2.2.1, state := found.2.2.2 }
     | .s3Bucket, h, spec => do
       let ep := s3For provider creds
       -- Only versioning is mutable here; Object Lock and region are not, which
@@ -393,6 +456,16 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
   delete
     | .objectStore, h => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
     | .s3Bucket, h    => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
+    | .securityGroup, h => Ec2.SecurityGroup.delete creds (ec2For creds) h.raw
+    | .awsInstance, h => do
+      -- Termination is by instance id, which only the observed state knows, so
+      -- it is looked up from the `Name` tag this fleet keys on. Already gone is
+      -- not an error: `delete` is reached from a plan, and EC2 keeps reporting
+      -- a terminated instance for a while after it is really finished.
+      let ep := ec2For creds
+      match (← Ec2.Instance'.list creds ep).find? (fun i => i.1 == h.raw) with
+      | none       => pure ()
+      | some found => Ec2.Instance'.delete creds ep found.2.1
     | .queues, h      => do
       Queues.deleteQueue (← Scaleway.Sqs.credentialsFor provider creds) (sqsFor provider creds) h.raw
     | .imageRegistry, h =>

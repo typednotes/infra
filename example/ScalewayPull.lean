@@ -45,6 +45,8 @@ def reprObserved : (k : Kind) → ObservedOf k → String
   | .imageRegistry,    o => toString (repr o)
   | .postgres,         o => toString (repr o)
   | .s3Bucket,         o => toString (repr o)
+  | .securityGroup,    o => toString (repr o)
+  | .awsInstance,      o => toString (repr o)
   | .scalewayFunction, o => toString (repr o)
   | .scalewayContainer, o => toString (repr o)
 
@@ -58,6 +60,8 @@ def declFor : Kind → String × String
   | .secrets          => ("pulledSecrets", "secrets")
   | .imageRegistry    => ("pulledImageRegistry", "imageRegistry")
   | .postgres         => ("pulledPostgres", "postgres")
+  | .securityGroup    => ("pulledSecurityGroup", "securityGroup")
+  | .awsInstance      => ("pulledAwsInstance", "awsInstance")
   | .s3Bucket         => ("pulledS3Bucket", "s3Bucket")
   | .scalewayFunction => ("pulledScalewayFunction", "scalewayFunction")
   | .scalewayContainer => ("pulledScalewayContainer", "scalewayContainer")
