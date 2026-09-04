@@ -95,26 +95,87 @@ safe to inspect and delete.
 ### Declaring and pushing a Scaleway queue
 
 `example/ScalewayQueue.lean` is the counterpart to the one above: instead of
-listing what already exists, it declares a target — one Scaleway queue named
-`infra-example` — and pushes it through the same `Keys`/`Plan`/`push` path
-`infra` itself uses, again against Scaleway only.
+listing what already exists, it declares a target and reconciles it. It is also
+the shortest file in the repo, and deliberately so — the whole declaration is:
+
+```lean
+fleet exampleQueue where
+  resource scaleway queues "infra-example"
+    { visibilityTimeoutSec := 30 }
+```
 
 ```
-$ lake exe scaleway-queue
-authenticating to Scaleway...
-authenticated (region fr-par)
+$ lake exe scaleway-queue          # offline: the plan, from placeholders
 would CREATE scaleway/queues/infra-example
 (dry run — pass --apply to execute)
 
-$ lake exe scaleway-queue --apply
-authenticating to Scaleway...
-authenticated (region fr-par)
+$ lake exe scaleway-queue push --apply
 CREATE scaleway/queues/infra-example ... ok
 ```
 
-A real, billable resource in your Scaleway account — delete it from the
-Queues console when you are done. Re-running without `--apply` afterwards
-prints `nothing to do`, since the queue already matches the target.
+A real, billable resource in your Scaleway account — delete it from the Queues
+console when you are done. Re-running `plan` afterwards prints `nothing to do`,
+since the queue already matches the target. Note that *removing the line* only
+un-manages the queue; it does not delete it.
+
+### Two instances behind a security group
+
+`example/ParisInstances.lean` is the one to read for what the types actually
+buy. `AwsInstanceSpec.securityGroup` is a **required** reference, so an
+instance with no security group, one naming a group outside the fleet, and one
+naming something that is not a group are all compile errors — the file quotes
+the three messages verbatim. The group is scheduled before both instances
+because of that reference, not because of the order it is written in.
+
+```
+$ lake exe paris-instances
+would CREATE aws/security-group/web
+would CREATE aws/aws-instance/web-1
+would CREATE aws/aws-instance/web-2
+```
+
+Read its header before applying: the AMI id is unverified, the *region* comes
+from your credentials rather than the declaration, and the EC2 backend has
+never been run against a real account.
+
+### One fleet across both clouds
+
+`example/CrossCloud.lean` puts the same portable `objectStore` declaration
+under both clouds, Object Lock on the AWS-only `s3Bucket`, and a Scaleway
+function that reads the AWS bucket — a reference crossing clouds, which is what
+orders the bucket first.
+
+```
+$ lake exe cross-cloud
+would CREATE aws/object-store/typednotes-assets
+would CREATE aws/s3-bucket/typednotes-archive
+would CREATE scaleway/object-store/typednotes-assets
+would CREATE scaleway/scaleway-function/reindex
+```
+
+The only example needing *both* clouds' credentials to run live. S3 bucket
+names are globally unique, so change them before applying.
+
+### All three share one entry point
+
+A bare invocation is offline: it plans against the placeholder backends, needs
+no credentials and creates nothing. `plan` reads the real account; `push
+--apply` changes it. That is `Infra.Cli.run`, the same front end `infra`'s own
+binary and a consumer repo both use — the examples deliberately contain no
+argument parsing, credential loading or backend wiring of their own.
+
+Any of them will refuse to touch the wrong account if you say which you expect:
+
+```sh
+export INFRA_EXPECT_AWS_ACCOUNT=<id>
+export INFRA_EXPECT_SCALEWAY_ORG=<id>
+```
+
+```
+$ lake exe cross-cloud plan
+aws: account 123456789012 ok
+scaleway: organization 4d7c630f-… ok
+```
 
 ## Documentation
 

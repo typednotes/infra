@@ -20,10 +20,32 @@ import Infra
      bucket, and `push` schedules the bucket first because the reference
      says so, not because anything here lists an order.
 
-  Runs against the placeholder backends, so it needs no credentials and
-  touches no network:
+      lake exe cross-cloud                # offline: the plan, from placeholders
+      lake exe cross-cloud plan           # reads BOTH accounts
+      lake exe cross-cloud push --apply   # creates real resources in both
 
-      lake exe cross-cloud
+  A bare invocation is offline and free. Unlike every other example here, the
+  live commands need **both** clouds' credentials, because the fleet genuinely
+  spans both — which is what `Keys.providers` reports, and `Infra.Cli`
+  authenticates exactly the clouds a fleet declares into.
+
+  ## Before applying
+
+  - **S3 bucket names are globally unique across all of AWS.**
+    `typednotes-assets` may well be taken by someone else, in which case
+    creating it fails with `BucketAlreadyExists`. Change the names first; they
+    are illustrative, not reserved.
+  - **The Scaleway function needs its namespace to already exist.**
+    `namespace' := "typednotes"` is not created by this fleet — a
+    `scalewayFunction` is *placed into* an existing Serverless Functions
+    namespace, and no kind here provisions one.
+  - **Removing a line un-manages a resource; it does not delete it.** Set its
+    status to `.absent`, or delete by hand.
+
+  To have it refuse to run against the wrong accounts:
+
+      export INFRA_EXPECT_AWS_ACCOUNT=<id>
+      export INFRA_EXPECT_SCALEWAY_ORG=<id>
 -/
 
 open Infra.Core
@@ -135,10 +157,21 @@ fleet crossCloud where
            (name := "reindex") (runtime := "python3.12")
            (namespace' := "typednotes") (sourceBucket := some archive))).length = 1
 
-def main : IO Unit := do
+/-- What a bare invocation does: the plan, from the placeholder backends. -/
+def demo : IO Unit := do
   IO.println "cross-cloud: a plan spanning AWS and Scaleway\n"
   for line in ← push Infra.Providers.all crossCloud.plan (worldOf []) {} do
     IO.println line
   IO.println "\nNote the order: the AWS bucket is created before the Scaleway"
   IO.println "function that reads it. Nothing above declares that order — it"
   IO.println "falls out of `sourceBucket` being a reference."
+  IO.println "\nThat was the placeholder backend — neither cloud was contacted."
+  IO.println "For the real thing: `plan`, then `push --apply`."
+
+/-- Its own cache root: this fleet's key family is not any other's, and two
+    different shapes must never be read as if they were the same. -/
+def cacheRoot : System.FilePath := ".infra" / "cross-cloud"
+
+def main (args : List String) : IO UInt32 := do
+  Infra.Cli.run "cross-cloud" crossCloud.plan demo
+    (accounts := ← Infra.Cli.Accounts.fromEnv) (cacheRoot := cacheRoot) (args := args)

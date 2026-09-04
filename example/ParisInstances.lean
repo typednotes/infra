@@ -36,8 +36,10 @@ import Infra
       lake exe paris-instances push --apply   # CREATES REAL, BILLABLE INSTANCES
 
   A bare invocation is offline, credential-free and free of charge. The live
-  commands need AWS credentials for account 616568506952, which is checked
-  before anything is listed.
+  commands need AWS credentials. To have them refuse to run against the wrong
+  account — worth doing before creating anything billable:
+
+      export INFRA_EXPECT_AWS_ACCOUNT=<your-account-id>
 
   ## Before the first apply, four things worth knowing
 
@@ -163,10 +165,6 @@ def demo : IO Unit := do
   IO.println "\nThat was the placeholder backend — nothing was contacted."
   IO.println "For the real thing: `plan` (reads), then `push --apply` (creates)."
 
-/-- The account this example is allowed to touch, so a stray `AWS_PROFILE`
-    cannot point two billable instances at somebody else's account. -/
-def account : Infra.Cli.Accounts := { aws := some "616568506952" }
-
 /-- Its own cache root, like `scaleway-queue`'s: this fleet's key family is not
     the demo fleet's, and two different shapes must never be read as if they
     were the same. -/
@@ -174,6 +172,6 @@ def cacheRoot : System.FilePath := ".infra" / "paris"
 
 /-- `check` (the default) stays offline. `plan` reads the account; `push
     --apply` creates **real, billable** instances that run until terminated. -/
-def main (args : List String) : IO UInt32 :=
+def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "paris-instances" paris.plan demo
-    (accounts := account) (cacheRoot := cacheRoot) (args := args)
+    (accounts := ← Infra.Cli.Accounts.fromEnv) (cacheRoot := cacheRoot) (args := args)

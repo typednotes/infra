@@ -62,6 +62,21 @@ structure Accounts where
   /-- The Scaleway organization (owner) id. -/
   scaleway : Option String := none
 
+/-- The accounts named by the environment, for a fleet that cannot hardcode
+    them.
+
+    A *declaration* repo should write its account ids down — they are part of
+    what it declares, and hardcoding them is the point. `infra`'s own examples
+    cannot: they ship with the library, so an id baked into one would make it
+    refuse to run for anybody but its author. This reads
+    `INFRA_EXPECT_AWS_ACCOUNT` and `INFRA_EXPECT_SCALEWAY_ORG` instead, and an
+    unset variable means "do not check that cloud" — so an example still runs
+    unguarded by default, and gains the guard the moment someone says which
+    account they mean. -/
+def Accounts.fromEnv : IO Accounts := do
+  return { aws := normalizeEnv (← IO.getEnv "INFRA_EXPECT_AWS_ACCOUNT")
+           scaleway := normalizeEnv (← IO.getEnv "INFRA_EXPECT_SCALEWAY_ORG") }
+
 /-- Refuse to go further unless the credentials in force point where the fleet
     says they should.
 
