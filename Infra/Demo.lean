@@ -38,6 +38,17 @@ instance : Finite Fn where
   complete := by intro a; cases a <;> simp
   nodup := by decide
 
+/-- The namespace the demo function is placed into. Now a resource in its own
+    right: `scalewayFunction.namespace'` is a reference, so the fleet has to
+    declare the namespace rather than naming it in a string. -/
+inductive Ns | demo
+  deriving Repr, DecidableEq
+
+instance : Finite Ns where
+  elems := [.demo]
+  complete := by intro a; cases a <;> simp
+  nodup := by decide
+
 inductive Archive | cold
   deriving Repr, DecidableEq
 
@@ -52,6 +63,7 @@ instance : Finite Archive where
   | .scaleway, .objectStore      => Bucket
   | .scaleway, .compute          => Fn
   | .aws,      .s3Bucket         => Archive
+  | .scaleway, .scalewayFunctionNamespace => Ns
   | .scaleway, .scalewayFunction => Fn
   | _,         _                 => Nothing
 
@@ -62,6 +74,7 @@ def demoName : (p : ProviderId) → (k : Kind) → demoKey p k → String
   | .scaleway, .objectStore,      .logs   => "logs"
   | .scaleway, .compute,          .api    => "api"
   | .aws,      .s3Bucket,         .cold   => "cold"
+  | .scaleway, .scalewayFunctionNamespace, .demo => "demo"
   | .scaleway, .scalewayFunction, .api    => "ingest"
   | _,         _,                 _       => ""
 
@@ -102,7 +115,7 @@ def apiSpec {K : ProviderId → Kind → Type} : ComputeSpec K Partial (Expr K) 
 def ingestSpec : ScalewayFunctionSpec demoKey Partial (Expr demoKey) where
   name         := "ingest"
   runtime      := "python3.12"
-  namespace'   := "demo"
+  namespace'   := Ns.demo
   sourceBucket := some Archive.cold
 
 def demoPlan : Plan demoKeys where
@@ -113,6 +126,8 @@ def demoPlan : Plan demoKeys where
     | .aws,      .s3Bucket,         _ =>
         .present { name := "cold", versioning := .unknown
                    objectLock := true, region := .unknown }
+    | .scaleway, .scalewayFunctionNamespace, _ =>
+        .present { name := "demo", description := "the demo fleet's functions" }
     | .scaleway, .scalewayFunction, _ => .present ingestSpec
     | _,         _,                 _ => .unmanaged
   outside := .unmanaged
@@ -362,19 +377,20 @@ section Guards
 
 -- The real plan is not yet realised, and every declared resource needs creating.
 #guard !(satisfies demoPlan emptyWorld)
-#guard (actions demoPlan emptyWorld).length = 7
+-- Eight now: the demo fleet declares the namespace its function sits in.
+#guard (actions demoPlan emptyWorld).length = 8
 
 -- One resource already exists *and already matches*, so it drops out of the
 -- work-list entirely: six actions, not seven. This is the case that makes a
 -- second apply come back empty, and the one an existence-only comparison could
 -- never produce.
-#guard (actions demoPlan partialWorld).length = 6
+#guard (actions demoPlan partialWorld).length = 7
 
 -- Extent is still unsatisfied, because six other resources are missing.
 #guard satisfies demoPlan partialWorld = false
 
 -- A mutable field that disagrees is an update; the count returns to seven.
-#guard (actions demoPlan driftedWorld).length = 7
+#guard (actions demoPlan driftedWorld).length = 8
 #guard (actions demoPlan driftedWorld).any fun
   | .update .aws .objectStore .assets => true
   | _ => false
@@ -388,10 +404,14 @@ section Guards
   | .update .aws .s3Bucket .cold => true
   | _ => false)
 
--- The cross-cloud reference is discovered: a Scaleway function depends on an AWS bucket.
-#guard (HasDeps.deps (S := ScalewayFunctionSpec) ingestSpec).length = 1
+-- Two references, and they are the two kinds of edge worth having: the bucket
+-- it reads, in the *other* cloud, and the namespace it is placed into, in this
+-- one. Both are discovered from the spec rather than declared as an order.
+#guard (HasDeps.deps (S := ScalewayFunctionSpec) ingestSpec).length = 2
 #guard (HasDeps.deps (S := ScalewayFunctionSpec) ingestSpec).any
          (fun d => d.provider = ProviderId.aws && d.kind = Kind.s3Bucket)
+#guard (HasDeps.deps (S := ScalewayFunctionSpec) ingestSpec).any
+         (fun d => d.kind = Kind.scalewayFunctionNamespace)
 
 -- Portable specs have no references at all — by construction, not by oversight.
 #guard (HasDeps.deps (S := ObjectStoreSpec) (bucketSpec (K := demoKey) "assets")).isEmpty

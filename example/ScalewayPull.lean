@@ -44,6 +44,8 @@ def declFor : Kind → String × String
   | .imageRegistry    => ("pulledImageRegistry", "imageRegistry")
   | .postgres         => ("pulledPostgres", "postgres")
   | .securityGroup    => ("pulledSecurityGroup", "securityGroup")
+  | .scalewayFunctionNamespace  => ("pulledFunctionNamespace", "scalewayFunctionNamespace")
+  | .scalewayContainerNamespace => ("pulledContainerNamespace", "scalewayContainerNamespace")
   | .awsInstance      => ("pulledAwsInstance", "awsInstance")
   | .s3Bucket         => ("pulledS3Bucket", "s3Bucket")
   | .scalewayFunction => ("pulledScalewayFunction", "scalewayFunction")

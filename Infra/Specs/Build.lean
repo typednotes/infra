@@ -127,13 +127,25 @@ def awsInstance (name : Expr K String) (imageId : Expr K String)
     AwsInstanceSpec K Partial (Expr K) :=
   { name, imageId, instanceType, securityGroup, keyName, subnetId }
 
+/-- Serves both namespace kinds; the expected return type picks which. -/
+def scalewayFunctionNamespace (name : Expr K String)
+    (description : Partial (Expr K String) := .unknown) :
+    ScalewayNamespaceSpec K Partial (Expr K) :=
+  { name, description }
+
+def scalewayContainerNamespace (name : Expr K String)
+    (description : Partial (Expr K String) := .unknown) :
+    ScalewayNamespaceSpec K Partial (Expr K) :=
+  { name, description }
+
 def scalewayFunction (name : Expr K String) (runtime : Expr K String)
-    (namespace' : Expr K String)
+    (namespace' : Expr K (K .scaleway .scalewayFunctionNamespace))
     (sourceBucket : Partial (Expr K (Option (K .aws .s3Bucket))) := .unknown) :
     ScalewayFunctionSpec K Partial (Expr K) :=
   { name, runtime, namespace', sourceBucket }
 
-def scalewayContainer (name : Expr K String) (namespace' : Expr K String)
+def scalewayContainer (name : Expr K String)
+    (namespace' : Expr K (K .scaleway .scalewayContainerNamespace))
     (image : Expr K String)
     (port : Partial (Expr K Nat) := .unknown)
     (minScale : Partial (Expr K Nat) := .unknown)
@@ -183,10 +195,18 @@ def scalewayContainer (name : Expr K String) (namespace' : Expr K String)
   | .awsInstance       => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
                             Expr K (K .aws .securityGroup) → _ → _ →
                             AwsInstanceSpec K Partial (Expr K) := @awsInstance; ()
-  | .scalewayFunction  => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String → _ →
+  | .scalewayFunctionNamespace  =>
+      let _ : ∀ {K}, Expr K String → _ → ScalewayNamespaceSpec K Partial (Expr K) :=
+        @scalewayFunctionNamespace; ()
+  | .scalewayContainerNamespace =>
+      let _ : ∀ {K}, Expr K String → _ → ScalewayNamespaceSpec K Partial (Expr K) :=
+        @scalewayContainerNamespace; ()
+  | .scalewayFunction  => let _ : ∀ {K}, Expr K String → Expr K String →
+                            Expr K (K .scaleway .scalewayFunctionNamespace) → _ →
                             ScalewayFunctionSpec K Partial (Expr K) := @scalewayFunction; ()
-  | .scalewayContainer => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
-                            _ → _ → _ → _ → _ → _ → _ → _ →
+  | .scalewayContainer => let _ : ∀ {K}, Expr K String →
+                            Expr K (K .scaleway .scalewayContainerNamespace) →
+                            Expr K String → _ → _ → _ → _ → _ → _ → _ → _ →
                             ScalewayContainerSpec K Partial (Expr K) := @scalewayContainer; ()
 
 end Infra.Specs.Build

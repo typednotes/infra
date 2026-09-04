@@ -154,6 +154,18 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .aws      => Postgres.Rds.list creds (rdsFor creds)
         | .scaleway => Postgres.Rdb.list creds
       return entries.map fun (n, host) => { handle := ⟨n⟩, endpoint := host }
+    | .scalewayFunctionNamespace => do
+      match provider with
+      | .scaleway =>
+        return (← Compute.Functions.listNamespaces creds).map fun (n, i) =>
+          { handle := ⟨n⟩, namespaceId := i }
+      | .aws => return []      -- Scaleway-only kind
+    | .scalewayContainerNamespace => do
+      match provider with
+      | .scaleway =>
+        return (← Compute.Containers.listNamespaces creds).map fun (n, i) =>
+          { handle := ⟨n⟩, namespaceId := i, registryEndpoint := "" }
+      | .aws => return []      -- Scaleway-only kind
     | .scalewayFunction => do
       match provider with
       | .scaleway =>
@@ -237,6 +249,10 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { name := h.raw, instanceClass, masterUsername := user
                masterPasswordSecret := "", version := ver, storageGb := storage
                minCapacity := .unknown, maxCapacity := .unknown }
+    | .scalewayFunctionNamespace, h => do
+      return { name := h.raw, description := ← Compute.Functions.readNamespace creds h.raw }
+    | .scalewayContainerNamespace, h => do
+      return { name := h.raw, description := ← Compute.Containers.readNamespace creds h.raw }
     | .scalewayFunction, h => do
       match provider with
       | .scaleway =>
@@ -247,8 +263,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
           | .known (some n) => .known (some ⟨n⟩)
           | .known none     => .known none
           | .unknown        => .unknown
-        return { name := h.raw, runtime, namespace' := "", sourceBucket := bucket }
-      | .aws => return { name := h.raw, runtime := "", namespace' := ""
+        -- `namespace'` is placement, not configuration: the API does not
+        -- report which namespace a function is in, so it cannot diverge and
+        -- `Divergent` excludes it. A blank handle is the honest "not reported".
+        return { name := h.raw, runtime, namespace' := ⟨""⟩, sourceBucket := bucket }
+      | .aws => return { name := h.raw, runtime := "", namespace' := ⟨""⟩
                          sourceBucket := .unknown }
     -- `secretEnv` is read once at apply and handed straight to the API, so
     -- it cannot be reported back and is excluded from the divergence table
@@ -258,10 +277,10 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .scaleway =>
         let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image) ←
           Compute.Containers.readFull creds h.raw
-        return { name := h.raw, namespace' := "", image
+        return { name := h.raw, namespace' := ⟨""⟩, image
                  port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env
                  secretEnv := .unknown }
-      | .aws => return { name := h.raw, namespace' := "", image := ""
+      | .aws => return { name := h.raw, namespace' := ⟨""⟩, image := ""
                          port := .unknown, minScale := .unknown, maxScale := .unknown
                          memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
                          env := .unknown, secretEnv := .unknown }
@@ -353,8 +372,18 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
           | .scaleway => Postgres.Rdb.create creds spec.name spec.instanceClass
                            spec.masterUsername password spec.version spec.storageGb
       return { handle := ⟨spec.name⟩, endpoint := host }
+    | .scalewayFunctionNamespace, spec => do
+      let (i, _) ← Compute.Functions.createNamespace creds spec.name spec.description
+      return { handle := ⟨spec.name⟩, namespaceId := i }
+    | .scalewayContainerNamespace, spec => do
+      -- The registry endpoint comes back from the create call: making a
+      -- containers namespace implicitly makes a Container Registry namespace,
+      -- and that is where its images have to be pushed.
+      let (i, reg) ← Compute.Containers.createNamespace creds spec.name spec.description
+      return { handle := ⟨spec.name⟩, namespaceId := i, registryEndpoint := reg }
     | .scalewayFunction, spec => do
-      let url ← Compute.Functions.create creds spec.name spec.runtime spec.namespace'
+      let ns : Handle .scalewayFunctionNamespace := spec.namespace'
+      let url ← Compute.Functions.create creds spec.name spec.runtime ns.raw
                   spec.sourceBucket
       return { handle := ⟨spec.name⟩, url }
     | .scalewayContainer, spec => do
@@ -362,7 +391,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       -- `Kinds.Secrets.fetchValue`.
       let secretVals ← spec.secretEnv.mapM fun (name, h) => do
         return (name, ← Secrets.fetchValue .scaleway creds h.raw)
-      let url ← Compute.Containers.createFull creds spec.name spec.image spec.namespace'
+      let ns : Handle .scalewayContainerNamespace := spec.namespace'
+      let url ← Compute.Containers.createFull creds spec.name spec.image ns.raw
                   spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
                   spec.timeoutSec spec.env secretVals
       return { handle := ⟨spec.name⟩, url }
@@ -443,6 +473,12 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .aws => Postgres.Rds.modify creds (rdsFor creds) h.raw spec.instanceClass spec.storageGb
         | .scaleway => Postgres.Rdb.modify creds h.raw spec.instanceClass
       return { handle := h, endpoint := "" }
+    | .scalewayFunctionNamespace, h, spec => do
+      Compute.Functions.updateNamespace creds h.raw spec.description
+      return { handle := h, namespaceId := "" }
+    | .scalewayContainerNamespace, h, spec => do
+      Compute.Containers.updateNamespace creds h.raw spec.description
+      return { handle := h, namespaceId := "", registryEndpoint := "" }
     | .scalewayFunction, h, spec => do
       Compute.Functions.update creds h.raw spec.sourceBucket
       return { handle := h, url := "" }
@@ -489,6 +525,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       match provider with
       | .aws      => Postgres.Rds.delete creds (rdsFor creds) h.raw
       | .scaleway => Postgres.Rdb.delete creds h.raw
+    | .scalewayFunctionNamespace, h => Compute.Functions.deleteNamespace creds h.raw
+    | .scalewayContainerNamespace, h => Compute.Containers.deleteNamespace creds h.raw
     | .scalewayFunction, h => Compute.Functions.delete creds h.raw
     | .scalewayContainer, h => Compute.Containers.delete creds h.raw
   -- The one inbound plaintext path; see `Backend.secretValue`. `fetchValue`

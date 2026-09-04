@@ -158,14 +158,26 @@ instance : Settleable .awsInstance where
              keyName := ← settleField env s.keyName
              subnetId := ← settleField env s.subnetId }
 
+/-- Both namespace kinds settle identically. -/
+instance : Settleable .scalewayFunctionNamespace where
+  settle env s := do
+    return { name := ← settleField env s.name
+             description := ← settleField env s.description }
+
+instance : Settleable .scalewayContainerNamespace where
+  settle env s := do
+    return { name := ← settleField env s.name
+             description := ← settleField env s.description }
+
 /-- The one instance that can genuinely fail: `sourceBucket` names another
     resource, so settling it needs that resource to exist already. -/
 instance : Settleable .scalewayFunction where
   settle env s := do
     let refKey ← settleField env s.sourceBucket
+    let nsKey ← settleField env s.namespace'
     return { name := ← settleField env s.name
              runtime := ← settleField env s.runtime
-             namespace' := ← settleField env s.namespace'
+             namespace' := ← settleRefReq env .scaleway .scalewayFunctionNamespace nsKey
              sourceBucket := ← settleRef env .aws .s3Bucket refKey }
 
 /-- List-generalized version of `scalewayFunction`'s single reference: every `secretEnv` entry
@@ -173,8 +185,9 @@ instance : Settleable .scalewayFunction where
 instance : Settleable .scalewayContainer where
   settle env s := do
     let refs ← settleField env s.secretEnv
+    let nsKey ← settleField env s.namespace'
     return { name := ← settleField env s.name
-             namespace' := ← settleField env s.namespace'
+             namespace' := ← settleRefReq env .scaleway .scalewayContainerNamespace nsKey
              image := ← settleField env s.image
              port := ← settleField env s.port
              minScale := ← settleField env s.minScale
@@ -197,7 +210,9 @@ instance : Settleable .scalewayContainer where
   | .s3Bucket          => inferInstanceAs (Settleable .s3Bucket)
   | .securityGroup     => inferInstanceAs (Settleable .securityGroup)
   | .awsInstance       => inferInstanceAs (Settleable .awsInstance)
+  | .scalewayFunctionNamespace  => inferInstanceAs (Settleable .scalewayFunctionNamespace)
   | .scalewayFunction  => inferInstanceAs (Settleable .scalewayFunction)
+  | .scalewayContainerNamespace => inferInstanceAs (Settleable .scalewayContainerNamespace)
   | .scalewayContainer => inferInstanceAs (Settleable .scalewayContainer)
 
 /-- Fill defaults and resolve references in one step: the whole journey from

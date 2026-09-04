@@ -49,14 +49,18 @@ inductive Kind
   | s3Bucket
   | securityGroup
   | awsInstance
+  | scalewayFunctionNamespace
   | scalewayFunction
+  | scalewayContainerNamespace
   | scalewayContainer
   deriving Repr, DecidableEq, BEq
 
 instance : Finite Kind where
   elems :=
     [.iam, .objectStore, .compute, .queues, .secrets, .imageRegistry, .postgres,
-     .s3Bucket, .securityGroup, .awsInstance, .scalewayFunction, .scalewayContainer]
+     .s3Bucket, .securityGroup, .awsInstance,
+     .scalewayFunctionNamespace, .scalewayFunction,
+     .scalewayContainerNamespace, .scalewayContainer]
   complete := by intro a; cases a <;> simp
   nodup := by decide
 
@@ -71,7 +75,9 @@ def Kind.name : Kind → String
   | .s3Bucket           => "s3-bucket"
   | .securityGroup      => "security-group"
   | .awsInstance        => "aws-instance"
+  | .scalewayFunctionNamespace  => "scaleway-function-namespace"
   | .scalewayFunction   => "scaleway-function"
+  | .scalewayContainerNamespace => "scaleway-container-namespace"
   | .scalewayContainer  => "scaleway-container"
 
 /-- The *physical* identifier, assigned by the provider at create time.
@@ -155,6 +161,29 @@ structure AwsInstanceObserved where
   state      : String
   deriving Repr, DecidableEq, ToJson, FromJson
 
+/-- A Serverless Functions namespace, identified by name.
+
+    Functions and Containers namespaces are **different products** — different
+    API prefixes (`functions/v1beta1` and `containers/v1beta1`) — so they are
+    two kinds rather than one with a discriminator. That is what makes pointing
+    a container at a functions namespace a type error rather than a 404. -/
+structure ScalewayFunctionNamespaceObserved where
+  handle      : Handle .scalewayFunctionNamespace
+  namespaceId : String
+  deriving Repr, DecidableEq, ToJson, FromJson
+
+/-- A Serverless Containers namespace.
+
+    Carries `registryEndpoint` as well, because creating one implicitly creates
+    a Container Registry namespace and that is where images for its containers
+    have to be pushed — a post-apply value worth observing rather than
+    reconstructing by hand. -/
+structure ScalewayContainerNamespaceObserved where
+  handle           : Handle .scalewayContainerNamespace
+  namespaceId      : String
+  registryEndpoint : String
+  deriving Repr, DecidableEq, ToJson, FromJson
+
 structure ScalewayFunctionObserved where
   handle : Handle .scalewayFunction
   url    : String
@@ -177,7 +206,9 @@ structure ScalewayContainerObserved where
   | .s3Bucket          => S3BucketObserved
   | .securityGroup     => SecurityGroupObserved
   | .awsInstance       => AwsInstanceObserved
+  | .scalewayFunctionNamespace  => ScalewayFunctionNamespaceObserved
   | .scalewayFunction  => ScalewayFunctionObserved
+  | .scalewayContainerNamespace => ScalewayContainerNamespaceObserved
   | .scalewayContainer => ScalewayContainerObserved
 
 /-- The handle of an observed resource, whichever kind it is.
@@ -196,7 +227,9 @@ def observedHandle : (k : Kind) → ObservedOf k → Handle k
   | .s3Bucket,          o => S3BucketObserved.handle o
   | .securityGroup,     o => SecurityGroupObserved.handle o
   | .awsInstance,       o => AwsInstanceObserved.handle o
+  | .scalewayFunctionNamespace,  o => ScalewayFunctionNamespaceObserved.handle o
   | .scalewayFunction,  o => ScalewayFunctionObserved.handle o
+  | .scalewayContainerNamespace, o => ScalewayContainerNamespaceObserved.handle o
   | .scalewayContainer, o => ScalewayContainerObserved.handle o
 
 instance : (k : Kind) → ToJson (ObservedOf k)
@@ -210,7 +243,9 @@ instance : (k : Kind) → ToJson (ObservedOf k)
   | .s3Bucket          => inferInstanceAs (ToJson S3BucketObserved)
   | .securityGroup     => inferInstanceAs (ToJson SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (ToJson AwsInstanceObserved)
+  | .scalewayFunctionNamespace  => inferInstanceAs (ToJson ScalewayFunctionNamespaceObserved)
   | .scalewayFunction  => inferInstanceAs (ToJson ScalewayFunctionObserved)
+  | .scalewayContainerNamespace => inferInstanceAs (ToJson ScalewayContainerNamespaceObserved)
   | .scalewayContainer => inferInstanceAs (ToJson ScalewayContainerObserved)
 
 /-- `Repr` per kind, alongside the two JSON instances and for the same reason:
@@ -228,7 +263,9 @@ instance : (k : Kind) → Repr (ObservedOf k)
   | .s3Bucket          => inferInstanceAs (Repr S3BucketObserved)
   | .securityGroup     => inferInstanceAs (Repr SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (Repr AwsInstanceObserved)
+  | .scalewayFunctionNamespace  => inferInstanceAs (Repr ScalewayFunctionNamespaceObserved)
   | .scalewayFunction  => inferInstanceAs (Repr ScalewayFunctionObserved)
+  | .scalewayContainerNamespace => inferInstanceAs (Repr ScalewayContainerNamespaceObserved)
   | .scalewayContainer => inferInstanceAs (Repr ScalewayContainerObserved)
 
 instance : (k : Kind) → FromJson (ObservedOf k)
@@ -242,12 +279,14 @@ instance : (k : Kind) → FromJson (ObservedOf k)
   | .s3Bucket          => inferInstanceAs (FromJson S3BucketObserved)
   | .securityGroup     => inferInstanceAs (FromJson SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (FromJson AwsInstanceObserved)
+  | .scalewayFunctionNamespace  => inferInstanceAs (FromJson ScalewayFunctionNamespaceObserved)
   | .scalewayFunction  => inferInstanceAs (FromJson ScalewayFunctionObserved)
+  | .scalewayContainerNamespace => inferInstanceAs (FromJson ScalewayContainerNamespaceObserved)
   | .scalewayContainer => inferInstanceAs (FromJson ScalewayContainerObserved)
 
 section Guards
 
-#guard card Kind = 12
+#guard card Kind = 14
 #guard card ProviderId = 2
 #guard card Nothing = 0
 

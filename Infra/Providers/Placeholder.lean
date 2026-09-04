@@ -27,6 +27,9 @@ def placeholderObserved : (k : Kind) → String → ObservedOf k
   | .securityGroup,    id => { handle := ⟨id⟩, groupId := "sg-placeholder", vpcId := "vpc-placeholder" }
   | .awsInstance,      id => { handle := ⟨id⟩, instanceId := "i-placeholder"
                                privateIp := "10.0.0.1", state := "running" }
+  | .scalewayFunctionNamespace, id => { handle := ⟨id⟩, namespaceId := "ns-placeholder" }
+  | .scalewayContainerNamespace, id => { handle := ⟨id⟩, namespaceId := "ns-placeholder"
+                                         registryEndpoint := "rg.placeholder.invalid/ns" }
   | .scalewayFunction, id => { handle := ⟨id⟩, url := "https://placeholder.invalid/fn" }
   | .scalewayContainer, id => { handle := ⟨id⟩, url := "https://placeholder.invalid/container" }
 
@@ -53,9 +56,11 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .awsInstance,      h => { name := h.raw, imageId := "", instanceType := ""
                               securityGroup := ⟨""⟩, keyName := .unknown
                               subnetId := .unknown }
-  | .scalewayFunction, h => { name := h.raw, runtime := "", namespace' := ""
+  | .scalewayFunctionNamespace,  h => { name := h.raw, description := .unknown }
+  | .scalewayContainerNamespace, h => { name := h.raw, description := .unknown }
+  | .scalewayFunction, h => { name := h.raw, runtime := "", namespace' := ⟨""⟩
                               sourceBucket := .unknown }
-  | .scalewayContainer, h => { name := h.raw, namespace' := "", image := ""
+  | .scalewayContainer, h => { name := h.raw, namespace' := ⟨""⟩, image := ""
                                port := .unknown, minScale := .unknown, maxScale := .unknown
                                memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
                                env := .unknown, secretEnv := .unknown }

@@ -169,6 +169,20 @@ instance : Divergent .awsInstance where
     ++ diverges "keyName" .forcesReplace t.keyName r.keyName
     ++ diverges "subnetId" .forcesReplace t.subnetId r.subnetId
 
+/-- Both namespace kinds compare the same two fields. A namespace cannot be
+    renamed — the name is its identity here, as with a bucket. -/
+private def namespaceDivergence
+    (t : ProviderSpec .scalewayFunctionNamespace) (r : Reported .scalewayFunctionNamespace) :
+    List (String × Mutability) :=
+  divergesReq "name" .forcesReplace t.name r.name
+  ++ diverges "description" .mutable t.description r.description
+
+instance : Divergent .scalewayFunctionNamespace where
+  divergence t r := namespaceDivergence t r
+
+instance : Divergent .scalewayContainerNamespace where
+  divergence t r := namespaceDivergence t r
+
 instance : Divergent .scalewayFunction where
   divergence t r :=
     divergesReq "name" .forcesReplace t.name r.name
@@ -207,7 +221,9 @@ instance : Divergent .scalewayContainer where
   | .s3Bucket          => inferInstanceAs (Divergent .s3Bucket)
   | .securityGroup     => inferInstanceAs (Divergent .securityGroup)
   | .awsInstance       => inferInstanceAs (Divergent .awsInstance)
+  | .scalewayFunctionNamespace  => inferInstanceAs (Divergent .scalewayFunctionNamespace)
   | .scalewayFunction  => inferInstanceAs (Divergent .scalewayFunction)
+  | .scalewayContainerNamespace => inferInstanceAs (Divergent .scalewayContainerNamespace)
   | .scalewayContainer => inferInstanceAs (Divergent .scalewayContainer)
 
 /-- The fields of a resource that disagree with its target. -/

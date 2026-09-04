@@ -270,6 +270,18 @@ structure S3BucketSpec (K : ProviderId → Kind → Type) (o : Type u → Type u
   objectLock       : Field .optional o f Bool
   region           : Field .optional o f String
 
+/-- A Serverless namespace, for either product.
+
+    One spec shape serves both `scalewayFunctionNamespace` and
+    `scalewayContainerNamespace`: the two are different *kinds*, because they
+    are different products and must not be confused for one another, but they
+    are configured identically. `SpecOf` maps both to this, so `Fillable` and
+    `HasDeps` are written once. -/
+structure ScalewayNamespaceSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
+    (f : Type → Type u) where
+  name        : Field .required o f String
+  description : Field .optional o f String
+
 /-- `sourceBucket` is an `Option (K .aws .s3Bucket)`, not a `Partial` of one: `Partial` means
     "not yet said", `Option` means "said: nothing". Conflating them is what `Cloud.lean` §13
     warns about when it flags `.lit default` as a lie. -/
@@ -277,10 +289,13 @@ structure ScalewayFunctionSpec (K : ProviderId → Kind → Type) (o : Type u �
     (f : Type → Type u) where
   name         : Field .required o f String
   runtime      : Field .required o f String
-  /-- Serverless Functions groups functions into a namespace. Required here
-      rather than optional, because this kind is Scaleway-only: there is no
-      other cloud for whom the field would be meaningless. -/
-  namespace'   : Field .required o f String
+  /-- The namespace this function is placed into — a *reference*, not a name.
+
+      Serverless Functions requires one, and it must already exist, so a bare
+      string meant a misspelling surfaced at apply time as
+      "no namespace named 'typndotes'". As a reference into this very fleet it
+      cannot be misspelled, cannot dangle, and orders the namespace first. -/
+  namespace'   : Field .required o f (K .scaleway .scalewayFunctionNamespace)
   /-- A bucket the function reads from.
 
       The function is not *deployed from* this bucket — Scaleway Functions
@@ -296,9 +311,11 @@ structure ScalewayFunctionSpec (K : ProviderId → Kind → Type) (o : Type u �
 structure ScalewayContainerSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
   name       : Field .required o f String
-  /-- Serverless Containers groups containers into a namespace, same as
-      `ScalewayFunctionSpec.namespace'`. Required: this kind is Scaleway-only. -/
-  namespace' : Field .required o f String
+  /-- The namespace this container is placed into — a reference, for the same
+      reason as `ScalewayFunctionSpec.namespace'`, and to a *containers*
+      namespace specifically: the two products are separate kinds, so this
+      cannot accidentally name a functions namespace. -/
+  namespace' : Field .required o f (K .scaleway .scalewayContainerNamespace)
   image      : Field .required o f String
   port       : Field .optional o f Nat
   minScale   : Field .optional o f Nat
@@ -371,7 +388,9 @@ structure AwsInstanceSpec (K : ProviderId → Kind → Type) (o : Type u → Typ
   | .s3Bucket          => S3BucketSpec
   | .securityGroup     => SecurityGroupSpec
   | .awsInstance       => AwsInstanceSpec
+  | .scalewayFunctionNamespace  => ScalewayNamespaceSpec
   | .scalewayFunction  => ScalewayFunctionSpec
+  | .scalewayContainerNamespace => ScalewayNamespaceSpec
   | .scalewayContainer => ScalewayContainerSpec
 
 /-! ## Realisability -/
@@ -481,6 +500,10 @@ instance : Fillable AwsInstanceSpec where
       keyName       := s.keyName.getD (.lit "")
       subnetId      := s.subnetId.getD (.lit "") }
 
+/-- Serves both namespace kinds. -/
+instance : Fillable ScalewayNamespaceSpec where
+  fill s := { name := s.name, description := s.description.getD (.lit "") }
+
 /-- Total over `Kind`, so a kind whose spec has no defaults cannot be forgotten. -/
 @[reducible] def fillableOf : (k : Kind) → Fillable (SpecOf.{1} k)
   | .iam               => inferInstanceAs (Fillable IamSpec)
@@ -493,7 +516,9 @@ instance : Fillable AwsInstanceSpec where
   | .s3Bucket          => inferInstanceAs (Fillable S3BucketSpec)
   | .securityGroup     => inferInstanceAs (Fillable SecurityGroupSpec)
   | .awsInstance       => inferInstanceAs (Fillable AwsInstanceSpec)
+  | .scalewayFunctionNamespace  => inferInstanceAs (Fillable ScalewayNamespaceSpec)
   | .scalewayFunction  => inferInstanceAs (Fillable ScalewayFunctionSpec)
+  | .scalewayContainerNamespace => inferInstanceAs (Fillable ScalewayNamespaceSpec)
   | .scalewayContainer => inferInstanceAs (Fillable ScalewayContainerSpec)
 
 /-! ## Self-checks -/

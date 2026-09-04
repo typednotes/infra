@@ -153,6 +153,10 @@ private def namespaceId (creds : Credentials) (name : String) : IO String := do
     | none   => throw (IO.userError s!"scaleway containers: namespace '{name}' has no id")
   | none => throw (IO.userError s!"scaleway containers: no namespace named '{name}'")
 
+/-- Public alias of `namespaceId`, for the namespace kind's own operations. -/
+def namespaceIdOfName (creds : Credentials) (name : String) : IO String :=
+  namespaceId creds name
+
 def read (creds : Credentials) (name : String) :
     IO (Partial Nat × Partial Nat × Partial (List (String × String)) × String) := do
   let id ← requireId creds name
@@ -277,6 +281,48 @@ def updateFull (creds : Credentials) (name image : String)
       , ("secret_environment_variables", secretEnvArray secretEnv) ]))
   return (stringField reply "domain_name").getD ""
 
+/-! ### Namespace CRUD
+
+  Functions and Containers each have their own namespace product at their own
+  prefix, so these are written once per product rather than shared. What
+  differs is only the prefix and what the response carries. -/
+
+/-- Every namespace, as `(name, id)`. -/
+def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  return (arrayField reply "namespaces").filterMap fun n =>
+    match stringField n "name", stringField n "id" with
+    | some nm, some i => some (nm, i)
+    | _,       _      => none
+
+/-- One namespace's description, by name. -/
+def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
+  | none   => return .unknown
+  | some n => return match stringField n "description" with
+                     | some d => .known d
+                     | none   => .known ""
+
+/-- Create a namespace. Needs the project id, like every Scaleway create. -/
+def createNamespace (creds : Credentials) (name description : String) : IO (String × String) := do
+  let project ← creds.requireProject
+  let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/namespaces")
+    (payload := some (.object
+      [ ("name", .string name), ("description", .string description)
+      , ("project_id", .string project) ]))
+  return ((stringField reply "id").getD "",
+          (stringField reply "registry_endpoint").getD "")
+
+def updateNamespace (creds : Credentials) (name description : String) : IO Unit := do
+  let id ← namespaceIdOfName creds name
+  discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/namespaces/{id}")
+    (payload := some (.object [("description", .string description)]))
+
+def deleteNamespace (creds : Credentials) (name : String) : IO Unit := do
+  let id ← namespaceIdOfName creds name
+  discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/namespaces/{id}")
+
 end Containers
 
 -- ══════════════════════════════════════════════════════════════
@@ -325,6 +371,10 @@ private def namespaceIdOf (creds : Credentials) (name : String) : IO String := d
     | none   => throw (IO.userError s!"scaleway functions: namespace '{name}' has no id")
   | none => throw (IO.userError s!"scaleway functions: no namespace named '{name}'")
 
+/-- Public alias of `namespaceIdOf`, for the namespace kind's own operations. -/
+def namespaceIdOfName (creds : Credentials) (name : String) : IO String :=
+  namespaceIdOf creds name
+
 def read (creds : Credentials) (name : String) : IO (String × Partial (Option String)) := do
   let id ← requireId creds name
   let f ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/functions/{id}")
@@ -362,6 +412,48 @@ def update (creds : Credentials) (name : String)
 def delete (creds : Credentials) (name : String) : IO Unit := do
   let id ← requireId creds name
   discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/functions/{id}")
+
+/-! ### Namespace CRUD
+
+  Functions and Containers each have their own namespace product at their own
+  prefix, so these are written once per product rather than shared. What
+  differs is only the prefix and what the response carries. -/
+
+/-- Every namespace, as `(name, id)`. -/
+def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  return (arrayField reply "namespaces").filterMap fun n =>
+    match stringField n "name", stringField n "id" with
+    | some nm, some i => some (nm, i)
+    | _,       _      => none
+
+/-- One namespace's description, by name. -/
+def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
+  | none   => return .unknown
+  | some n => return match stringField n "description" with
+                     | some d => .known d
+                     | none   => .known ""
+
+/-- Create a namespace. Needs the project id, like every Scaleway create. -/
+def createNamespace (creds : Credentials) (name description : String) : IO (String × String) := do
+  let project ← creds.requireProject
+  let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/namespaces")
+    (payload := some (.object
+      [ ("name", .string name), ("description", .string description)
+      , ("project_id", .string project) ]))
+  return ((stringField reply "id").getD "",
+          (stringField reply "registry_endpoint").getD "")
+
+def updateNamespace (creds : Credentials) (name description : String) : IO Unit := do
+  let id ← namespaceIdOfName creds name
+  discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/namespaces/{id}")
+    (payload := some (.object [("description", .string description)]))
+
+def deleteNamespace (creds : Credentials) (name : String) : IO Unit := do
+  let id ← namespaceIdOfName creds name
+  discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/namespaces/{id}")
 
 end Functions
 

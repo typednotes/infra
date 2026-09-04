@@ -166,8 +166,13 @@ instance : HasDeps S3BucketSpec where
     and the first of the two key-typed *payload* reads. -/
 instance : HasDeps ScalewayFunctionSpec where
   deps s :=
-    depsReq s.name ++ depsReq s.runtime ++ depsReq s.namespace'
+    depsReq s.name ++ depsReq s.runtime
+    ++ depsReq s.namespace' ++ depsKey s.namespace'
     ++ depsOpt s.sourceBucket ++ depsKeyOpt s.sourceBucket
+
+/-- A namespace references nothing; it is what gets referenced. -/
+instance : HasDeps ScalewayNamespaceSpec where
+  deps s := depsReq s.name ++ depsOpt s.description
 
 /-- A security group references nothing; it is what gets referenced. -/
 instance : HasDeps SecurityGroupSpec where
@@ -187,7 +192,7 @@ instance : HasDeps AwsInstanceSpec where
     `secretEnv` is a dependency, same-cloud this time. -/
 instance : HasDeps ScalewayContainerSpec where
   deps s :=
-    depsReq s.name ++ depsReq s.namespace' ++ depsReq s.image
+    depsReq s.name ++ depsReq s.namespace' ++ depsKey s.namespace' ++ depsReq s.image
     ++ depsOpt s.port ++ depsOpt s.minScale ++ depsOpt s.maxScale
     ++ depsOpt s.memoryMb ++ depsOpt s.cpuLimit ++ depsOpt s.timeoutSec
     ++ depsOpt s.env ++ depsOpt s.secretEnv ++ depsKeys s.secretEnv
@@ -204,7 +209,9 @@ instance : HasDeps ScalewayContainerSpec where
   | .s3Bucket          => inferInstanceAs (HasDeps S3BucketSpec)
   | .securityGroup     => inferInstanceAs (HasDeps SecurityGroupSpec)
   | .awsInstance       => inferInstanceAs (HasDeps AwsInstanceSpec)
+  | .scalewayFunctionNamespace  => inferInstanceAs (HasDeps ScalewayNamespaceSpec)
   | .scalewayFunction  => inferInstanceAs (HasDeps ScalewayFunctionSpec)
+  | .scalewayContainerNamespace => inferInstanceAs (HasDeps ScalewayNamespaceSpec)
   | .scalewayContainer => inferInstanceAs (HasDeps ScalewayContainerSpec)
 
 end Infra.Core

@@ -51,6 +51,8 @@ file to compile.
 | `s3Bucket` | S3 | — | AWS-only kind |
 | `securityGroup` | EC2 security groups | — | AWS-only kind |
 | `awsInstance` | EC2 instances | — | AWS-only kind; the portable `compute` kind is serverless-shaped and cannot carry a required network reference |
+| `scalewayFunctionNamespace` | — | Serverless Functions namespaces | Scaleway-only kind |
+| `scalewayContainerNamespace` | — | Serverless Containers namespaces | Scaleway-only kind; creating one implicitly creates a Container Registry namespace, whose endpoint is observed |
 | `scalewayFunction` | — | Serverless Functions | Scaleway-only kind |
 | `scalewayContainer` | — | Serverless Containers | Scaleway-only kind; the portable `compute` kind cannot bind secret-backed env vars |
 
@@ -71,6 +73,8 @@ is the point; a mapping that looked like it worked would be worse.
 | `iam.policies` | Scaleway | AWS policy ARNs have no Scaleway equivalent; its policies are rule sets over permission sets and scopes |
 | `compute.runtime` | both | vestigial under container images — baked into the image, reported by neither |
 | `secrets.valueFrom` | both | names an environment variable the cloud has never heard of |
+| `scalewayFunction.namespace'` | Scaleway | placement, not configuration: the API does not report which namespace a function is in, so it can never diverge — moving one between namespaces is not detected |
+| `scalewayContainer.namespace'` | Scaleway | same |
 | `postgres.masterPasswordSecret` | both | bookkeeping, never reported by the database |
 
 Two fields point the opposite way — required by one cloud, meaningless to the
@@ -117,6 +121,31 @@ Two deliberate limitations, both visible in a plan before anything is applied:
 Rules the spec cannot express — anything that is not a single TCP port with a
 CIDR — are dropped by `read` rather than misreported, so `ingress` diverging
 can also mean "the cloud has a rule this tool cannot see".
+
+## Namespaces are declared, not assumed
+
+Serverless Functions and Serverless Containers each group their resources into
+a namespace, and neither will place one into a namespace that does not exist.
+That used to surface at apply time as
+
+```
+uncaught exception: scaleway functions: no namespace named 'typednotes'
+```
+
+because `namespace'` was a bare `String` and nothing created the thing it
+named. It is now a **required reference** to a namespace resource in the same
+fleet, so the namespace is declared, created first, and cannot be misspelled.
+
+They are **two kinds, not one**, because Functions namespaces and Containers
+namespaces are different products at different API prefixes
+(`functions/v1beta1` and `containers/v1beta1`). Two kinds make pointing a
+container at a functions namespace a type error rather than a 404. They share
+one *spec shape*, since they are configured identically — `SpecOf` maps both
+to `ScalewayNamespaceSpec`.
+
+The portable `compute` kind keeps a `String` namespace, necessarily: a portable
+spec carries no cross-resource references, which is the same reason `compute`
+is serverless-shaped at all.
 
 ## S3 requires an integrity header on configuration writes
 

@@ -215,8 +215,10 @@ def checkPush : IO Unit := do
   -- Nothing exists: every declared resource is a create, plus the notice.
   let dry ← push bs demoPlan emptyWorld {}
   let creates := dry.filter (·.startsWith "would CREATE")
-  unless creates.length == 7 do
-    throw (IO.userError s!"expected 7 creates, got {creates.length}: {dry}")
+  -- Eight: the demo fleet now declares the namespace its function sits in,
+  -- because `scalewayFunction.namespace'` is a reference rather than a string.
+  unless creates.length == 8 do
+    throw (IO.userError s!"expected 8 creates, got {creates.length}: {dry}")
   unless dry.any (·.startsWith "(dry run") do
     throw (IO.userError "dry run did not say it was a dry run")
 
@@ -231,8 +233,8 @@ def checkPush : IO Unit := do
 
   -- A resource that already matches drops out entirely.
   let partial' ← push bs demoPlan partialWorld {}
-  unless (partial'.filter (·.startsWith "would")).length == 6 do
-    throw (IO.userError s!"expected 6 actions against partialWorld: {partial'}")
+  unless (partial'.filter (·.startsWith "would")).length == 7 do
+    throw (IO.userError s!"expected 7 actions against partialWorld: {partial'}")
 
   -- An immutable field that disagrees is a replace, not an update.
   let immutable ← push bs demoPlan immutableDriftWorld {}
@@ -332,7 +334,7 @@ def checkTeardown : IO Unit := do
     , ⟨.scaleway, .scalewayFunction, .api,
         { observed := { handle := ⟨"ingest"⟩, url := "https://x.invalid" }
           reported := { name := "ingest", runtime := "python3.12"
-                        namespace' := "demo", sourceBucket := .unknown } }⟩ ]
+                        namespace' := ⟨"demo"⟩, sourceBucket := .unknown } }⟩ ]
   let ordered ← push bs (Plan.absent demoKeys) both {}
   match slotIdx ordered "scaleway/scaleway-function/ingest",
         slotIdx ordered "aws/s3-bucket/cold" with

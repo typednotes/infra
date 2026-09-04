@@ -78,9 +78,16 @@ fleet crossCloud where
   -- A Scaleway function that reads the AWS bucket. `sourceBucket` has type
   -- `Option (K .aws .s3Bucket)`, so it can only ever name a bucket that this
   -- fleet actually declares, in that cloud, of that kind.
+  -- The namespace is now a resource this fleet *creates*, not a string it
+  -- hopes already exists. `apply` used to fail here with
+  -- "no namespace named 'typednotes'"; the reference makes that unrepresentable
+  -- and orders the namespace first.
+  resource scaleway scalewayFunctionNamespace "typednotes" as ns
+    { description := "the cross-cloud example's functions" }
+
   resource scaleway scalewayFunction "reindex" as reindex
     { runtime      := "python3.12"
-    , namespace'   := "typednotes"
+    , namespace'   := ns
     , sourceBucket := some archive }
 
 /-! ## What the types rule out
@@ -160,7 +167,7 @@ fleet crossCloud where
 #guard (HasDeps.deps (S := ScalewayFunctionSpec)
          (Build.scalewayFunction (K := crossCloud.keys.Key)
            (name := "reindex") (runtime := "python3.12")
-           (namespace' := "typednotes") (sourceBucket := some archive))).length = 1
+           (namespace' := ns) (sourceBucket := some archive))).length = 2
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "cross-cloud" crossCloud.plan
