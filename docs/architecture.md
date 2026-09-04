@@ -61,8 +61,11 @@ both AWS and Scaleway to demonstrate exactly this.
   references at all**, because a reference has type `K p k` and so names a provider. `compute`
   is serverless-shaped for the same reason — a required subnet reference would make the kind
   undeployable on serverless functions.
-- **Provider-local kinds** — `s3Bucket`, `scalewayFunction`. The escape hatch to concepts closer
-  to one provider: richer, free to reference other resources, and not portable.
+- **Provider-local kinds** — `s3Bucket`, `securityGroup`, `awsInstance`, `scalewayFunction`,
+  `scalewayContainer`. The escape hatch to concepts closer to one provider: richer, free to
+  reference other resources, and not portable. `awsInstance` is where that freedom is used
+  hardest — its `securityGroup` reference is *required*, which is exactly what the portable
+  `compute` kind cannot have and why EC2 needs a kind of its own.
 
 A provider that does not implement a kind sets that `(provider, kind)` pair's key type to
 `Nothing`, so a plan **cannot mention** what its provider lacks. Non-portability is
