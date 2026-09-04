@@ -341,6 +341,18 @@ outside the fleet.
 - **Unreportable fields are unenforced, not rejected.** A target asking for
   something a cloud cannot express is accepted and quietly ignored; see
   `docs/providers.md` for the list.
+- **Tearing down is `Plan.absent`, not an empty file.** `destroy` reconciles
+  against the fleet's own keys with every status `.absent`, which is what
+  `Status.absent`'s "must not exist ⇒ DELETE" was for. Removing a resource
+  from the declaration instead removes its *key*, and an unkeyed resource is
+  unmanaged rather than deleted — the same mechanism that makes scoping work
+  is the one that makes deletion-by-omission impossible, deliberately.
+  Deletion *ordering*, though, is weaker than the creation side: `orderActions`
+  topologically sorts creations and merely reverses destructions, so on the way
+  down the schedule is the reverse of enumeration order rather than a sort of
+  the transposed graph. It comes out right for the fleets here — and
+  `infra check` and `example/ParisInstances.lean` both pin the order so a
+  `Kind` reordering fails a check rather than an account.
 - **`Plan.outside` is declared but not consumed.** Nothing in `satisfiesAt`,
   `satisfies`, `actions`, or `pullEntries` reads it — a key type's absence
   from `Keys.build`'s table (`Nothing`) is what actually leaves a resource

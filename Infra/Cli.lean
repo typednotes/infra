@@ -9,7 +9,7 @@ import Infra.Providers
   The command-line front end, as library code.
 
   A declaration repo declares a fleet; it should not also have to reimplement
-  `check | refresh | plan | apply`, decide which clouds to authenticate,
+  `check | refresh | plan | apply | destroy`, decide which clouds to authenticate,
   or remember that a dry run is the default. All of that lives here and is
   parameterised by the fleet, so a consumer's `Main.lean` is a call rather than
   a copy — this file exists because `infra`'s own `Main.lean` and
@@ -142,12 +142,14 @@ def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Un
     "For the real thing: `plan` (reads), then `apply` (changes).")
 
 def usage (exe : String) : String := String.intercalate "\n"
-  [ s!"usage: {exe} [check | refresh | plan | apply]"
+  [ s!"usage: {exe} [check | refresh | plan [--destroy] | apply | destroy]"
   , ""
-  , "  check      run the offline self-checks (default)"
-  , "  refresh    observe the declared clouds and cache what is there"
-  , "  plan       show what would change, without changing anything"
-  , "  apply      actually reconcile"
+  , "  check            run the offline self-checks (default)"
+  , "  refresh          observe the declared clouds and cache what is there"
+  , "  plan             show what would change, without changing anything"
+  , "  plan --destroy   show what tearing the fleet down would delete"
+  , "  apply            actually reconcile"
+  , "  destroy          delete everything this fleet declares"
   ]
 
 /-- The whole front end for one fleet.
@@ -189,15 +191,17 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
       let world ← pull (κ := κ) cacheRoot bs
       IO.println s!"pulled; {(plan target world).length} action(s) outstanding"
     return 0
-  -- One branch, because the two commands differ only in the `apply` flag —
-  -- which is exactly how `Infra.Core.push` is parameterised, so a plan is the
-  -- same function stopping one step earlier rather than a second
-  -- implementation that could disagree with it.
-  | ["plan"] | ["apply"] =>
+  -- Four commands, one body. They vary in two independent ways — *which*
+  -- declaration to reconcile against, and whether to actually do it — so
+  -- writing them out separately would be four copies of the same three lines.
+  -- `Plan.absent` is the "empty declaration": same keys, every one `.absent`.
+  | ["plan"] | ["apply"] | ["plan", "--destroy"] | ["destroy"] =>
+    let tearDown := args == ["destroy"] || args == ["plan", "--destroy"]
+    let doIt     := args == ["apply"] || args == ["destroy"]
     withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
-      let opts := { apply := args == ["apply"], colour : PushOptions }
-      for line in ← push bs target world opts do IO.println line
+      let wanted := if tearDown then Plan.absent κ else target
+      for line in ← push bs wanted world { apply := doIt, colour } do IO.println line
     return 0
   | _ =>
     IO.eprintln (usage exe)

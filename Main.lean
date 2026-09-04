@@ -290,6 +290,48 @@ def checkSecretComposition : IO Unit := do
 
   IO.println "composed secrets: ok (one apply, ordered, no leak, converges)"
 
+/-- Checks the empty declaration: what `destroy` reconciles against.
+
+    Two claims worth pinning. First, `Plan.absent` deletes what exists and
+    nothing else — `actions` maps `.absent` against an unseen resource to no
+    action, so tearing down a fleet that was never applied is a no-op rather
+    than a pile of doomed deletes. Second, deletions run in the *reverse* of
+    creation order, which is what `orderActions` does by reversing them: a
+    resource must go before whatever it depends on is taken away. -/
+def checkTeardown : IO Unit := do
+  let bs := Infra.Providers.all
+
+  -- Nothing observed: the empty declaration asks for nothing.
+  let onNothing ← push bs (Plan.absent demoKeys) emptyWorld {}
+  unless onNothing == ["nothing to do"] do
+    throw (IO.userError s!"tearing down an unapplied fleet should be a no-op: {onNothing}")
+
+  -- Against a world where the referenced bucket exists, the delete appears.
+  let dry ← push bs (Plan.absent demoKeys) partialWorld {}
+  unless (dry.filter (·.startsWith "would DELETE")).length == 1 do
+    throw (IO.userError s!"expected one delete against partialWorld: {dry}")
+
+  -- Ordering, on the fleet that has a real cross-cloud edge: the Scaleway
+  -- function reads the AWS bucket, so on the way down the function goes first.
+  let both : World demoKeys := worldOf
+    [ ⟨.aws, .s3Bucket, .cold,
+        { observed := { handle := ⟨"cold"⟩, arn := "arn:x", region := "eu-west-1" }
+          reported := { name := "cold", versioning := .unknown
+                        objectLock := .unknown, region := .unknown } }⟩
+    , ⟨.scaleway, .scalewayFunction, .api,
+        { observed := { handle := ⟨"ingest"⟩, url := "https://x.invalid" }
+          reported := { name := "ingest", runtime := "python3.12"
+                        namespace' := "demo", sourceBucket := .unknown } }⟩ ]
+  let ordered ← push bs (Plan.absent demoKeys) both {}
+  match slotIdx ordered "scaleway/scaleway-function/ingest",
+        slotIdx ordered "aws/s3-bucket/cold" with
+  | some fn, some bucket =>
+    unless fn < bucket do
+      throw (IO.userError s!"on teardown the function must go before its bucket: {ordered}")
+  | _, _ => throw (IO.userError s!"expected both deletes: {ordered}")
+
+  IO.println "teardown: ok (no-op when absent, reverse order when present)"
+
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
 def selfCheck : IO Unit := do
@@ -299,6 +341,7 @@ def selfCheck : IO Unit := do
   checkCredentials
   checkSigning
   checkPush
+  checkTeardown
   checkSecretComposition
 
 /-- The dispatch itself lives in `Infra.Cli`, which is also what a declaration

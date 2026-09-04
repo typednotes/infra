@@ -23,6 +23,8 @@ import Infra
       lake exe cross-cloud                # offline: the plan, from placeholders
       lake exe cross-cloud plan           # reads BOTH accounts
       lake exe cross-cloud apply          # creates real resources in both
+      lake exe cross-cloud plan --destroy # what tearing it down would delete
+      lake exe cross-cloud destroy        # delete it all again
 
   A bare invocation is offline and free. Unlike every other example here, the
   live commands need **both** clouds' credentials, because the fleet genuinely
@@ -39,8 +41,11 @@ import Infra
     `namespace' := "typednotes"` is not created by this fleet — a
     `scalewayFunction` is *placed into* an existing Serverless Functions
     namespace, and no kind here provisions one.
-  - **Removing a line un-manages a resource; it does not delete it.** Set its
-    status to `.absent`, or delete by hand.
+  - **Removing a line un-manages a resource; it does not delete it.** To
+    actually remove what this created, use `destroy`, which reconciles against
+    `Plan.absent` — the same keys, every one declared `.absent`. Deleting the
+    `resource` lines instead removes the keys, and the buckets stay, unmanaged.
+    Deletion runs in reverse, so the function goes before the bucket it reads.
 
   To have it refuse to run against the wrong accounts:
 

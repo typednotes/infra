@@ -34,6 +34,8 @@ import Infra
       lake exe paris-instances                # offline: the plan, from placeholders
       lake exe paris-instances plan           # reads the real account
       lake exe paris-instances apply          # CREATES REAL, BILLABLE INSTANCES
+      lake exe paris-instances plan --destroy # what tearing it down would delete
+      lake exe paris-instances destroy        # terminate them again
 
   A bare invocation is offline, credential-free and free of charge. The live
   commands need AWS credentials **and a region** — the region is what puts
@@ -51,8 +53,10 @@ import Infra
   ## Before the first apply, four things worth knowing
 
   1. **`t3.nano` costs money** and both instances run until something
-     terminates them. Removing a resource from this file does *not* delete it —
-     it un-manages it. Set the plan to `.absent`, or terminate by hand.
+     terminates them — `destroy` is that something, and is the reason to read
+     the "Tearing it down" section below before applying. Removing a resource
+     from this file does *not* delete it; it un-manages it, and the instance
+     keeps running and keeps billing.
   2. **`al2023Paris` below is unverified.** An AMI id is region-specific and
      they are rotated; if it is stale, `RunInstances` fails with
      `InvalidAMIID.NotFound`. That is the most likely first failure.
@@ -140,6 +144,55 @@ fleet paris where
 --     keys.Key ProviderId.aws Kind.s3Bucket
 --   but is expected to have type
 --     Expr keys.Key (keys.Key ProviderId.aws Kind.securityGroup)
+
+/-! ## Tearing it down
+
+  `destroy` reconciles against `Plan.absent`, which keeps this fleet's keys and
+  declares every one `.absent`. That is the "empty infra": *not* deleting the
+  `resource` lines above, which would remove the keys and leave the instances
+  running, unmanaged.
+
+  Deletion order is the reverse of creation order, so the instances go before
+  the group they sit in — which matters, because EC2 refuses to delete a
+  security group that an instance still references.
+
+  **That order is currently incidental, not derived.** `orderActions`
+  topologically sorts *creations* and merely reverses destructions, so what
+  makes this come out right is that `securityGroup` precedes `awsInstance` in
+  the `Kind` enum. The guard below pins it, so reordering that enum fails here
+  rather than failing against a real account. -/
+
+/-- The same fleet, already applied: enough to make `.absent` produce deletes
+    rather than no-ops, since `actions` only deletes what it can see. -/
+def existing : World paris.keys :=
+  worldOf
+    [ ⟨.aws, .securityGroup, web,
+        { observed := { handle := ⟨"web"⟩, groupId := "sg-x", vpcId := "vpc-x" }
+          reported := { name := "web"
+                        description := "http and https from anywhere, ssh from nowhere"
+                        ingress := .unknown } }⟩
+    , ⟨.aws, .awsInstance, NamedKey.of paris.names.aws.awsInstance "web-1",
+        { observed := { handle := ⟨"web-1"⟩, instanceId := "i-1"
+                        privateIp := "10.0.0.1", state := "running" }
+          reported := { name := "web-1", imageId := al2023Paris
+                        instanceType := "t3.nano", securityGroup := ⟨"web"⟩
+                        keyName := .unknown, subnetId := .unknown } }⟩ ]
+
+-- Two resources exist here, so the empty declaration deletes two.
+#guard (actions (Plan.absent paris.keys) existing).length = 2
+
+/-- What `push` actually executes: `orderActions` schedules creations
+    topologically and *reverses* destructions, so this is the list to assert
+    on. Raw `actions` comes back in enumeration order — group first — which is
+    exactly the order that would fail against EC2. -/
+private def teardown : List String :=
+  match orderActions (Plan.absent paris.keys) (actions (Plan.absent paris.keys) existing) with
+  | .ok ordered => ordered.map Action.slot
+  | .error _    => []
+
+-- The instance goes before the group it references. Reordering the `Kind`
+-- enum would break this, which is why it is written down.
+#guard teardown = ["aws/aws-instance/web-1", "aws/security-group/web"]
 
 /-! ## What the fleet says -/
 

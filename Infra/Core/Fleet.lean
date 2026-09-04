@@ -94,6 +94,21 @@ def satisfiesAt {κ : Keys} (T : Plan κ) (W : World κ)
   | .present _, some _   => true
   | .present _, none     => false
 
+/-- The empty declaration: everything this fleet knows about must not exist.
+
+    This is how a fleet is torn down, and it is worth being precise about why
+    it is not the same as deleting the resources from the source file.
+    `assign` is total over `κ.Key`, so a resource *removed* from a declaration
+    no longer has a key for anything to mention — it becomes unmanaged, and
+    whatever exists in the cloud is left alone. Keeping the keys and saying
+    `.absent` is what turns "I no longer want this" into a DELETE.
+
+    `outside` stays `unmanaged`: this says nothing about resources the fleet
+    never claimed, only that the ones it did claim should go. -/
+def Plan.absent (κ : Keys) : Plan κ where
+  assign _ _ _ := .absent
+  outside := .unmanaged
+
 /-- Whether every secret this plan declares is honest about where its value
     comes from — no plaintext written into the committed target.
 

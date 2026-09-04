@@ -59,11 +59,21 @@ lake exe infra check   # offline self-checks; no cloud, no credentials needed
 keychain / environment-variable chain it tries, in that order.
 
 ```sh
-lake exe infra check     # offline self-checks (default, no cloud)
-lake exe infra refresh   # observe both clouds, cache to .infra/
-lake exe infra plan      # show what would change, no changes made
-lake exe infra apply     # actually reconcile
+lake exe infra check            # offline self-checks (default, no cloud)
+lake exe infra refresh          # observe both clouds, cache to .infra/
+lake exe infra plan             # show what would change, no changes made
+lake exe infra plan --destroy   # show what tearing the fleet down would delete
+lake exe infra apply            # actually reconcile
+lake exe infra destroy          # delete everything the fleet declares
 ```
+
+`destroy` reconciles against `Plan.absent` — the fleet's own keys, every one
+declared `.absent`. That distinction matters: **deleting a resource from the
+declaration does not delete it from the cloud.** `Plan.assign` is total over
+the fleet's keys, so a removed resource has no key for anything to mention and
+is simply left alone, still running. Saying `.absent` is what turns "I no
+longer want this" into a DELETE, and deletions run in the reverse of creation
+order so a resource goes before whatever it depends on.
 
 `plan` never touches a cloud. Treat `apply` like you would `terraform apply`:
 read the plan first. Output is coloured by verb when stdout is a terminal —
