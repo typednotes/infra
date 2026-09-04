@@ -1,5 +1,9 @@
 # Infra
 
+## Code
+
+Please commit code but do not push without approval
+
 ## Documentation
 
 The code should stay in sync with the documentation in `docs/`.
