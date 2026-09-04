@@ -251,5 +251,14 @@ API keys, so the browser flow in `Infra/Core/Auth.lean` is built but unused.
 
 What credentials actually do is a three-source chain — the CLIs' own config files, then the OS
 keychain, then environment variables — resolved in `docs/authentication.md` and implemented in
-`Infra/Core/Credentials.lean`. The browser flow stays for whenever AWS SSO or a Scaleway OAuth
-flow is added.
+`Infra/Core/Credentials.lean`.
+
+Browser login has since been **decided against** rather than merely deferred. Scaleway has no
+browser flow for programmatic credentials at all, and AWS's is IAM Identity Center, which the
+account this targets does not use. `Infra/Core/Auth.lean` stays, but note that it sketches the
+authorization-*code* flow, and AWS browser login is the *device authorization* grant — so it is
+not the starting point it looks like. See `docs/authentication.md`'s "Still open".
+
+Being authenticated is not the same as being pointed at the right place, so a fleet also states
+which accounts it is for, and every live command verifies that before listing anything
+(`Infra.Cli.Accounts`, `Kinds/Identity.lean`).

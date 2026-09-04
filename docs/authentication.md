@@ -2,13 +2,16 @@
 
 ## Problem
 
-Per the "Authentication" section of `docs/architecture.md`: "Basic authentication to a
-service happens by opening the browser. Later, other means of authentication will be
-used." That much is settled and implemented — `Infra.Core.Auth.openBrowser` and
-`authorizationUrl` build the OAuth2 authorization-code URL (via Linen's `Network.OAuth2`)
-and open it in the user's default browser. What's open is what happens after the browser
-opens: how the authorization-code redirect is caught, and where the resulting token ends
-up stored so later `pull`/`push` calls can use it.
+`docs/architecture.md` originally said "basic authentication to a service
+happens by opening the browser". That turned out not to be what either cloud
+wants, and the sections below are kept as the record of how that was worked
+out — read them as history, not as a plan.
+
+**What is actually implemented** is a three-source credential chain (config
+files, then the OS keychain, then environment variables), described under
+"Resolved: where credentials come from". **Browser login is decided against**,
+for reasons specific to these two clouds — see "Still open". `Infra.Core.Auth`
+remains a stub of a flow that would not be the right one anyway.
 
 ## Catching the redirect
 
@@ -146,6 +149,44 @@ The fix is to point OpenSSL at the runner's own bundle, which
 the first live call from CI is where it appears. See `typednotes-infra`'s
 workflows for a working example.
 
+### Which account, verified before anything happens
+
+Credentials being *valid* is not the same as their being the *right* ones. The
+chain has three sources, so what is in force is whatever the environment, the
+keychain or a config file happened to supply — and an exported `AWS_PROFILE`, a
+stale keychain entry or a CI secret pointing at another account all look
+identical at the point of use. The first visible sign would be a plan proposing
+to build a fleet somewhere it does not belong.
+
+So a fleet states which accounts it is for (`Infra.Cli.Accounts`), and every
+live command checks the claim before listing anything:
+
+```
+$ lake exe typednotes-infra plan
+aws: account 616568506952 ok
+scaleway: organization 4d7c630f-df06-43fe-b9e5-df729c8be4e3 ok
+```
+
+and otherwise refuses:
+
+```
+wrong AWS account: credentials are for 999988887777
+(arn:aws:iam::999988887777:user/someone), but this fleet is declared for 616568506952
+```
+
+AWS uses `sts:GetCallerIdentity`, which is the right call and no other: it
+requires no permissions, so it cannot fail for a reason unrelated to the
+answer, and it behaves identically for an IAM user, an assumed role and an
+Identity Center session. Scaleway has no equivalent, so the organization comes
+from the API key's own record, falling back to `default_organization_id`.
+
+A claim that cannot be *established* is a failure, never a pass — the check is
+never silently skipped. Only the clouds a fleet uses are checked, and only
+those it names an id for, so it costs one call per cloud per run and nothing
+for a fleet that opts out. `infra` itself names no accounts: whose they are is
+the declaring repo's business, and neither id is a secret (an account id
+appears in every ARN, an organization id in the console URL).
+
 ### Secrets never render
 
 `Credentials`' `Repr` redacts the secret key and any session token, so no
@@ -155,11 +196,31 @@ credential does not contain the secret.
 
 ## Still open
 
-- **Loopback listener or manual paste** for an OAuth2 authorization code. Not
-  needed yet: both clouds authenticate with static keys, so
-  `Infra.Core.Auth`'s browser flow remains unused. It becomes relevant if AWS
-  SSO or a Scaleway OAuth flow is added.
-- **Token refresh.** Same: static keys do not expire, so nothing refreshes.
+- **Browser login is decided against, for now.** Static keys stay the only
+  mechanism. The reasons are specific rather than a matter of taste:
+
+  * **Scaleway has no browser flow to use.** API access is by access key and
+    secret key, created in the console. There is no OAuth or device grant for
+    programmatic credentials, so no amount of work here would cover that half.
+  * **AWS has one, but only via IAM Identity Center**, which the account this
+    is aimed at does not use — it is reached with plain IAM keys.
+
+  Worth recording for whoever revisits this: `Infra.Core.Auth` is **not the
+  right starting point**. It sketches the OAuth2 *authorization-code* flow
+  (build a URL, open a browser, catch a redirect), and its own comment says the
+  callback listener and token exchange are deliberately absent. AWS browser
+  login is the *device authorization* grant instead — `RegisterClient`,
+  `StartDeviceAuthorization`, open the browser, poll `CreateToken`, then
+  `sso:GetRoleCredentials` — which needs no redirect listener at all and so
+  reuses almost none of that file. The pieces it *would* reuse already exist:
+  `Auth.openBrowser`, the HTTP client, and `Credentials.sessionToken`, which
+  already carries temporary credentials through signing.
+
+  Cheaper than either, if it ever comes up: read the token the AWS CLI's own
+  `aws sso login` already caches under `~/.aws/sso/cache/`, and call
+  `GetRoleCredentials` with it — a fourth source in the chain rather than a
+  new flow.
+- **Token refresh.** Static keys do not expire, so nothing refreshes.
   Temporary AWS credentials (`AWS_SESSION_TOKEN`) are *accepted* and signed
   with, but this tool will not renew them when they lapse.
 - **Restricted INI and YAML readers.** The credential chain uses Linen's
