@@ -137,8 +137,34 @@ def update (creds : Credentials) (ep : Endpoint) (name : String)
       authorize creds ep groupId port cidr
   return groupId
 
-def delete (creds : Credentials) (ep : Endpoint) (name : String) : IO Unit := do
-  let _ ← Query.call creds ep "DeleteSecurityGroup" version [("GroupName", name)]
+/-- Delete, retrying while AWS still says something depends on the group.
+
+    `Instance'.delete` already waits for `terminated`, so by the time this runs
+    the instances are gone — but detaching their network interfaces can lag a
+    little behind that, and AWS reports the gap as `DependencyViolation`. It is
+    the one error here that is worth retrying rather than surfacing: it means
+    "not yet", where every other failure means "no".
+
+    Any other error propagates immediately, so a genuinely undeletable group
+    still fails fast. -/
+private def deleteRetrying (creds : Credentials) (ep : Endpoint) (name : String) :
+    Nat → IO Unit
+  | 0 => do
+    -- Out of patience: make the last attempt's real error the one reported.
+    let _ ← Query.call creds ep "DeleteSecurityGroup" version [("GroupName", name)]
+  | n + 1 => do
+    match ← (Query.call creds ep "DeleteSecurityGroup" version
+              [("GroupName", name)]).toBaseIO with
+    | .ok _ => pure ()
+    | .error e =>
+      if ((toString e).splitOn "DependencyViolation").length > 1 then
+        IO.sleep 3000
+        deleteRetrying creds ep name n
+      else
+        throw e
+
+def delete (creds : Credentials) (ep : Endpoint) (name : String) : IO Unit :=
+  deleteRetrying creds ep name 20
 
 end SecurityGroup
 
@@ -264,9 +290,53 @@ def update (creds : Credentials) (ep : Endpoint) (instanceId : String)
     let _ ← Query.call creds ep "ModifyInstanceAttribute" version
       [("InstanceId", instanceId), ("GroupId.1", gid)]
 
-/-- Terminate by instance id, which the caller reads out of `ObservedOf`. -/
+/-- The state AWS reports for one instance id, unfiltered.
+
+    Unlike `byName` this hides nothing: `shutting-down` and `terminated` both
+    come back, which is the entire point — they are the states the caller has
+    to be able to tell apart. `none` means AWS no longer reports the instance
+    at all, which it eventually stops doing. -/
+def stateById (creds : Credentials) (ep : Endpoint) (instanceId : String) :
+    IO (Option String) := do
+  let root ← Query.call creds ep "DescribeInstances" version
+    [("InstanceId.1", instanceId)]
+  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
+  return instances.head?.map fun i =>
+    match i.child "instanceState" with
+    | some st => (st.childText "name").getD ""
+    | none    => ""
+
+/-- Poll until the instance is really gone, or give up with a named error. -/
+private def awaitTerminated (creds : Credentials) (ep : Endpoint) (instanceId : String) :
+    Nat → IO Unit
+  | 0 => throw (IO.userError
+      s!"instance {instanceId} did not reach 'terminated' in time; its security group \
+cannot be deleted until it does — re-run `destroy` once it has")
+  | n + 1 => do
+    match ← stateById creds ep instanceId with
+    | none               => pure ()          -- no longer reported at all
+    | some "terminated"  => pure ()
+    | some _             => IO.sleep 3000; awaitTerminated creds ep instanceId n
+
+/-- Terminate by instance id, and **wait for it to finish**.
+
+    `TerminateInstances` is asynchronous: it returns as soon as the request is
+    accepted, and the instance then spends up to a minute or so in
+    `shutting-down`, during which its network interface still references its
+    security group. Deleting that group meanwhile fails with
+
+        DependencyViolation: resource sg-… has a dependent object
+
+    which is what a `destroy` of `example/ParisInstances.lean` hit — the
+    scheduler ordered the instance before the group, correctly, and then raced
+    it. Ordering alone is not enough when a provider's delete is asynchronous;
+    something has to wait.
+
+    Bounded at a couple of minutes, then a named error telling the operator to
+    re-run rather than hanging indefinitely. -/
 def delete (creds : Credentials) (ep : Endpoint) (instanceId : String) : IO Unit := do
   let _ ← Query.call creds ep "TerminateInstances" version [("InstanceId.1", instanceId)]
+  awaitTerminated creds ep instanceId 40
 
 end Instance'
 

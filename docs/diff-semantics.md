@@ -341,6 +341,18 @@ outside the fleet.
 - **Unreportable fields are unenforced, not rejected.** A target asking for
   something a cloud cannot express is accepted and quietly ignored; see
   `docs/providers.md` for the list.
+- **Ordering is not the same as waiting.** The scheduler gets the *sequence*
+  right — an instance is deleted before its security group — but a provider's
+  delete can be asynchronous, so "the previous action returned" does not mean
+  "the resource is gone". `TerminateInstances` accepts the request and leaves
+  the instance in `shutting-down` with its network interface still holding the
+  security group, and the group delete then fails with `DependencyViolation`.
+  Found by running `destroy` against a real account, which is the only way it
+  could have been found. `Kinds/Ec2.lean` now waits for `terminated` and
+  retries the group delete while AWS still reports a dependent object; nothing
+  in the *engine* knows about waiting, so every other asynchronous delete has
+  the same latent problem until its backend handles it. A general answer would
+  be a per-kind "settled?" predicate the scheduler consults between actions.
 - **Tearing down is `Plan.absent`, not an empty file.** `destroy` reconciles
   against the fleet's own keys with every status `.absent`, which is what
   `Status.absent`'s "must not exist ⇒ DELETE" was for. Removing a resource

@@ -95,6 +95,14 @@ instance therefore always contributes a dependency edge, cannot be declared
 without a group, and cannot be settled until that group exists — see
 `example/ParisInstances.lean`.
 
+Deleting an instance **waits** for it to reach `terminated` rather than just
+issuing `TerminateInstances`, and the security-group delete retries while AWS
+reports `DependencyViolation`. Both exist because a real `destroy` failed
+without them: terminate is asynchronous, so ordering the instance first is
+necessary but not sufficient — its network interface holds the group for a
+while after the call returns. Bounded at a couple of minutes, then a named
+error telling the operator to re-run.
+
 Two deliberate limitations, both visible in a plan before anything is applied:
 
 - **`instanceType` is `forcesReplace`.** EC2 can resize a *stopped* instance,
