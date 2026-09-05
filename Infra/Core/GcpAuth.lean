@@ -89,6 +89,36 @@ def parse (contents : String) : Except String ServiceAccount := do
            tokenUri := (str? j "token_uri").getD "https://oauth2.googleapis.com/token"
            projectId := str? j "project_id" }
 
+/-- The `type` a Google credentials file declares, if it is JSON at all.
+
+    Separate from `parse` because the question "is this mine to read?" is not
+    the same question as "is this a valid service-account key?", and the two
+    want different answers on failure. -/
+def declaredType (contents : String) : Option String :=
+  (Json.parse contents).toOption.bind (str? · "type")
+
+/-- Credential files that are perfectly valid, and *not this module's job*.
+
+    `GOOGLE_APPLICATION_CREDENTIALS` is a general "where are my Google
+    credentials" variable, not a service-account-key variable. Several kinds of
+    file live under it, and the one that matters here is `external_account`:
+    that is what Workload Identity Federation writes, and
+    `google-github-actions/auth` sets the variable to point at it on every
+    federated CI run.
+
+    Encountering one is not an error. It means federation is in use, the token
+    is already available by another route, and this module has nothing to
+    contribute — so it declines and the chain moves on. Treating it as a
+    failure instead broke GCP CI outright: the file exists, so the key path
+    ran; the type is wrong, so it threw; and the access token sitting in the
+    environment two steps later was never reached. -/
+def foreignTypes : List String :=
+  [ "external_account"                  -- Workload Identity Federation
+  , "external_account_authorized_user"  -- federated user credentials
+  , "impersonated_service_account"      -- impersonation chain
+  , "authorized_user"                   -- `gcloud auth application-default login`
+  , "gdch_service_account" ]            -- Google Distributed Cloud Hosted
+
 /-- Seconds since the Unix epoch. `iat`/`exp` are in these. -/
 private def epochSeconds : IO Nat := do
   let now ← Data.Time.getCurrentTime
@@ -177,10 +207,20 @@ def keyFileVar : String := "GOOGLE_APPLICATION_CREDENTIALS"
 def fromKeyFile : IO (Option Credentials) := do
   let some path ← (do return (← IO.getEnv keyFileVar)) | return none
   if path.trimAscii.isEmpty then return none
-  let (token, project) ← tokenFromKeyFile path
-  return some
-    { accessKey := "", secretKey := "", region := ""
-      accessToken := some token, projectId := project }
+  let contents ← IO.FS.readFile path
+  -- Decline rather than fail: see `foreignTypes`. A *service-account* key that
+  -- is broken still throws — that one really is this module's problem, and
+  -- staying quiet about it would look identical to having no credentials.
+  if let some t := declaredType contents then
+    if foreignTypes.contains t then return none
+  match parse contents with
+  | .error e => throw (IO.userError s!"{path}: {e}")
+  | .ok sa =>
+    let jwt ← assertion sa defaultScope
+    let token ← exchange sa jwt
+    return some
+      { accessKey := "", secretKey := "", region := ""
+        accessToken := some token, projectId := sa.projectId }
 
 /-! ## Self-checks
 
@@ -206,6 +246,15 @@ def fromKeyFile : IO (Option Credentials) := do
 -- Missing pieces are named.
 #guard (parse "{\"type\":\"service_account\",\"client_email\":\"a@b\"}").isOk = false
 #guard (parse "not json").isOk = false
+
+-- A federated credentials file is recognised as someone else's business. This
+-- is the GCP CI failure, in one line: the file is real, and reading it here is
+-- the wrong response to it.
+#guard declaredType "{\"type\":\"external_account\",\"audience\":\"//iam.googleapis.com/x\"}"
+  = some "external_account"
+#guard foreignTypes.contains "external_account" = true
+#guard foreignTypes.contains "service_account" = false
+#guard declaredType "not json" = none
 
 -- The key is never rendered, whatever anyone does with `repr` or `toString`.
 private def secretSa : ServiceAccount :=
