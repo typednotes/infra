@@ -321,6 +321,19 @@ Verified offline, by `infra check`:
   hand-written equivalent — same cardinalities, providers, names, and ordered
   action list.
 
+**Since verified against a real account, and this section said otherwise for
+too long**: EC2. `example/ParisInstances.lean` was applied, and the cache holds
+a real security group with its VPC and two instances with real ids and state
+`running` — so `CreateSecurityGroup`, `RunInstances`, `DescribeSecurityGroups`
+and `DescribeInstances` work as written. What is still unconfirmed is narrower:
+whether `AuthorizeSecurityGroupIngress` applied the rules, whether
+`CreateTags` lands, and the whole of `ModifyInstanceAttribute` and
+`TerminateInstances`. AWS S3 creation is likewise confirmed, for both
+`objectStore` and `s3Bucket`.
+
+The paragraph below is what this file used to say, kept because the reasoning
+still applies to everything that *has* not been run:
+
 **Not verified against any account, and the newest of the lot**: every EC2
 endpoint path, parameter name and response shape in `Kinds/Ec2.lean` —
 `DescribeSecurityGroups`, `CreateSecurityGroup`,

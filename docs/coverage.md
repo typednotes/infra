@@ -93,6 +93,18 @@ This is the section worth reading before trusting anything. Correctness of
   `example/ScalewayQueue.lean`. Two bugs only surfaced here: the endpoint host
   was wrong in a way that did not resolve at all, and Scaleway's SQS-compatible
   API refuses the main API key and needs a dedicated minted credential.
+- **AWS S3 `create` and `list`** — `example/CrossCloud.lean` applied against a
+  real account. The cache holds a real bucket URL
+  (`s3.eu-west-3.amazonaws.com/typednotes-assets`) and a real ARN
+  (`arn:aws:s3:::typednotes-archive`), so both the portable `objectStore` and
+  the provider-local `s3Bucket` create paths work.
+- **AWS EC2 `create` and `read`** — `example/ParisInstances.lean` applied
+  against a real account. The cache holds a real security group
+  (`sg-…`, with its VPC) and two instances with real ids, private IPs and state
+  `running`. That means `CreateSecurityGroup`, `RunInstances`,
+  `DescribeSecurityGroups` and `DescribeInstances` all work with the parameter
+  names in `Kinds/Ec2.lean` — which this document, until now, described as
+  unverified guesses.
 
 ### Verified offline, on every build
 
@@ -107,11 +119,15 @@ both directions by a checker that recomputes the edges independently.
 
 ### Never run against any account
 
-- **All of EC2** — `securityGroup` and `awsInstance`. Every endpoint path,
-  parameter name and response shape in `Kinds/Ec2.lean` is a best guess.
-  The newest code here and the most likely to be wrong.
-- **Everything on AWS.** No AWS call in this library has been made against a
-  real account.
+- **Most of AWS** — Lambda, RDS, ECR, Secrets Manager and IAM have never been
+  called. S3 and EC2 have; the rest have not.
+- **Every `update` and `delete` path, on both clouds.** What is confirmed is
+  creation and observation. Nothing here has been seen to modify or tear down
+  a real resource, and `destroy` in particular is the least exercised code in
+  the library relative to how much it can cost to get wrong.
+- **Ingress rules and tags** — `CreateSecurityGroup` succeeded, but whether
+  `AuthorizeSecurityGroupIngress` applied the rules correctly, and whether tags
+  land, is not established by a group merely existing.
 - **Most endpoint shapes** — roughly 1,200 lines across `Kinds/*.lean`.
 - **`scalewayContainer.secretEnv`** — how Scaleway actually binds a secret to
   an environment variable. Implemented against the plaintext-at-set-time

@@ -184,7 +184,7 @@
 
 <div class="banner">
   <strong>0.2.0</strong> — early software. Two clouds, 14 resource kinds, and
-  <strong>no AWS call yet made against a real account</strong>.
+  verification that <strong>varies a lot by kind</strong>.
   <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">See exactly what is covered →</a>
 </div>
 
@@ -542,8 +542,9 @@ would CREATE scaleway/secrets/db-url
     <div class="cov">
       <div class="cov-card ok">
         <h4>Verified live</h4>
-        <p>Scaleway <code>list</code> for every kind, and queues end to end —
-           create, read, list. Two real bugs surfaced only here.</p>
+        <p>Scaleway <code>list</code> for every kind, and queues end to end.
+           On AWS: S3 and EC2 <code>create</code> — real buckets, a security
+           group and two running instances.</p>
       </div>
       <div class="cov-card warn">
         <h4>Verified offline</h4>
@@ -552,8 +553,9 @@ would CREATE scaleway/secrets/db-url
       </div>
       <div class="cov-card bad">
         <h4>Never run</h4>
-        <p><strong>All of AWS.</strong> Every EC2 parameter name, and roughly
-           1,200 lines of endpoint shapes, are best guesses.</p>
+        <p>Most of AWS — Lambda, RDS, ECR, Secrets Manager, IAM — and every
+           <code>update</code> and <code>delete</code> path. Roughly 1,200
+           lines of endpoint shapes are still best guesses.</p>
       </div>
     </div>
 

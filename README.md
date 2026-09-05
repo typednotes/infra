@@ -42,9 +42,9 @@ Maturity is uneven and worth knowing before you rely on it:
 
 | | |
 |---|---|
-| Verified against a real account | Scaleway `list` for every kind; Scaleway queues end to end |
+| Verified against a real account | Scaleway `list` for every kind and queues end to end; on AWS, S3 and EC2 `create` |
 | Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets |
-| **Never run against an account** | **all of AWS**, and most endpoint shapes (~1,200 lines) |
+| **Never run against an account** | most of AWS (Lambda, RDS, ECR, Secrets Manager, IAM), every `update`/`delete` path, ~1,200 lines of endpoint shapes |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
 references, and a `# TODO` for anything HCL cannot express), and

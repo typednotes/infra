@@ -66,9 +66,11 @@ import Infra
      a different fleet for every operator who ran it. The account guard checks
      the account; `in paris` checks the place, and both are checked before
      anything is created.
-  4. **This backend has never been run.** Signing is verified offline; every
-     EC2 parameter name in `Kinds/Ec2.lean` is a best guess until an apply says
-     otherwise. Expect to iterate, and read `docs/providers.md` first.
+  4. **This backend has now been run, once.** An apply against a real account
+     created the group and both instances, so the EC2 parameter names in
+     `Kinds/Ec2.lean` are no longer guesses. `destroy` has *not* been
+     exercised, which is the half that costs money to get wrong — read
+     "Tearing it down" below before you need it.
 -/
 
 open Infra.Core
