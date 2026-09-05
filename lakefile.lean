@@ -128,6 +128,15 @@ run_cmd do
 
 package infra where
   version := v!"0.2.0"
+  -- Metadata Reservoir (the Lake package index) surfaces on the package page.
+  -- Reservoir indexes public Lean repos automatically — no submission — but it
+  -- only shows what is declared here, and the repo link is all it can infer.
+  description := "Terraform-style infrastructure as code in Lean 4: \
+dependently-typed target and observed cloud state, so an unrealisable \
+target is a compile error"
+  keywords := #["devtool", "cloud", "infrastructure", "devops", "dsl"]
+  homepage := "https://typednotes.github.io/infra/"
+  license := "Apache-2.0"
   moreLinkArgs := nativeLinkArgs
 
 require linen from git "https://github.com/typednotes/linen" @ "main"
