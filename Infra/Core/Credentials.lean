@@ -161,7 +161,7 @@ def fromGcloud : IO (Option Credentials) := do
     try
       let out ← IO.Process.output { cmd := "gcloud", args }
       if out.exitCode == 0 then
-        let v := out.stdout.trim
+        let v := out.stdout.trimAscii.toString
         -- `gcloud config get-value` prints this for an unset key.
         return if v.isEmpty || v == "(unset)" then none else some v
       else return none

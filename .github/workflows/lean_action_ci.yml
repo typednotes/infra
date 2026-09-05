@@ -53,3 +53,19 @@ jobs:
       # are available here.
       - name: Run offline self-checks
         run: lake exe infra check
+      # The test driver, offline: it builds every live fleet and plans it
+      # against the placeholder backends. That is what catches a live test
+      # broken by an unrelated change *before* someone runs it against a real
+      # account. Passing a provider is the live path and is never done here —
+      # see `.github/workflows/live-test.yml`, which is manual only.
+      - name: Run the test driver (offline)
+        run: lake test
+      # Every example is test surface, per AGENTS.md. All but `scaleway-pull`
+      # are offline and free, so CI runs them; a bare invocation plans against
+      # the placeholder backends.
+      - name: Run the examples (offline)
+        run: |
+          for e in scaleway-queue paris-instances cross-cloud multi-region; do
+            echo "── $e ──"
+            lake exe "$e" > /dev/null
+          done

@@ -127,7 +127,7 @@ run_cmd do
   mkDef `nativeLinkArgs keychain
 
 package infra where
-  version := v!"0.2.0"
+  version := v!"0.3.0"
   -- Metadata Reservoir (the Lake package index) surfaces on the package page.
   -- Reservoir indexes public Lean repos automatically — no submission — but it
   -- only shows what is declared here, and the repo link is all it can infer.
@@ -181,6 +181,17 @@ lean_exe «paris-instances» where
 lean_exe «cross-cloud» where
   srcDir := "example"
   root := `CrossCloud
+
+/-- The test driver, which `lake test` runs.
+
+    Offline with no arguments — that is what ordinary CI runs, and it needs no
+    credentials and costs nothing. `lake test -- aws` (or `scaleway`, `gcp`)
+    creates one real queue, checks the fleet converged, and deletes it again,
+    with the teardown guaranteed by a `finally`. See `test/Live.lean`. -/
+@[test_driver]
+lean_exe «live-test» where
+  srcDir := "test"
+  root := `Live
 
 /-- `example/MultiRegion.lean`: one fleet in four regions, placed with nested
     `provider`/`in` blocks. Placeholder-backed like `cross-cloud`, so a bare

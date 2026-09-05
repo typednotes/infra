@@ -1,4 +1,4 @@
-# Coverage in 0.2.0
+# Coverage in 0.3.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-05.
@@ -12,7 +12,8 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| GCP, Azure, OVH | not started — named in `docs/architecture.md` as intended, no code |
+| **GCP** | **types only** — declarable, placeable, referenceable, schedulable, diffable and exportable to HCL; no live client, every backend branch raises |
+| Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
 over it fails to compile until handled. That is the intended cost: mechanical
@@ -74,6 +75,7 @@ asserted.
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
 | Terraform/OpenTofu export (`toHcl`) | works; not a round trip — see below |
 | Terraform/OpenTofu import (`fleetOfState`) | works, from `terraform show -json` |
+| `lake test` — offline by default, live per provider on request | complete |
 
 ## How far each part has actually been run
 
@@ -105,6 +107,19 @@ This is the section worth reading before trusting anything. Correctness of
   `DescribeSecurityGroups` and `DescribeInstances` all work with the parameter
   names in `Kinds/Ec2.lean` — which this document, until now, described as
   unverified guesses.
+
+### Exercised by CI
+
+`lake test` runs the offline driver on every push, and every example with it.
+`lake test -- <provider>` is the live round trip — create one queue, check the
+fleet converged, delete it — and runs only from a manual workflow trigger, one
+cloud at a time. Everything it creates is named `ci-tests-infra-…`, teardown is
+guaranteed even when the assertions fail, and there is a backstop teardown if
+the driver dies between the two.
+
+That closes the gap this document named a version ago: `destroy` was "the least
+exercised code in the library relative to how much it can cost to get wrong",
+and it is now on the CI path for AWS and Scaleway.
 
 ### Verified offline, on every build
 

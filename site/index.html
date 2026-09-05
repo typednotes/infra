@@ -81,6 +81,7 @@
   .nav-links { margin-left: auto; display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
   .nav-links a { color: var(--ink-2); text-decoration: none; font-size: 15px; font-weight: 500; }
   .nav-links a:hover { color: var(--ink); }
+  .nav-links .gh { display: flex; align-items: center; }
 
   /* ── hero ── */
   .hero { padding: 72px 0 56px; }
@@ -132,6 +133,12 @@
          background: var(--border); cursor: pointer; }
   .dot[aria-current="true"] { background: var(--blue); }
   .slide[hidden] { display: none; }
+  /* The frame keeps its shape between examples: without this the card grows
+     and shrinks as slides change, and the controls beneath it jump. Measured
+     from the tallest slide (371px) rather than guessed — the four are 282,
+     371, 326 and 371. Re-measure if a slide is edited. */
+  .slides { min-height: 371px; }
+  @media (max-width: 900px) { .slides { min-height: 0; } }
 
   /* ── sections ── */
   section { padding: 64px 0; border-top: 1px solid var(--border); }
@@ -151,6 +158,8 @@
            border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
            color: var(--ink-2); opacity: .5; }
   .cloud.is-on { opacity: 1; color: var(--ink); border-color: var(--ink-2); }
+  /* Declarable but not yet reachable: the types work, the client does not. */
+  .cloud.is-partial { opacity: .8; color: var(--ink); border-style: dashed; }
   .cloud img { height: 20px; width: auto; display: block; }
   .cloud span { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
                 border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
@@ -183,7 +192,7 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.2.0</strong> — early software. Two clouds, 14 resource kinds, and
+  <strong>0.3.0</strong> — early software. Three clouds, 14 resource kinds, and
   verification that <strong>varies a lot by kind</strong>.
   <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">See exactly what is covered →</a>
 </div>
@@ -197,7 +206,11 @@
       <a href="#why">Why</a>
       <a href="#coverage">Coverage</a>
       <a href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Tutorial</a>
-      <a href="https://github.com/typednotes/infra">GitHub</a>
+      <a class="gh" href="https://github.com/typednotes/infra" aria-label="infra on GitHub">
+        <svg viewBox="0 0 16 16" width="19" height="19" aria-hidden="true" focusable="false">
+          <path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+        </svg>
+      </a>
     </div>
   </div>
 </nav>
@@ -219,7 +232,7 @@
         get as far as a plan</strong>.
       </p>
       <div class="stats">
-        <div class="stat"><b>2</b><span>clouds — AWS, Scaleway</span></div>
+        <div class="stat"><b>3</b><span>clouds — AWS, Scaleway, GCP</span></div>
         <div class="stat"><b>14</b><span>resource kinds</span></div>
         <div class="stat"><b>0</b><span>runtime validation passes</span></div>
       </div>
@@ -240,6 +253,7 @@
       <div class="card">
         <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span id="slide-file">Main.lean</span></div>
 
+        <div class="slides">
         <div class="slide" id="s0" role="group" aria-roledescription="slide" aria-label="1 of 4">
 <pre><span class="c">-- One bucket in Paris. `in paris` is what places it:</span>
 <span class="c">-- AWS would read eu-west-3, Scaleway fr-par.</span>
@@ -304,6 +318,7 @@
   { valueFrom := composed
       expr!<span class="s">"postgres://dbadmin:{secretValueOf dbPassword}</span>
 <span class="s">              @{endpointOf mainDb}/main"</span> }</pre>
+        </div>
         </div>
       </div>
 
@@ -529,7 +544,7 @@ would CREATE scaleway/secrets/db-url
     <div class="clouds">
       <div class="cloud is-on"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></div>
       <div class="cloud is-on"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></div>
-      <div class="cloud"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>planned</span></div>
+      <div class="cloud is-partial"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>types only</span></div>
       <div class="cloud"><img src="providers/azure.svg" alt="Azure" width="190" height="60"><span>planned</span></div>
       <div class="cloud"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"><span>planned</span></div>
     </div>
@@ -612,7 +627,11 @@ lake exe multi-region       <span class="c"># six resources in four regions</spa
       <a href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Tutorial</a>
       <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
       <a href="https://github.com/typednotes/infra/blob/main/docs/architecture.md">Architecture</a>
-      <a href="https://github.com/typednotes/infra">GitHub</a>
+      <a class="gh" href="https://github.com/typednotes/infra" aria-label="infra on GitHub">
+        <svg viewBox="0 0 16 16" width="19" height="19" aria-hidden="true" focusable="false">
+          <path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+        </svg>
+      </a>
     </div>
     <p>
       Apache-2.0. Written in the Lean programming language and proof assistant.

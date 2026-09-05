@@ -1,0 +1,124 @@
+name: Live test
+
+# Manual only, and one cloud at a time.
+#
+# This workflow CREATES AND DELETES a real resource — a queue named
+# `ci-tests-infra-queue` — in whichever account the secrets point at. It is
+# never triggered by a push, because a job that spends money should be started
+# by a person who meant to.
+#
+# Each fleet in `test/Live.lean` is single-cloud, so a run for one provider
+# authenticates only that provider: the AWS leg never reads Scaleway's secrets
+# and vice versa. That falls out of `Keys.providers`, not from the `if`s below.
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'Which cloud to run against'
+        required: true
+        type: choice
+        options: [aws, scaleway, gcp]
+
+# Never two live runs at once against the same account: the second would see
+# the first's queue and the convergence check would be meaningless. Queued
+# rather than cancelled, so a run always reaches its teardown.
+concurrency:
+  group: live-test-${{ inputs.provider }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    # A hung provider call must not hold a runner, and must not skip teardown:
+    # the step timeout below is shorter, so the job's own cleanup still runs.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: false
+          test: false
+
+      - name: Build
+        run: lake build live-test
+
+      # The offline leg always runs, whichever provider was chosen. It costs
+      # nothing and it fails fast on anything that would also break the live
+      # run — a bad fleet, a bad plan, a bad build.
+      - name: Offline checks
+        run: lake test
+
+      - name: Check the secrets for this provider are present
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ secrets.GOOGLE_OAUTH_ACCESS_TOKEN }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+        run: |
+          # An unset GitHub secret arrives as the empty string, not as absent —
+          # which is exactly the case `Credentials.normalizeEnv` exists for.
+          # Checking here means the failure names the missing secret instead of
+          # surfacing later as an opaque 403.
+          case "${{ inputs.provider }}" in
+            aws)      need="AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY" ;;
+            scaleway) need="SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID" ;;
+            gcp)      need="GOOGLE_OAUTH_ACCESS_TOKEN GOOGLE_CLOUD_PROJECT" ;;
+          esac
+          missing=""
+          for v in $need; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing repository secret(s):$missing"
+            exit 1
+          fi
+
+      # Creates one queue, checks the fleet converged, deletes it again.
+      # Teardown is inside the driver (`test/Live.lean`) rather than in a
+      # separate `if: always()` step, deliberately: it needs the same fleet,
+      # cache and backends the create used, and a shell step would have to
+      # reconstruct all three.
+      - name: Live round trip — ${{ inputs.provider }}
+        timeout-minutes: 12
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ secrets.GOOGLE_OAUTH_ACCESS_TOKEN }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+        run: lake test -- ${{ inputs.provider }}
+
+      # If the driver died between create and delete — a killed runner, a
+      # cancelled job — this is the backstop. `destroy` against the same fleet
+      # is idempotent: with nothing there, it is a no-op.
+      - name: Backstop teardown
+        if: failure() || cancelled()
+        timeout-minutes: 6
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ secrets.GOOGLE_OAUTH_ACCESS_TOKEN }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+        run: |
+          echo "::warning::live run did not finish cleanly; retrying teardown"
+          lake test -- ${{ inputs.provider }} || true
+          echo "If this still fails, look for resources named 'ci-tests-infra-*'"

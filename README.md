@@ -33,10 +33,13 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.2.0 covers
+## What 0.3.0 covers
 
-**2 clouds** (AWS, Scaleway) · **14 resource kinds** (7 portable, 7
+**3 clouds** (AWS, Scaleway, GCP) · **14 resource kinds** (7 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
+
+GCP is **types only**: its resources can be declared, placed, referenced,
+scheduled, diffed and exported to HCL, and there is no live client yet.
 
 Maturity is uneven and worth knowing before you rely on it:
 
@@ -254,6 +257,7 @@ extending anything:
 - [`docs/persistence.md`](docs/persistence.md) — how observed state is cached
 - [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the
   trademark policies that constrain them
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed, and when
 - [`docs/providers.md`](docs/providers.md) — how each `Kind` maps onto each cloud's API, and what is actually verified live
 - [`docs/diff-semantics.md`](docs/diff-semantics.md) — how target vs. observed state is compared
 
