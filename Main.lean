@@ -403,6 +403,42 @@ def selfCheck : IO Unit := do
   checkSecretComposition
   checkGcpAssertion
 
+/-- `infra gcp-check <key.json>` — does this service-account key actually work?
+
+    Parses the file, signs an assertion with it, and exchanges that with
+    Google for an access token. Reports whether each step worked and **never
+    prints the token or the key**: the point is a yes/no, and a diagnostic that
+    leaks the thing it is diagnosing is worse than no diagnostic.
+
+    Worth having as a command rather than only as a library path, because the
+    failure modes are all indistinguishable from the outside — a wrong file
+    type, a disabled key, a service account with no roles, and a clock skewed
+    past the assertion's window all surface as one opaque 4xx from the token
+    endpoint. -/
+def gcpCheck (path : String) : IO UInt32 := do
+  let contents ← try IO.FS.readFile path
+    catch _ => IO.eprintln s!"error: cannot read {path}"; return 1
+  match Infra.Core.GcpAuth.parse contents with
+  | .error e => IO.eprintln s!"error: {path}: {e}"; return 1
+  | .ok sa =>
+    IO.println s!"key file:   ok — {sa.clientEmail}"
+    IO.println s!"project:    {sa.projectId.getD "(none in the key)"}"
+    let jwt ← try Infra.Core.GcpAuth.assertion sa Infra.Core.GcpAuth.defaultScope
+      catch e => IO.eprintln s!"error: could not sign the assertion: {e}"; return 1
+    IO.println s!"assertion:  ok — signed RS256, {jwt.length} chars"
+    match ← (Infra.Core.GcpAuth.exchange sa jwt).toBaseIO with
+    | .error e =>
+      IO.eprintln s!"error: the token exchange failed: {e}"
+      IO.eprintln "  Common causes: the key is disabled or deleted; the IAM API is\n\
+  not enabled on the project; this machine's clock is off by more than the\n\
+  assertion's window."
+      return 1
+    | .ok token =>
+      -- Length only. The token is a bearer credential for the whole project.
+      IO.println s!"token:      ok — {token.length} chars, not printed"
+      IO.println "\nThis key can authenticate. Point GOOGLE_APPLICATION_CREDENTIALS at it."
+      return 0
+
 /-- `infra` is two things: the demo fleet's own front end, and the scaffolder.
 
     The dispatch itself lives in `Infra.Cli`, which is also what a declaration
@@ -417,4 +453,7 @@ def main (args : List String) : IO UInt32 :=
   | ["new"] =>
     IO.eprintln "usage: lake exe infra new <directory>" *> pure 2
   | ["new", dir] => Infra.Cli.New.scaffold dir
+  | ["gcp-check"] =>
+    IO.eprintln "usage: lake exe infra gcp-check <service-account-key.json>" *> pure 2
+  | ["gcp-check", path] => gcpCheck path
   | _ => Infra.Cli.run "infra" demoPlan selfCheck (args := args)

@@ -290,6 +290,23 @@ The first is new, and only became possible when `linen` gained RSA *signing*
 — it could verify a signature and not produce one, which is why this used to
 shell out to a CLI. It requires **linen ≥ 0.13.0**.
 
+To check a key before relying on it:
+
+```sh
+lake exe infra gcp-check path/to/key.json
+```
+
+It parses the file, signs an assertion, exchanges it with Google, and reports
+each step — printing neither the key nor the resulting token, since a
+diagnostic that leaks what it is diagnosing is worse than none. This path has
+been exercised end to end against a real service account: parse, RS256, token
+exchange, and the credential chain picking the file up from
+`GOOGLE_APPLICATION_CREDENTIALS`.
+
+Worth having as a command because the failure modes are indistinguishable from
+outside — a wrong file type, a disabled key, a service account with no roles,
+and a skewed clock all arrive as one opaque 4xx.
+
 A key file is a real secret: long-lived, copyable, and usable from anywhere.
 It exists because not every environment can federate, not because it is a good
 default.

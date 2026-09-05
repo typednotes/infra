@@ -91,6 +91,12 @@ This is the section worth reading before trusting anything. Correctness of
   empty list for the rest, which is a *successful* call finding nothing rather
   than a skipped one. Twelve of the fourteen make a real Scaleway call; only
   `securityGroup` and `awsInstance` short-circuit, being AWS-only kinds.
+- **GCP service-account authentication**, end to end against a real service
+  account on 2026-09-05: a key file parsed, an RFC 7523 assertion signed
+  RS256, exchanged with Google for a live access token, and the credential
+  chain picking the file up from `GOOGLE_APPLICATION_CREDENTIALS`. The key was
+  created for the test and deleted immediately after. Note this verifies
+  *authentication* only — there is still no GCP client for anything to call.
 - **Scaleway `queues`** — `list`, `create`, `read`, via
   `example/ScalewayQueue.lean`. Two bugs only surfaced here: the endpoint host
   was wrong in a way that did not resolve at all, and Scaleway's SQS-compatible

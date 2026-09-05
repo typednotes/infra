@@ -12,6 +12,11 @@ been exercised; this file is what changed and when.
 
 ### Added
 
+- **`infra gcp-check <key.json>`** — verifies a service-account key by
+  actually using it: parse, sign, exchange. Prints neither the key nor the
+  token. The GCP key path is now confirmed working end to end against a real
+  service account, including the credential chain reading
+  `GOOGLE_APPLICATION_CREDENTIALS`.
 - **`docs/ci-auth.md` and `ci/`** — the AWS OIDC role, its trust policy and its
   permissions policy, as runnable documents rather than prose, alongside the
   GCP commands. Both clouds now federate; neither stores a key.
