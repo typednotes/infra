@@ -103,6 +103,34 @@ jobs:
           fi
           echo "role: $ROLE"
 
+      # What AWS is actually matching against. `Not authorized to perform
+      # sts:AssumeRoleWithWebIdentity` means the provider validated the token
+      # and the role's trust policy then refused it — so the only useful
+      # question is what the claims say, and nothing else prints them.
+      #
+      # Claims are identifiers, not secrets: `sub` names the repository and
+      # environment, `aud` the intended audience. The token itself is never
+      # printed.
+      - name: Show the OIDC claims the trust policy must match
+        if: inputs.provider == 'aws'
+        run: |
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::could not obtain an OIDC token — is 'permissions: id-token: write' set?"
+            exit 1
+          fi
+          # Second segment of the JWT, base64url-decoded. Padding added because
+          # base64url omits it and `base64 -d` insists.
+          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2)
+          PAYLOAD="$PAYLOAD$(printf '%*s' $(( (4 - ${#PAYLOAD} % 4) % 4 )) '' | tr ' ' '=')"
+          echo "$PAYLOAD" | tr '_-' '/+' | base64 -d 2>/dev/null \
+            | jq '{sub, aud, repository, repository_owner, ref, environment, job_workflow_ref}'
+          echo
+          echo "The role's trust policy must accept the 'sub' and 'aud' above."
+          echo "Compare with: aws iam get-role --role-name infra-ci \\"
+          echo "  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition'"
+
       - name: Authenticate to AWS (OIDC)
         if: inputs.provider == 'aws'
         uses: aws-actions/configure-aws-credentials@v6

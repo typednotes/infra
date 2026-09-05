@@ -374,6 +374,23 @@ Distinguish it from the neighbouring failures, which look similar and are not:
 The third is the one to expect if the `sub` condition and the workflow's
 `environment:` disagree.
 
+For that third case the workflow prints the claims itself — the step *Show the
+OIDC claims the trust policy must match* decodes the token's payload and shows
+`sub`, `aud`, `repository` and `environment`. Claims are identifiers rather
+than secrets; the token is never printed. Put that output next to:
+
+```sh
+aws iam get-role --role-name infra-ci \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition'
+```
+
+and the mismatch is usually obvious. The two that catch people:
+
+- The job declares `environment: production`, so `sub` is
+  `repo:typednotes/infra:environment:production` — **not** the `ref:` form.
+  A trust policy written for a branch will reject it.
+- Environment names are case-sensitive in the claim.
+
 ### 6. Verify
 
 ```sh
