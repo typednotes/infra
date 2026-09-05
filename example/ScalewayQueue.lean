@@ -27,9 +27,16 @@ import Infra
       lake exe scaleway-queue plan         -- reads the account
       lake exe scaleway-queue apply        -- actually creates the queue
 
-  A real, billable queue, in whatever region your credentials name. Delete it
-  from the Queues console when you are done — removing the line above
-  un-manages it rather than deleting it.
+  A real, billable queue in `fr-par`, because `in paris` below says so rather
+  than leaving it to whatever region your credentials name. Delete it from the
+  Queues console when you are done — removing the line above un-manages it
+  rather than deleting it.
+
+  Scaleway is in Paris, Amsterdam, Warsaw and (since March 2026) Milan, so
+  `in amsterdam` and `in warsaw` are equally legal *here* and would both be
+  compile errors in `example/CrossCloud.lean`, which also uses AWS. That is
+  the whole of the placement check: it is about the clouds the fleet declares
+  into, not about the place alone.
 
   To have it refuse to run against the wrong organization:
 
@@ -38,10 +45,18 @@ import Infra
 open Infra.Core
 open Infra.Specs
 
-fleet exampleQueue where
+fleet exampleQueue in paris where
   resource scaleway queues "infra-example"
     { visibilityTimeoutSec := 30 }
 
+-- One cloud, so one region, and it is `fr-par`.
+#guard (exampleQueue.regions.region .scaleway).map Region.code = some "fr-par"
+#guard exampleQueue.regions.covers exampleQueue.keys
+
+-- Legal here and not in a fleet that also uses AWS.
+#guard Locality.warsaw.covers exampleQueue.keys = true
+
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "scaleway-queue" exampleQueue.plan
-    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)
+    (accounts := ← Infra.Cli.Accounts.fromEnv)
+    (regions := exampleQueue.regions) (args := args)

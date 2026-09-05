@@ -13,6 +13,29 @@ The general architecture is defined in `docs/architecture.md`.
 
 When something does not work and should be changed, the user should be asked to change the doc and implemented then.
 
+## The examples must work
+
+`example/` is test surface, not decoration: several `#guard`s in there pin
+facts that would otherwise only fail against a real cloud, and the headers are
+the tutorial. After any change to the library, build everything and run every
+executable:
+
+    lake build
+    lake exe infra              # the offline self-check suite
+    lake exe scaleway-queue     # bare invocation: offline, free
+    lake exe paris-instances    # bare invocation: offline, free
+    lake exe cross-cloud        # bare invocation: offline, free
+    lake exe scaleway-pull      # reads a real Scaleway account
+
+All but the last are offline, credential-free and free of charge, so there is
+no excuse for not running them. `scaleway-pull` needs Scaleway credentials and
+is read-only.
+
+Keep the headers true as well as the code: they document what each example
+proves, and several quote real compiler error messages. If you change an error
+message or an API, re-provoke the error and paste what the compiler actually
+says rather than what it used to say.
+
 ## Provider facts go stale
 
 Some values are typechecked against a table written down in this repo rather
