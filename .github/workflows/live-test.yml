@@ -22,6 +22,11 @@ on:
 # Never two live runs at once against the same account: the second would see
 # the first's queue and the convergence check would be meaningless. Queued
 # rather than cancelled, so a run always reaches its teardown.
+#
+# Note this does not impose a *gap* between runs, and AWS needs one: SQS
+# refuses to recreate a queue deleted less than sixty seconds ago. Two AWS runs
+# in quick succession will fail on create, with an error that says exactly
+# that.
 concurrency:
   group: live-test-${{ inputs.provider }}
   cancel-in-progress: false

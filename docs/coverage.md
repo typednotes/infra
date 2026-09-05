@@ -136,7 +136,13 @@ both directions by a checker that recomputes the edges independently.
 
 - **Most of AWS** — Lambda, RDS, ECR, Secrets Manager and IAM have never been
   called. S3 and EC2 have; the rest have not.
-- **Every `update` and `delete` path, on both clouds.** What is confirmed is
+- **Every `update` and `delete` path, on both clouds.** The first live AWS run
+  of the test attempted one and the harness, not the library, got in the way:
+  it read SQS's listing immediately after creating and reported a
+  non-convergence that was really propagation delay, then tore down against a
+  world it could not see and left the queue behind while reporting success.
+  Both directions poll now. `destroy` remains unverified against a real
+  account. What is confirmed is
   creation and observation. Nothing here has been seen to modify or tear down
   a real resource, and `destroy` in particular is the least exercised code in
   the library relative to how much it can cost to get wrong.

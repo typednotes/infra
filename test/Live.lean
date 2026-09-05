@@ -18,6 +18,18 @@ import Infra
   fixed at compile time, so the test would be one name away from being
   permanently unrunnable by anyone else.
 
+  ## AWS: sixty seconds between runs
+
+  SQS refuses to create a queue with the name of one deleted less than sixty
+  seconds ago (`AWS.SimpleQueueService.QueueDeletedRecently`). A fleet's
+  resource names are fixed at compile time, so this test cannot dodge it with a
+  unique name per run — back-to-back AWS runs inside that window will fail on
+  create, and the error says so plainly enough that it is left to say it rather
+  than papered over with a retry that would hide a real failure just as well.
+
+  The workflow's `concurrency` group stops two runs overlapping; it does not
+  impose a gap between them. Wait a minute.
+
   ## Teardown is not conditional
 
   The whole point of a live test is that it leaves nothing behind, and the

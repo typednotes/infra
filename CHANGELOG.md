@@ -25,6 +25,12 @@ been exercised; this file is what changed and when.
   Worse, the teardown that followed found nothing to delete and reported
   success, so a real resource could have been left behind while the job
   claimed to be clean. Both directions now poll for up to 60 seconds.
+  Confirmed after the fact: the queue was still in `eu-west-1`.
+- **Documented AWS's sixty-second window.** SQS refuses to recreate a queue
+  deleted less than a minute earlier, and a fleet's names are fixed at compile
+  time, so the live test cannot dodge it with a unique name. Back-to-back AWS
+  runs inside that window fail on create; the workflow's `concurrency` group
+  prevents overlap but not proximity.
 
 ## [0.3.3] — 2026-09-05
 
