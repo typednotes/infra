@@ -19,6 +19,24 @@ import Linen.Data.Ini
   credential minted is cached in the OS keychain (same store as
   `Infra.Core.Credentials`, a different account) and reused from then on,
   rather than reprovisioned on every `push`.
+
+  ## Where there is no keychain
+
+  That cache is what makes minting a one-off, and a CI runner does not have
+  one — no keychain daemon, so the lookup misses and the store fails. The
+  store failing is handled (it warns rather than throwing, since caching must
+  not be able to fail the thing it optimises), but the consequence is not
+  handled and should be understood before pointing CI at a real project:
+
+  **every run mints another credential, and nothing deletes it.** The secret
+  is shown once, so an existing credential cannot be recovered and reused —
+  minting really is the only option once the cache is cold. A CI job that runs
+  daily therefore leaves a growing pile of credentials named `infra` in the
+  Scaleway console.
+
+  The fix is for the live test to delete the credential it minted, which needs
+  the id from the mint response and a `DELETE .../sqs-credentials/{id}`.
+  Not done; recorded in `docs/coverage.md`.
 -/
 
 namespace Infra.Providers.Scaleway.Sqs
@@ -36,16 +54,26 @@ private def keychainAccount : String := "scaleway-sqs"
 
 /-- Best-effort: a project that is already active answers activation the same
     as one just activated in every observed case, so a failure here is not
-    treated as fatal — only a failed mint afterwards is. -/
-private def activate (creds : Credentials) (region project : String) : IO Unit := do
-  discard <| (Scaleway.call creds "POST" (prefix' region ++ "/activate-sqs")
-    (payload := some (.object [("project_id", .string project)]))).toBaseIO
+    treated as fatal — only a failed mint afterwards is.
+
+    It does **return** the failure rather than discard it, though. Swallowing
+    it entirely was a mistake: when activation fails for a real reason — a
+    wrong path, an unsupported region, a project without the product — the
+    mint that follows fails too, and its error is the only one anyone sees.
+    Two calls fail, one message survives, and it describes the second. -/
+private def activate (creds : Credentials) (region project : String) :
+    IO (Option String) := do
+  match ← (Scaleway.call creds "POST" (prefix' region ++ "/activate-sqs")
+      (payload := some (.object [("project_id", .string project)]))).toBaseIO with
+  | .ok _    => return none
+  | .error e => return some (toString e)
 
 /-- Mint a fresh dedicated credential, named so it is recognisable among any
     others in the Scaleway console. Full permissions: this credential is used
     for every SQS operation `infra` performs, not just publishing. -/
 private def mint (creds : Credentials) (region project : String) : IO Credentials := do
-  let reply ← Scaleway.call creds "POST" (prefix' region ++ "/sqs-credentials")
+  let path := prefix' region ++ "/sqs-credentials"
+  let reply ← Scaleway.call creds "POST" path
     (payload := some (.object
       [ ("project_id", .string project)
       , ("name", .string "infra")
@@ -77,9 +105,30 @@ def credentialsFor (provider : ProviderId) (creds : Credentials) : IO Credential
     | some c => return c
     | none =>
       let project ← creds.requireProject
-      activate creds creds.region project
-      let c ← mint creds creds.region project
-      storeInKeychainAccount keychainAccount c
+      let activationError ← activate creds creds.region project
+      -- Name the call, the path and the region. `HTTP 404 not_found` on its
+      -- own does not say which of the three requests in this flow produced
+      -- it, and they are provisioning, minting and the queue operation
+      -- itself — three different problems with three different fixes.
+      let c ← match ← (mint creds creds.region project).toBaseIO with
+        | .ok c => pure c
+        | .error e =>
+          let also := match activationError with
+            | some a => s!"\n  activation had already failed with: {a}"
+            | none   => ""
+          throw (IO.userError s!"scaleway queues: could not mint a dedicated SQS \
+credential for project {project} in {creds.region}\n  POST {Scaleway.host}{prefix' creds.region}/sqs-credentials\n  {e}{also}")
+      -- Caching is an optimisation, not a requirement, and it must not be
+      -- able to fail the operation it is optimising. A CI runner has no
+      -- keychain daemon, so this throws there — after a successful mint,
+      -- which would waste the credential and report a confusing error.
+      match ← (storeInKeychainAccount keychainAccount c).toBaseIO with
+      | .ok _ => pure ()
+      | .error e =>
+        -- Said out loud, because the consequence is not free: see the module
+        -- note. Without a cache every run mints another credential.
+        IO.eprintln s!"warning: minted a Scaleway SQS credential but could not \
+cache it ({e}); it will be minted again next run — see docs/providers.md"
       return c
 
 end Infra.Providers.Scaleway.Sqs

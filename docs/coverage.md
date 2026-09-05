@@ -197,6 +197,23 @@ The `(provider, kind) → resource type` table is **unverified against either
 registry**, and the attribute names inside each block are a looser guess
 still. Same standing as the endpoint shapes in `Kinds/*.lean`.
 
+### Scaleway queues mint a credential per run where there is no keychain
+
+Scaleway's SQS-compatible endpoint refuses the main API key and needs a
+dedicated one, minted once and cached in the OS keychain. A CI runner has no
+keychain, so the cache always misses — and because the minted secret is shown
+only once, an existing credential cannot be recovered and reused. Minting
+really is the only option.
+
+So **every CI run leaves another credential named `infra`** in the Scaleway
+project, and nothing deletes them. Caching failures no longer fail the run
+(they warn), but the accumulation is real and is not yet handled. The fix is
+for the live test to delete what it minted, using the id from the mint
+response; it needs a `DELETE .../sqs-credentials/{id}` that does not exist here
+yet.
+
+Worth knowing before pointing a scheduled job at a real project.
+
 ## Known defects
 
 Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger. The one
