@@ -60,15 +60,23 @@ open Infra.Specs
 fleet spread in paris where
   provider aws where
     -- No block: takes the fleet's own placement, which for AWS is `eu-west-3`.
+    --
+    -- `region` is written out on every `s3Bucket` here, and it must agree with
+    -- the block around it. That is a wart, not a feature — see "The `region`
+    -- field is a trap" below. Leaving it off does not mean "wherever the fleet
+    -- is"; it means `eu-west-1`, and the plan then proposes a replacement that
+    -- can never converge.
     resource s3Bucket "typednotes-eu-assets"
-      { versioning := true }
+      { versioning := true, region := "eu-west-3" }
 
     in nVirginia where
-      resource s3Bucket "typednotes-us-east-assets" { versioning := true }
+      resource s3Bucket "typednotes-us-east-assets"
+        { versioning := true, region := "us-east-1" }
       resource objectStore "typednotes-us-east-logs" { versioning := true }
 
     in oregon where
-      resource s3Bucket "typednotes-us-west-assets" { versioning := true }
+      resource s3Bucket "typednotes-us-west-assets"
+        { versioning := true, region := "us-west-2" }
 
   provider scaleway where
     resource objectStore "typednotes-eu-cache" { versioning := true }
@@ -104,6 +112,58 @@ fleet spread in paris where
      = ["eu-west-3", "us-east-1", "us-west-2"]
 #guard spread.regions.used spread.keys .aws .objectStore "" = ["us-east-1"]
 #guard spread.regions.used spread.keys .scaleway .objectStore "" = ["fr-par", "nl-ams"]
+
+/-! ## The `region` field is a trap, and this is the guard against it
+
+  `S3BucketSpec.region` predates fleet placement and does **not** place
+  anything: `Live.lean` creates the bucket at the endpoint the placement builds
+  and reports that region back, so the field is only ever *compared* — on a
+  `forcesReplace` row, because a bucket cannot move.
+
+  `Fillable` fills an unwritten one with `.lit "eu-west-1"`. So a bucket
+  declared without a region, in a fleet placed anywhere else, diverges on an
+  immutable field; the replacement recreates it at the endpoint's region, which
+  is the region it already had, and the next plan proposes the same
+  replacement. It never converges, and `REPLACE` is `DeleteBucket` first.
+
+  This example had exactly that bug: all three buckets replaced forever. The
+  guard below is the property that was violated — **a converged fleet has
+  nothing to do** — and it is worth more than the three `region :=` lines,
+  because it fails if either the placement or the field moves without the
+  other. See `docs/diff-semantics.md`'s soft spots. -/
+
+private def bucketSighting (name region : String) : Sighting .s3Bucket :=
+  { observed := { handle := ⟨name⟩, arn := s!"arn:aws:s3:::{name}", region }
+    reported := { name, versioning := .known true
+                  objectLock := .known false, region := .known region } }
+
+private def storeSighting (name : String) : Sighting .objectStore :=
+  { observed := { handle := ⟨name⟩, url := s!"https://{name}" }
+    reported := { name, versioning := .known true, tags := .unknown } }
+
+/-- The fleet exactly as `apply` leaves it: every bucket in the region its
+    block places it in, which is the region `read` reports back. -/
+private def applied : World spread.keys :=
+  worldOf
+    [ ⟨.aws, .s3Bucket, NamedKey.of spread.names.aws.s3Bucket "typednotes-eu-assets",
+        bucketSighting "typednotes-eu-assets" "eu-west-3"⟩
+    , ⟨.aws, .s3Bucket, NamedKey.of spread.names.aws.s3Bucket "typednotes-us-east-assets",
+        bucketSighting "typednotes-us-east-assets" "us-east-1"⟩
+    , ⟨.aws, .s3Bucket, NamedKey.of spread.names.aws.s3Bucket "typednotes-us-west-assets",
+        bucketSighting "typednotes-us-west-assets" "us-west-2"⟩
+    , ⟨.aws, .objectStore, NamedKey.of spread.names.aws.objectStore "typednotes-us-east-logs",
+        storeSighting "typednotes-us-east-logs"⟩
+    , ⟨.scaleway, .objectStore,
+        NamedKey.of spread.names.scaleway.objectStore "typednotes-eu-cache",
+        storeSighting "typednotes-eu-cache"⟩
+    , ⟨.scaleway, .objectStore,
+        NamedKey.of spread.names.scaleway.objectStore "typednotes-nl-cache",
+        storeSighting "typednotes-nl-cache"⟩ ]
+
+-- **Applying twice changes nothing.** This is the guard that was failing:
+-- before the `region :=` lines above, all three buckets proposed a REPLACE
+-- against a fleet that was already exactly right.
+#guard actions spread.plan applied = []
 
 /-! ## What cannot be written
 

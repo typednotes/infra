@@ -391,8 +391,15 @@ outside the fleet.
   Fleet placement (`docs/architecture.md`, "Where a fleet is") makes the field
   redundant for choosing, and the honest resolutions are to drop it or to have
   the backend actually honour it per bucket; neither is done.
-  `example/CrossCloud.lean` keeps the two in step with a `#guard` in the
-  meantime.
+  `example/CrossCloud.lean` keeps the two in step with a `#guard`, and
+  `example/MultiRegion.lean` guards the property that was actually violated —
+  **applying twice changes nothing** — against a hand-built converged world.
+  That example had the bug: all three of its buckets proposed a replacement
+  against a fleet that was already exactly right, because none of them wrote
+  `region` and the fill supplied `eu-west-1`. Per-resource placement makes the
+  wart worse rather than better: the correct value now differs per resource, so
+  the workaround is writing the region twice — once in the block, once in the
+  field — with nothing coupling them but that guard.
 - **Ordering is not the same as waiting.** The scheduler gets the *sequence*
   right — an instance is deleted before its security group — but a provider's
   delete can be asynchronous, so "the previous action returned" does not mean
