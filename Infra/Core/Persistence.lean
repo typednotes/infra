@@ -36,14 +36,32 @@ private def rowsAt {κ : Keys} (es : List (CachedEntry κ)) (p : ProviderId) (k 
     | ⟨p', k', key', o⟩ =>
       if p' = p ∧ k' = k then some (κ.name p' k' key', toJson o) else none
 
-/-- Writes only the `(provider, kind)` pairs that have something in them, so the cache doesn't
-    fill with empty files for every unused kind. -/
+/-- Writes the `(provider, kind)` pairs that have something in them, and **removes the file for
+    a pair that has become empty**.
+
+    That second half was missing, and its absence made the cache lie. Writing only non-empty
+    pairs is right — the cache should not fill with empty files for every unused kind — but
+    skipping an emptied pair left its previous contents on disk untouched, mtime and all. After a
+    `destroy`, the cache still listed every resource that had just been deleted, and went on
+    doing so indefinitely, because nothing ever wrote that path again.
+
+    Nothing *reads* the cache today (`load` has no callers; the engine plans from a fresh
+    `pull`), so no plan was ever wrong because of this. What it wrecked was the cache's value as
+    a record: it is the thing a human or an external tool looks at to see what a fleet last
+    observed, and it was reporting resources that no longer existed. It fooled the author of this
+    comment into asserting that two terminated EC2 instances were still running.
+
+    Deleting is guarded by `pathExists` rather than caught, so a genuine permission error still
+    surfaces instead of being swallowed. -/
 def save {κ : Keys} (root : System.FilePath) (es : List (CachedEntry κ)) : IO Unit := do
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
       let rows := rowsAt es p k
-      unless rows.isEmpty do
-        let path := statePath root p k
+      let path := statePath root p k
+      if rows.isEmpty then
+        if ← path.pathExists then
+          IO.FS.removeFile path
+      else
         if let some dir := path.parent then
           IO.FS.createDirAll dir
         IO.FS.writeFile path (Json.mkObj rows).compress

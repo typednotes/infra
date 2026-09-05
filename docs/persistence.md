@@ -103,3 +103,21 @@ These were previously open questions; each is now settled and implemented in
 We will serialize the state as JSON to start with (`Lean.Data.Json`'s `ToJson`/`FromJson`,
 via `deriving ToJson, FromJson` on each state structure). `Infra.Core.Persistence.load`/`save`
 implement the "small storage interface with a filesystem implementation" described above.
+
+## An emptied pair deletes its file
+
+`save` writes the `(provider, kind)` pairs that have rows and **removes the
+file for a pair that has none**. The second half was missing until 0.3.1, and
+its absence made the cache lie in a specific and misleading way: skipping an
+emptied pair left the previous contents on disk untouched, mtime and all, so
+after a `destroy` the cache went on listing every resource that had just been
+deleted — indefinitely, because nothing ever wrote that path again.
+
+No plan was ever wrong because of it. `load` has no callers; the engine plans
+from a fresh `pull`, and the cache is a *record* rather than an input. But a
+record that reports deleted resources as present is worse than no record: it is
+the file a human reads to see what a fleet last observed, and it will be
+believed.
+
+`Main.lean` checks it — saving nothing must load back nothing — and the live
+test asserts the same after a real `destroy`.

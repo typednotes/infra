@@ -127,7 +127,7 @@ run_cmd do
   mkDef `nativeLinkArgs keychain
 
 package infra where
-  version := v!"0.3.0"
+  version := v!"0.3.1"
   -- Metadata Reservoir (the Lake package index) surfaces on the package page.
   -- Reservoir indexes public Lean repos automatically — no submission — but it
   -- only shows what is declared here, and the repo link is all it can infer.

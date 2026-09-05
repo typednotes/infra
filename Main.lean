@@ -30,6 +30,18 @@ def checkPersistenceRoundTrip : IO Unit := do
       IO.println s!"persistence round-trip: ok ({loaded.length} entries)"
     else
       throw (IO.userError s!"round-trip lost entries: saved {saved.length}, loaded {loaded.length}")
+
+    -- Saving *nothing* must empty the cache, not leave the previous contents
+    -- lying there. It used to: `save` skipped every `(provider, kind)` with no
+    -- rows, so an emptied pair kept its old file — and after a `destroy` the
+    -- cache went on listing resources that had just been deleted, forever,
+    -- because nothing ever wrote that path again.
+    Persistence.save (κ := demoKeys) tmp []
+    let afterEmpty ← Persistence.load (κ := demoKeys) tmp
+    unless afterEmpty.isEmpty do
+      throw (IO.userError
+        s!"a destroyed fleet left {afterEmpty.length} entry(ies) in the cache")
+    IO.println "persistence: an emptied fleet empties its cache"
   finally
     IO.FS.removeDirAll tmp
 

@@ -8,6 +8,20 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.3.1] — 2026-09-05
+
+### Fixed
+
+- **The observed-state cache was never cleaned.** `Persistence.save` wrote
+  only the `(provider, kind)` pairs that had rows and never removed the file
+  of a pair that had become empty, so after a `destroy` the cache went on
+  listing every resource that had just been deleted — indefinitely, since
+  nothing ever wrote that path again. No plan was affected: `load` has no
+  callers and the engine plans from a fresh `pull`. What it damaged was the
+  cache's value as a record, and it was believed. `Main.lean` now checks that
+  saving nothing loads back nothing, and the live test asserts the same after
+  a real teardown.
+
 ## [0.3.0] — 2026-09-05
 
 ### Added

@@ -91,7 +91,15 @@ def liveRoundTrip {κ : Keys} (name : String) (target : Plan κ) (regions : Regi
     let left := (actions (Plan.absent κ) after).length
     unless left == 0 do
       throw (IO.userError s!"[{name}] {left} resource(s) survived destroy — check the account")
-    IO.println s!"[{name}] destroyed"
+    -- And the cache must agree. `save` used to leave the file of an emptied
+    -- `(provider, kind)` pair on disk untouched, so the cache went on listing
+    -- what had just been deleted. Checking it here is what would have caught
+    -- that against a real account rather than by reading the files by hand.
+    let cached ← Persistence.load (κ := κ) cacheRoot
+    unless cached.isEmpty do
+      throw (IO.userError
+        s!"[{name}] destroyed, but the cache still lists {cached.length} resource(s)")
+    IO.println s!"[{name}] destroyed, and the cache is empty"
 
   let checks : IO Unit := do
     let observed ← pull (κ := κ) cacheRoot bs

@@ -363,6 +363,14 @@ outside the fleet.
   computed one would be the unknown-dependent shape `Expr` exists to rule out;
   closing it properly means a non-`Expr` slot for reference fields, recorded
   under "Not yet adopted" below.
+- **The cache was never cleaned, and lied after a `destroy`** — fixed in 0.3.1,
+  recorded because of how it was found. `Persistence.save` wrote only
+  non-empty `(provider, kind)` pairs and never removed the file of a pair that
+  had become empty, so a destroyed fleet's resources stayed in the cache
+  forever. Nothing reads the cache, so no plan was affected; what it damaged
+  was the cache's credibility as a record, and it was believed — including by
+  the author of this entry, who read those files as evidence that two
+  terminated EC2 instances were still running and said so.
 - **Nothing forces a `Plan` through `fill` before apply.** `settleSpec` does
   it, and `push` goes through `settleSpec`, but the type system does not
   require that route.
