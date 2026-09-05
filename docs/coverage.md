@@ -1,0 +1,142 @@
+# Coverage in 0.2.0
+
+What this version actually does, and — more usefully — how far each part has
+been exercised. Everything below is the state on 2026-09-05.
+
+This page is the canonical answer; the README and `docs/tutorial.md` link here
+rather than repeating it, so there is one place to correct.
+
+## Clouds
+
+| Cloud | Status |
+|---|---|
+| **AWS** | implemented |
+| **Scaleway** | implemented |
+| GCP, Azure, OVH | not started — named in `docs/architecture.md` as intended, no code |
+
+Adding a cloud is a `ProviderId` constructor, after which every total match
+over it fails to compile until handled. That is the intended cost: mechanical
+and loud, not a plugin boundary.
+
+## Resource kinds
+
+Fourteen, split deliberately. **Portable** kinds are the common denominator and
+carry no cross-resource references, so the same spec value applies to either
+cloud. **Provider-local** kinds are richer and tie a plan to one cloud, which
+the kind's name makes obvious.
+
+Every `(provider, kind)` pair is implemented — `Live.lean` has no catch-all,
+and Lean reports one as unreachable.
+
+### Portable — one spec, either cloud
+
+| Kind | AWS | Scaleway | Shared client |
+|---|---|---|---|
+| `objectStore` | S3 | Object Storage | **yes** |
+| `queues` | SQS | Messaging & Queuing | **yes** |
+| `secrets` | Secrets Manager | Secret Manager | no |
+| `imageRegistry` | ECR | Container Registry | no |
+| `compute` | Lambda (container image) | Serverless Containers | no |
+| `iam` | IAM users | IAM applications | no |
+| `postgres` | RDS | Managed Database | no |
+
+Two of the seven need no per-cloud code at all, because both clouds speak the
+same API. That is the portability claim actually paying off rather than being
+asserted.
+
+### Provider-local — the escape hatch
+
+| Kind | Cloud | Why it is not portable |
+|---|---|---|
+| `s3Bucket` | AWS | Object Lock has no Scaleway counterpart |
+| `securityGroup` | AWS | no portable networking model |
+| `awsInstance` | AWS | needs a *required* network reference, which the serverless-shaped `compute` cannot carry |
+| `scalewayFunctionNamespace` | Scaleway | Functions and Containers are different products with different API prefixes |
+| `scalewayFunction` | Scaleway | as above |
+| `scalewayContainerNamespace` | Scaleway | as above |
+| `scalewayContainer` | Scaleway | binds secret-backed environment variables, which `compute` cannot |
+
+## Language and engine features
+
+| Feature | State |
+|---|---|
+| `fleet` declaration DSL, with `provider` and `in` blocks | complete |
+| Placement — per cloud, and per resource across regions | complete |
+| Typed localities and region codes, checked at elaboration | complete |
+| Typed EC2 instance types (family × size), checked at elaboration | complete |
+| References between resources, including across clouds | complete |
+| DAG scheduling of creations *and* deletions, cycles rejected | complete |
+| Composed secrets — a value assembled from post-apply state, in one apply | complete |
+| Account guard — refuse to run against the wrong account | complete |
+| Offline planning against placeholder backends | complete |
+| Observed-state cache on disk | complete |
+| `check` / `refresh` / `plan` / `apply` / `destroy` | complete |
+| Scoping — manage some resources, leave the rest alone | complete, via the key family |
+
+## How far each part has actually been run
+
+This is the section worth reading before trusting anything. Correctness of
+*signing* is established; correctness of *what is being signed* mostly is not.
+
+### Verified against a real account
+
+- **Scaleway `list`, every kind.** `example/ScalewayPull.lean` calls raw
+  `Backend.list` for all fourteen kinds. Run on 2026-09-05 it returned nine
+  resources — IAM applications (3), a container image registry (2), a
+  serverless container and its namespace, a queue, and a compute unit — and an
+  empty list for the rest, which is a *successful* call finding nothing rather
+  than a skipped one. Twelve of the fourteen make a real Scaleway call; only
+  `securityGroup` and `awsInstance` short-circuit, being AWS-only kinds.
+- **Scaleway `queues`** — `list`, `create`, `read`, via
+  `example/ScalewayQueue.lean`. Two bugs only surfaced here: the endpoint host
+  was wrong in a way that did not resolve at all, and Scaleway's SQS-compatible
+  API refuses the main API key and needs a dedicated minted credential.
+
+### Verified offline, on every build
+
+Signing against AWS's published SigV4 test vectors; both provider error
+dialects; the divergence rules; `Content-MD5` for S3 configuration writes; the
+credential chain and its redaction; composed secrets creating three resources
+in one correctly-ordered apply with no value leaking into output or cache; that
+the `fleet` command produces a fleet indistinguishable from the hand-written
+equivalent; and DAG scheduling over a sixteen-resource graph with a diamond,
+fan-in, a redundant edge, a four-deep chain and cross-cloud edges, checked in
+both directions by a checker that recomputes the edges independently.
+
+### Never run against any account
+
+- **All of EC2** — `securityGroup` and `awsInstance`. Every endpoint path,
+  parameter name and response shape in `Kinds/Ec2.lean` is a best guess.
+  The newest code here and the most likely to be wrong.
+- **Everything on AWS.** No AWS call in this library has been made against a
+  real account.
+- **Most endpoint shapes** — roughly 1,200 lines across `Kinds/*.lean`.
+- **`scalewayContainer.secretEnv`** — how Scaleway actually binds a secret to
+  an environment variable. Implemented against the plaintext-at-set-time
+  assumption; if the real mechanism is a native reference, the backend
+  simplifies and the types do not change.
+- **Scaleway Serverless SQL Database** — honestly stubbed rather than guessed.
+
+## Known defects
+
+Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger; the two
+that will bite a user first:
+
+- **`S3BucketSpec.region` proposes a replacement that never converges.** The
+  field does not place the bucket — it is only compared — so it must be
+  written out to match the fleet's placement. Leaving it off means `eu-west-1`.
+- **`Plan.outside` is declared and not consumed.** Scoping works through the
+  key family instead, which is the mechanism to rely on.
+
+Neither is a surprise waiting to be discovered; both are written down.
+
+## Not in this version
+
+More clouds, more kinds, and more of each cloud's surface — networking beyond
+security groups, DNS, load balancers, Kubernetes. Also: checking an instance
+type against the region it is placed in, which is now *possible* because both
+facts are declared, and is not done because a stale availability table would
+reject valid fleets.
+
+Breaking changes to the Lean API should be expected before a first tagged
+release.

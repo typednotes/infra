@@ -30,6 +30,12 @@ Two consequences worth internalising before you start:
 - **A bare invocation is offline.** It plans against placeholder backends: no
   credentials, no network, no charges. You have to ask for the real thing.
 
+> **Before you invest much in it:** this is early software. Two clouds, 14
+> resource kinds, and a maturity that varies a lot by kind — notably, *no AWS
+> call in this library has ever been made against a real account*.
+> [`coverage.md`](coverage.md) is the honest breakdown, and worth two minutes
+> before you go further.
+
 ---
 
 ## 1. A project
@@ -369,6 +375,8 @@ All but `ScalewayPull` run offline and free with a bare invocation.
 The design documents explain *why*, and are worth reading before extending
 anything:
 
+- [`coverage.md`](coverage.md) — what this version covers and how far each part
+  has been exercised
 - [`architecture.md`](architecture.md) — the overall design, portability rules,
   and placement
 - [`diff-semantics.md`](diff-semantics.md) — how target and observed state are

@@ -24,16 +24,25 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## Project status
+## What 0.2.0 covers
 
-Early and evolving. The core engine (`Kind`/`SpecOf`/`Plan`/`push`) is
-exercised by offline self-checks on every commit, and a couple of Scaleway
-examples are exercised against a real account by hand (see below). Coverage
-across `Kind`s and providers is uneven — check
-[`docs/providers.md`](docs/providers.md) for what is actually confirmed
-against a live API versus implemented against best-guess field names and
-flagged as unverified. Breaking changes to the Lean API should be expected
-before a first tagged release.
+**2 clouds** (AWS, Scaleway) · **14 resource kinds** (7 portable, 7
+provider-local) · every `(provider, kind)` pair implemented.
+
+Maturity is uneven and worth knowing before you rely on it:
+
+| | |
+|---|---|
+| Verified against a real account | Scaleway `list` for every kind; Scaleway queues end to end |
+| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets |
+| **Never run against an account** | **all of AWS**, and most endpoint shapes (~1,200 lines) |
+
+[`docs/coverage.md`](docs/coverage.md) is the full breakdown — kinds, features,
+what is verified how, and the known defects. It is kept current deliberately,
+including the parts that are embarrassing.
+
+Early and evolving: breaking changes to the Lean API should be expected before
+a first tagged release.
 
 ## Requirements
 
@@ -217,6 +226,8 @@ scaleway: organization 4d7c630f-… ok
 
 Start here:
 
+- [`docs/coverage.md`](docs/coverage.md) — **what this version actually does**,
+  and how far each part has been exercised
 - [`docs/tutorial.md`](docs/tutorial.md) — **getting started**: an empty
   directory to a fleet in two clouds, with the commands, credentials,
   placement, references and secrets explained in order. Every snippet in it
