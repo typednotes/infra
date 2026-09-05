@@ -185,13 +185,21 @@ fields you actually mean.
 recommended default for a consumer project:
 
 ```lean
-fleet myFleet where
-  resource scaleway secrets "db-password" as dbPassword
-    { valueFrom := fromEnv "DB_PASSWORD" }
-  resource scaleway postgres "main" as mainDb
-    { masterUsername := "dbadmin", masterPasswordSecret := "db-password"
-      minCapacity := 1, maxCapacity := 4 }
+fleet myFleet in paris where
+  provider scaleway where
+    resource secrets "db-password" as dbPassword
+      { valueFrom := fromEnv "DB_PASSWORD" }
+    resource postgres "main" as mainDb
+      { masterUsername := "dbadmin", masterPasswordSecret := "db-password"
+        minCapacity := 1, maxCapacity := 4 }
 ```
+
+`in` is where the fleet is (above); `provider` writes the cloud once instead
+of on every line. Both are optional and neither changes what is produced — a
+`resource` outside a block names its own cloud, blocks and bare lines mix, and
+`Infra/Demo.lean` declares one fleet three ways (by hand, bare `resource`
+lines, `provider` block) and guards that the keys, names, plan and ordering
+come out identical.
 
 This exists for one reason the other two cannot address: a resource's name
 would otherwise be written three or four times — a name list, a key

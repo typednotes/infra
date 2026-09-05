@@ -48,6 +48,22 @@ import Infra.Specs.Build
   cannot disagree with itself. `Keys.name` must equal the cloud's physical
   identifier, which is why it is not a separate label.
 
+  A cloud named on every line is noise once a fleet is mostly one cloud, so
+  it can be written once instead:
+
+      fleet myFleet in paris where
+        provider scaleway where
+          resource secrets "db-password" as dbPassword
+            { valueFrom := fromEnv "DB_PASSWORD" }
+          resource postgres "main" as mainDb
+            { masterUsername := "dbadmin", masterPasswordSecret := "db-password" }
+
+  Inside a block a `resource` names only its kind. Blocks and bare
+  `resource` lines mix freely and in any order, and a bare line still names
+  its own cloud — this is grouping, not a mode. Nothing else changes: the
+  buckets, the keys and the plan come out identical, which `Infra/Demo.lean`
+  checks by declaring one fleet both ways.
+
   `as` is optional and only needed for a resource something else references.
   It binds an ordinary Lean identifier, so a reference is type-checked — a key
   of the wrong `Kind` is a type error — and forward references work, because
@@ -84,9 +100,15 @@ open Lean Elab Command Term
     through unchanged so its errors point at the author's own code. -/
 syntax fleetField := ident " := " term
 
-/-- One resource. Provider and kind are bare identifiers naming `ProviderId`
-    and `Kind` constructors. -/
-syntax fleetResource := "resource " ident ident str (" as " ident)? "{" fleetField,* "}"
+/-- One resource. The kind is a bare identifier naming a `Kind` constructor;
+    the provider is another, and may be omitted inside a `provider` block. -/
+syntax fleetResource := "resource " ident (ident)? str (" as " ident)? "{" fleetField,* "}"
+
+/-- A `provider` block: the cloud, written once, for the resources under it. -/
+syntax fleetProvider := "provider " ident " where " fleetResource*
+
+/-- A fleet's body: bare resources, `provider` blocks, or both. -/
+syntax fleetItem := fleetResource <|> fleetProvider
 
 /-- One placement: a bare identifier is a `Locality`, an identifier followed by
     a string is a cloud and its own region code. -/
@@ -97,7 +119,7 @@ syntax fleetIn := " in " fleetPlace,+
 
 /-- Declare a fleet: its `Keys`, its `Plan` and its `Regions`, derived from the
     resources and the optional `in` clause. -/
-syntax (name := fleetDecl) "fleet " ident (fleetIn)? " where " fleetResource* : command
+syntax (name := fleetDecl) "fleet " ident (fleetIn)? " where " fleetItem* : command
 
 /-- One `(field := value)` named argument.
 
@@ -110,22 +132,51 @@ private def mkNamedArg (fieldId : Ident) (val : Term) : Syntax :=
     #[mkAtom "(", fieldId, mkAtom " := ", val, mkAtom ")"]
 
 elab_rules : command
-  | `(command| fleet $fleetName:ident $[$placement:fleetIn]? where $ress:fleetResource*) => do
+  | `(command| fleet $fleetName:ident $[$placement:fleetIn]? where $items:fleetItem*) => do
     -- Group resources by `(provider, kind)`, preserving declaration order —
     -- which is also the key order within a bucket.
     let mut buckets :
         Array (Ident × Ident ×
           Array (TSyntax `str × Option Ident × Array (TSyntax `Infra.Core.fleetField))) := #[]
-    for r in ress do
+    -- One resource, with the provider already resolved: written on the
+    -- `resource` line, or inherited from the `provider` block around it.
+    let addResource := fun
+        (buckets : Array (Ident × Ident ×
+          Array (TSyntax `str × Option Ident × Array (TSyntax `Infra.Core.fleetField))))
+        (p k : Ident) (entry : TSyntax `str × Option Ident ×
+          Array (TSyntax `Infra.Core.fleetField)) =>
+      match buckets.findIdx? (fun b => b.1.getId == p.getId && b.2.1.getId == k.getId) with
+      | some i =>
+        let b := buckets[i]!
+        buckets.set! i (b.1, b.2.1, b.2.2.push entry)
+      | none => buckets.push (p, k, #[entry])
+    -- `outer` is the enclosing `provider` block's cloud, if there is one. A
+    -- `resource` names one identifier inside a block and two outside it, so
+    -- which is the provider and which the kind depends on where it sits.
+    let resolve := fun (outer : Option Ident) (r : TSyntax `Infra.Core.fleetResource) =>
       match r with
-      | `(fleetResource| resource $p:ident $k:ident $nm:str $[as $al:ident]? { $fs,* }) =>
-        let entry := (nm, al, fs.getElems)
-        match buckets.findIdx? (fun b => b.1.getId == p.getId && b.2.1.getId == k.getId) with
-        | some i =>
-          let b := buckets[i]!
-          buckets := buckets.set! i (b.1, b.2.1, b.2.2.push entry)
-        | none => buckets := buckets.push (p, k, #[entry])
-      | _ => throwErrorAt r "malformed resource declaration"
+      | `(fleetResource| resource $a:ident $[$b:ident]? $nm:str $[as $al:ident]? { $fs,* }) =>
+        match b, outer with
+        -- `resource scaleway secrets "x"` — provider written out.
+        | some k, _         => Except.ok (a, k, (nm, al, fs.getElems))
+        -- `resource secrets "x"` inside `provider scaleway where`.
+        | none,   some p    => Except.ok (p, a, (nm, al, fs.getElems))
+        | none,   none      => Except.error
+            s!"this resource names only a kind, so it needs a provider: write \
+`resource <provider> {a.getId} …`, or put it inside a `provider … where` block"
+      | _ => Except.error "malformed resource declaration"
+    for item in items do
+      match item with
+      | `(fleetItem| provider $p:ident where $ress:fleetResource*) =>
+        for r in ress do
+          match resolve (some p) r with
+          | .ok (p', k, entry) => buckets := addResource buckets p' k entry
+          | .error m           => throwErrorAt r m
+      | `(fleetItem| $r:fleetResource) =>
+        match resolve none r with
+        | .ok (p, k, entry) => buckets := addResource buckets p k entry
+        | .error m          => throwErrorAt r m
+      | _ => throwErrorAt item "malformed fleet item"
 
     -- The name-list identifier is a pure function of the bucket, so it is
     -- recomputed where needed rather than kept in an array that has to stay

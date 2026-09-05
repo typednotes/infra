@@ -255,6 +255,50 @@ fleet viaMacro where
     , minCapacity := 1
     , maxCapacity := 4 }
 
+/-! ## And a third time, with the cloud written once
+
+  Same fleet again, with `provider` grouping the three resources instead of
+  each line naming Scaleway for itself.
+
+  `provider` is grouping, not a mode: it changes where the identifier is
+  written and nothing else, so this must be indistinguishable from `viaMacro`
+  — same buckets, same names, same plan, same ordering. The guards below are
+  what say so, and are why the block form can be recommended without
+  qualification. -/
+
+fleet viaBlock where
+  provider scaleway where
+    resource secrets "db-password" as blockDbPassword
+      { valueFrom := fromEnv "DB_PASSWORD" }
+    resource secrets "db-url"
+      { valueFrom := composed
+          expr!"postgres://dbadmin:{secretValueOf blockDbPassword}@{endpointOf blockMainDb}/main" }
+    resource postgres "main" as blockMainDb
+      { masterUsername := "dbadmin"
+      , masterPasswordSecret := "db-password"
+      , minCapacity := 1
+      , maxCapacity := 4 }
+
+section BlockGuards
+
+/- Identical to `viaMacro` in every way the rest of the library can observe:
+   the buckets and their order, the names, and the scheduled plan. -/
+#guard viaBlock.names.scaleway.secrets = viaMacro.names.scaleway.secrets
+#guard viaBlock.names.scaleway.postgres = viaMacro.names.scaleway.postgres
+#guard viaBlock.keys.providers = viaMacro.keys.providers
+#guard viaBlock.keys.count .scaleway .secrets = viaMacro.keys.count .scaleway .secrets
+#guard viaBlock.keys.count .scaleway .postgres = viaMacro.keys.count .scaleway .postgres
+
+/- Same plan and same ordering — including the composed secret still coming
+   last, which is the part that would break if a reference crossing the block
+   boundary were resolved differently. -/
+#guard ((actions viaBlock.plan (worldOf [])).map Action.slot)
+     = ((actions viaMacro.plan (worldOf [])).map Action.slot)
+
+#guard viaBlock.plan.secretsAreSound
+
+end BlockGuards
+
 section MacroGuards
 
 /- Same shape as the hand-written fleet: same buckets, same cardinalities,
