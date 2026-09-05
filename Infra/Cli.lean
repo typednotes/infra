@@ -60,17 +60,36 @@ def liveFor (κ : Keys) (regions : Regions := {}) :
     -- "hostname resolution failed" — an error that says nothing about the
     -- missing variable. `requireRegion` names it instead, and this is the one
     -- funnel every live command passes through, so checking here covers all
-    -- of them before any call is attempted. A fleet that declares where it is
-    -- never reaches that check: it has already answered the question.
-    let c ← match regions.region p with
-      | some r => pure { c with region := r.code }
-      | none   => do discard <| c.requireRegion p; pure c
+    -- of them before any call is attempted.
+    --
+    -- Required only for a fleet that leaves something unplaced: a slot the
+    -- declaration does not place falls back to the credentials, and that is
+    -- exactly when the credentials have to supply one. A fully placed fleet
+    -- has already answered the question and never reaches the check.
+    let unplaced := (Finite.elems (α := Kind)).any fun k =>
+      (Finite.elems (α := κ.Key p k)).any fun key =>
+        (regions.codeFor p k (κ.name p k key)).isNone
+    if unplaced then discard <| c.requireRegion p
     creds := (p, c) :: creds
   let lookup := fun p => (creds.find? fun c => c.1 == p).map (·.2)
-  return ({ backend := fun p =>
+  -- One backend per (cloud, region). Cheap: a `Backend` is a record of
+  -- closures over the credentials, and the only thing varying is the region
+  -- every endpoint builder reads.
+  let backendIn := fun (p : ProviderId) (code : String) =>
     match lookup p with
-    | some c => Infra.Providers.liveBackend p c
-    | none   => Infra.Providers.placeholderBackend p.name }, lookup)
+    | some c => Infra.Providers.liveBackend p { c with region := code }
+    | none   => Infra.Providers.placeholderBackend p.name
+  -- Where a cloud goes when the fleet does not say: the credentials' region.
+  let fallback := fun (p : ProviderId) => ((lookup p).map (·.region)).getD ""
+  let resolve := fun p k nm => (regions.codeFor p k nm).getD (fallback p)
+  return ({ backend    := fun p     => backendIn p (fallback p)
+            backendFor := fun p k nm => backendIn p (resolve p k nm)
+            -- Exactly the regions this bucket's own resources live in — so a
+            -- single-region fleet still lists once, and no fleet ever lists a
+            -- region it declares nothing in.
+            listers    := fun p k =>
+              (regions.used κ p k (fallback p)).map fun code =>
+                (backendIn p code, fun nm => resolve p k nm == code) }, lookup)
 
 /-- Which accounts a fleet is for.
 

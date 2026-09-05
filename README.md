@@ -152,6 +152,28 @@ has never been run against a real account. The *region* is declared —
 neither read nor needed, and the same file no longer builds a different fleet
 for each operator who runs it.
 
+### One fleet across four regions
+
+`example/MultiRegion.lean` places resources per *resource* rather than per
+cloud, with blocks that nest and scope like a `with` in Python:
+
+```lean
+fleet spread in paris where
+  provider aws where
+    resource s3Bucket "eu-assets" { versioning := true }   -- the fleet's Paris
+    in nVirginia where
+      resource s3Bucket "us-east-assets" { versioning := true }
+  provider scaleway where
+    in amsterdam where
+      resource objectStore "nl-cache" { versioning := true }
+```
+
+One `in paris` reaches both clouds with each one's own code; a block overrides
+only what is nested inside it; and a resource placed where its cloud has no
+region — a Scaleway one inside `in oregon` — is a compile error. The regions a
+pull has to list are derived from the declaration, so a single-region fleet
+still lists once.
+
 ### One fleet across both clouds
 
 `example/CrossCloud.lean` puts the same portable `objectStore` declaration

@@ -36,9 +36,34 @@ structure Backend where
   secretValue : Handle .secrets → IO String
 
 /-- Every cloud the engine can reach. Total over `ProviderId`, matching `Plan.assign`'s
-    totality over the same index. -/
+    totality over the same index.
+
+    `backend` is the cloud's default — for a fleet in one region per cloud, it
+    is the whole story and the two fields below default to it, so every
+    existing `Backends` keeps working unchanged.
+
+    The two below exist because a region is not a property of a *cloud* but of
+    a *resource*: a fleet may put one bucket in Ireland and one instance in
+    Paris, and an endpoint is built per region. Routing lives here rather than
+    in the engine because the engine has no credentials and no idea what a
+    region is — it knows only slots. See `Infra.Core.Region`. -/
 structure Backends where
   backend : ProviderId → Backend
+  /-- The backend for one slot, addressed the way the engine already addresses
+      everything: cloud, kind, and the slot's `Keys.name`. Used for every
+      per-resource call — `read`, `create`, `update`, `delete`, `secretValue`. -/
+  backendFor : ProviderId → Kind → String → Backend := fun p _ _ => backend p
+  /-- How to enumerate a `(provider, kind)` bucket that may span regions: one
+      entry per region in play, each paired with the test for which slot names
+      belong to it.
+
+      A pair rather than a bare list because `list` is the one call with no
+      slot to route on — it asks a *region* what is in it — and its answers
+      must then be matched only against the slots placed there. Without that
+      pairing, a bucket named `assets` in one region would satisfy a key
+      placed in another, and the engine would believe it already existed. -/
+  listers : ProviderId → Kind → List (Backend × (String → Bool)) :=
+    fun p _ => [(backend p, fun _ => true)]
 
 /-- One observed resource, tied back to the fleet key it realises.
 

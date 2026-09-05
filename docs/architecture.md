@@ -261,12 +261,73 @@ twice, so the two cannot drift; the cost is that a region no locality names —
 GovCloud, or one added last week — needs `Region.raw`, which is spelled
 differently precisely so that reaching past the table is visible.
 
-**Placement is per cloud, not per resource.** Every endpoint for a cloud is
-built from one region, which is the shape `Live.lean` already has, so a fleet
-spanning two regions of the same cloud is not expressible. `S3BucketSpec` has
-a `region` field that predates this and is *not* that mechanism: it is
-compared against the region the bucket is reported in, and must agree with
-where the fleet places AWS. See `docs/providers.md`.
+### Per resource, with blocks that scope like `with`
+
+Placement began per *cloud*. It is now per *resource*, written as blocks that
+nest — a `provider` block naming the cloud once, an `in` block naming the
+place once, in whichever order reads better:
+
+```lean
+fleet spread in paris where
+  provider aws where
+    resource s3Bucket "eu-assets" { versioning := true }   -- the fleet's Paris
+    in nVirginia where
+      resource s3Bucket "us-east-assets" { versioning := true }
+    in oregon where
+      resource s3Bucket "us-west-assets" { versioning := true }
+  provider scaleway where
+    in amsterdam where
+      resource objectStore "nl-cache" { versioning := true }
+```
+
+The blocks are scoping and nothing else: a resource sees the blocks it is
+nested inside, an inner block overrides an outer one of the same sort, and a
+resource outside every block falls back to its cloud's placement and then to
+its credentials. **Indentation is load-bearing** — an item belongs to a block
+only while indented past its keyword, which is what stops a block swallowing
+the siblings that follow it.
+
+Three properties are worth stating because a region *string* per resource
+would have none of them. A locality still resolves per cloud, so one
+`in paris` gives `eu-west-3` and `fr-par`. An impossible placement is still a
+compile error, now one resource at a time: Scaleway has no Oregon region, so a
+Scaleway resource inside `in oregon` does not elaborate. And the set of
+regions a pull must list is *derived* (`Regions.used`) from the fleet's own
+declarations rather than configured — it is exactly the regions each
+`(provider, kind)` bucket names, deduplicated, so a single-region fleet still
+lists once and no fleet ever lists a region it declares nothing in.
+
+Three things carry it below the syntax:
+
+- **`Backends` gained two defaulted fields** (`Infra/Core/Backend.lean`).
+  `backendFor` routes every per-resource call by `(cloud, kind, name)`;
+  `listers` gives one backend per region in play for a bucket, *paired with
+  the test for which slot names belong to it*. The pairing is not optional:
+  `list` is the one call with no slot to route on, and without it a bucket
+  named `assets` in one region would satisfy a key placed in another and the
+  engine would believe it already existed. Both default to the old behaviour,
+  so every existing `Backends` is unchanged.
+- **The engine learned nothing about regions.** It addresses slots; `Cli`
+  translates slots to backends. `liveFor` writes the resolved region into the
+  `Credentials` it hands to `liveBackend`, so no backend knows either.
+- **The cache key did not have to change.** `namesNodup` already forces names
+  unique within a `(provider, kind)` bucket, so `Keys.name` stays unique
+  whatever the regions are. The cost is that one *name* cannot exist twice in
+  a bucket, in two regions — which is the fleet's own identifier for a
+  resource, so making it region-dependent would be the stranger choice.
+
+One check had to be weakened, and it is recorded rather than hidden:
+`Regions.covers` is per cloud, not per slot, because it is discharged by
+`by decide` in the kernel and a per-slot version compares strings there —
+which took Lean down with a stack overflow on a six-resource fleet.
+`Regions.coversSlots` is the honest question, evaluated only at runtime, and
+`Infra.Cli.liveFor` asks it per cloud before requiring a credential region.
+Nothing is lost: a resource in a block is placed by construction.
+
+`S3BucketSpec` has a `region` field that predates all of this and is *not*
+this mechanism: it is compared against the region the bucket is reported in,
+and must agree with where the fleet places that bucket. See
+`docs/providers.md`.
 
 ## Values that are not really strings
 

@@ -25,6 +25,7 @@ executable:
     lake exe scaleway-queue     # bare invocation: offline, free
     lake exe paris-instances    # bare invocation: offline, free
     lake exe cross-cloud        # bare invocation: offline, free
+    lake exe multi-region       # bare invocation: offline, free
     lake exe scaleway-pull      # reads a real Scaleway account
 
 All but the last are offline, credential-free and free of charge, so there is

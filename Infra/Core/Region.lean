@@ -34,12 +34,27 @@ import Infra.Core.Ergonomics
   region, or one a cloud added this morning — is unwritable otherwise, and a
   stale table must never be a hard block.
 
-  ## What it does not do
+  ## Per cloud, then per resource
 
-  Placement is per *cloud*, not per resource. Every endpoint for a cloud is
-  built from one region, which is the shape `Infra.Providers.Live` already has.
-  A fleet spanning two regions of the same cloud is not expressible, and saying
-  so here is better than half-supporting it: see `docs/architecture.md`.
+  A `Regions` says two things. `region` is where a cloud goes by default, and
+  for a fleet in one region per cloud it is the whole story. `slot` places one
+  *resource*, addressed by its `Keys.name` — the string that is also the
+  cloud's physical identifier and the one `pullEntries` matches listings on.
+  `codeFor` is the resolution: the slot's own placement if it has one, then its
+  cloud's, then nothing, which means "ask the credentials".
+
+  Keyed by name rather than by `κ.Key`, so `Regions` stays independent of any
+  one fleet's key family — the same choice `Infra.Cli.Accounts` makes. A name
+  is unique within a `(provider, kind)` bucket (`namesNodup` is what
+  guarantees it), so a `slot` entry addresses exactly one resource.
+
+  `used` is what bounds the cost of a pull: the distinct regions of one
+  bucket, derived from the declarations rather than configured, so a fleet
+  lists exactly the regions it names and a single-region fleet lists once.
+
+  The block syntax that writes all this is in `Infra.Core.Declare`, and the
+  routing that acts on it is `Backends.backendFor`/`listers`. See
+  `docs/architecture.md`.
 -/
 
 namespace Infra.Core
@@ -220,6 +235,15 @@ def Locality.region (l : Locality) (p : ProviderId)
     before this existed and is still what a fleet with no `in` clause does. -/
 structure Regions where
   region : (p : ProviderId) → Option (Region p) := fun _ => none
+  /-- A single slot that lives somewhere other than its cloud's own region,
+      identified by its `Keys.name` — which is the cloud's physical
+      identifier, and the same string `pullEntries` matches listings on.
+
+      Keyed by name rather than by `κ.Key`, so `Regions` stays independent of
+      any one fleet's key family, exactly as `Infra.Cli.Accounts` does. The
+      name is unique within a `(provider, kind)` bucket — `namesNodup` is what
+      guarantees it — so this addresses exactly one resource. -/
+  slot : ProviderId → Kind → String → Option String := fun _ _ _ => none
 
 namespace Regions
 
@@ -232,13 +256,71 @@ def everywhere (κ : Keys) (l : Locality) (_h : Assert (l.covers κ) := by decid
   region p := (l.code p).map Region.mk
 
 /-- Place one cloud, overriding whatever was said for it. The cloud is implicit
-    because `r`'s type names it. -/
-def set (rs : Regions) {p : ProviderId} (r : Region p) : Regions where
-  region q := if h : p = q then some (h ▸ r) else rs.region q
+    because `r`'s type names it.
 
-/-- Whether every cloud `κ` declares resources in has been placed. -/
+    `{ rs with … }` rather than a fresh structure: rebuilding one would reset
+    `slot` to its default and silently drop every per-resource placement made
+    before it. -/
+def set (rs : Regions) {p : ProviderId} (r : Region p) : Regions :=
+  { rs with region := fun q => if h : p = q then some (h ▸ r) else rs.region q }
+
+/-- The region code in force for one slot: its own, if it was placed
+    individually, and otherwise its cloud's. -/
+def codeFor (rs : Regions) (p : ProviderId) (k : Kind) (name : String) : Option String :=
+  match rs.slot p k name with
+  | some c => some c
+  | none   => (rs.region p).map Region.code
+
+/-- Place one resource, overriding the region its cloud is otherwise in.
+
+    This is what a region block inside a fleet expands to. `k` and `name`
+    together name one slot; the cloud comes from `r`'s type. -/
+def setSlot (rs : Regions) {p : ProviderId} (k : Kind) (name : String)
+    (r : Region p) : Regions :=
+  { rs with slot := fun p' k' n' =>
+      if p' == p && k' == k && n' == name then some r.code else rs.slot p' k' n' }
+
+/-- Whether every cloud `κ` declares resources in has a default region.
+
+    Deliberately *not* per slot, and the reason is worth recording because the
+    per-slot version was written first and had to be withdrawn: it is
+    discharged by `by decide`, which reduces in the **kernel**, and a per-slot
+    check compares the slot's name against every `setSlot` in the chain. Kernel
+    `String` equality walks a list of characters, so a six-resource fleet in
+    four regions took Lean down with a stack overflow.
+
+    Nothing is lost. A resource inside a region block is placed *by
+    construction* — the block is what places it — so the only thing a coverage
+    check can catch is a cloud whose resources fall back to a default that does
+    not exist, and that is exactly this. Slots that fall back with no default
+    are caught at the one place that can afford to look: `Infra.Cli.liveFor`,
+    at runtime, where the same walk is a handful of string comparisons and the
+    failure names the cloud and all three ways to fix it. -/
 def covers (rs : Regions) (κ : Keys) : Bool :=
   κ.providers.all fun p => (rs.region p).isSome
+
+/-- Whether every *resource* has a region, counting per-slot placements.
+
+    The honest coverage question, and the one `covers` cannot afford to be. Not
+    an `Assert`: only ever evaluated at runtime. -/
+def coversSlots (rs : Regions) (κ : Keys) : Bool :=
+  (Finite.elems (α := ProviderId)).all fun p =>
+    (Finite.elems (α := Kind)).all fun k =>
+      (Finite.elems (α := κ.Key p k)).all fun key =>
+        (rs.codeFor p k (κ.name p k key)).isSome
+
+/-- The distinct regions a `(provider, kind)` bucket's resources live in,
+    with `fallback` standing for a slot the fleet does not place.
+
+    This is what bounds the cost of a pull: `pullEntries` lists once per entry
+    here, and the list is derived from the fleet's own declarations — so it is
+    exactly the regions the fleet uses, deduplicated, and never one it declares
+    nothing in. A fleet in one region lists once, as it always did. -/
+def used (rs : Regions) (κ : Keys) (p : ProviderId) (k : Kind)
+    (fallback : String) : List String :=
+  (Finite.elems (α := κ.Key p k)).foldl (init := []) fun acc key =>
+    let c := (rs.codeFor p k (κ.name p k key)).getD fallback
+    if acc.contains c then acc else acc ++ [c]
 
 /-- `rs`, refusing to elaborate unless it places every cloud `κ` uses.
 

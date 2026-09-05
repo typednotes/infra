@@ -245,6 +245,15 @@ misplaced fleet never reaches a DNS lookup:
 | A region code from the wrong cloud, or a typo | `Assert ((knownRegions p).contains code)` on `Region.of` |
 | An instance type that does not exist | `Assert (f.sizes.contains s)` on `InstanceType.of` — `t3` has no `32xlarge` |
 | A placement leaving one of the fleet's clouds unplaced | `Assert (rs.covers κ)` on `Regions.covering` |
+| A *resource* placed in a region its cloud does not have | `Assert (l.code p).isSome` on `Locality.region`, one resource at a time |
+
+`Regions.covers` is per *cloud* and not per *slot*, which is a deliberate
+weakening: `by decide` reduces in the kernel, and a per-slot check compares
+slot names there — kernel `String` equality walks a character list, and a
+six-resource fleet in four regions overflowed the stack. The per-slot question
+is `Regions.coversSlots`, evaluated at runtime by `Infra.Cli.liveFor`. Nothing
+escapes as a result: a resource inside a region block is placed by
+construction, so the only thing left to check is a cloud-level default.
 
 The first is decidable rather than structural because `Locality` is one enum
 across all clouds: making "a place AWS is in" a *type* would need one enum per

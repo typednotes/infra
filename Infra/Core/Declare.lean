@@ -104,21 +104,42 @@ syntax fleetField := ident " := " term
     the provider is another, and may be omitted inside a `provider` block. -/
 syntax fleetResource := "resource " ident (ident)? str (" as " ident)? "{" fleetField,* "}"
 
-/-- A `provider` block: the cloud, written once, for the resources under it. -/
-syntax fleetProvider := "provider " ident " where " fleetResource*
-
-/-- A fleet's body: bare resources, `provider` blocks, or both. -/
-syntax fleetItem := fleetResource <|> fleetProvider
-
 /-- One placement: a bare identifier is a `Locality`, an identifier followed by
     a string is a cloud and its own region code. -/
 syntax fleetPlace := ident (str)?
 
-/-- Where the fleet is. See the module doc. -/
+/-- Where the fleet is by default. See the module doc. -/
 syntax fleetIn := " in " fleetPlace,+
 
+/-- A fleet's body.
+
+    A category rather than an alias because the two block forms nest: a region
+    block inside a provider block, or the other way round, to whatever depth
+    the declaration reads best at. -/
+declare_syntax_cat fleetItem
+
+/-- A bare resource. -/
+syntax fleetResource : fleetItem
+
+/-- A `provider` block: the cloud, written once, for everything under it.
+
+    `withPosition`/`colGt` is what makes it a *block*: an item belongs to it
+    only while indented past the `provider` keyword. Without that the item list
+    is greedy and a block swallows every sibling that follows it — which it
+    did, silently, putting a later `provider scaleway` group inside an earlier
+    `in oregon` one and rejecting the fleet for a region Scaleway does not
+    have. Indentation is load-bearing here, as it is in the Python `with` this
+    reads like. -/
+syntax withPosition("provider " ident " where " (colGt fleetItem)*) : fleetItem
+
+/-- A region block: the place, written once, for everything under it. Scoped
+    exactly like a `with` in Python — it applies to what is nested inside it
+    and to nothing else. Column-sensitive for the same reason as `provider`
+    above. -/
+syntax withPosition("in " fleetPlace " where " (colGt fleetItem)*) : fleetItem
+
 /-- Declare a fleet: its `Keys`, its `Plan` and its `Regions`, derived from the
-    resources and the optional `in` clause. -/
+    resources and from whatever `in`/`provider` context encloses each. -/
 syntax (name := fleetDecl) "fleet " ident (fleetIn)? " where " fleetItem* : command
 
 /-- One `(field := value)` named argument.
@@ -131,52 +152,86 @@ private def mkNamedArg (fieldId : Ident) (val : Term) : Syntax :=
   mkNode ``Lean.Parser.Term.namedArgument
     #[mkAtom "(", fieldId, mkAtom " := ", val, mkAtom ")"]
 
+/-- One resource with its enclosing context already resolved.
+
+    Flattening the block structure into this before generating anything is
+    what keeps the rest of the elaborator identical to the version that had no
+    blocks: blocks are *scoping*, and scoping is finished by the time the
+    buckets are built.
+    Field named `cloud` rather than `provider`, and `binding` rather than
+    `alias`: both of those are parser tokens in this file — `provider` because
+    the block syntax above declares it as one — so neither can be an
+    identifier here. -/
+private structure Res where
+  cloud   : Ident
+  kind    : Ident
+  name    : TSyntax `str
+  binding : Option Ident
+  fields  : Array (TSyntax `Infra.Core.fleetField)
+  /-- The region block this sat inside, if any. -/
+  place   : Option (Ident × Option (TSyntax `str))
+
+/-- Walk the body, carrying the enclosing `provider` and `in` context down.
+
+    The context-manager reading, exactly: an item sees the blocks it is nested
+    inside and nothing else, and an inner block overrides an outer one of the
+    same sort. -/
+private partial def flatten (ctxProvider : Option Ident)
+    (ctxPlace : Option (Ident × Option (TSyntax `str))) (item : Syntax) :
+    CommandElabM (Array Res) := do
+  match item with
+  | `(fleetItem| provider $p:ident where $is*) =>
+    let mut acc := #[]
+    for i in is do acc := acc ++ (← flatten (some p) ctxPlace i)
+    return acc
+  | `(fleetItem| in $pl:fleetPlace where $is*) =>
+    let some (a, c) := parsePlace pl | throwErrorAt pl "malformed placement"
+    -- `in aws "eu-west-1"` names a cloud as well as a region, so it supplies
+    -- the provider context too — the code could not mean anything otherwise.
+    let inner := match c with | some _ => some a | none => ctxProvider
+    let mut acc := #[]
+    for i in is do acc := acc ++ (← flatten inner (some (a, c)) i)
+    return acc
+  | `(fleetItem| $r:fleetResource) =>
+    match r with
+    | `(fleetResource| resource $a:ident $[$b:ident]? $nm:str $[as $al:ident]? { $fs,* }) =>
+      match b, ctxProvider with
+      -- `resource scaleway secrets "x"` — the cloud is on the line.
+      | some k, _      => return #[⟨a, k, nm, al, fs.getElems, ctxPlace⟩]
+      -- `resource secrets "x"` — the cloud comes from an enclosing block.
+      | none,   some p => return #[⟨p, a, nm, al, fs.getElems, ctxPlace⟩]
+      | none,   none   => throwErrorAt r s!"this resource names only a kind, so it needs \
+a provider: write `resource <provider> {a.getId} …`, or put it inside a `provider … where` \
+or `in <provider> \"<region>\" … where` block"
+    | _ => throwErrorAt r "malformed resource declaration"
+  | _ => throwErrorAt item "malformed fleet item"
+where
+  /-- `paris` or `aws "eu-west-3"`. -/
+  parsePlace (pl : Syntax) : Option (Ident × Option (TSyntax `str)) :=
+    match pl with
+    | `(fleetPlace| $a:ident $[$c:str]?) => some (a, c)
+    | _ => none
+
 elab_rules : command
-  | `(command| fleet $fleetName:ident $[$placement:fleetIn]? where $items:fleetItem*) => do
+  | `(command| fleet $fleetName:ident $[$placement:fleetIn]? where $items*) => do
+    -- Blocks are resolved first, so everything below sees a flat list of
+    -- resources that each know their own cloud and their own place.
+    let mut flat : Array Res := #[]
+    for i in items do flat := flat ++ (← flatten none none i)
+
     -- Group resources by `(provider, kind)`, preserving declaration order —
     -- which is also the key order within a bucket.
     let mut buckets :
         Array (Ident × Ident ×
           Array (TSyntax `str × Option Ident × Array (TSyntax `Infra.Core.fleetField))) := #[]
-    -- One resource, with the provider already resolved: written on the
-    -- `resource` line, or inherited from the `provider` block around it.
-    let addResource := fun
-        (buckets : Array (Ident × Ident ×
-          Array (TSyntax `str × Option Ident × Array (TSyntax `Infra.Core.fleetField))))
-        (p k : Ident) (entry : TSyntax `str × Option Ident ×
-          Array (TSyntax `Infra.Core.fleetField)) =>
-      match buckets.findIdx? (fun b => b.1.getId == p.getId && b.2.1.getId == k.getId) with
+    for r in flat do
+      let entry := (r.name, r.binding, r.fields)
+      match buckets.findIdx? (fun b =>
+          b.1.getId == r.cloud.getId && b.2.1.getId == r.kind.getId) with
       | some i =>
         let b := buckets[i]!
-        buckets.set! i (b.1, b.2.1, b.2.2.push entry)
-      | none => buckets.push (p, k, #[entry])
-    -- `outer` is the enclosing `provider` block's cloud, if there is one. A
-    -- `resource` names one identifier inside a block and two outside it, so
-    -- which is the provider and which the kind depends on where it sits.
-    let resolve := fun (outer : Option Ident) (r : TSyntax `Infra.Core.fleetResource) =>
-      match r with
-      | `(fleetResource| resource $a:ident $[$b:ident]? $nm:str $[as $al:ident]? { $fs,* }) =>
-        match b, outer with
-        -- `resource scaleway secrets "x"` — provider written out.
-        | some k, _         => Except.ok (a, k, (nm, al, fs.getElems))
-        -- `resource secrets "x"` inside `provider scaleway where`.
-        | none,   some p    => Except.ok (p, a, (nm, al, fs.getElems))
-        | none,   none      => Except.error
-            s!"this resource names only a kind, so it needs a provider: write \
-`resource <provider> {a.getId} …`, or put it inside a `provider … where` block"
-      | _ => Except.error "malformed resource declaration"
-    for item in items do
-      match item with
-      | `(fleetItem| provider $p:ident where $ress:fleetResource*) =>
-        for r in ress do
-          match resolve (some p) r with
-          | .ok (p', k, entry) => buckets := addResource buckets p' k entry
-          | .error m           => throwErrorAt r m
-      | `(fleetItem| $r:fleetResource) =>
-        match resolve none r with
-        | .ok (p, k, entry) => buckets := addResource buckets p k entry
-        | .error m          => throwErrorAt r m
-      | _ => throwErrorAt item "malformed fleet item"
+        buckets := buckets.set! i (b.1, b.2.1, b.2.2.push entry)
+      | none => buckets := buckets.push (r.cloud, r.kind, #[entry])
 
     -- The name-list identifier is a pure function of the bucket, so it is
     -- recomputed where needed rather than kept in an array that has to stay
@@ -246,9 +301,27 @@ clause: it places every cloud, so anything before it would be discarded. Write \
 `in {p.getId}` first and override single clouds after it."
               placeTerm ← `(Infra.Core.Regions.everywhere $keysId .$p:ident)
           | pl => throwErrorAt pl "malformed placement"
-        if perCloud then
-          placeTerm ← `(Infra.Core.Regions.covering $keysId $placeTerm)
       | _ => throwErrorAt clause "malformed `in` clause"
+    -- Then every region block, as a per-slot override on top of that. A block
+    -- naming a locality resolves it per cloud, so `in paris` over an AWS
+    -- resource and a Scaleway one gives `eu-west-3` and `fr-par` — and fails
+    -- to elaborate over a resource in a cloud that is not there.
+    for r in flat do
+      if let some (a, c) := r.place then
+        let region : Term ← match c with
+          | some code =>
+            unless a.getId == r.cloud.getId do
+              throwErrorAt r.name s!"this resource is in `{r.cloud.getId}`, but the block \
+around it names a `{a.getId}` region; a region code belongs to one cloud"
+            `(Infra.Core.Region.of .$a:ident $code)
+          | none => `(Infra.Core.Locality.region .$a:ident .$(r.cloud):ident)
+        -- Deliberately does *not* set `perCloud`: `Regions.covering` is a
+        -- cloud-level check, and a resource in a block is placed by
+        -- construction, so there is nothing for it to add here. See
+        -- `Regions.covers` for why it cannot be per-slot.
+        placeTerm ← `(($placeTerm).setSlot .$(r.kind):ident $(r.name) $region)
+    if perCloud then
+      placeTerm ← `(Infra.Core.Regions.covering $keysId $placeTerm)
     cmds := cmds.push (← `(def $regionsId : Infra.Core.Regions := $placeTerm))
 
     -- 4. Every `as` abbreviation, all of them before any spec, so a resource

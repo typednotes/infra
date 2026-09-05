@@ -172,3 +172,11 @@ lean_exe «paris-instances» where
 lean_exe «cross-cloud» where
   srcDir := "example"
   root := `CrossCloud
+
+/-- `example/MultiRegion.lean`: one fleet in four regions, placed with nested
+    `provider`/`in` blocks. Placeholder-backed like `cross-cloud`, so a bare
+    invocation needs no credentials. -/
+@[default_target]
+lean_exe «multi-region» where
+  srcDir := "example"
+  root := `MultiRegion

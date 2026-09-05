@@ -30,15 +30,22 @@ def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
       -- without ever calling AWS, and so without AWS credentials.
       if (Finite.elems (α := κ.Key p k)).isEmpty then
         continue
-      let observed ← (bs.backend p).list k
-      for key in Finite.elems (α := κ.Key p k) do
-        match observed.find? (fun o => (observedHandle k o).raw == κ.name p k key) with
-        | some o =>
-          -- Only now, for a key the fleet actually claims, is the extra
-          -- per-resource read worth paying for.
-          let reported ← (bs.backend p).read k (observedHandle k o)
-          acc := ⟨p, k, key, { observed := o, reported }⟩ :: acc
-        | none   => pure ()
+      -- One listing per region this bucket's resources live in — for a fleet
+      -- in one region per cloud that is exactly one, as it always was. Each
+      -- listing is matched only against the slots placed in *that* region:
+      -- see `Backends.listers` for why the pairing is not optional.
+      for (b, here) in bs.listers p k do
+        let observed ← b.list k
+        for key in Finite.elems (α := κ.Key p k) do
+          let nm := κ.name p k key
+          if here nm then
+            match observed.find? (fun o => (observedHandle k o).raw == nm) with
+            | some o =>
+              -- Only now, for a key the fleet actually claims, is the extra
+              -- per-resource read worth paying for.
+              let reported ← b.read k (observedHandle k o)
+              acc := ⟨p, k, key, { observed := o, reported }⟩ :: acc
+            | none   => pure ()
   return acc
 
 /-- Observe the world and cache it. -/
@@ -202,7 +209,8 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
       -- Deduplicated: a spec naming one secret twice would otherwise pay for
       -- two plaintext reads, which is the most expensive call to repeat.
       unless values.any (fun v => v.1 == d.provider && v.2.1 == nm) do
-        values := (d.provider, nm, ← (bs.backend d.provider).secretValue ⟨nm⟩) :: values
+        values := (d.provider, nm,
+                   ← (bs.backendFor d.provider d.kind nm).secretValue ⟨nm⟩) :: values
     let env : Env κ.Key :=
       { base with secretValue := fun p' key' =>
           (values.find? fun v => v.1 == p' && v.2.1 == κ.name p' .secrets key').map (·.2.2) }
@@ -216,7 +224,7 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
 private def remember {κ : Keys} (bs : Backends) (entries : List (Entry κ))
     (p : ProviderId) (k : Kind) (key : κ.Key p k) (o : ObservedOf k) :
     IO (List (Entry κ)) := do
-  let reported ← (bs.backend p).read k (observedHandle k o)
+  let reported ← (bs.backendFor p k (κ.name p k key)).read k (observedHandle k o)
   return ⟨p, k, key, { observed := o, reported }⟩ :: entries
 
 /-- Run `act`, and if it fails, say what was being done to what.
@@ -246,26 +254,28 @@ private def inContext {α : Type} (what : String) (act : IO α) : IO α := do
     work-list. -/
 private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     (entries : List (Entry κ)) : Action κ → IO (List (Entry κ))
+  -- Every mutation goes to the slot's *own* backend, which for a fleet in one
+  -- region per cloud is the cloud's only one.
   | .create p k key => inContext s!"CREATE {slotId p k (κ.name p k key)}" do
-    let o ← (bs.backend p).create k (← settleFor T bs entries p k key)
+    let o ← (bs.backendFor p k (κ.name p k key)).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
   | .update p k key => inContext s!"UPDATE {slotId p k (κ.name p k key)}" do
     match (worldOf entries).sighting p k key with
     | some seen =>
-      let o ← (bs.backend p).update k (observedHandle k seen.observed)
+      let o ← (bs.backendFor p k (κ.name p k key)).update k (observedHandle k seen.observed)
         (← settleFor T bs entries p k key)
       remember bs entries p k key o
     | none => throw (IO.userError s!"{slotId p k (κ.name p k key)}: vanished before update")
   | .replace p k key => inContext s!"REPLACE {slotId p k (κ.name p k key)}" do
     -- Destroy then create: the key survives, the handle does not.
     match (worldOf entries).sighting p k key with
-    | some seen => (bs.backend p).delete k (observedHandle k seen.observed)
+    | some seen => (bs.backendFor p k (κ.name p k key)).delete k (observedHandle k seen.observed)
     | none      => pure ()
-    let o ← (bs.backend p).create k (← settleFor T bs entries p k key)
+    let o ← (bs.backendFor p k (κ.name p k key)).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
   | .delete p k key => inContext s!"DELETE {slotId p k (κ.name p k key)}" do
     match (worldOf entries).sighting p k key with
-    | some seen => (bs.backend p).delete k (observedHandle k seen.observed)
+    | some seen => (bs.backendFor p k (κ.name p k key)).delete k (observedHandle k seen.observed)
     | none      => pure ()
     return entries
 
