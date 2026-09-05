@@ -13,7 +13,7 @@
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:typednotes/infra:*"
+          "token.actions.githubusercontent.com:sub": "repo:typednotes@192230886/infra@1342807595:*"
         }
       }
     }

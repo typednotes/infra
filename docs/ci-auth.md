@@ -346,6 +346,40 @@ GitHub to mint the token in the first place, and
 `aws-actions/configure-aws-credentials` exports the three variables the
 credential chain reads.
 
+### The subject claim embeds numeric IDs
+
+**This is the one that will catch you**, and it caught this repository.
+
+Every guide, and GitHub's own examples, show a subject like:
+
+```
+repo:typednotes/infra:environment:production
+```
+
+For repositories created after **15 July 2026**, or ones that opt in, GitHub
+issues an *immutable* subject instead, with the owner and repository **numeric
+IDs** appended:
+
+```
+repo:typednotes@192230886/infra@1342807595:environment:production
+       ^^^^^^^^^         ^^^^^^^^^^
+```
+
+A trust policy written from the documentation's example is an exact-string
+mismatch against that, and the resulting error — `Not authorized to perform
+sts:AssumeRoleWithWebIdentity` — says nothing about subjects.
+
+The IDs for this repository are in `ci/aws-trust-policy*.json`. To find them
+for another:
+
+```sh
+gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+```
+
+This is a *better* state of affairs, not merely an obstacle: names can be
+released and re-registered, so a policy trusting `repo:acme/tool:*` can be
+inherited by whoever claims `acme` next. Numeric IDs cannot be re-issued.
+
 ### If it fails with "the web identity token could not be validated"
 
 That error is about the *token*, not the role, and it almost always means step

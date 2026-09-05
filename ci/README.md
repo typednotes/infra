@@ -26,7 +26,14 @@ rather than what it can do. `aws-permissions-policy.json` remains here as the
 least-privilege alternative, and as documentation of what the live test
 actually needs.
 
-None of these contains a secret. An account id appears in every ARN.
+Both subjects carry **immutable owner and repository IDs**
+(`typednotes@192230886/infra@1342807595`) rather than plain names, because that
+is what GitHub actually issues for this repository — see the guide. A policy
+written from the documentation's `repo:owner/name` example is an exact-string
+mismatch and fails with an error that mentions neither subjects nor names.
+
+None of these contains a secret. An account id appears in every ARN, and the
+owner and repository IDs are public.
 
 GCP's equivalent is not here because `gcloud` takes those conditions as command
 arguments rather than documents; the commands are in the same guide.
