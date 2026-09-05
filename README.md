@@ -39,7 +39,11 @@ the portability rules.
 provider-local) · every `(provider, kind)` pair implemented.
 
 GCP is **types only**: its resources can be declared, placed, referenced,
-scheduled, diffed and exported to HCL, and there is no live client yet.
+scheduled, diffed and exported to HCL today — everything above the backend
+works. What is missing is the client that talks to it, so an apply raises
+rather than quietly doing nothing. Authentication is already done (a
+service-account key, `gcloud`, or Workload Identity Federation), so what
+remains is the per-product REST calls.
 
 Verification varies by kind, and it is worth knowing which before you rely on
 any one of them:
@@ -71,11 +75,32 @@ a first tagged release.
   `lean_action_ci.yml` install steps for the exact packages if `lake build`
   fails looking for a header.
 
-## Build
+## Start a project
+
+`infra new` scaffolds a declaration repository you can commit and deploy the
+same day. It wraps `lake init`, so Lake still owns the toolchain pin; what it
+adds is the part Lake cannot know about — chiefly the native link flags every
+consumer needs, which Lake does not propagate from a dependency and which are
+otherwise copied by hand.
+
+```sh
+lake exe infra new my-infra   # wraps `lake init`, then adds the rest
+cd my-infra
+lake update                   # fetch infra
+lake exe my_infra             # offline plan — no credentials, no charges
+```
+
+You get `Fleet.lean` (the whole declaration), `Main.lean` (five lines), a
+`.gitignore` that excludes the state cache, a README, and CI for **GitHub and
+GitLab** with the plan/apply split wired: plan on every push, apply only when a
+person presses the button.
+
+## Build this repository
 
 ```sh
 lake build
 lake exe infra check   # offline self-checks; no cloud, no credentials needed
+lake test              # the test driver, offline
 ```
 
 ## Running against real accounts

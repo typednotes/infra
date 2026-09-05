@@ -160,6 +160,8 @@
   .cloudband { padding: 8px 24px 56px; }
   .cloudband-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
                      color: var(--ink-2); margin: 0 0 14px; }
+  .cloudband-note { font-size: 15px; color: var(--ink-2); max-width: 68ch; margin: 16px 0 0; }
+  .cloudband-note strong { color: var(--ink); }
   .clouds { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 0; }
   .cloud { display: flex; align-items: center; gap: 10px; padding: 14px 20px;
            border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
@@ -212,6 +214,7 @@
       <a href="#catches">What it catches</a>
       <a href="#why">Why</a>
       <a href="#coverage">Coverage</a>
+      <a href="#start">Start</a>
       <a href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Tutorial</a>
       <a class="gh" href="https://github.com/typednotes/infra" aria-label="infra on GitHub">
         <svg viewBox="0 0 16 16" width="19" height="19" aria-hidden="true" focusable="false">
@@ -241,7 +244,7 @@
       <div class="stats">
         <div class="stat"><b>3</b><span>clouds — AWS, Scaleway, GCP</span></div>
         <div class="stat"><b>14</b><span>resource kinds</span></div>
-        <div class="stat"><b>0</b><span>runtime validation passes</span></div>
+        <div class="stat"><b>2</b><span>of them need no per-cloud code at all</span></div>
       </div>
       <div class="ctas">
         <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Read the tutorial</a>
@@ -347,6 +350,14 @@
     <div class="cloud"><img src="providers/azure.svg" alt="Azure" width="190" height="60"><span>planned</span></div>
     <div class="cloud"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"><span>planned</span></div>
   </div>
+  <p class="cloudband-note">
+    <strong>&ldquo;Types only&rdquo;</strong> means GCP resources can be declared,
+    placed, referenced, scheduled, diffed and exported to HCL today — everything
+    above the backend works. What is missing is the client that talks to it, so
+    an apply raises rather than quietly doing nothing. Authentication is
+    already done: a service-account key, <code>gcloud</code>, or Workload
+    Identity Federation.
+  </p>
 </div>
 
 <section id="catches">
@@ -608,7 +619,32 @@ would CREATE scaleway/secrets/db-url
 
 <section>
   <div class="wrap">
-    <h2>Try it</h2>
+    <h2 id="start">Start a project</h2>
+    <p class="sub">
+      <code>infra new</code> scaffolds a declaration repository you can commit
+      and deploy the same day: the canonical structure, a commented example
+      fleet that compiles, and CI for GitHub <em>and</em> GitLab with the
+      plan/apply split already wired. It builds on <code>lake init</code>, so
+      Lake still owns the toolchain pin — what it adds is the part Lake cannot
+      know about, chiefly the native link flags every consumer needs and would
+      otherwise copy by hand.
+    </p>
+    <div class="card" style="max-width:760px">
+      <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>
+<pre>lake exe infra new my-infra   <span class="c"># wraps `lake init`, then adds the rest</span>
+<span class="k">cd</span> my-infra
+lake update                   <span class="c"># fetch infra</span>
+lake exe my_infra             <span class="c"># offline plan — no credentials, no charges</span></pre>
+    </div>
+    <p class="sub" style="margin:26px 0 12px">
+      You get <code>Fleet.lean</code> (the whole declaration),
+      <code>Main.lean</code> (five lines), a <code>.gitignore</code> that
+      excludes the state cache, and workflows that plan on every push and apply
+      only when a person presses the button. Fill in the account ids, add your
+      secrets, commit.
+    </p>
+
+    <h2 style="margin-top:56px">Or read this one</h2>
     <p class="sub">
       A bare invocation is offline, credential-free and free of charge: it plans
       against placeholder backends. You have to ask for the real thing.
@@ -618,7 +654,7 @@ would CREATE scaleway/secrets/db-url
 <pre>git clone https://github.com/typednotes/infra &amp;&amp; <span class="k">cd</span> infra
 lake build
 lake exe infra              <span class="c"># offline self-checks</span>
-lake exe cross-cloud        <span class="c"># a plan spanning both clouds</span>
+lake exe cross-cloud        <span class="c"># a plan spanning two clouds</span>
 lake exe multi-region       <span class="c"># six resources in four regions</span></pre>
     </div>
   </div>
