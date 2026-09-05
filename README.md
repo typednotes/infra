@@ -46,6 +46,10 @@ Maturity is uneven and worth knowing before you rely on it:
 | Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets |
 | **Never run against an account** | **all of AWS**, and most endpoint shapes (~1,200 lines) |
 
+It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
+references, and a `# TODO` for anything HCL cannot express), and
+`fleetOfState` reads `terraform show -json` back into a fleet declaration.
+
 [`docs/coverage.md`](docs/coverage.md) is the full breakdown — kinds, features,
 what is verified how, and the known defects. It is kept current deliberately,
 including the parts that are embarrassing.
@@ -248,8 +252,8 @@ extending anything:
 - [`docs/architecture.md`](docs/architecture.md) — overall design and the portability rules
 - [`docs/authentication.md`](docs/authentication.md) — where credentials come from
 - [`docs/persistence.md`](docs/persistence.md) — how observed state is cached
-- [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the two
-  trademark policies that constrain both
+- [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the
+  trademark policies that constrain them
 - [`docs/providers.md`](docs/providers.md) — how each `Kind` maps onto each cloud's API, and what is actually verified live
 - [`docs/diff-semantics.md`](docs/diff-semantics.md) — how target vs. observed state is compared
 

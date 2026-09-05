@@ -145,6 +145,16 @@
   .band h3 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.4px; }
   .band p { margin: 0; color: var(--ink-2); }
 
+  /* ── clouds ── */
+  .clouds { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 0; }
+  .cloud { display: flex; align-items: center; gap: 10px; padding: 14px 20px;
+           border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+           color: var(--ink-2); opacity: .5; }
+  .cloud.is-on { opacity: 1; color: var(--ink); border-color: var(--ink-2); }
+  .cloud img { height: 20px; width: auto; display: block; }
+  .cloud span { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+                border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
+
   /* ── coverage ── */
   .cov { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
   @media (max-width: 820px) { .cov { grid-template-columns: 1fr; } }
@@ -184,6 +194,7 @@
     <div class="nav-links">
       <a href="#examples">Examples</a>
       <a href="#catches">What it catches</a>
+      <a href="#why">Why</a>
       <a href="#coverage">Coverage</a>
       <a href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Tutorial</a>
       <a href="https://github.com/typednotes/infra">GitHub</a>
@@ -396,6 +407,115 @@ would CREATE scaleway/secrets/db-url
   </div>
 </section>
 
+<section id="why">
+  <div class="wrap">
+    <h2>Why this instead of Terraform or OpenTofu</h2>
+    <p class="sub">
+      Honestly: not for the coverage — they have thousands of providers and this
+      has two. For what the type system buys, and only if that trade is worth it
+      to you.
+    </p>
+
+    <div class="cov" style="grid-template-columns:repeat(2,1fr)">
+      <div class="cov-card">
+        <h4 style="color:var(--blue)">Errors move to compile time</h4>
+        <p>
+          A dangling reference, a reference of the wrong kind or the wrong
+          cloud, a missing required field, a region a cloud is not in, an
+          instance size that does not exist, a plaintext secret in the committed
+          file. In HCL each of these is a plan-time or apply-time failure; here
+          they are type errors and decidable side-conditions, so they fail in
+          your editor. See the examples above — each is a real message.
+        </p>
+      </div>
+      <div class="cov-card">
+        <h4 style="color:var(--blue)">Ordering is derived, not declared</h4>
+        <p>
+          There is no <code>depends_on</code>. A reference <em>is</em> the
+          dependency, so the graph cannot disagree with the code — and both
+          directions are sorted, so teardown is the reverse of the same graph
+          rather than a guess. Cycles are rejected by name.
+        </p>
+      </div>
+      <div class="cov-card">
+        <h4 style="color:var(--blue)">One apply, not two</h4>
+        <p>
+          A value that needs state which does not exist yet — a connection
+          string wanting both a generated password and an endpoint the cloud
+          assigns at creation — is written as a <em>function</em> over that
+          state. Both references become ordering edges, so one apply does it.
+          No second run, no operator pasting a string in between.
+        </p>
+      </div>
+      <div class="cov-card">
+        <h4 style="color:var(--blue)">Secrets cannot be in the file</h4>
+        <p>
+          A secret names an environment variable or a composition — never a
+          value. That a committed fleet holds no plaintext is itself decidable
+          and checked at compile time, and no value reaches plan output or the
+          on-disk cache.
+        </p>
+      </div>
+      <div class="cov-card">
+        <h4 style="color:var(--blue)">One spec, either cloud</h4>
+        <p>
+          Portable kinds are indexed by kind alone, never by provider, so the
+          same value applies to AWS or Scaleway; the provider enters only at
+          apply. Two of the seven portable kinds need no per-cloud code at all.
+          Reaching for a cloud-specific concept makes the loss of portability
+          visible in the <em>type</em>, not in a comment.
+        </p>
+      </div>
+      <div class="cov-card">
+        <h4 style="color:var(--blue)">It is Lean, not a DSL</h4>
+        <p>
+          Loops, functions, abstraction and testing are the host language's,
+          already there and already documented. Your fleet is a value you can
+          compute with, and <code>#guard</code> lets you assert things about it
+          that hold at build time. Apache-2.0, no CLA, no relicensing risk.
+        </p>
+      </div>
+    </div>
+
+    <div class="band" style="margin-top:48px">
+      <div class="band-text">
+        <h3>It converts both ways</h3>
+        <p>
+          <code>toHcl</code> turns a fleet into <code>.tf</code> — resource
+          blocks, provider blocks from the placement, and real HCL references
+          where the fleet has references, because a reference is an index into
+          the fleet and so the target's type and label are both derivable.
+          <code>fleetOfState</code> reads <code>terraform show -json</code> the
+          other way and writes a fleet declaration.
+        </p>
+        <p style="margin-top:12px">
+          Neither is claimed to be a round trip. What HCL cannot express — a
+          composed secret, a value over post-apply state — comes out as a
+          <code># TODO</code> naming what was dropped, because a silently wrong
+          value is worse than a visible hole.
+        </p>
+      </div>
+      <div class="card"><div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>generated main.tf</span></div>
+<pre><span class="c"># A STARTING POINT, NOT A ROUND TRIP.</span>
+
+<span class="k">provider</span> <span class="s">"aws"</span> {
+  region = <span class="s">"eu-west-3"</span>
+}
+
+<span class="k">resource</span> <span class="s">"aws_security_group"</span> <span class="s">"web"</span> {
+  name        = <span class="s">"web"</span>
+  description = <span class="s">"http"</span>
+}
+
+<span class="k">resource</span> <span class="s">"aws_instance"</span> <span class="s">"web-1"</span> {
+  ami                    = <span class="s">"ami-1"</span>
+  instance_type          = <span class="s">"t3.nano"</span>
+  vpc_security_group_ids = [aws_security_group.web.id]
+}</pre></div>
+    </div>
+  </div>
+</section>
+
 <section id="coverage">
   <div class="wrap">
     <h2>How far this has actually been run</h2>
@@ -404,6 +524,19 @@ would CREATE scaleway/secrets/db-url
       established; correctness of <em>what is being signed</em> mostly is not. This
       is a summary — <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">coverage.md</a>
       is the full breakdown and is kept current, including the embarrassing parts.
+    </p>
+
+    <div class="clouds">
+      <div class="cloud is-on"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></div>
+      <div class="cloud is-on"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></div>
+      <div class="cloud"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>planned</span></div>
+      <div class="cloud"><img src="providers/azure.svg" alt="Azure" width="190" height="60"><span>planned</span></div>
+      <div class="cloud"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"><span>planned</span></div>
+    </div>
+    <p class="sub" style="margin:16px 0 40px">
+      Adding a cloud is a constructor on one enum, after which every total match
+      over it fails to compile until it is handled — mechanical and loud, rather
+      than a plugin boundary that can be half-finished.
     </p>
 
     <div class="cov">

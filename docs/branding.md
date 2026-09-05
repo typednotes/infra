@@ -97,6 +97,25 @@ If we ever want to display the actual Lean logo, it must be the unmodified
 official file with the ™ intact, and it must not be arranged so a casual
 observer would read it as endorsement.
 
+## The cloud marks are names, not logos
+
+`assets/providers/*.svg` are **wordmarks set in this project's own type**, in
+`currentColor` so they invert with the theme. They are not AWS's or Scaleway's
+logos, and that is deliberate: the same caution that applies to Lean and
+OpenTofu applies here, and AWS's guidelines in particular are strict about
+their marks.
+
+Naming a product you interoperate with is nominative use and is ordinarily
+fine; reproducing its logo is a different act. Since the page only needs to say
+*which clouds this supports*, the name does the whole job and carries none of
+the risk. It also happens to make the strip trivially extensible — a new cloud
+is one more file with one more word in it, and the three greyed "planned" tiles
+cost nothing.
+
+If the real logos are ever wanted, both companies publish brand pages with
+conditions attached, and that is a decision to make deliberately rather than by
+dropping a downloaded PNG into the repo.
+
 ## Open question
 
 There is no conventional "made with Lean" badge — Lean is not in Simple Icons,

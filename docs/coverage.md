@@ -72,6 +72,8 @@ asserted.
 | Observed-state cache on disk | complete |
 | `check` / `refresh` / `plan` / `apply` / `destroy` | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
+| Terraform/OpenTofu export (`toHcl`) | works; not a round trip — see below |
+| Terraform/OpenTofu import (`fleetOfState`) | works, from `terraform show -json` |
 
 ## How far each part has actually been run
 
@@ -116,6 +118,34 @@ both directions by a checker that recomputes the edges independently.
   assumption; if the real mechanism is a native reference, the backend
   simplifies and the types do not change.
 - **Scaleway Serverless SQL Database** — honestly stubbed rather than guessed.
+
+## Interoperability with Terraform and OpenTofu
+
+Both directions exist, in `Infra/Interop/Terraform.lean`, and neither is a
+round trip — which is stated because the temptation to oversell this is
+obvious.
+
+**Out** — `toHcl` turns a fleet into `.tf`: a `resource` block per resource,
+`provider` blocks from the placement, and *real* HCL references where the
+fleet has references, since a reference is an index into the fleet and so the
+target's Terraform type and label are both derivable. What HCL cannot express
+— a composed secret, a value over post-apply state — becomes a `# TODO`
+naming what was dropped, because a silently wrong value is worse than a
+visible hole. A fleet spanning several regions of one cloud emits aliased
+providers plus a note that the per-resource `provider =` arguments are *not*
+generated.
+
+**In** — `fleetOfState` reads `terraform show -json` and writes a `fleet`
+declaration. Source text rather than a value, necessarily: a fleet's key type
+is derived from its resource names while the file elaborates, so importing
+means writing a declaration for you to compile. Fields are left empty on
+purpose, so anything with a required field will not compile until you supply
+it — and the error names the field. Resource types this library does not model
+are skipped, with a count.
+
+The `(provider, kind) → resource type` table is **unverified against either
+registry**, and the attribute names inside each block are a looser guess
+still. Same standing as the endpoint shapes in `Kinds/*.lean`.
 
 ## Known defects
 
