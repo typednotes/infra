@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>infra — infrastructure as code, in Lean 4</title>
+<meta name="description" content="Terraform-style infrastructure as code written in the Lean programming language. Target and observed cloud state are dependently-typed values, so an unrealisable target is a compile error.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FBFCFE" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0D131C" media="(prefers-color-scheme: dark)">
+<style>
+  :root {
+    color-scheme: light dark;
+    --blue: #386EE0;
+    --blue-hover: #2A57B8;
+    --slate-top: #7C93B4;
+    --slate-side: #3F5372;
+
+    --bg: #FBFCFE;
+    --surface: #FFFFFF;
+    --surface-2: #F2F5FA;
+    --border: #DDE4EE;
+    --ink: #16202E;
+    --ink-2: #4B5B70;
+    --code-bg: #101827;
+    --code-ink: #DDE4EE;
+    --ok: #1B7F4B;
+    --warn: #9A5B00;
+    --bad: #A8323C;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0D131C;
+      --surface: #141C28;
+      --surface-2: #19222F;
+      --border: #26303F;
+      --ink: #E8EDF5;
+      --ink-2: #9DAABC;
+      --code-bg: #0A0F17;
+      --code-ink: #DDE4EE;
+      --ok: #56C98A;
+      --warn: #E0A44A;
+      --bad: #F0868F;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: 'DM Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Roboto, Helvetica, Arial, sans-serif;
+    font-size: 17px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .skip { position: absolute; left: -9999px; top: 0; background: var(--blue); color: #fff;
+          padding: 10px 16px; z-index: 10; border-radius: 0 0 6px 0; }
+  .skip:focus { left: 0; }
+  .wrap { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--blue); }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 3px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; }
+
+  /* ── banner ── */
+  .banner {
+    background: var(--surface-2); border-bottom: 1px solid var(--border);
+    font-size: 14px; text-align: center; padding: 8px 16px; color: var(--ink-2);
+  }
+  .banner strong { color: var(--ink); }
+
+  /* ── nav ── */
+  nav { border-bottom: 1px solid var(--border); background: var(--bg); }
+  .nav-in { display: flex; align-items: center; gap: 28px; height: 68px; }
+  .nav-logo { display: flex; align-items: center; gap: 11px; font-weight: 700;
+              font-size: 21px; color: var(--ink); text-decoration: none; letter-spacing: -.5px; }
+  .nav-logo img { width: 30px; height: 31px; display: block; }
+  .nav-links { margin-left: auto; display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  .nav-links a { color: var(--ink-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .nav-links a:hover { color: var(--ink); }
+
+  /* ── hero ── */
+  .hero { padding: 72px 0 56px; }
+  .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: start; }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 36px; } }
+  h1 { font-size: clamp(34px, 5vw, 52px); line-height: 1.1; margin: 0 0 20px;
+       letter-spacing: -1.5px; font-weight: 700; }
+  .lede { font-size: 19px; color: var(--ink-2); margin: 0 0 18px; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  .stats { display: flex; gap: 28px; flex-wrap: wrap; margin: 26px 0 30px;
+           padding: 18px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .stat b { display: block; font-size: 26px; font-variant-numeric: tabular-nums; line-height: 1.1; letter-spacing: -1px; }
+  .stat span { font-size: 13px; color: var(--ink-2); }
+  .ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 13px 22px; border-radius: 6px; font-weight: 600;
+         font-size: 15px; text-decoration: none; border: 1px solid transparent; }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-primary:hover { background: var(--blue-hover); }
+  .btn-ghost { border-color: var(--border); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--ink-2); }
+
+  /* ── code card ── */
+  .card { background: var(--code-bg); border: 1px solid var(--border);
+          border-radius: 10px; overflow: hidden; }
+  .card-bar { display: flex; align-items: center; gap: 9px; padding: 10px 14px;
+              border-bottom: 1px solid #1E2939; background: #0B121C; }
+  .card-bar img { width: 15px; height: 16px; }
+  .card-bar span { font-size: 13px; color: #8593A8; font-family: ui-monospace, monospace; }
+  pre { margin: 0; padding: 18px; overflow-x: auto; font-size: 13.5px; line-height: 1.65;
+        color: var(--code-ink); }
+  .k { color: #7FA9F5; }      /* keyword */
+  .s { color: #9BD8A0; }      /* string  */
+  .c { color: #6B7A90; font-style: italic; }  /* comment */
+  .n { color: #E0B080; }      /* literal */
+  .t { color: #C8A9F0; }      /* type / kind */
+  .err { color: #F0868F; }
+
+  /* ── carousel ── */
+  .car-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; min-height: 62px; }
+  .car-head h3 { margin: 0; font-size: 17px; font-weight: 700; }
+  .car-head p { margin: 4px 0 0; font-size: 14px; color: var(--ink-2); }
+  .car-nav { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .car-btn { width: 34px; height: 34px; border-radius: 6px; border: 1px solid var(--border);
+             background: var(--surface); color: var(--ink); cursor: pointer; font-size: 15px;
+             line-height: 1; display: grid; place-items: center; }
+  .car-btn:hover { border-color: var(--ink-2); }
+  .dots { display: flex; gap: 7px; margin-left: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; border: 0; padding: 0;
+         background: var(--border); cursor: pointer; }
+  .dot[aria-current="true"] { background: var(--blue); }
+  .slide[hidden] { display: none; }
+
+  /* ── sections ── */
+  section { padding: 64px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -1px; margin: 0 0 10px; font-weight: 700; }
+  .sub { color: var(--ink-2); margin: 0 0 40px; font-size: 17px; max-width: 68ch; }
+  .band { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; align-items: center;
+          margin-bottom: 44px; }
+  .band:nth-child(even) .band-text { order: 2; }
+  @media (max-width: 900px) { .band { grid-template-columns: 1fr; gap: 24px; }
+                              .band:nth-child(even) .band-text { order: 0; } }
+  .band h3 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.4px; }
+  .band p { margin: 0; color: var(--ink-2); }
+
+  /* ── coverage ── */
+  .cov { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 820px) { .cov { grid-template-columns: 1fr; } }
+  .cov-card { background: var(--surface); border: 1px solid var(--border);
+              border-radius: 10px; padding: 20px 22px; }
+  .cov-card h4 { margin: 0 0 4px; font-size: 15px; letter-spacing: .3px; text-transform: uppercase; }
+  .cov-card.ok h4 { color: var(--ok); }
+  .cov-card.warn h4 { color: var(--warn); }
+  .cov-card.bad h4 { color: var(--bad); }
+  .cov-card p { margin: 8px 0 0; font-size: 15px; color: var(--ink-2); }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; margin-top: 8px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: .4px; color: var(--ink-2); }
+  td code { font-size: 13.5px; }
+  .scroller { overflow-x: auto; }
+
+  footer { border-top: 1px solid var(--border); padding: 40px 0 56px; color: var(--ink-2);
+           font-size: 14.5px; }
+  footer a { color: var(--ink-2); }
+  .foot-top { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; margin-bottom: 22px; }
+  .foot-top img { width: 26px; height: 27px; }
+</style>
+</head>
+<body>
+
+<a class="skip" href="#top">Skip to content</a>
+
+<div class="banner">
+  <strong>0.2.0</strong> — early software. Two clouds, 14 resource kinds, and
+  <strong>no AWS call yet made against a real account</strong>.
+  <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">See exactly what is covered →</a>
+</div>
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="nav-logo" href="#top"><img src="logo.svg" alt="" width="30" height="31">infra</a>
+    <div class="nav-links">
+      <a href="#examples">Examples</a>
+      <a href="#catches">What it catches</a>
+      <a href="#coverage">Coverage</a>
+      <a href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Tutorial</a>
+      <a href="https://github.com/typednotes/infra">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main id="top">
+<div class="wrap hero">
+  <div class="hero-grid">
+    <div>
+      <h1>Infrastructure as code, in Lean&nbsp;4</h1>
+      <p class="lede">
+        Terraform-style declarative infrastructure, written in the Lean programming
+        language and proof assistant instead of a bespoke DSL. Target and observed
+        cloud state are <strong>dependently-typed Lean values</strong>, so an
+        unrealisable target is a compile error rather than a failed apply.
+      </p>
+      <p class="lede">
+        A dangling reference, a region a cloud is not in, an instance size that does
+        not exist, a plaintext password in a committed file — <strong>none of these
+        get as far as a plan</strong>.
+      </p>
+      <div class="stats">
+        <div class="stat"><b>2</b><span>clouds — AWS, Scaleway</span></div>
+        <div class="stat"><b>14</b><span>resource kinds</span></div>
+        <div class="stat"><b>0</b><span>runtime validation passes</span></div>
+      </div>
+      <div class="ctas">
+        <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Read the tutorial</a>
+        <a class="btn btn-ghost" href="https://github.com/typednotes/infra">View on GitHub</a>
+      </div>
+    </div>
+
+    <div id="examples">
+      <div class="car-head">
+        <div>
+          <h3 id="slide-title">Declare a fleet</h3>
+          <p id="slide-desc">A complete, working declaration. The resource's name is written once and is the cloud's real identifier.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span id="slide-file">Main.lean</span></div>
+
+        <div class="slide" id="s0" role="group" aria-roledescription="slide" aria-label="1 of 4">
+<pre><span class="c">-- One bucket in Paris. `in paris` is what places it:</span>
+<span class="c">-- AWS would read eu-west-3, Scaleway fr-par.</span>
+<span class="k">fleet</span> myFleet <span class="k">in</span> paris <span class="k">where</span>
+  <span class="k">provider</span> scaleway <span class="k">where</span>
+    <span class="k">resource</span> <span class="t">objectStore</span> <span class="s">"my-first-bucket"</span>
+      { versioning := <span class="k">true</span>
+      , tags       := [(<span class="s">"project"</span>, <span class="s">"tutorial"</span>)] }
+
+<span class="k">def</span> main (args : <span class="t">List String</span>) : <span class="t">IO UInt32</span> :=
+  Infra.Cli.run <span class="s">"my-infra"</span> myFleet.plan
+    (regions := myFleet.regions) (args := args)</pre>
+        </div>
+
+        <div class="slide" id="s1" hidden role="group" aria-roledescription="slide" aria-label="2 of 4">
+<pre><span class="c">-- Blocks nest and scope like a `with` in Python.</span>
+<span class="k">fleet</span> spread <span class="k">in</span> paris <span class="k">where</span>
+  <span class="k">provider</span> aws <span class="k">where</span>
+    <span class="k">resource</span> <span class="t">s3Bucket</span> <span class="s">"eu-assets"</span> { versioning := <span class="k">true</span> }
+
+    <span class="k">in</span> nVirginia <span class="k">where</span>
+      <span class="k">resource</span> <span class="t">s3Bucket</span> <span class="s">"us-east-assets"</span> { versioning := <span class="k">true</span> }
+
+  <span class="k">provider</span> scaleway <span class="k">where</span>
+    <span class="k">in</span> amsterdam <span class="k">where</span>
+      <span class="k">resource</span> <span class="t">objectStore</span> <span class="s">"nl-cache"</span> { versioning := <span class="k">true</span> }
+
+<span class="c">-- Scaleway has no Oregon region, so this does not compile:</span>
+<span class="c">--   Assert (Locality.oregon.code ProviderId.scaleway).isSome</span>
+<span class="c">--   is false</span></pre>
+        </div>
+
+        <div class="slide" id="s2" hidden role="group" aria-roledescription="slide" aria-label="3 of 4">
+<pre><span class="k">fleet</span> web <span class="k">in</span> paris <span class="k">where</span>
+  <span class="k">provider</span> aws <span class="k">where</span>
+    <span class="k">resource</span> <span class="t">securityGroup</span> <span class="s">"web"</span> <span class="k">as</span> webGroup
+      { description := <span class="s">"http from anywhere"</span> }
+
+    <span class="k">resource</span> <span class="t">awsInstance</span> <span class="s">"web-1"</span>
+      { imageId       := <span class="s">"ami-0d3c032f5934e1b41"</span>
+      , instanceType  := InstanceType.of .t3 .nano
+      , securityGroup := webGroup }
+
+<span class="c">-- The reference is an index into this fleet's own keys, so it</span>
+<span class="c">-- cannot dangle, cannot name the wrong kind, cannot name the</span>
+<span class="c">-- wrong cloud. The group is created first because of it.</span></pre>
+        </div>
+
+        <div class="slide" id="s3" hidden role="group" aria-roledescription="slide" aria-label="4 of 4">
+<pre><span class="k">resource</span> <span class="t">secrets</span> <span class="s">"db-password"</span> <span class="k">as</span> dbPassword
+  { valueFrom := fromEnv <span class="s">"DB_PASSWORD"</span> }
+
+<span class="k">resource</span> <span class="t">postgres</span> <span class="s">"main"</span> <span class="k">as</span> mainDb
+  { masterUsername       := <span class="s">"dbadmin"</span>
+  , masterPasswordSecret := <span class="s">"db-password"</span>
+  , minCapacity := <span class="n">1</span>, maxCapacity := <span class="n">4</span> }
+
+<span class="c">-- A value that cannot exist until the database does.</span>
+<span class="c">-- Both references become ordering edges, so ONE apply</span>
+<span class="c">-- creates all three, in the right order.</span>
+<span class="k">resource</span> <span class="t">secrets</span> <span class="s">"db-url"</span>
+  { valueFrom := composed
+      expr!<span class="s">"postgres://dbadmin:{secretValueOf dbPassword}</span>
+<span class="s">              @{endpointOf mainDb}/main"</span> }</pre>
+        </div>
+      </div>
+
+      <div class="car-nav">
+        <button class="car-btn" id="prev" aria-label="Previous example">&#8592;</button>
+        <button class="car-btn" id="next" aria-label="Next example">&#8594;</button>
+        <div class="dots" id="dots" role="tablist" aria-label="Choose example"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section id="catches">
+  <div class="wrap">
+    <h2>What the compiler catches</h2>
+    <p class="sub">
+      Not a validation pass that runs before apply. These are type errors and
+      decidable side-conditions, settled while the file elaborates — so the
+      failure arrives in your editor, not after half a fleet exists.
+    </p>
+
+    <div class="band">
+      <div class="band-text">
+        <h3>References cannot dangle</h3>
+        <p>
+          A reference has the type of an index into <em>this fleet's own keys</em>.
+          There is no "not found" case to handle, a bucket key is a different type
+          from a security-group key, and keys are indexed by cloud as well as kind.
+          Ordering falls out of the same fact: the scheduler reads the reference
+          graph, handles arbitrary DAGs, and rejects cycles by name.
+        </p>
+      </div>
+      <div class="card"><div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>the error</span></div>
+<pre><span class="c">-- pointing at a bucket where a security group belongs</span>
+<span class="err">Application type mismatch</span>: The argument
+  bucket
+has type
+  keys.Key ProviderId.aws Kind.s3Bucket
+but is expected to have type
+  Expr keys.Key (keys.Key ProviderId.aws Kind.securityGroup)</pre></div>
+    </div>
+
+    <div class="band">
+      <div class="band-text">
+        <h3>A cloud cannot be somewhere it is not</h3>
+        <p>
+          A locality is a place named before any cloud names it, so one
+          <code>in paris</code> resolves to <code>eu-west-3</code> on AWS and
+          <code>fr-par</code> on Scaleway. Scaleway has a Warsaw region and AWS does
+          not — so <code>in warsaw</code> compiles for a Scaleway-only fleet and
+          fails for one that also uses AWS.
+        </p>
+      </div>
+      <div class="card"><div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>the error</span></div>
+<pre><span class="k">fleet</span> crossCloud <span class="k">in</span> warsaw <span class="k">where</span> …
+
+<span class="err">Tactic `decide` proved that the proposition</span>
+  Assert (Locality.warsaw.covers keys)
+is false</pre></div>
+    </div>
+
+    <div class="band">
+      <div class="band-text">
+        <h3>Instance types are a family and a size</h3>
+        <p>
+          Not a string. Twenty-six current families share nine size lists between
+          them, so the pair is checked: <code>t3</code> stops at
+          <code>2xlarge</code>, and gen-7 Intel skips <code>32xlarge</code> entirely
+          and jumps to <code>48xlarge</code>. Autocomplete lists the families, then
+          the sizes it actually comes in.
+        </p>
+      </div>
+      <div class="card"><div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>the error</span></div>
+<pre>instanceType := InstanceType.of .t3 .xlarge32
+
+<span class="err">Tactic `decide` proved that the proposition</span>
+  Assert (InstanceFamily.t3.sizes.contains InstanceSize.xlarge32)
+is false</pre></div>
+    </div>
+
+    <div class="band">
+      <div class="band-text">
+        <h3>Secrets never hold a value</h3>
+        <p>
+          A secret names an environment variable, or a <em>function</em> over state
+          that does not exist yet. The value is never known to the file, the plan
+          output, or the on-disk cache. That a committed fleet holds no plaintext is
+          itself decidable — <code>#guard plan.secretsAreSound</code> — so it is
+          checked at compile time rather than trusted.
+        </p>
+      </div>
+      <div class="card"><div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>one apply, correctly ordered</span></div>
+<pre>would CREATE scaleway/secrets/db-password
+would CREATE scaleway/postgres/main
+would CREATE scaleway/secrets/db-url
+
+<span class="c">-- the composed secret comes last because both its</span>
+<span class="c">-- references are ordering edges, not because anything</span>
+<span class="c">-- here lists an order</span></pre></div>
+    </div>
+  </div>
+</section>
+
+<section id="coverage">
+  <div class="wrap">
+    <h2>How far this has actually been run</h2>
+    <p class="sub">
+      The part most project pages leave out. Correctness of <em>signing</em> is
+      established; correctness of <em>what is being signed</em> mostly is not. This
+      is a summary — <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">coverage.md</a>
+      is the full breakdown and is kept current, including the embarrassing parts.
+    </p>
+
+    <div class="cov">
+      <div class="cov-card ok">
+        <h4>Verified live</h4>
+        <p>Scaleway <code>list</code> for every kind, and queues end to end —
+           create, read, list. Two real bugs surfaced only here.</p>
+      </div>
+      <div class="cov-card warn">
+        <h4>Verified offline</h4>
+        <p>SigV4 against AWS's published vectors, diffing, DAG scheduling,
+           the credential chain, composed secrets — on every build.</p>
+      </div>
+      <div class="cov-card bad">
+        <h4>Never run</h4>
+        <p><strong>All of AWS.</strong> Every EC2 parameter name, and roughly
+           1,200 lines of endpoint shapes, are best guesses.</p>
+      </div>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <caption class="sub" style="text-align:left;margin:28px 0 0;caption-side:top">
+          Seven portable kinds — one spec value, either cloud. Two of them need no
+          per-cloud code at all.
+        </caption>
+        <thead><tr><th>Kind</th><th>AWS</th><th>Scaleway</th><th>Shared client</th></tr></thead>
+        <tbody>
+          <tr><td><code>objectStore</code></td><td>S3</td><td>Object Storage</td><td>yes</td></tr>
+          <tr><td><code>queues</code></td><td>SQS</td><td>Messaging &amp; Queuing</td><td>yes</td></tr>
+          <tr><td><code>secrets</code></td><td>Secrets Manager</td><td>Secret Manager</td><td>no</td></tr>
+          <tr><td><code>imageRegistry</code></td><td>ECR</td><td>Container Registry</td><td>no</td></tr>
+          <tr><td><code>compute</code></td><td>Lambda (image)</td><td>Serverless Containers</td><td>no</td></tr>
+          <tr><td><code>iam</code></td><td>IAM users</td><td>IAM applications</td><td>no</td></tr>
+          <tr><td><code>postgres</code></td><td>RDS</td><td>Managed Database</td><td>no</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:22px">
+      Plus seven provider-local kinds — S3 buckets with Object Lock, EC2 security
+      groups and instances, and Scaleway's Functions and Containers with their
+      namespaces — where reaching for a cloud-specific concept makes the loss of
+      portability visible in the type.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Try it</h2>
+    <p class="sub">
+      A bare invocation is offline, credential-free and free of charge: it plans
+      against placeholder backends. You have to ask for the real thing.
+    </p>
+    <div class="card" style="max-width:760px">
+      <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>
+<pre>git clone https://github.com/typednotes/infra &amp;&amp; <span class="k">cd</span> infra
+lake build
+lake exe infra              <span class="c"># offline self-checks</span>
+lake exe cross-cloud        <span class="c"># a plan spanning both clouds</span>
+lake exe multi-region       <span class="c"># six resources in four regions</span></pre>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-top">
+      <img src="logo.svg" alt="" width="26" height="27">
+      <a href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Tutorial</a>
+      <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
+      <a href="https://github.com/typednotes/infra/blob/main/docs/architecture.md">Architecture</a>
+      <a href="https://github.com/typednotes/infra">GitHub</a>
+    </div>
+    <p>
+      Apache-2.0. Written in the Lean programming language and proof assistant.
+      Not affiliated with or endorsed by the Lean Focused Research Organization,
+      the OpenTofu project, or the Linux Foundation.
+    </p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var slides = [
+    { id: 's0', file: 'Main.lean',
+      title: 'Declare a fleet',
+      desc: "A complete, working declaration. The resource's name is written once and is the cloud's real identifier." },
+    { id: 's1', file: 'MultiRegion.lean',
+      title: 'Place it, per resource',
+      desc: 'One locality resolves per cloud. Blocks nest, and a cloud cannot be placed somewhere it has no region.' },
+    { id: 's2', file: 'ParisInstances.lean',
+      title: 'Point at another resource',
+      desc: 'A reference is an index into this fleet, so it cannot dangle — and it is what orders the work.' },
+    { id: 's3', file: 'Fleet.lean',
+      title: 'Compose a secret from state that does not exist yet',
+      desc: 'The target holds the function, not the value. One apply, correctly ordered, nothing leaked.' }
+  ];
+  var i = 0;
+  var titleEl = document.getElementById('slide-title');
+  var descEl  = document.getElementById('slide-desc');
+  var fileEl  = document.getElementById('slide-file');
+  var dotsEl  = document.getElementById('dots');
+
+  slides.forEach(function (s, n) {
+    var b = document.createElement('button');
+    b.className = 'dot';
+    b.type = 'button';
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-label', 'Example ' + (n + 1) + ': ' + s.title);
+    b.addEventListener('click', function () { show(n); });
+    dotsEl.appendChild(b);
+  });
+
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach(function (s, k) {
+      document.getElementById(s.id).hidden = (k !== i);
+      dotsEl.children[k].setAttribute('aria-current', k === i ? 'true' : 'false');
+    });
+    titleEl.textContent = slides[i].title;
+    descEl.textContent  = slides[i].desc;
+    fileEl.textContent  = slides[i].file;
+  }
+
+  document.getElementById('next').addEventListener('click', function () { show(i + 1); });
+  document.getElementById('prev').addEventListener('click', function () { show(i - 1); });
+  document.addEventListener('keydown', function (e) {
+    if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (e.key === 'ArrowRight') show(i + 1);
+    if (e.key === 'ArrowLeft') show(i - 1);
+  });
+
+  show(0);
+})();
+</script>
+</body>
+</html>

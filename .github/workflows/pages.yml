@@ -1,0 +1,36 @@
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'assets/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+# One in-flight deploy at a time; a queued run supersedes an older one rather
+# than racing it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The page is static and self-contained — no build step, no external
+      # requests at runtime. `site/` already carries its own copy of the logo
+      # so the published tree does not reach outside itself.
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

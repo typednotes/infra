@@ -8,3 +8,5 @@ out/
 
 # MacOS
 .DS_Store
+# Playwright MCP scratch output
+.playwright-mcp/

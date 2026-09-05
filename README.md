@@ -1,4 +1,13 @@
-# infra
+<p align="center">
+  <img src="assets/logo-wordmark.svg" alt="infra" width="300">
+</p>
+
+<p align="center">
+  <em>Infrastructure as code, in Lean 4 — an unrealisable target is a compile error.</em><br>
+  <a href="https://typednotes.github.io/infra/">Website</a> ·
+  <a href="docs/tutorial.md">Tutorial</a> ·
+  <a href="docs/coverage.md">Coverage</a>
+</p>
 
 [![CI](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml/badge.svg)](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml)
 [![Lean](https://img.shields.io/badge/Lean-v4.33.1-blue)](https://leanprover.github.io/)
@@ -239,6 +248,8 @@ extending anything:
 - [`docs/architecture.md`](docs/architecture.md) — overall design and the portability rules
 - [`docs/authentication.md`](docs/authentication.md) — where credentials come from
 - [`docs/persistence.md`](docs/persistence.md) — how observed state is cached
+- [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the two
+  trademark policies that constrain both
 - [`docs/providers.md`](docs/providers.md) — how each `Kind` maps onto each cloud's API, and what is actually verified live
 - [`docs/diff-semantics.md`](docs/diff-semantics.md) — how target vs. observed state is compared
 

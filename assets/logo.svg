@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 126" width="120" height="126"
+     role="img" aria-label="infra">
+  <title>infra</title>
+  <!--
+    An isometric cube: the plain, un-ownable form of the idiom, deliberately
+    not OpenTofu's. No mascot face, no rounded sticker gutter, no yellow, no
+    heavy navy keyline — those four things are what carry their mark.
+
+    One face is #386EE0, the blue the Lean site uses for its primary colour and
+    its nav mark. Note it is *not* an official Lean logo colour: every official
+    Lean logo file is monochrome #070000. See docs/branding.md.
+
+    The face carries an existential quantifier, an ordinary mathematical
+    symbol rather than any part of the Lean wordmark, projected onto the plane
+    of the face it sits on.
+  -->
+  <g>
+    <!-- top face -->
+    <path d="M60 18 L102 42 L60 66 L18 42 Z" fill="#7C93B4"/>
+    <!-- front-left face -->
+    <path d="M18 42 L60 66 L60 108 L18 84 Z" fill="#3F5372"/>
+    <!-- front-right face, in Lean blue -->
+    <path d="M102 42 L60 66 L60 108 L102 84 Z" fill="#386EE0"/>
+    <!--
+      The exists sign, drawn in a unit square and projected onto the
+      front-right face: (0,0)->(60,66) (1,0)->(102,42) (0,1)->(60,108).
+    -->
+    <g transform="matrix(42 -24 0 42 60 66)" fill="#FFFFFF">
+      <rect x="0.60" y="0.20" width="0.115" height="0.60"/>
+      <rect x="0.28" y="0.20" width="0.435" height="0.115"/>
+      <rect x="0.28" y="0.4425" width="0.435" height="0.115"/>
+      <rect x="0.28" y="0.685" width="0.435" height="0.115"/>
+    </g>
+  </g>
+</svg>
