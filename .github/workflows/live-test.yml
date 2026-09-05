@@ -83,11 +83,26 @@ jobs:
       # trades it for role credentials that expire with the job. `id-token:
       # write` above is what allows the mint, and the role's trust policy is
       # what restricts it to this repository.
+      - name: Check the AWS role ARN is configured
+        if: inputs.provider == 'aws'
+        env:
+          ROLE: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+        run: |
+          # Without this, an unset ARN makes `configure-aws-credentials` omit
+          # `role-to-assume`, fall back to looking for static keys, and report
+          # "Could not load credentials from any providers", which names
+          # neither the variable nor the fact that OIDC never happened.
+          if [ -z "$ROLE" ]; then
+            echo "::error::AWS_ROLE_ARN is not set. Add it under Settings -> Secrets and variables -> Actions, as a variable or a secret; both are read. Expected something like arn:aws:iam::616568506952:role/infra-ci"
+            exit 1
+          fi
+          echo "role: $ROLE"
+
       - name: Authenticate to AWS (OIDC)
         if: inputs.provider == 'aws'
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
           aws-region: eu-west-1
           role-session-name: infra-live-test
 
@@ -99,7 +114,7 @@ jobs:
       - name: Authenticate to GCP (Workload Identity Federation)
         id: gcp-auth
         if: inputs.provider == 'gcp'
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           project_id: typednotes
           workload_identity_provider: projects/113928363564/locations/global/workloadIdentityPools/github/providers/github-provider

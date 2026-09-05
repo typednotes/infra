@@ -326,11 +326,20 @@ Three things worth knowing about the ordering:
 
 ### 5. Point the workflow at it
 
-Set a repository **variable** — not a secret, because a role ARN is not one:
+Set `AWS_ROLE_ARN`:
 
 ```
 AWS_ROLE_ARN = arn:aws:iam::616568506952:role/infra-ci
 ```
+
+A **variable** is the right home — an ARN is not a secret, it appears in every
+policy document — but the workflow reads
+`${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}`, so either works. That
+fallback exists because putting it in the wrong namespace produces no error at
+all: the action simply omits `role-to-assume`, falls back to looking for static
+keys, and reports *"Could not load credentials from any providers"* — which
+names neither the variable nor the fact that OIDC never happened. A guard step
+now catches the empty case first and says which setting is missing.
 
 The workflow already has `permissions: id-token: write`, which is what allows
 GitHub to mint the token in the first place, and
