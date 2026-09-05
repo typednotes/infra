@@ -343,12 +343,16 @@
 
 <div class="wrap cloudband">
   <p class="cloudband-label">Clouds</p>
+  <!-- Alphabetical. It was grouped by status before, which reads as arbitrary
+       unless you already know the statuses — and the tag on each one says the
+       status anyway, so the grouping was carrying no information the reader
+       could not already see. -->
   <div class="clouds">
     <div class="cloud is-on"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></div>
-    <div class="cloud is-on"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></div>
-    <div class="cloud is-partial"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>types only</span></div>
     <div class="cloud"><img src="providers/azure.svg" alt="Azure" width="190" height="60"><span>planned</span></div>
+    <div class="cloud is-partial"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>types only</span></div>
     <div class="cloud"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"><span>planned</span></div>
+    <div class="cloud is-on"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></div>
   </div>
   <p class="cloudband-note">
     <strong>&ldquo;Types only&rdquo;</strong> means GCP resources can be declared,

@@ -357,6 +357,39 @@ def checkTeardown : IO Unit := do
 
   IO.println "teardown: ok (no-op when absent, reverse order when present)"
 
+/-- A GCP service-account assertion is built, signed, and verifies.
+
+    The crypto itself is `linen`'s and is tested there; what this checks is
+    *this* library's part — that the claims document, the header and the
+    base64url assembly produce something whose signature validates. A JWT
+    Google would reject is useless however good the signing primitive is.
+
+    The key is a throwaway generated for this check. It signs nothing else and
+    guards nothing; it is test data, like a fixed seed. -/
+def checkGcpAssertion : IO Unit := do
+  let keyFile := "{\"type\":\"service_account\",\"project_id\":\"p\",\
+\"client_email\":\"ci@p.iam.gserviceaccount.com\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDpcDBZHjvbtp68\\nZJmXXFGQzgYVgOUZXMVs/mFiyelPoBrY2ZuQ+McU8m0xXzzGvEbe/isgChZ3g8+l\\nJsL900iwLetXfnhdqFU7j+WPpB1Jx/tfqG3qOFPR0tCPndwKFtVyn1nJjHmZYT5N\\n7RBSrVIfWhwa7y5tkpF19Rbrta0KH4d2+rXmYwFMT5Ft6wUpe6WifTdThfWNd47/\\nc6kdqkWZtzTE9q7RkWCNrqk1C+W5lU3HdaxYEGmGk5tSWWiM3ZjqO3IYPXylc/Yi\\nOZE2zCu6b59geQIuyp14kzDmHHp/qqNP0ykdKbyZTJgZr74Ug8mLDekupAl4Knd5\\nejWze0aXAgMBAAECggEABfU6ZqviNI4JUx7w2e9zQtI0pDaGol+/HN8JNppB/X7v\\n8HpCrC/in42TF+ApuZtzO5xvwVZAkzWmsRJiMP7u1gBLXLpPnCRVuJAdoyLkfyOU\\nLjGATKq6CPBBKR6K+n7xXQblexgTam9pmwI37m7vWk7UdM4x+H311HWNljUsK3FC\\nExQwifiT1eRcFLtGOYm5iNpJtLIbKZYguhb5rDoHYoqBflt5T9/R1cGMfcAR5V7J\\n6uF8hwcc1vvv/knNHbkbA9qOAz+imFFr6LDzFltOU4rrqg9/4BMciQRQUg+FBWS0\\nXUi8Z6X+UfQwyMkgsF6NQ+2F9Ii6M0haGh0WXgShkQKBgQD/IjVOr1j3enLrYKCi\\niVEy7L1aPxK9be4qx+W0n86e6jfaFNUx1u7eL+zKvNdWUWA4JPSr8LGYREcbJVns\\nYzO6VLfuiOjIcUvz45DQKcADoc0HT1KE235QMr9+HlLMtDka46Alo2Y4zYfmX0jY\\nR56CiHSMG1iSejwRMuYcq+fbAwKBgQDqOx7XoWP1cYNfydf2WMArgTrUW8y5PdjT\\ntJcSgmSjb3ALRsl8Dvhc/DTSb1g5Rm6JL7TSnUx4yCYWvdBVxOxiQ3F5fR705k2F\\npUZTkvTJ5GhaSgIs/SIryVG1RiD0kVOspV+MI/7M9iLB52ltRlQkCqQYS+ulUC/l\\nio3m92dn3QKBgQCMNZB2HYcW+gQNtpyQtkYZZmDpJ6B02eT5PcHO8cPrMWxgPPKs\\n4SGEmXHYOM9ecHogYK7VjwEKXPt2v6AbeKkEzWoHfNXw0dKbxYPf4hHT7SdvzPfc\\na4OPL1RtStzWAnUfgdiQ1qtmrAzzXYn60eEae0MRfDXAycwY54/uUcqpYQKBgCcK\\n670tnafP4AIbdvANIxsdU10KYDmQYZAIThY7veKwNJDsn7EaHbQCJhvdi2sgnlQn\\nq5Bfv9tyIUcxJITnai+G5mdFv986dDmOrwZHPJ5agDpsk6hEGWoLCJ+arOuXPcdN\\nWXvWlCY98NU5aY1ZZ7UKQQf7v6+yiglM6xJQst/RAoGAIWEVDnRDRTMupQ6yyPei\\nqwtb2/Ew+5iwjMLHAhUdRrDJbl/kmI6DC2yLkFA5YjHoqx+9kOXzZzmLae9V384y\\npPJ+UAHBFApKyTS/x/dRWY6fVvnGrk3SXgyOizCg+rOlBxTYacPMXiJlEuIGANBH\\ntgNxv+cGCEjoVJaNhTyrGYs=\\n-----END PRIVATE KEY-----\"}"
+  let sa ← match Infra.Core.GcpAuth.parse keyFile with
+    | .ok sa   => pure sa
+    | .error e => throw (IO.userError s!"gcp key parse: {e}")
+  -- Nothing may render the private key, whatever is done with it.
+  if ((toString sa).splitOn "PRIVATE KEY").length > 1 then
+    throw (IO.userError "gcp: the service-account key leaked into its own Repr")
+  let jwt ← Infra.Core.GcpAuth.assertion sa Infra.Core.GcpAuth.defaultScope
+  match jwt.splitOn "." with
+  | [h, p, sig] =>
+    let n ← Crypto.JOSE.FFI.base64urlDecode "6XAwWR4727aevGSZl1xRkM4GFYDlGVzFbP5hYsnpT6Aa2NmbkPjHFPJtMV88xrxG3v4rIAoWd4PPpSbC_dNIsC3rV354XahVO4_lj6QdScf7X6ht6jhT0dLQj53cChbVcp9ZyYx5mWE-Te0QUq1SH1ocGu8ubZKRdfUW67WtCh-Hdvq15mMBTE-RbesFKXulon03U4X1jXeO_3OpHapFmbc0xPau0ZFgja6pNQvluZVNx3WsWBBphpObUllojN2Y6jtyGD18pXP2IjmRNswrum-fYHkCLsqdeJMw5hx6f6qjT9MpHSm8mUyYGa--FIPJiw3pLqQJeCp3eXo1s3tGlw"
+    let e ← Crypto.JOSE.FFI.base64urlDecode "AQAB"
+    let jwk : Crypto.JOSE.JWK :=
+      { kty := .RSA, material := .rsa n e none
+        kty_material_coherent := by
+          refine ⟨fun _ => ⟨n, e, none, rfl⟩, fun hh => ?_, fun hh => ?_⟩ <;> cases hh }
+    let sigBytes ← Crypto.JOSE.FFI.base64urlDecode sig
+    let ok ← Crypto.JOSE.JWS.verifySignature .RS256 jwk (h ++ "." ++ p).toUTF8 sigBytes
+    unless ok do throw (IO.userError "gcp: the assertion's own signature does not verify")
+    IO.println "gcp auth: ok (service-account assertion signs and verifies)"
+  | _ => throw (IO.userError s!"gcp: assertion is not a three-part JWT")
+
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
 def selfCheck : IO Unit := do
@@ -368,6 +401,7 @@ def selfCheck : IO Unit := do
   checkPush
   checkTeardown
   checkSecretComposition
+  checkGcpAssertion
 
 /-- `infra` is two things: the demo fleet's own front end, and the scaffolder.
 

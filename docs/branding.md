@@ -112,9 +112,34 @@ the risk. It also happens to make the strip trivially extensible — a new cloud
 is one more file with one more word in it, and the three greyed "planned" tiles
 cost nothing.
 
-If the real logos are ever wanted, both companies publish brand pages with
-conditions attached, and that is a decision to make deliberately rather than by
-dropping a downloaded PNG into the repo.
+The strip is ordered **alphabetically**. It was grouped by status first, which
+reads as arbitrary unless you already know the statuses — and each tile carries
+its status as a tag anyway, so the grouping conveyed nothing the reader could
+not already see.
+
+### If you want the official logos instead
+
+They can go in, and it is your call rather than mine, but it is a decision to
+take deliberately and the conditions differ per vendor:
+
+| Vendor | Where the terms live |
+|---|---|
+| AWS | the AWS Trademark Guidelines — notably restrictive; the logo is generally not available for third-party use without a written agreement, and "Powered by AWS" badges are the sanctioned route |
+| Google Cloud | Google's brand permissions, which allow some referential use of the Cloud logo under stated conditions |
+| Microsoft Azure | the Microsoft Trademark and Brand Guidelines |
+| OVHcloud, Scaleway | each publishes a press/brand kit |
+
+Two practical points. Each vendor wants its *own* file, unmodified — so
+recolouring five logos to a common monochrome, which is what would make the
+strip look coherent, is usually the thing their guidelines prohibit. And a
+vendored logo is a binary asset that has to be re-checked when they refresh
+their branding, which the wordmarks never do.
+
+To go ahead: download each from the vendor's own brand page under its terms,
+drop them in `assets/providers/`, and the markup needs only the `src` and the
+intrinsic `width`/`height` changed. Do not let an agent fetch them for you from
+a search result — logo aggregator sites host outdated and unofficial
+variants, and using one is worse than using no logo at all.
 
 ## Open question
 
