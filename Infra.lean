@@ -14,6 +14,7 @@ import Infra.Specs.Basic
 import Infra.Specs.Build
 import Infra.Core.Fleet
 import Infra.Core.Ergonomics
+import Infra.Core.Region
 import Infra.Core.Declare
 import Infra.Core.Action
 import Infra.Core.Backend

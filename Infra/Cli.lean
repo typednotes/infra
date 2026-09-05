@@ -1,5 +1,6 @@
 import Infra.Core.Engine
 import Infra.Core.Credentials
+import Infra.Core.Region
 import Infra.Providers.Live
 import Infra.Providers.Placeholder
 import Infra.Providers.Kinds.Identity
@@ -39,9 +40,18 @@ def defaultCacheRoot : System.FilePath := ".infra"
     Credential failures name every place that was searched — see
     `docs/authentication.md`.
 
+    `regions` is where the fleet says it is. A cloud the fleet places is put
+    there, **overriding** whatever region the credentials carry: placement is
+    part of what the fleet declares, and a declaration loses its meaning if the
+    environment can move it. It is not checked against the credentials the way
+    the *account* is, because the two are not alike — an API key belongs to one
+    account and cannot be pointed at another, whereas which region to build in
+    is a free choice, and the declaration is where free choices are recorded.
+
     Returns the credentials alongside the backends, because `checkAccounts`
     needs them and loading twice would prompt a keychain twice. -/
-def liveFor (κ : Keys) : IO (Backends × (ProviderId → Option Credentials)) := do
+def liveFor (κ : Keys) (regions : Regions := {}) :
+    IO (Backends × (ProviderId → Option Credentials)) := do
   let mut creds : List (ProviderId × Credentials) := []
   for p in κ.providers do
     let c ← Credentials.load p
@@ -50,8 +60,11 @@ def liveFor (κ : Keys) : IO (Backends × (ProviderId → Option Credentials)) :
     -- "hostname resolution failed" — an error that says nothing about the
     -- missing variable. `requireRegion` names it instead, and this is the one
     -- funnel every live command passes through, so checking here covers all
-    -- of them before any call is attempted.
-    let _ ← c.requireRegion p
+    -- of them before any call is attempted. A fleet that declares where it is
+    -- never reaches that check: it has already answered the question.
+    let c ← match regions.region p with
+      | some r => pure { c with region := r.code }
+      | none   => do discard <| c.requireRegion p; pure c
     creds := (p, c) :: creds
   let lookup := fun p => (creds.find? fun c => c.1 == p).map (·.2)
   return ({ backend := fun p =>
@@ -122,7 +135,11 @@ SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
     unless actual == expected do
       throw (IO.userError s!"wrong {p.name} account: credentials are for \
 {actual}{detail}, but this fleet is declared for {expected}")
-    IO.println s!"{p.name}: {actual} {Ansi.style colour Ansi.green "ok"}"
+    -- The region rides along on the same line rather than getting one of its
+    -- own: account and region together are the whole of "where is this about
+    -- to build", and reading them apart is what let a fleet aimed at the right
+    -- account in the wrong region look fine.
+    IO.println s!"{p.name}: {actual} in {c.region} {Ansi.style colour Ansi.green "ok"}"
 
 /-- The plan, against the placeholder backends: what a bare invocation shows.
 
@@ -162,6 +179,12 @@ def usage (exe : String) : String := String.intercalate "\n"
     check, which is the old behaviour and a worse default: a fleet that names
     its accounts cannot be applied into someone else's.
 
+    `regions` is where the fleet is, and the `fleet` command's `in` clause
+    generates it (`myFleet.regions`). Omitting it means each cloud's region
+    comes from its credentials, which is what every fleet did before placement
+    was expressible — and which fails, by design, when the credentials carry
+    no region at all.
+
     `cacheRoot` defaults to `.infra/<exe>`, not `.infra`: two fleets have
     different key families and their caches must never be read as if they were
     the same shape. Making that structural means a second fleet cannot forget
@@ -169,13 +192,14 @@ def usage (exe : String) : String := String.intercalate "\n"
 def run {κ : Keys} (exe : String) (target : Plan κ)
     (selfCheck : IO Unit := offlinePlan target)
     (accounts : Accounts := {})
+    (regions : Regions := {})
     (cacheRoot : System.FilePath := defaultCacheRoot / exe) (args : List String) :
     IO UInt32 := do
   -- Resolved once, at the edge: whether stdout is a terminal is a property of
   -- this invocation, not of a plan, so the engine is told rather than asking.
   let colour ← Ansi.wanted
   let withLive (act : Backends → IO Unit) : IO Unit := do
-    let (bs, creds) ← liveFor κ
+    let (bs, creds) ← liveFor κ regions
     checkAccounts κ accounts creds colour
     act bs
   -- Failures are reported, not thrown out of `main`. An escaping exception

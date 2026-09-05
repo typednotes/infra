@@ -1,5 +1,6 @@
 import Lean
 import Infra.Core.Ergonomics
+import Infra.Core.Region
 import Infra.Specs.Build
 
 /-
@@ -52,8 +53,27 @@ import Infra.Specs.Build
   of the wrong `Kind` is a type error — and forward references work, because
   every abbreviation is emitted before any spec.
 
-  Generates `myFleet.keys : Keys` and `myFleet.plan : Plan myFleet.keys`, plus
-  one abbreviation per `as`.
+  ## Where it is
+
+      fleet myFleet in paris where …                        -- both clouds' Paris
+      fleet myFleet in scaleway "pl-waw" where …            -- one cloud, its own code
+      fleet myFleet in aws "eu-west-1", scaleway "fr-par" where …
+
+  An entry without a string is a `Locality` and places *every* cloud the fleet
+  uses; an entry with one is that cloud's own region code. A locality must come
+  first, because the entries after it override one cloud each — so the clause
+  reads left to right as "everywhere here, except these".
+
+  All of it is checked while the fleet elaborates: a locality one of the
+  fleet's clouds is not in, a code from the wrong cloud, a typo in a code, and
+  a placement that leaves one of the fleet's clouds unplaced are each a compile
+  error. See `Infra.Core.Region`.
+
+  Omitting `in` is still allowed and still means what it always did — each
+  cloud's region comes from its credentials.
+
+  Generates `myFleet.keys : Keys`, `myFleet.plan : Plan myFleet.keys` and
+  `myFleet.regions : Regions`, plus one abbreviation per `as`.
 -/
 
 namespace Infra.Core
@@ -68,8 +88,16 @@ syntax fleetField := ident " := " term
     and `Kind` constructors. -/
 syntax fleetResource := "resource " ident ident str (" as " ident)? "{" fleetField,* "}"
 
-/-- Declare a fleet: its `Keys` and its `Plan`, derived from the resources. -/
-syntax (name := fleetDecl) "fleet " ident " where " fleetResource* : command
+/-- One placement: a bare identifier is a `Locality`, an identifier followed by
+    a string is a cloud and its own region code. -/
+syntax fleetPlace := ident (str)?
+
+/-- Where the fleet is. See the module doc. -/
+syntax fleetIn := " in " fleetPlace,+
+
+/-- Declare a fleet: its `Keys`, its `Plan` and its `Regions`, derived from the
+    resources and the optional `in` clause. -/
+syntax (name := fleetDecl) "fleet " ident (fleetIn)? " where " fleetResource* : command
 
 /-- One `(field := value)` named argument.
 
@@ -82,7 +110,7 @@ private def mkNamedArg (fieldId : Ident) (val : Term) : Syntax :=
     #[mkAtom "(", fieldId, mkAtom " := ", val, mkAtom ")"]
 
 elab_rules : command
-  | `(command| fleet $fleetName:ident where $ress:fleetResource*) => do
+  | `(command| fleet $fleetName:ident $[$placement:fleetIn]? where $ress:fleetResource*) => do
     -- Group resources by `(provider, kind)`, preserving declaration order —
     -- which is also the key order within a bucket.
     let mut buckets :
@@ -108,9 +136,10 @@ elab_rules : command
     -- so the cast is spelled once here instead of at each of four sites.
     let alt := fun (a : TSyntax ``Lean.Parser.Term.matchAltExpr) =>
       (⟨a.raw⟩ : TSyntax ``Lean.Parser.Term.matchAlt)
-    let keysId  := mkIdentFrom fleetName (fleetName.getId ++ `keys)
-    let tableId := mkIdentFrom fleetName (fleetName.getId ++ `table)
-    let planId  := mkIdentFrom fleetName (fleetName.getId ++ `plan)
+    let keysId    := mkIdentFrom fleetName (fleetName.getId ++ `keys)
+    let tableId   := mkIdentFrom fleetName (fleetName.getId ++ `table)
+    let planId    := mkIdentFrom fleetName (fleetName.getId ++ `plan)
+    let regionsId := mkIdentFrom fleetName (fleetName.getId ++ `regions)
 
     -- 1. One name list per bucket. `KeySpec.named`'s `namesNodup` auto-param
     --    is checked against these, so a duplicate name fails at elaboration.
@@ -133,7 +162,45 @@ elab_rules : command
     cmds := cmds.push (← `(
       def $keysId : Infra.Core.Keys := Infra.Core.Keys.build $tableId))
 
-    -- 3. Every `as` abbreviation, all of them before any spec, so a resource
+    -- 3. Where it is. No `in` clause means the empty placement, which is what
+    --    every fleet had before this existed: each cloud's region comes from
+    --    its credentials. A clause that says *something* is held to saying it
+    --    about every cloud the fleet uses — that is `Regions.covering`, and it
+    --    is the check a per-cloud list would otherwise let you skip by
+    --    forgetting a cloud.
+    let mut placeTerm : Term ← `(({} : Infra.Core.Regions))
+    -- A lone locality needs no coverage check: `everywhere`'s own obligation
+    -- already says every cloud the fleet uses is there, so wrapping it would
+    -- only report the same mistake twice.
+    let mut perCloud := false
+    if let some clause := placement then
+      match clause with
+      | `(fleetIn| in $places,*) =>
+        let elems := places.getElems
+        for i in [0 : elems.size] do
+          match elems[i]! with
+          | `(fleetPlace| $p:ident $[$c:str]?) =>
+            match c with
+            -- A cloud and its own code: overrides just that cloud.
+            | some code =>
+              perCloud := true
+              placeTerm ← `(($placeTerm).set (Infra.Core.Region.of .$p:ident $code))
+            -- A locality: places every cloud at once, so it replaces rather
+            -- than overrides, and may only be the first entry. Allowing it
+            -- later would silently discard the entries before it.
+            | none =>
+              unless i == 0 do
+                throwErrorAt elems[i]! s!"a locality must be the first entry of an `in` \
+clause: it places every cloud, so anything before it would be discarded. Write \
+`in {p.getId}` first and override single clouds after it."
+              placeTerm ← `(Infra.Core.Regions.everywhere $keysId .$p:ident)
+          | pl => throwErrorAt pl "malformed placement"
+        if perCloud then
+          placeTerm ← `(Infra.Core.Regions.covering $keysId $placeTerm)
+      | _ => throwErrorAt clause "malformed `in` clause"
+    cmds := cmds.push (← `(def $regionsId : Infra.Core.Regions := $placeTerm))
+
+    -- 4. Every `as` abbreviation, all of them before any spec, so a resource
     --    may reference one declared later in the block.
     for (p, k, entries) in buckets do
       for (nm, al, _) in entries do
@@ -142,7 +209,7 @@ elab_rules : command
             abbrev $a : ($keysId).Key .$p:ident .$k:ident :=
               Infra.Core.NamedKey.of $(nameId p k) $nm))
 
-    -- 4. The plan: one `assignFromNamed` bucket per row, plus the total
+    -- 5. The plan: one `assignFromNamed` bucket per row, plus the total
     --    `.unmanaged` fallback for every pair this fleet does not declare.
     let mut assignAlts : Array (TSyntax ``Lean.Parser.Term.matchAlt) := #[]
     for (p, k, entries) in buckets do

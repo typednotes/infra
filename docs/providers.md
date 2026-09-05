@@ -60,6 +60,48 @@ Two kinds need no per-cloud code at all, because both clouds speak the same
 API. That is the portability claim actually paying off, and `infra check`
 asserts it: `S3.endpoint` differs only in host, and both sign service `s3`.
 
+## Regions reach a backend through the credentials
+
+Every endpoint builder in `Aws/Protocols.lean` and `Scaleway/Rest.lean` takes a
+region string, and `Live.lean` supplies `creds.region` to all of them. That is
+still true — placement did not add a second path. `Infra.Cli.liveFor` resolves
+the fleet's declared region and **writes it into the `Credentials` value** it
+hands to `liveBackend`, so one funnel keeps serving every kind and no backend
+had to learn what a `Regions` is.
+
+Two endpoints deliberately ignore it. `Query.iamEndpoint` and
+`Query.stsEndpoint` are global and always sign `us-east-1`, whatever region is
+in force; signing them regionally is a common and confusing mistake, so the
+region is fixed in the builder rather than passed in.
+
+A cloud the fleet does not place still reads its region from the credentials,
+and `Credentials.requireRegion` is what turns a missing one into a message
+naming all three ways to supply it, before any call is attempted.
+
+### `S3BucketSpec.region` is not the placement mechanism
+
+`s3Bucket` has a `region` field, and it predates fleet placement. It does not
+*choose* where the bucket goes: `ObjectStore.createBucket` sends the location
+constraint from `ep.region` — the endpoint the placement built — and `read`
+reports that same value back. The spec field is therefore only ever *compared*
+against where the bucket actually is, on a `forcesReplace` row of the
+divergence table.
+
+The consequence is worth stating plainly, because it is a trap:
+
+- If the field agrees with where the fleet places AWS, nothing happens. This is
+  what `example/CrossCloud.lean` does, and it has a `#guard` pinning the two
+  together since nothing in the types couples them.
+- If it disagrees, the plan proposes a **replacement that cannot converge** —
+  the replacement recreates the bucket at the endpoint's region, which is the
+  region the spec already disagreed with, so the next plan proposes it again.
+
+`Fillable` fills an unset `region` with `.lit "eu-west-1"`, which makes that
+the default rather than an opt-in: an `s3Bucket` in a fleet placed anywhere
+other than Ireland diverges unless its region is written out. That default is a
+fabricated value of exactly the kind `docs/diff-semantics.md` argues against,
+and it is a known soft spot rather than a design: see the ledger.
+
 ## What is not portable, and is not pretended to be
 
 These are cases where a portable spec field has no counterpart on one cloud.

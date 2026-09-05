@@ -286,12 +286,17 @@ def Credentials.requireOrganization (c : Credentials) : IO String := do
 default_organization_id in ~/.config/scw/config.yaml")
 
 /-- The region, or a clear failure. Most APIs are regional and a blank region
-    produces a baffling signing error much later, so it is caught here. -/
+    produces a baffling signing error much later, so it is caught here.
+
+    Only reached for a cloud the fleet does not place itself. The declaration
+    is the better answer of the three the message offers, so it is named
+    first — see `Infra.Core.Region`. -/
 def Credentials.requireRegion (c : Credentials) (provider : ProviderId) : IO String := do
   if c.region.isEmpty then
     let (_, _, rv, _) := envVars provider
     throw (IO.userError
-      s!"no region configured for {provider.name}; set {rv} or the region in its config file")
+      s!"no region configured for {provider.name}; declare where the fleet is \
+(`fleet myFleet in paris where …`), or set {rv}, or set the region in its config file")
   return c.region
 
 /-! ## Self-checks -/

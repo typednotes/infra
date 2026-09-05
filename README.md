@@ -146,9 +146,11 @@ would CREATE aws/aws-instance/web-1
 would CREATE aws/aws-instance/web-2
 ```
 
-Read its header before applying: the AMI id is unverified, the *region* comes
-from your credentials rather than the declaration, and the EC2 backend has
-never been run against a real account.
+Read its header before applying: the AMI id is unverified and the EC2 backend
+has never been run against a real account. The *region* is declared —
+`fleet paris in paris where …` puts it in `eu-west-3`, so `AWS_REGION` is
+neither read nor needed, and the same file no longer builds a different fleet
+for each operator who runs it.
 
 ### One fleet across both clouds
 

@@ -1,0 +1,320 @@
+import Infra.Core.Ergonomics
+
+/-
+  Where a fleet's resources live.
+
+  Until now the region came from the credentials and nowhere else: every
+  endpoint in `Infra.Providers.Live` is built from `creds.region`, so a fleet
+  ran wherever `AWS_REGION` or `default_region` happened to point. Two things
+  were wrong with that. The first is ergonomic — a declaration that cannot say
+  where it is refuses to run until an environment variable is set, which is
+  exactly the failure this module removes. The second is worse: placement is
+  part of what a fleet *declares*, and leaving it to the environment means the
+  same committed file builds a different system depending on who runs it.
+  `example/ParisInstances.lean` said so in prose ("the region comes from your
+  credentials, not from this file") because there was no way to say it in code.
+
+  ## Two ways to say it, one of them portable
+
+  A `Locality` is a place — `.paris` — and each cloud maps it to its own code
+  (`eu-west-3` on AWS, `fr-par` on Scaleway) or to nothing at all, because no
+  cloud is everywhere. A `Region p` is one cloud's own code, tagged with the
+  cloud it belongs to, so an AWS region cannot reach Scaleway.
+
+  Both are checked when the fleet is elaborated, never at apply time:
+
+  - `Region.of .scaleway "eu-west-3"` — not a Scaleway region, compile error.
+  - `Regions.everywhere κ .warsaw` on a fleet that uses AWS — AWS is not in
+    Warsaw, compile error.
+  - a placement that leaves one of the fleet's clouds unplaced — compile error
+    (`Regions.covering`).
+
+  The escape hatch is `Region.raw`, and it exists because `knownRegions` is
+  derived from the `Locality` table: a region no locality names — a GovCloud
+  region, or one a cloud added this morning — is unwritable otherwise, and a
+  stale table must never be a hard block.
+
+  ## What it does not do
+
+  Placement is per *cloud*, not per resource. Every endpoint for a cloud is
+  built from one region, which is the shape `Infra.Providers.Live` already has.
+  A fleet spanning two regions of the same cloud is not expressible, and saying
+  so here is better than half-supporting it: see `docs/architecture.md`.
+-/
+
+namespace Infra.Core
+
+/-! ## `Locality` — a place, before any cloud names it -/
+
+/-- A place a cloud may or may not have a region in.
+
+    Named the way the clouds' own documentation names them, which is why a few
+    are countries (`.ireland`, `.spain`) or states (`.nVirginia`) rather than
+    cities: AWS's `eu-west-1` is "Europe (Ireland)" and has no city in its
+    name. A city/country pair was the alternative and would have had to invent
+    one.
+
+    The list is the union of what the supported clouds offer, so most entries
+    exist on exactly one of them — which is the point. `.warsaw` is a Scaleway
+    region and not an AWS one, and that asymmetry is what the compile-time
+    check reads. -/
+inductive Locality
+  -- Europe
+  | paris | amsterdam | warsaw | ireland | london
+  | frankfurt | zurich | stockholm | milan | spain
+  -- Americas
+  | nVirginia | ohio | nCalifornia | oregon | montreal | saoPaulo
+  -- Asia Pacific
+  | tokyo | osaka | seoul | mumbai | singapore | sydney
+  deriving Repr, DecidableEq, BEq
+
+instance : Finite Locality where
+  elems :=
+    [ .paris, .amsterdam, .warsaw, .ireland, .london
+    , .frankfurt, .zurich, .stockholm, .milan, .spain
+    , .nVirginia, .ohio, .nCalifornia, .oregon, .montreal, .saoPaulo
+    , .tokyo, .osaka, .seoul, .mumbai, .singapore, .sydney ]
+  complete := by intro a; cases a <;> simp
+  nodup := by decide
+
+/-- AWS's code for a place, or `none` where AWS is not.
+
+    Written out rather than defaulted through a wildcard, on the same rule as
+    every other total match here: adding a `Locality` must fail to compile
+    until both clouds have been asked about it, because a silent `none` is a
+    claim that a cloud is absent somewhere. -/
+private def awsCode : Locality → Option String
+  | .paris        => some "eu-west-3"
+  | .ireland      => some "eu-west-1"
+  | .london       => some "eu-west-2"
+  | .frankfurt    => some "eu-central-1"
+  | .zurich       => some "eu-central-2"
+  | .stockholm    => some "eu-north-1"
+  | .milan        => some "eu-south-1"
+  | .spain        => some "eu-south-2"
+  | .nVirginia    => some "us-east-1"
+  | .ohio         => some "us-east-2"
+  | .nCalifornia  => some "us-west-1"
+  | .oregon       => some "us-west-2"
+  | .montreal     => some "ca-central-1"
+  | .saoPaulo     => some "sa-east-1"
+  | .tokyo        => some "ap-northeast-1"
+  | .osaka        => some "ap-northeast-3"
+  | .seoul        => some "ap-northeast-2"
+  | .mumbai       => some "ap-south-1"
+  | .singapore    => some "ap-southeast-1"
+  | .sydney       => some "ap-southeast-2"
+  -- AWS has no region in either.
+  | .amsterdam | .warsaw => none
+
+/-- Scaleway's code for a place. Scaleway has three regions, so this is mostly
+    `none` — grouped into one arm rather than a wildcard, so that adding a
+    `Locality` still breaks the match. -/
+private def scalewayCode : Locality → Option String
+  | .paris     => some "fr-par"
+  | .amsterdam => some "nl-ams"
+  | .warsaw    => some "pl-waw"
+  | .ireland | .london | .frankfurt | .zurich | .stockholm | .milan | .spain
+  | .nVirginia | .ohio | .nCalifornia | .oregon | .montreal | .saoPaulo
+  | .tokyo | .osaka | .seoul | .mumbai | .singapore | .sydney => none
+
+/-- What this cloud calls this place, if it is there at all. -/
+def Locality.code (l : Locality) : ProviderId → Option String
+  | .aws      => awsCode l
+  | .scaleway => scalewayCode l
+
+/-- Whether every cloud `κ` declares resources in has a region at `l`.
+
+    Named rather than inlined so that the compile error a violation produces
+    reads as `Assert (Locality.warsaw.covers keys)` — which names the place —
+    instead of an unfolded `List.all` over an inlined `Locality.code`. -/
+def Locality.covers (l : Locality) (κ : Keys) : Bool :=
+  κ.providers.all fun p => (l.code p).isSome
+
+/-! ## `Region` — one cloud's own code, tagged with the cloud -/
+
+/-- A region code, indexed by the cloud it belongs to.
+
+    The index is what stops `eu-west-3` reaching Scaleway *by typing*; the
+    constructors below add the weaker, decidable check that the code is one
+    that cloud actually has. -/
+structure Region (p : ProviderId) where
+  code : String
+  deriving Repr, DecidableEq
+
+/-- Every region code the `Locality` table names for a cloud.
+
+    Derived from that table rather than written out a second time, so the two
+    cannot drift: every region with a code here has a portable name, and one
+    without a portable name needs `Region.raw`. -/
+def knownRegions (p : ProviderId) : List String :=
+  (Finite.elems (α := Locality)).filterMap (Locality.code · p)
+
+/-- A cloud's own region code, checked against `knownRegions` at elaboration.
+
+    Catches both halves of "compatible": a code from the wrong cloud, and a
+    typo in a code from the right one. Neither survives to a DNS failure. -/
+def Region.of (p : ProviderId) (code : String)
+    (_h : Assert ((knownRegions p).contains code) := by decide) : Region p :=
+  ⟨code⟩
+
+/-- A region code taken on trust.
+
+    `knownRegions` is a hand-maintained table and clouds add regions, so there
+    has to be a way past it — but it is spelled differently from `Region.of`,
+    so reaching for it is visible in the declaration rather than silent. -/
+def Region.raw (p : ProviderId) (code : String) : Region p := ⟨code⟩
+
+/-- The region a cloud uses for a place, refusing to elaborate if it has none
+    there. -/
+def Locality.region (l : Locality) (p : ProviderId)
+    (h : Assert (l.code p).isSome := by decide) : Region p :=
+  ⟨(l.code p).get h⟩
+
+/-! ## `Regions` — where one fleet is, cloud by cloud -/
+
+/-- Which region each cloud's half of a fleet lives in.
+
+    A total function over `ProviderId` rather than one named field per cloud,
+    for the same reason `Infra.Cli.Accounts` is: the enum is `Finite` and the
+    rest of the library already treats it uniformly, so a third cloud should be
+    a row rather than a third copy of everything that reads this.
+
+    `none` means "take it from the credentials", which is what every fleet did
+    before this existed and is still what a fleet with no `in` clause does. -/
+structure Regions where
+  region : (p : ProviderId) → Option (Region p) := fun _ => none
+
+namespace Regions
+
+/-- Put every cloud the fleet uses at one place.
+
+    The portable spelling, and the one that carries a real obligation: `_h`
+    fails for a place one of the fleet's clouds is not in. It is a fresh
+    placement rather than an override, so it belongs first in a chain. -/
+def everywhere (κ : Keys) (l : Locality) (_h : Assert (l.covers κ) := by decide) : Regions where
+  region p := (l.code p).map Region.mk
+
+/-- Place one cloud, overriding whatever was said for it. The cloud is implicit
+    because `r`'s type names it. -/
+def set (rs : Regions) {p : ProviderId} (r : Region p) : Regions where
+  region q := if h : p = q then some (h ▸ r) else rs.region q
+
+/-- Whether every cloud `κ` declares resources in has been placed. -/
+def covers (rs : Regions) (κ : Keys) : Bool :=
+  κ.providers.all fun p => (rs.region p).isSome
+
+/-- `rs`, refusing to elaborate unless it places every cloud `κ` uses.
+
+    The check `everywhere` cannot make on its own: a fleet placed cloud by
+    cloud can simply leave one out, and the consequence — that cloud silently
+    falling back to whatever the credentials say — is the behaviour this module
+    exists to end. A fleet that says nothing at all is untouched by this; only
+    a fleet that says *something* is held to saying it about everything. -/
+def covering (κ : Keys) (rs : Regions) (_h : Assert (rs.covers κ) := by decide) : Regions := rs
+
+end Regions
+
+/-! ## Self-checks -/
+
+-- Paris is the one place both clouds are, which is why it is the only locality
+-- a cross-cloud fleet can be declared at.
+#guard Locality.paris.code .aws = some "eu-west-3"
+#guard Locality.paris.code .scaleway = some "fr-par"
+
+-- Scaleway is in Warsaw and Amsterdam; AWS is in neither.
+#guard Locality.warsaw.code .scaleway = some "pl-waw"
+#guard Locality.warsaw.code .aws = none
+#guard Locality.amsterdam.code .aws = none
+
+-- ...and AWS is in a great many places Scaleway is not.
+#guard Locality.ireland.code .aws = some "eu-west-1"
+#guard Locality.ireland.code .scaleway = none
+
+-- Scaleway has exactly three regions. If this changes, `scalewayCode` is the
+-- one place to change, and this guard is what notices it did not.
+#guard (knownRegions .scaleway).length = 3
+#guard knownRegions .scaleway = ["fr-par", "nl-ams", "pl-waw"]
+
+-- `Region.of`'s check is exactly membership in that list, which is what makes
+-- an AWS code at Scaleway a compile error rather than a DNS failure:
+--
+--   Region.of .scaleway "eu-west-3"
+--
+--   could not synthesize default value for parameter '_h' using tactics
+--   Tactic `decide` proved that the proposition
+--     Assert ((knownRegions ProviderId.scaleway).contains "eu-west-3")
+--   is false
+#guard (knownRegions .scaleway).contains "eu-west-3" = false
+#guard (knownRegions .aws).contains "eu-west-3" = true
+#guard (knownRegions .aws).contains "eu-west-33" = false
+
+#guard (Region.of .aws "eu-west-3").code = "eu-west-3"
+#guard (Locality.paris.region .scaleway).code = "fr-par"
+#guard (Region.raw .aws "us-gov-west-1").code = "us-gov-west-1"
+
+-- Every code a locality names is a known region of that cloud, so `Region.of`
+-- accepts everything `Locality.region` can produce.
+#guard (Finite.elems (α := Locality)).all fun l =>
+  (Finite.elems (α := ProviderId)).all fun p =>
+    match l.code p with
+    | some c => (knownRegions p).contains c
+    | none   => true
+
+section RegionsGuards
+
+private def oneCloud : Keys := Keys.build fun
+  | .aws, .objectStore => .named ["assets"]
+  | _,    _            => .unused
+
+private def bothClouds : Keys := Keys.build fun
+  | .aws,      .objectStore => .named ["assets"]
+  | .scaleway, .objectStore => .named ["assets"]
+  | _,         _            => .unused
+
+#guard oneCloud.providers = [.aws]
+#guard bothClouds.providers = [.aws, .scaleway]
+
+-- A locality covers a fleet when every cloud the fleet uses is there. Warsaw
+-- covers a Scaleway-only fleet and not a cross-cloud one — this Bool is
+-- precisely what `Regions.everywhere`'s auto-param asserts, so these two lines
+-- are the compile error, evaluated rather than triggered.
+#guard Locality.paris.covers bothClouds = true
+#guard Locality.warsaw.covers bothClouds = false
+#guard Locality.ireland.covers oneCloud = true
+#guard Locality.warsaw.covers oneCloud = false
+
+-- The portable spelling reaches both clouds with each one's own code.
+private def atParis : Regions := Regions.everywhere bothClouds .paris
+#guard (atParis.region .aws).map Region.code = some "eu-west-3"
+#guard (atParis.region .scaleway).map Region.code = some "fr-par"
+#guard atParis.covers bothClouds = true
+
+-- `set` overrides one cloud and leaves the other alone: "both in Paris, except
+-- Scaleway in Warsaw".
+private def parisButWarsaw : Regions := atParis.set (Region.of .scaleway "pl-waw")
+#guard (parisButWarsaw.region .aws).map Region.code = some "eu-west-3"
+#guard (parisButWarsaw.region .scaleway).map Region.code = some "pl-waw"
+
+-- Cloud by cloud, with no locality involved.
+private def perCloud : Regions :=
+  (({} : Regions).set (Region.of .aws "eu-west-1")).set (Region.of .scaleway "fr-par")
+#guard (perCloud.region .aws).map Region.code = some "eu-west-1"
+#guard (perCloud.region .scaleway).map Region.code = some "fr-par"
+#guard perCloud.covers bothClouds = true
+
+-- Placing only one half of a two-cloud fleet does not cover it, which is what
+-- `Regions.covering` refuses. The same value covers the one-cloud fleet, so
+-- the check is about the fleet, not about the placement alone.
+private def awsOnly : Regions := ({} : Regions).set (Region.of .aws "eu-west-1")
+#guard awsOnly.covers bothClouds = false
+#guard awsOnly.covers oneCloud = true
+
+-- Saying nothing is not a partial placement: it is the pre-existing
+-- "ask the credentials" behaviour, and no fleet is held to it.
+#guard ({} : Regions).covers oneCloud = false
+#guard (({} : Regions).region .aws).isNone = true
+
+end RegionsGuards
+
+end Infra.Core

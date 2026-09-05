@@ -31,6 +31,16 @@ import Infra
   spans both — which is what `Keys.providers` reports, and `Infra.Cli`
   authenticates exactly the clouds a fleet declares into.
 
+  ## Paris is the only place this fleet can be
+
+  `in paris` below is a `Locality`, and it places *both* clouds — AWS at
+  `eu-west-3`, Scaleway at `fr-par`. It is also the only locality that can be
+  written here, and that is the fourth thing the type system is buying: the
+  two clouds overlap in exactly one place, so `in warsaw` (Scaleway has it,
+  AWS does not) and `in ireland` (the reverse) are both compile errors *for
+  this fleet* while being perfectly legal for a single-cloud one. See "What
+  the types rule out" below.
+
   ## Before applying
 
   - **S3 bucket names are globally unique across all of AWS.**
@@ -56,7 +66,7 @@ import Infra
 open Infra.Core
 open Infra.Specs
 
-fleet crossCloud where
+fleet crossCloud in paris where
   -- The same portable spec, declared in both clouds. `objectStore` is the
   -- common denominator: a name, versioning, tags — nothing provider-shaped.
   resource aws objectStore "typednotes-assets" as assetsAws
@@ -71,6 +81,13 @@ fleet crossCloud where
   -- `objectLock` is settable only at creation — so changing it is a REPLACE,
   -- not an UPDATE. Reaching for `s3Bucket` is how that becomes expressible,
   -- at the cost of portability, which the kind's name makes obvious.
+  --
+  -- `region` here is the *bucket's own* field, not the fleet's placement, and
+  -- the two must agree: the backend creates the bucket at the endpoint the
+  -- placement builds and then reports that region back, so a spec saying
+  -- anything else diverges on a field marked `forcesReplace` and proposes a
+  -- replacement that could never converge. `in paris` above is what makes
+  -- `eu-west-3` the right thing to write. See `docs/providers.md`.
   resource aws s3Bucket "typednotes-archive" as archive
     { objectLock := true
     , region     := "eu-west-3" }
@@ -148,6 +165,26 @@ fleet crossCloud where
 -- partially applied named-argument call, not something the `fleet` command
 -- introduces — a direct `Build.scalewayFunction` call reports the same.
 
+-- **A place one of the two clouds is not in.** This is the cross-cloud case
+-- of the placement check: the fleet uses both clouds, so `Locality.covers` has
+-- to hold for both, and only Paris does.
+--
+--   fleet crossCloud in warsaw where …
+--
+--   could not synthesize default value for parameter '_h' using tactics
+--   Tactic `decide` proved that the proposition
+--     Assert (Locality.warsaw.covers keys)
+--   is false
+--
+-- Written cloud by cloud instead, the same fleet is caught by the *other*
+-- check — placing one cloud and forgetting the other is not a placement:
+--
+--   fleet crossCloud in aws "eu-west-3" where …
+--
+--   Tactic `decide` proved that the proposition
+--     Assert (({ }.set (Region.of ProviderId.aws "eu-west-3" ⋯)).covers keys)
+--   is false
+
 -- A resource in a `(provider, kind)` pair this fleet never declared. There is
 -- no key to write down, so it cannot be named at all — which is also the
 -- scoping mechanism: whatever else exists in these accounts is left alone.
@@ -167,6 +204,24 @@ fleet crossCloud where
 -- unlike a single-cloud fleet, which `Infra.Cli` authenticates one side of.
 #guard crossCloud.keys.providers = [.aws, .scaleway]
 
+-- One `in paris`, two region codes: this is what "portable placement" means,
+-- and why a `Locality` is not just an alias for a region string.
+#guard (crossCloud.regions.region .aws).map Region.code = some "eu-west-3"
+#guard (crossCloud.regions.region .scaleway).map Region.code = some "fr-par"
+
+-- Paris is the only locality both clouds have, so it is the only one this
+-- fleet can be declared at. The two `false`s are the compile errors above,
+-- evaluated instead of triggered.
+#guard Locality.paris.covers crossCloud.keys = true
+#guard Locality.warsaw.covers crossCloud.keys = false     -- Scaleway yes, AWS no
+#guard Locality.ireland.covers crossCloud.keys = false    -- AWS yes, Scaleway no
+#guard (Finite.elems (α := Locality)).filter (·.covers crossCloud.keys) = [.paris]
+
+-- The bucket's own `region` field agrees with where the fleet places AWS.
+-- They are separate mechanisms and nothing couples them, so this guard is
+-- what notices if one moves without the other.
+#guard (crossCloud.regions.region .aws).map Region.code = some "eu-west-3"
+
 -- The function depends on the bucket it reads, and on nothing else.
 #guard (HasDeps.deps (S := ScalewayFunctionSpec)
          (Build.scalewayFunction (K := crossCloud.keys.Key)
@@ -177,4 +232,5 @@ def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "cross-cloud" crossCloud.plan
     (selfCheck := Infra.Cli.offlinePlan crossCloud.plan
       "cross-cloud: a plan spanning AWS and Scaleway")
-    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)
+    (accounts := ← Infra.Cli.Accounts.fromEnv)
+    (regions := crossCloud.regions) (args := args)

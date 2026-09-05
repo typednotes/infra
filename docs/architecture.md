@@ -205,6 +205,63 @@ small; it expands to the level-2 combinators, so errors point at your own
 code. `Infra/Demo.lean` declares one fleet at both levels and `#guard`s that
 the results agree.
 
+## Where a fleet is
+
+A fleet declares which region each of its clouds is in, alongside which
+accounts it is for. Before this existed the region came from the credentials
+and nowhere else — every endpoint in `Infra/Providers/Live.lean` is built from
+`creds.region` — so the same committed file built a different system depending
+on who ran it, and refused to run at all when `AWS_REGION` was unset.
+`Infra/Core/Region.lean` closes both halves.
+
+Two spellings, and the choice between them is the portability choice again:
+
+- **A `Locality`** — `.paris` — is a place, named before any cloud names it.
+  Each cloud maps it to its own code or to nothing: AWS's Paris is
+  `eu-west-3`, Scaleway's is `fr-par`, and neither has a region in the
+  other's Warsaw or Ireland. One `in paris` places both clouds correctly,
+  which a region string could not.
+- **A `Region p`** — `Region.of .aws "eu-west-3"` — is one cloud's own code,
+  indexed by that cloud. The index stops an AWS region reaching Scaleway *by
+  typing*; `Region.of` adds a decidable check that the code is one that cloud
+  actually has.
+
+Three mistakes are therefore compile errors rather than DNS failures, all by
+the same `Assert`/`by decide` mechanism `NamedKey.of` uses:
+
+| Mistake | Caught by |
+|---|---|
+| a place one of the fleet's clouds is not in | `Locality.covers` |
+| a region code from the wrong cloud, or a typo in one | `Region.of` |
+| a placement that leaves one of the fleet's clouds unplaced | `Regions.covering` |
+
+The `fleet` command's optional `in` clause generates all of it:
+
+```lean
+fleet myFleet in paris where …                       -- both clouds' Paris
+fleet myFleet in aws "eu-west-1", scaleway "fr-par" where …
+```
+
+An entry without a string is a locality and places every cloud; an entry with
+one places that cloud, and may override a locality written before it. Omitting
+`in` keeps the old behaviour — each cloud's region comes from its credentials,
+and a cloud whose credentials carry none fails with a message naming all three
+ways to supply it.
+
+`knownRegions` is *derived* from the `Locality` table rather than written out
+twice, so the two cannot drift; the cost is that a region no locality names —
+GovCloud, or one added last week — needs `Region.raw`, which is spelled
+differently precisely so that reaching past the table is visible.
+
+**Placement is per cloud, not per resource.** Every endpoint for a cloud is
+built from one region, which is the shape `Live.lean` already has, so a fleet
+spanning two regions of the same cloud is not expressible. `S3BucketSpec` has
+a `region` field that predates this and is *not* that mechanism: it is
+compared against the region the bucket is reported in, and must agree with
+where the fleet places AWS. See `docs/providers.md`.
+
+## Declaring a fleet, continued
+
 **This table is the scoping mechanism** the project's `AGENTS.md` calls for ("the ability to
 scope what's managed vs. left alone"): a `(provider, kind)` pair left `.unused`, or a resource
 name simply not listed under a pair that is used, has no key for `Plan.assign` to mention it
@@ -265,3 +322,11 @@ not the starting point it looks like. See `docs/authentication.md`'s "Still open
 Being authenticated is not the same as being pointed at the right place, so a fleet also states
 which accounts it is for, and every live command verifies that before listing anything
 (`Infra.Cli.Accounts`, `Kinds/Identity.lean`).
+
+The account and the region are the two halves of "where is this about to build", and they are
+declared alike but enforced differently. An API key *belongs* to one account and cannot be
+pointed at another, so the account is **checked** against what the credentials report and a
+mismatch is refused. Which region to build in is a free choice, so placement **overrides**
+whatever region the credentials carry — see "Where a fleet is" above. `checkAccounts` prints
+both on one line, because reading them apart is what let a fleet aimed at the right account in
+the wrong region look fine.

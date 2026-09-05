@@ -229,10 +229,27 @@ type would otherwise destroy live resources on a first run.
 | Unhandled kind | `SpecOf`, `ObservedOf`, `fillableOf`, `hasDepsOf`, `divergentOf`, `settleableOf` and `Live.lean` are all total over `Kind` |
 | Using a kind a provider lacks | that `(provider, kind)` pair's `Key` is `Nothing`, so there is no key to write down |
 | A secret's *source* being ambiguous | `SecretSource` has two constructors, so "an env var name" and "a composed value" cannot both be given, nor neither |
+| A region reaching the wrong cloud | `Region` is indexed by `ProviderId`, so `Region .aws` is not `Region .scaleway` |
 
 **Decidable**, dischargeable with `(h : Assert … := by decide)`: acyclicity,
 quota bounds such as `Assert (κ.count .aws .compute ≤ 20)`, name formats,
-and — for `Infra.Core.Ergonomics`'s `NamedKey` — duplicate resource *names*.
+placement (all three rows below), and — for `Infra.Core.Ergonomics`'s
+`NamedKey` — duplicate resource *names*.
+
+Placement is the newest of these and is checked entirely at elaboration, so a
+misplaced fleet never reaches a DNS lookup:
+
+| | |
+|---|---|
+| A place one of the fleet's clouds is not in | `Assert (l.covers κ)` on `Regions.everywhere` — AWS has no Warsaw region, so `in warsaw` fails for any fleet using AWS |
+| A region code from the wrong cloud, or a typo | `Assert ((knownRegions p).contains code)` on `Region.of` |
+| A placement leaving one of the fleet's clouds unplaced | `Assert (rs.covers κ)` on `Regions.covering` |
+
+The first is decidable rather than structural because `Locality` is one enum
+across all clouds: making "a place AWS is in" a *type* would need one enum per
+cloud and would lose the single name that places both. The third does not
+apply to a fleet that declares no placement at all — saying nothing keeps the
+credentials' region, which is not a partial claim.
 `Infra/Demo.lean`'s hand-rolled `inductive` keys get "no duplicate key" for
 free from constructor distinctness (the row above); `NamedKey (names : List
 String)` is `Fin names.length` underneath, so two equal strings in `names`
@@ -341,6 +358,21 @@ outside the fleet.
 - **Unreportable fields are unenforced, not rejected.** A target asking for
   something a cloud cannot express is accepted and quietly ignored; see
   `docs/providers.md` for the list.
+- **`S3BucketSpec.region` can ask for a replacement that never converges.**
+  The field does not place the bucket — `Live.lean` creates it at the endpoint
+  the fleet's placement builds, and reports that region back — so the field is
+  only ever *compared*, on a `forcesReplace` row. A spec naming a region other
+  than where the fleet places AWS therefore diverges, and the replacement
+  recreates the bucket in the same place it already was, so the next plan
+  proposes the same replacement forever. Worse, `Fillable` fills an unset
+  `region` with `.lit "eu-west-1"`, so this is the *default* for any fleet not
+  placed in Ireland: a fabricated value standing in for "the author said
+  nothing", which is exactly what this document argues a fill must never be.
+  Fleet placement (`docs/architecture.md`, "Where a fleet is") makes the field
+  redundant for choosing, and the honest resolutions are to drop it or to have
+  the backend actually honour it per bucket; neither is done.
+  `example/CrossCloud.lean` keeps the two in step with a `#guard` in the
+  meantime.
 - **Ordering is not the same as waiting.** The scheduler gets the *sequence*
   right — an instance is deleted before its security group — but a provider's
   delete can be asynchronous, so "the previous action returned" does not mean

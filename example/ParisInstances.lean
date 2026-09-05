@@ -38,12 +38,10 @@ import Infra
       lake exe paris-instances destroy        # terminate them again
 
   A bare invocation is offline, credential-free and free of charge. The live
-  commands need AWS credentials **and a region** — the region is what puts
-  this fleet in Paris (see point 3 below), and nothing in the declaration
-  supplies it:
+  commands need AWS credentials, and nothing else — the region is declared
+  below (`in paris`), so `AWS_REGION` is neither read nor needed:
 
       export AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…
-      export AWS_REGION=eu-west-3
 
   To have them refuse to run against the wrong account — worth doing before
   creating anything billable:
@@ -60,12 +58,14 @@ import Infra
   2. **`al2023Paris` below is unverified.** An AMI id is region-specific and
      they are rotated; if it is stale, `RunInstances` fails with
      `InvalidAMIID.NotFound`. That is the most likely first failure.
-  3. **The region comes from your credentials, not from this file.** Nothing in
-     `AwsInstanceSpec` names a region — `Live.lean` builds the EC2 endpoint from
-     `creds.region` — so "Paris" here means "your credentials say `eu-west-3`".
-     Point them elsewhere and this same declaration builds the same fleet in
-     another region against an AMI that does not exist there. The account guard
-     checks the *account*, not the region.
+  3. **The region comes from this file.** `in paris` below places the fleet,
+     and `Infra.Cli` builds every AWS endpoint from that rather than from
+     `creds.region` — so "Paris" here means Paris, whatever the credentials
+     say. That matters more than convenience: the AMI in point 2 is
+     region-specific, and until placement was declarable this same file built
+     a different fleet for every operator who ran it. The account guard checks
+     the account; `in paris` checks the place, and both are checked before
+     anything is created.
   4. **This backend has never been run.** Signing is verified offline; every
      EC2 parameter name in `Kinds/Ec2.lean` is a best guess until an apply says
      otherwise. Expect to iterate, and read `docs/providers.md` first.
@@ -79,7 +79,11 @@ open Infra.Specs
     other region, and there is no lookup here that would hide that. -/
 def al2023Paris : String := "ami-0d3c032f5934e1b41"
 
-fleet paris where
+-- `in paris` places every cloud this fleet uses — AWS only, here — at the
+-- `Locality.paris` region, which for AWS is `eu-west-3`. The alternative
+-- spelling is AWS's own code, `in aws "eu-west-3"`, and both are checked while
+-- this file elaborates. See "Where it cannot be" below.
+fleet paris in paris where
   -- Referenced by both instances below. Nothing references *it*, which is why
   -- it has no `as`-less twin: `as web` is what the instances name.
   resource aws securityGroup "web" as web
@@ -144,6 +148,43 @@ fleet paris where
 --     keys.Key ProviderId.aws Kind.s3Bucket
 --   but is expected to have type
 --     Expr keys.Key (keys.Key ProviderId.aws Kind.securityGroup)
+
+/-! ## Where it cannot be
+
+  Placement is checked the same way, and by the same mechanism — a decidable
+  side-condition discharged while the fleet elaborates. -/
+
+-- **A place this fleet's cloud is not in.** Scaleway has a Warsaw region and
+-- AWS does not, so `in warsaw` is a compile error *for this fleet* and would
+-- not be for a Scaleway-only one. The proposition names both the place and
+-- the fleet. `keys` in the message is this fleet's own `paris.keys`, printed
+-- without its prefix:
+--
+--   fleet paris in warsaw where …
+--
+--   could not synthesize default value for parameter '_h' using tactics
+--   Tactic `decide` proved that the proposition
+--     Assert (Locality.warsaw.covers keys)
+--   is false
+
+-- **A region code from the wrong cloud**, or one that does not exist. Both are
+-- the same check, against the codes that cloud actually has:
+--
+--   fleet paris in aws "fr-par" where …
+--
+--   Tactic `decide` proved that the proposition
+--     Assert ((knownRegions ProviderId.aws).contains "fr-par")
+--   is false
+
+-- Both hold for this fleet, which is what the two errors above assert the
+-- negation of. `covers` is the whole check: every cloud the fleet uses has a
+-- region at that place.
+#guard Locality.paris.covers paris.keys = true
+#guard Locality.warsaw.covers paris.keys = false
+
+-- And the placement it produced is AWS's own name for Paris.
+#guard (paris.regions.region .aws).map Region.code = some "eu-west-3"
+#guard paris.regions.covers paris.keys = true
 
 /-! ## Tearing it down
 
@@ -221,4 +262,5 @@ def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "paris-instances" paris.plan
     (selfCheck := Infra.Cli.offlinePlan paris.plan
       "paris: two t3.nano behind one security group")
-    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)
+    (accounts := ← Infra.Cli.Accounts.fromEnv)
+    (regions := paris.regions) (args := args)
