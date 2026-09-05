@@ -215,6 +215,16 @@ scaleway: organization 4d7c630f-… ok
 
 ## Documentation
 
+Start here:
+
+- [`docs/tutorial.md`](docs/tutorial.md) — **getting started**: an empty
+  directory to a fleet in two clouds, with the commands, credentials,
+  placement, references and secrets explained in order. Every snippet in it
+  compiles.
+
+Then the design documents, which explain *why* and are worth reading before
+extending anything:
+
 - [`docs/architecture.md`](docs/architecture.md) — overall design and the portability rules
 - [`docs/authentication.md`](docs/authentication.md) — where credentials come from
 - [`docs/persistence.md`](docs/persistence.md) — how observed state is cached
