@@ -491,8 +491,15 @@ def gcpCheck (path : String) : IO UInt32 := do
 def main (args : List String) : IO UInt32 :=
   match args with
   | ["new"] =>
-    IO.eprintln "usage: lake exe infra new <directory>" *> pure 2
+    IO.eprintln "usage: lake exe infra new <directory>" *>
+    IO.eprintln "       lake exe infra init [directory]   # set up a directory that exists" *>
+    pure 2
   | ["new", dir] => Infra.Cli.New.scaffold dir
+  -- `init` is to `new` what Lake's own pair is to each other: same output,
+  -- one makes the directory and one works in the directory you are in.
+  -- Defaults to `.`, which is the only argument anyone passes it.
+  | ["init"] => Infra.Cli.New.scaffold "." (inPlace := true)
+  | ["init", dir] => Infra.Cli.New.scaffold dir (inPlace := true)
   | ["gcp-check"] =>
     IO.eprintln "usage: lake exe infra gcp-check <service-account-key.json>" *> pure 2
   | ["gcp-check", path] => gcpCheck path

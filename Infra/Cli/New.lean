@@ -8,6 +8,19 @@ import Infra.Core.Kind
   that excludes the two things that must never be committed, and CI for both
   GitHub and GitLab.
 
+  ## Two modes
+
+  `new <dir>` makes a project in a new directory; `init [dir]` sets up a
+  directory that already exists, defaulting to `.`. Same output, and the same
+  distinction Lake draws between its own `new` and `init`.
+
+  `init` exists because `new` alone was the wrong shape for the commonest
+  start: someone with a repository already, or with nothing in it but a `git
+  init` and a README. `new` refused any non-empty directory, so the only route
+  was to scaffold a *second* project elsewhere and move files across by hand
+  — a workflow nobody would choose, and stricter than `lake init` itself,
+  which has never minded a non-empty directory.
+
   ## Why it wraps `lake init`
 
   Rather than write a `lean-toolchain` and a git repository from scratch, this
@@ -452,12 +465,22 @@ it never enters the repository, the plan output or the state cache.
   accounts is left alone, unconditionally.
 "
 
-/-- Write a file, creating its directory. -/
-private def put (root : System.FilePath) (rel : String) (contents : String) : IO Unit := do
+/-- Write a file, creating its directory. Returns whether it wrote.
+
+    `keep := true` leaves an existing file alone. That is the difference
+    between `new` and `init`: scaffolding into a directory someone is already
+    working in must not be able to destroy what is there, and a lakefile or a
+    `Main.lean` they wrote is exactly what would go. -/
+private def put (root : System.FilePath) (rel : String) (contents : String)
+    (keep : Bool := false) : IO Bool := do
   let path := root / rel
+  if keep && (← path.pathExists) then
+    IO.println s!"  {rel} (kept — already there)"
+    return false
   if let some dir := path.parent then IO.FS.createDirAll dir
   IO.FS.writeFile path contents
   IO.println s!"  {rel}"
+  return true
 
 /-- The lakefile: Lake's own, plus the link flags and the dependency. -/
 private def lakefile (name : String) : String :=
@@ -489,51 +512,107 @@ lean_exe «" ++ name ++ "» where
 
 /-- Scaffold a project into `dir`.
 
-    `lake init` runs first, for the toolchain pin and the git repository, and
-    then everything an infra project needs is written over the top. A
-    non-empty directory is refused rather than merged into: overwriting
-    someone's work would be a poor first impression. -/
-def scaffold (dir : String) : IO UInt32 := do
+    Two modes, mirroring Lake's own pair, because they answer two different
+    questions and conflating them was a mistake:
+
+    - `new dir` — make me a project. Refuses a non-empty directory.
+    - `init dir` — set *this* directory up. Keeps whatever is already there.
+
+    Only `new` existed at first, and it refused any directory with anything in
+    it — including one holding nothing but a `git init` and a README, which is
+    where most people start. So the answer to "I already have a directory, add
+    infra to it" was to create a *second* project somewhere else and move the
+    files across by hand. `lake init`, which this wraps, has never had that
+    restriction; the wrapper was stricter than the thing it wrapped for no
+    reason anyone could have defended.
+
+    `init` writes only files that are absent and says which it kept. If it
+    keeps the lakefile — an existing Lean project — it prints the block that
+    has to go in by hand, because the link flags are not optional and Lake
+    will not propagate them from a dependency. -/
+def scaffold (dir : String) (inPlace : Bool := false) : IO UInt32 := do
   let root : System.FilePath := dir
   if ← root.pathExists then
     let entries ← root.readDir
-    unless entries.isEmpty do
+    unless inPlace || entries.isEmpty do
       IO.eprintln s!"error: {dir} exists and is not empty"
+      IO.eprintln s!"  to set up the directory you are already in, use: \
+lake exe infra init {dir}"
       return 1
   IO.FS.createDirAll root
 
-  -- The Lean identifier the fleet is named after: `my-infra` is not one.
-  let ident := ((dir.splitOn "/").filter (!·.isEmpty)).getLastD dir |>.map fun c =>
-    if c.isAlphanum then c else '_'
+  -- The Lean identifier the fleet is named after: `my-infra` is not one, and
+  -- neither is `.` — which is the usual spelling of "here", so it has to
+  -- resolve to the directory's real name rather than to an underscore.
+  let resolved ← try IO.FS.realPath root catch _ => pure root
+  let base := (resolved.fileName.getD dir)
+  let cleaned := base.map fun c => if c.isAlphanum then c else '_'
+  -- A leading digit is not a Lean identifier either, and `2026-infra` is a
+  -- plausible directory name.
+  let ident := if cleaned.front.isDigit then "_" ++ cleaned else cleaned
 
-  IO.println s!"Creating {dir}…\n"
+  -- What was here *before this command ran*. That is the set to protect, and
+  -- it is not the same as "what exists when we come to write it": `lake init`
+  -- below creates a lakefile, a `Main.lean` and a README of its own moments
+  -- from now, and keeping *those* would mean keeping Lake's minimal lakefile
+  -- instead of the one with the link flags in it — the single thing this
+  -- command exists to provide.
+  let mut preexisting : List String := []
+  if inPlace then
+    for f in [ "lakefile.lean", "Fleet.lean", "Main.lean", ".gitignore", "README.md"
+             , ".github/workflows/plan.yml", ".github/workflows/apply.yml"
+             , ".gitlab-ci.yml" ] do
+      if ← (root / f).pathExists then preexisting := f :: preexisting
+
+  IO.println s!"{if inPlace then "Setting up" else "Creating"} {dir}…\n"
 
   -- Lake first: it owns how a Lean project starts, including the toolchain
-  -- pin, and reimplementing that here would only let it drift.
-  let init ← try
-      IO.Process.output { cmd := "lake", args := #["init", ident, "exe.lean"], cwd := root }
-    catch _ =>
-      IO.eprintln "error: `lake` is not on PATH — install elan first"
+  -- pin, and reimplementing that here would only let it drift. Skipped when
+  -- there is already a lakefile, because then Lake's work is done and running
+  -- it again would only fail.
+  let hasLakefile ← ((root / "lakefile.lean").pathExists <||> (root / "lakefile.toml").pathExists)
+  unless hasLakefile do
+    let init ← try
+        IO.Process.output { cmd := "lake", args := #["init", ident, "exe.lean"], cwd := root }
+      catch _ =>
+        IO.eprintln "error: `lake` is not on PATH — install elan first"
+        return 1
+    unless init.exitCode == 0 do
+      IO.eprintln s!"error: lake init failed:\n{init.stderr}"
       return 1
-  unless init.exitCode == 0 do
-    IO.eprintln s!"error: lake init failed:\n{init.stderr}"
-    return 1
 
-  put root "lakefile.lean"                    (lakefile ident)
-  put root "Fleet.lean"                       (fleetLean ident)
-  put root "Main.lean"                        (mainLean ident)
-  put root ".gitignore"                       gitignore
-  put root "README.md"                        (readme ident)
-  put root ".github/workflows/plan.yml"       (githubPlan ident)
-  put root ".github/workflows/apply.yml"      (githubApply ident)
-  put root ".gitlab-ci.yml"                   (gitlabCi ident)
+  let keep (rel : String) : Bool := preexisting.contains rel
+  let wroteLakefile ← put root "lakefile.lean"     (lakefile ident) (keep "lakefile.lean")
+  discard <| put root "Fleet.lean"                 (fleetLean ident) (keep "Fleet.lean")
+  discard <| put root "Main.lean"                  (mainLean ident) (keep "Main.lean")
+  discard <| put root ".gitignore"                 gitignore (keep ".gitignore")
+  discard <| put root "README.md"                  (readme ident) (keep "README.md")
+  discard <| put root ".github/workflows/plan.yml" (githubPlan ident)
+    (keep ".github/workflows/plan.yml")
+  discard <| put root ".github/workflows/apply.yml" (githubApply ident)
+    (keep ".github/workflows/apply.yml")
+  discard <| put root ".gitlab-ci.yml"             (gitlabCi ident) (keep ".gitlab-ci.yml")
 
   -- Written line by line rather than as one escaped literal: the indentation
   -- is part of the message, and a string gap would eat it.
   IO.println ""
-  IO.println "Done. Next:"
+  -- Keeping someone's lakefile is the one case where the result does not yet
+  -- build, and saying "Done" would be a lie. The flags are the whole reason
+  -- this command exists.
+  unless wroteLakefile do
+    IO.println "Your lakefile was kept, so the dependency and the native link"
+    IO.println "flags are NOT in it yet. Both are required — Lake does not"
+    IO.println "propagate link flags from a dependency. Add to lakefile.lean:"
+    IO.println ""
+    IO.println "  require infra from git \"https://github.com/typednotes/infra\" @ \"main\""
+    IO.println ""
+    IO.println "  -- and the `moreLinkArgs` block from this project's own"
+    IO.println "  -- lakefile.lean, which `lake exe infra new` writes in full:"
+    IO.println "  --   lake exe infra new /tmp/reference && cat /tmp/reference/lakefile.lean"
+    IO.println ""
+  IO.println "Next:"
   IO.println ""
-  IO.println s!"  cd {dir}"
+  unless inPlace do IO.println s!"  cd {dir}"
   IO.println  "  lake update                # fetch infra"
   IO.println s!"  lake exe {ident}           # offline plan — no credentials, no charges"
   IO.println ""

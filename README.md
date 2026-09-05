@@ -83,12 +83,42 @@ adds is the part Lake cannot know about — chiefly the native link flags every
 consumer needs, which Lake does not propagate from a dependency and which are
 otherwise copied by hand.
 
+First, the scaffolder itself. It is a command in *this* repository, so it comes
+from a checkout of it — there is no published binary to install yet:
+
 ```sh
-lake exe infra new my-infra   # wraps `lake init`, then adds the rest
-cd my-infra
+git clone https://github.com/typednotes/infra && cd infra
+lake build
+```
+
+Then either make a new project, or set up a directory you already have. The
+two are the same distinction Lake draws with `new` and `init`, and the second
+is the one to use if you already have a repository:
+
+```sh
+# a new project, in a new directory
+lake exe infra new ~/my-infra
+cd ~/my-infra
+
+# or: a directory that already exists — your own repo, freshly `git init`ed
+cd ~/my-infra && lake exe infra init
+```
+
+`init` writes only what is absent and says what it kept, so it cannot destroy
+work in progress. If it keeps a lakefile you wrote, it prints the dependency
+and link-flag block for you to add by hand — those are required, and Lake will
+not propagate them from a dependency.
+
+Either way, the project is then ordinary Lake:
+
+```sh
 lake update                   # fetch infra
 lake exe my_infra             # offline plan — no credentials, no charges
 ```
+
+The scaffolder does not have to stay in the checkout: `.lake/build/bin/infra`
+is a self-contained binary, so copying it onto your `PATH` makes `infra new`
+and `infra init` available anywhere.
 
 You get `Fleet.lean` (the whole declaration), `Main.lean` (five lines), a
 `.gitignore` that excludes the state cache, a README, and CI for **GitHub and

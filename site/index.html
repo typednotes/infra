@@ -631,12 +631,20 @@ would CREATE scaleway/secrets/db-url
       plan/apply split already wired. It builds on <code>lake init</code>, so
       Lake still owns the toolchain pin — what it adds is the part Lake cannot
       know about, chiefly the native link flags every consumer needs and would
-      otherwise copy by hand.
+      otherwise copy by hand. <code>infra init</code> does the same to a
+      directory you already have, writing only what is absent.
     </p>
     <div class="card" style="max-width:760px">
       <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>
-<pre>lake exe infra new my-infra   <span class="c"># wraps `lake init`, then adds the rest</span>
-<span class="k">cd</span> my-infra
+<pre><span class="c"># the scaffolder lives in the repo — no published binary yet</span>
+git clone https://github.com/typednotes/infra &amp;&amp; <span class="k">cd</span> infra &amp;&amp; lake build
+
+<span class="c"># a new project…</span>
+lake exe infra new ~/my-infra
+
+<span class="c"># …or a directory you already have</span>
+<span class="k">cd</span> ~/my-infra &amp;&amp; lake exe infra init
+
 lake update                   <span class="c"># fetch infra</span>
 lake exe my_infra             <span class="c"># offline plan — no credentials, no charges</span></pre>
     </div>
