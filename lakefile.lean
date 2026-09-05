@@ -127,7 +127,7 @@ run_cmd do
   mkDef `nativeLinkArgs keychain
 
 package infra where
-  version := v!"0.1.0"
+  version := v!"0.2.0"
   moreLinkArgs := nativeLinkArgs
 
 require linen from git "https://github.com/typednotes/linen" @ "main"
