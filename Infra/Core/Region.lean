@@ -48,75 +48,111 @@ namespace Infra.Core
 
 /-- A place a cloud may or may not have a region in.
 
-    Named the way the clouds' own documentation names them, which is why a few
-    are countries (`.ireland`, `.spain`) or states (`.nVirginia`) rather than
-    cities: AWS's `eu-west-1` is "Europe (Ireland)" and has no city in its
-    name. A city/country pair was the alternative and would have had to invent
-    one.
+    Named the way each cloud's own documentation names the place, which is why
+    a few are countries (`.ireland`, `.spain`, `.uae`) or a compass point
+    (`.canadaCentral`) rather than cities: AWS's `eu-west-1` is "Europe
+    (Ireland)" and its `ca-central-1` is "Canada (Central)" — it never says
+    Dublin or Montreal, and calling it `.montreal` would also have collided
+    with `ca-west-1`, "Canada West (Calgary)". A city/country pair was the
+    alternative and would have had to invent a city for each of these.
 
     The list is the union of what the supported clouds offer, so most entries
     exist on exactly one of them — which is the point. `.warsaw` is a Scaleway
-    region and not an AWS one, and that asymmetry is what the compile-time
-    check reads. -/
+    region and not an AWS one, `.ireland` the reverse, and that asymmetry is
+    what the compile-time check reads.
+
+    **Not exhaustive, and a snapshot.** AWS's opt-in regions past the ones
+    below, GovCloud and China are reachable through `Region.raw`. See
+    `AGENTS.md`, "Provider facts go stale". -/
 inductive Locality
   -- Europe
   | paris | amsterdam | warsaw | ireland | london
   | frankfurt | zurich | stockholm | milan | spain
   -- Americas
-  | nVirginia | ohio | nCalifornia | oregon | montreal | saoPaulo
+  | nVirginia | ohio | nCalifornia | oregon
+  | canadaCentral | calgary | mexicoCentral | saoPaulo
+  -- Middle East and Africa
+  | uae | telAviv | capeTown
   -- Asia Pacific
-  | tokyo | osaka | seoul | mumbai | singapore | sydney
+  | tokyo | osaka | seoul | mumbai | hyderabad
+  | singapore | jakarta | sydney | hongKong
   deriving Repr, DecidableEq, BEq
 
 instance : Finite Locality where
   elems :=
     [ .paris, .amsterdam, .warsaw, .ireland, .london
     , .frankfurt, .zurich, .stockholm, .milan, .spain
-    , .nVirginia, .ohio, .nCalifornia, .oregon, .montreal, .saoPaulo
-    , .tokyo, .osaka, .seoul, .mumbai, .singapore, .sydney ]
+    , .nVirginia, .ohio, .nCalifornia, .oregon
+    , .canadaCentral, .calgary, .mexicoCentral, .saoPaulo
+    , .uae, .telAviv, .capeTown
+    , .tokyo, .osaka, .seoul, .mumbai, .hyderabad
+    , .singapore, .jakarta, .sydney, .hongKong ]
   complete := by intro a; cases a <;> simp
   nodup := by decide
 
 /-- AWS's code for a place, or `none` where AWS is not.
+
+    Checked against AWS's "Regions and Zones" table on 2026-09-05.
 
     Written out rather than defaulted through a wildcard, on the same rule as
     every other total match here: adding a `Locality` must fail to compile
     until both clouds have been asked about it, because a silent `none` is a
     claim that a cloud is absent somewhere. -/
 private def awsCode : Locality → Option String
-  | .paris        => some "eu-west-3"
-  | .ireland      => some "eu-west-1"
-  | .london       => some "eu-west-2"
-  | .frankfurt    => some "eu-central-1"
-  | .zurich       => some "eu-central-2"
-  | .stockholm    => some "eu-north-1"
-  | .milan        => some "eu-south-1"
-  | .spain        => some "eu-south-2"
-  | .nVirginia    => some "us-east-1"
-  | .ohio         => some "us-east-2"
-  | .nCalifornia  => some "us-west-1"
-  | .oregon       => some "us-west-2"
-  | .montreal     => some "ca-central-1"
-  | .saoPaulo     => some "sa-east-1"
-  | .tokyo        => some "ap-northeast-1"
-  | .osaka        => some "ap-northeast-3"
-  | .seoul        => some "ap-northeast-2"
-  | .mumbai       => some "ap-south-1"
-  | .singapore    => some "ap-southeast-1"
-  | .sydney       => some "ap-southeast-2"
+  | .paris         => some "eu-west-3"
+  | .ireland       => some "eu-west-1"
+  | .london        => some "eu-west-2"
+  | .frankfurt     => some "eu-central-1"
+  | .zurich        => some "eu-central-2"
+  | .stockholm     => some "eu-north-1"
+  | .milan         => some "eu-south-1"
+  | .spain         => some "eu-south-2"
+  | .nVirginia     => some "us-east-1"
+  | .ohio          => some "us-east-2"
+  | .nCalifornia   => some "us-west-1"
+  | .oregon        => some "us-west-2"
+  | .canadaCentral => some "ca-central-1"
+  | .calgary       => some "ca-west-1"
+  | .mexicoCentral => some "mx-central-1"
+  | .saoPaulo      => some "sa-east-1"
+  | .uae           => some "me-central-1"
+  | .telAviv       => some "il-central-1"
+  | .capeTown      => some "af-south-1"
+  | .tokyo         => some "ap-northeast-1"
+  | .osaka         => some "ap-northeast-3"
+  | .seoul         => some "ap-northeast-2"
+  | .mumbai        => some "ap-south-1"
+  | .hyderabad     => some "ap-south-2"
+  | .singapore     => some "ap-southeast-1"
+  | .jakarta       => some "ap-southeast-3"
+  | .sydney        => some "ap-southeast-2"
+  | .hongKong      => some "ap-east-1"
   -- AWS has no region in either.
   | .amsterdam | .warsaw => none
 
-/-- Scaleway's code for a place. Scaleway has three regions, so this is mostly
-    `none` — grouped into one arm rather than a wildcard, so that adding a
-    `Locality` still breaks the match. -/
+/-- Scaleway's code for a place, or `none` where Scaleway is not.
+
+    Checked against Scaleway's VPC and Instance API region parameters on
+    2026-09-05: four regions, `it-mil` having opened in March 2026. Scaleway
+    has announced Sweden and Germany next, and `.stockholm` and `.frankfurt`
+    are already here waiting for them.
+
+    Regions, not availability zones: `fr-par-1` is a zone inside `fr-par` and
+    is not a value that belongs in this table.
+
+    The `none`s are grouped into one arm rather than written as a wildcard, so
+    that adding a `Locality` still breaks the match. -/
 private def scalewayCode : Locality → Option String
   | .paris     => some "fr-par"
   | .amsterdam => some "nl-ams"
   | .warsaw    => some "pl-waw"
-  | .ireland | .london | .frankfurt | .zurich | .stockholm | .milan | .spain
-  | .nVirginia | .ohio | .nCalifornia | .oregon | .montreal | .saoPaulo
-  | .tokyo | .osaka | .seoul | .mumbai | .singapore | .sydney => none
+  | .milan     => some "it-mil"
+  | .ireland | .london | .frankfurt | .zurich | .stockholm | .spain
+  | .nVirginia | .ohio | .nCalifornia | .oregon
+  | .canadaCentral | .calgary | .mexicoCentral | .saoPaulo
+  | .uae | .telAviv | .capeTown
+  | .tokyo | .osaka | .seoul | .mumbai | .hyderabad
+  | .singapore | .jakarta | .sydney | .hongKong => none
 
 /-- What this cloud calls this place, if it is there at all. -/
 def Locality.code (l : Locality) : ProviderId → Option String
@@ -217,10 +253,14 @@ end Regions
 
 /-! ## Self-checks -/
 
--- Paris is the one place both clouds are, which is why it is the only locality
--- a cross-cloud fleet can be declared at.
+-- Paris and Milan are the two places both clouds are, which is what a
+-- cross-cloud fleet can be declared at. Milan only since March 2026 — this
+-- table said three Scaleway regions until it was checked against Scaleway's
+-- own API docs, which is the whole of `AGENTS.md`'s "Provider facts go stale".
 #guard Locality.paris.code .aws = some "eu-west-3"
 #guard Locality.paris.code .scaleway = some "fr-par"
+#guard Locality.milan.code .aws = some "eu-south-1"
+#guard Locality.milan.code .scaleway = some "it-mil"
 
 -- Scaleway is in Warsaw and Amsterdam; AWS is in neither.
 #guard Locality.warsaw.code .scaleway = some "pl-waw"
@@ -231,10 +271,16 @@ end Regions
 #guard Locality.ireland.code .aws = some "eu-west-1"
 #guard Locality.ireland.code .scaleway = none
 
--- Scaleway has exactly three regions. If this changes, `scalewayCode` is the
--- one place to change, and this guard is what notices it did not.
-#guard (knownRegions .scaleway).length = 3
-#guard knownRegions .scaleway = ["fr-par", "nl-ams", "pl-waw"]
+-- Scaleway has exactly four regions. If this changes, `scalewayCode` is the
+-- one place to change, and this guard is what notices it did not — it is how
+-- the missing `it-mil` was found.
+#guard (knownRegions .scaleway).length = 4
+#guard knownRegions .scaleway = ["fr-par", "nl-ams", "pl-waw", "it-mil"]
+
+-- The two clouds overlap in exactly these places, which is the set a
+-- cross-cloud fleet can be declared at.
+#guard (Finite.elems (α := Locality)).filter
+  (fun l => (l.code .aws).isSome && (l.code .scaleway).isSome) = [.paris, .milan]
 
 -- `Region.of`'s check is exactly membership in that list, which is what makes
 -- an AWS code at Scaleway a compile error rather than a DNS failure:
@@ -280,6 +326,7 @@ private def bothClouds : Keys := Keys.build fun
 -- precisely what `Regions.everywhere`'s auto-param asserts, so these two lines
 -- are the compile error, evaluated rather than triggered.
 #guard Locality.paris.covers bothClouds = true
+#guard Locality.milan.covers bothClouds = true
 #guard Locality.warsaw.covers bothClouds = false
 #guard Locality.ireland.covers oneCloud = true
 #guard Locality.warsaw.covers oneCloud = false

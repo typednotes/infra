@@ -31,15 +31,19 @@ import Infra
   spans both — which is what `Keys.providers` reports, and `Infra.Cli`
   authenticates exactly the clouds a fleet declares into.
 
-  ## Paris is the only place this fleet can be
+  ## Only two places this fleet can be
 
   `in paris` below is a `Locality`, and it places *both* clouds — AWS at
-  `eu-west-3`, Scaleway at `fr-par`. It is also the only locality that can be
-  written here, and that is the fourth thing the type system is buying: the
-  two clouds overlap in exactly one place, so `in warsaw` (Scaleway has it,
-  AWS does not) and `in ireland` (the reverse) are both compile errors *for
-  this fleet* while being perfectly legal for a single-cloud one. See "What
-  the types rule out" below.
+  `eu-west-3`, Scaleway at `fr-par`. It is one of only two localities that can
+  be written here, and that is the fourth thing the type system is buying: the
+  two clouds overlap in exactly Paris and Milan, so `in warsaw` (Scaleway has
+  it, AWS does not) and `in ireland` (the reverse) are both compile errors
+  *for this fleet* while being perfectly legal for a single-cloud one. See
+  "What the types rule out" below.
+
+  Milan joined that set in March 2026, when Scaleway opened `it-mil`. Nothing
+  here had to change for it: the overlap is computed from the locality table,
+  and the `#guard` below is what says what it currently is.
 
   ## Before applying
 
@@ -209,13 +213,14 @@ fleet crossCloud in paris where
 #guard (crossCloud.regions.region .aws).map Region.code = some "eu-west-3"
 #guard (crossCloud.regions.region .scaleway).map Region.code = some "fr-par"
 
--- Paris is the only locality both clouds have, so it is the only one this
--- fleet can be declared at. The two `false`s are the compile errors above,
--- evaluated instead of triggered.
+-- Paris and Milan are the localities both clouds have, so they are the only
+-- ones this fleet can be declared at. The two `false`s are the compile errors
+-- above, evaluated instead of triggered.
 #guard Locality.paris.covers crossCloud.keys = true
+#guard Locality.milan.covers crossCloud.keys = true
 #guard Locality.warsaw.covers crossCloud.keys = false     -- Scaleway yes, AWS no
 #guard Locality.ireland.covers crossCloud.keys = false    -- AWS yes, Scaleway no
-#guard (Finite.elems (α := Locality)).filter (·.covers crossCloud.keys) = [.paris]
+#guard (Finite.elems (α := Locality)).filter (·.covers crossCloud.keys) = [.paris, .milan]
 
 -- The bucket's own `region` field agrees with where the fleet places AWS.
 -- They are separate mechanisms and nothing couples them, so this guard is
