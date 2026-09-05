@@ -68,6 +68,30 @@ fleet gcpLive in paris where
 #guard scalewayLive.keys.providers = [.scaleway]
 #guard gcpLive.keys.providers = [.gcp]
 
+/-- How long to let a cloud's listing catch up before calling it a failure. -/
+def settleSeconds : Nat := 60
+
+/-- Re-`pull` until `done` holds, or until `settleSeconds` have passed.
+
+    Every cloud list API here is eventually consistent to some degree, so a
+    single read immediately after a write measures propagation delay rather
+    than correctness. Returns whatever `report` says is outstanding at the end,
+    which is empty exactly when it succeeded.
+
+    Fixed one-second steps rather than a backoff: the waits are short, and a
+    backoff would make the worst case unpredictable in a job that has a
+    timeout. No `partial` — `go` recurses on a decreasing `Nat`, so the bound
+    is a real measure. -/
+def waitFor {κ : Keys} (root : System.FilePath) (bs : Backends)
+    (done : World κ → Bool) (report : World κ → List String) : IO (List String) := do
+  let rec go (left : Nat) : IO (List String) := do
+    let w ← pull (κ := κ) root bs
+    if done w then return []
+    match left with
+    | 0     => return report w
+    | n + 1 => IO.sleep 1000; go n
+  go settleSeconds
+
 /-- Create, check, and delete — with the delete guaranteed.
 
     `apply` twice would be the stronger convergence check, but the second run
@@ -87,10 +111,16 @@ def liveRoundTrip {κ : Keys} (name : String) (target : Plan κ) (regions : Regi
     IO.println s!"[{name}] destroying…"
     let w ← pull (κ := κ) cacheRoot bs
     discard <| push bs (Plan.absent κ) w { apply := true } (edges := target)
-    let after ← pull (κ := κ) cacheRoot bs
-    let left := (actions (Plan.absent κ) after).length
-    unless left == 0 do
-      throw (IO.userError s!"[{name}] {left} resource(s) survived destroy — check the account")
+    -- Same again on the way down, and it matters more here: a `destroy` that
+    -- ran while the resource was still invisible would find nothing to do and
+    -- report success, leaving it behind. Waiting for it to *appear* is not
+    -- possible in general, so what this asserts is that after the delete
+    -- settles, a fresh listing shows nothing — and it polls to get there.
+    let leftover ← waitFor cacheRoot bs (fun w => (actions (Plan.absent κ) w).isEmpty)
+      (fun w => (actions (Plan.absent κ) w).map Action.render)
+    unless leftover.isEmpty do
+      throw (IO.userError s!"[{name}] {leftover.length} resource(s) survived destroy \
+after {settleSeconds}s — look for 'ci-tests-infra-*' in the account")
     -- And the cache must agree. `save` used to leave the file of an emptied
     -- `(provider, kind)` pair on disk untouched, so the cache went on listing
     -- what had just been deleted. Checking it here is what would have caught
@@ -102,11 +132,16 @@ def liveRoundTrip {κ : Keys} (name : String) (target : Plan κ) (regions : Regi
     IO.println s!"[{name}] destroyed, and the cache is empty"
 
   let checks : IO Unit := do
-    let observed ← pull (κ := κ) cacheRoot bs
-    let outstanding := plan target observed
+    -- Poll rather than read once. A cloud's list API is eventually consistent
+    -- — SQS's `ListQueues` explicitly so — and a resource created a moment ago
+    -- may simply not be visible yet. Checking immediately tests the API's
+    -- propagation delay rather than this library, which is what the first live
+    -- run of this test actually did.
+    let outstanding ← waitFor cacheRoot bs (fun w => (plan target w).isEmpty)
+      (fun w => (plan target w).map Action.render)
     unless outstanding.isEmpty do
-      throw (IO.userError s!"[{name}] did not converge: \
-{String.intercalate ", " (outstanding.map Action.render)}")
+      throw (IO.userError s!"[{name}] did not converge after {settleSeconds}s: \
+{String.intercalate ", " outstanding}")
     IO.println s!"[{name}] converged: a second apply would do nothing"
 
   match ← checks.toBaseIO with

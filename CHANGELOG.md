@@ -8,6 +8,24 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.3.4] — 2026-09-05
+
+### Added
+
+- **GCP Workload Identity Federation** is set up and wired into the live
+  workflow: `google-github-actions/auth@v2` exchanges GitHub's OIDC token for
+  a short-lived one, so neither AWS nor GCP has a stored credential any more.
+
+### Fixed
+
+- **The live test read a cloud's listing once, immediately after writing.**
+  Every list API here is eventually consistent — SQS's `ListQueues`
+  explicitly so — so the first real AWS run reported "did not converge" for a
+  queue that had almost certainly been created and was simply not visible yet.
+  Worse, the teardown that followed found nothing to delete and reported
+  success, so a real resource could have been left behind while the job
+  claimed to be clean. Both directions now poll for up to 60 seconds.
+
 ## [0.3.3] — 2026-09-05
 
 ### Added
