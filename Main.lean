@@ -369,8 +369,18 @@ def selfCheck : IO Unit := do
   checkTeardown
   checkSecretComposition
 
-/-- The dispatch itself lives in `Infra.Cli`, which is also what a declaration
+/-- `infra` is two things: the demo fleet's own front end, and the scaffolder.
+
+    The dispatch itself lives in `Infra.Cli`, which is also what a declaration
     repo calls — so this binary exercises the same front end consumers get,
-    rather than a parallel copy of it. -/
+    rather than a parallel copy of it.
+
+    `new` is the exception, handled here, because it is not a fleet command: it
+    reads no plan, touches no cloud and needs no credentials. It creates a
+    repository. -/
 def main (args : List String) : IO UInt32 :=
-  Infra.Cli.run "infra" demoPlan selfCheck (args := args)
+  match args with
+  | ["new"] =>
+    IO.eprintln "usage: lake exe infra new <directory>" *> pure 2
+  | ["new", dir] => Infra.Cli.New.scaffold dir
+  | _ => Infra.Cli.run "infra" demoPlan selfCheck (args := args)

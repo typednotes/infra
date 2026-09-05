@@ -8,6 +8,26 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.3.2] — 2026-09-05
+
+### Added
+
+- **`infra new <dir>`** scaffolds a declaration repository: the canonical
+  structure, a commented example fleet that compiles, a `.gitignore` that
+  excludes the state cache, a README, and CI for **both GitHub and GitLab**
+  with the plan/apply split already wired. It wraps `lake init` rather than
+  reimplementing toolchain pinning, and it emits the platform link-flag block
+  every consumer needs — which Lake cannot propagate from a dependency and
+  which is the most annoying part of starting one of these by hand.
+
+### Fixed
+
+- **`certificate verify failed` on every live CI call.** Lean's toolchain
+  bundles a static OpenSSL whose compile-time trust-store path does not exist
+  on a runner. `SSL_CERT_FILE`/`SSL_CERT_DIR` are now set in the live-test
+  workflow *and* in every workflow `infra new` generates. Found by the AWS
+  live test on its first real run.
+
 ## [0.3.1] — 2026-09-05
 
 ### Fixed

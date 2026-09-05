@@ -49,6 +49,17 @@ jobs:
           build: false
           test: false
 
+      # Lean's toolchain bundles a static OpenSSL whose compile-time trust-store
+      # path does not exist on a runner, so every live call fails with
+      # `certificate verify failed` until OpenSSL is pointed at the real
+      # bundle. Costs nothing when it is already correct.
+      - name: Point OpenSSL at the runner's CA bundle
+        run: |
+          for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
+          done
+          echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
+
       - name: Build
         run: lake build live-test
 

@@ -43,6 +43,12 @@ Concretely, when a change lands:
 - **A removed defect is deleted from the ledger, not softened.** If it is gone,
   say it is gone and say what replaced it; `docs/diff-semantics.md`'s ledger is
   only useful while it is true.
+- **`Infra/Cli/New.lean` embeds a copy of the lakefile's native link-flag
+  block and of the CI workflows.** Lake cannot propagate `moreLinkArgs` from a
+  dependency, so every consumer needs that block; if this repo's own
+  `lakefile.lean` link flags or workflows change, the scaffolder's copies have
+  to change with them. `lake exe infra new /tmp/x` and building the result is
+  the check.
 - **`docs/branding.md` governs the artwork.** Do not add a third-party logo
   without reading it first.
 

@@ -54,5 +54,6 @@ import Infra.Interop.Terraform
 -- The command-line front end, so a declaration repo's `Main` is a call rather
 -- than a copy of the dispatch.
 import Infra.Cli
+import Infra.Cli.New
 
 import Infra.Demo
