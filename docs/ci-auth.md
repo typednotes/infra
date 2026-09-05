@@ -346,6 +346,34 @@ GitHub to mint the token in the first place, and
 `aws-actions/configure-aws-credentials` exports the three variables the
 credential chain reads.
 
+### If it fails with "the web identity token could not be validated"
+
+That error is about the *token*, not the role, and it almost always means step
+1 was skipped: **there is no IAM OIDC provider** for
+`token.actions.githubusercontent.com` in the account, so AWS has nothing to
+validate the signature against. Check:
+
+```sh
+aws iam list-open-id-connect-providers
+aws iam get-open-id-connect-provider --open-id-connect-provider-arn \
+  arn:aws:iam::616568506952:oidc-provider/token.actions.githubusercontent.com
+```
+
+The `ClientIDList` must contain `sts.amazonaws.com`, which is the audience the
+action requests. A provider registered with a different client id validates
+nothing.
+
+Distinguish it from the neighbouring failures, which look similar and are not:
+
+| Message | Means |
+|---|---|
+| `Could not load credentials from any providers` | `role-to-assume` was empty — the ARN setting is missing |
+| `the web identity token could not be validated` | no OIDC provider, or an audience mismatch |
+| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | provider fine; the **trust policy** rejected the claim |
+
+The third is the one to expect if the `sub` condition and the workflow's
+`environment:` disagree.
+
 ### 6. Verify
 
 ```sh

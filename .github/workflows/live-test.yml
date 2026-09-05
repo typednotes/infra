@@ -92,6 +92,11 @@ jobs:
           # `role-to-assume`, fall back to looking for static keys, and report
           # "Could not load credentials from any providers", which names
           # neither the variable nor the fact that OIDC never happened.
+          #
+          # The value is also trimmed. A settings field is a text box and a
+          # leading space is invisible in it; this one arrived with one.
+          ROLE="$(echo "$ROLE" | xargs)"
+          echo "AWS_ROLE_ARN_CLEAN=$ROLE" >> "$GITHUB_ENV"
           if [ -z "$ROLE" ]; then
             echo "::error::AWS_ROLE_ARN is not set. Add it under Settings -> Secrets and variables -> Actions, as a variable or a secret; both are read. Expected something like arn:aws:iam::616568506952:role/infra-ci"
             exit 1
@@ -102,7 +107,7 @@ jobs:
         if: inputs.provider == 'aws'
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN_CLEAN }}
           aws-region: eu-west-1
           role-session-name: infra-live-test
 
@@ -140,22 +145,18 @@ jobs:
 
       - name: Check the secrets for this provider are present
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
-          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ secrets.GOOGLE_OAUTH_ACCESS_TOKEN }}
-          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
         run: |
           # An unset GitHub secret arrives as the empty string, not as absent —
           # which is exactly the case `Credentials.normalizeEnv` exists for.
           # Checking here means the failure names the missing secret instead of
           # surfacing later as an opaque 403.
           case "${{ inputs.provider }}" in
-            aws)      need="" ;;   # OIDC: no static secret to check
+            aws)      need="" ;;   # OIDC — checked by the role-ARN step above
             scaleway) need="SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID" ;;
-            gcp)      need="" ;;   # WIF: no static secret to check
+            gcp)      need="" ;;   # WIF — no static secret exists
           esac
           missing=""
           for v in $need; do
@@ -174,14 +175,13 @@ jobs:
       - name: Live round trip — ${{ inputs.provider }}
         timeout-minutes: 12
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
-          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
-          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ secrets.GOOGLE_OAUTH_ACCESS_TOKEN }}
-          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          # Scaleway only. AWS arrives from the OIDC step as real environment
+          # variables, and GCP's token likewise — neither is passed here, and
+          # neither cloud's secrets reach a run for the other.
+          SCW_ACCESS_KEY: ${{ inputs.provider == 'scaleway' && secrets.SCW_ACCESS_KEY || '' }}
+          SCW_SECRET_KEY: ${{ inputs.provider == 'scaleway' && secrets.SCW_SECRET_KEY || '' }}
+          SCW_DEFAULT_PROJECT_ID: ${{ inputs.provider == 'scaleway' && secrets.SCW_DEFAULT_PROJECT_ID || '' }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ inputs.provider == 'scaleway' && secrets.SCW_DEFAULT_ORGANIZATION_ID || '' }}
         run: lake test -- ${{ inputs.provider }}
 
       # If the driver died between create and delete — a killed runner, a
@@ -191,13 +191,9 @@ jobs:
         if: failure() || cancelled()
         timeout-minutes: 6
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
-          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ secrets.GOOGLE_OAUTH_ACCESS_TOKEN }}
-          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
         run: |
           echo "::warning::live run did not finish cleanly; retrying teardown"
           lake test -- ${{ inputs.provider }} || true
