@@ -383,6 +383,22 @@ by — so whatever exists there in the cloud is left alone unconditionally, inde
 `Plan.outside` (see that field's status in `docs/diff-semantics.md`'s known soft spots). There
 is no separate "unmanaged within a kind" flag, and none is needed.
 
+## Ordering
+
+Creation is scheduled by Kahn's algorithm over the edges `HasDeps` reports, so
+an arbitrary DAG is fine: diamonds, fan-in and fan-out, redundant edges that
+duplicate an implied path, chains, edges between different kinds, and edges
+crossing clouds. A cycle is rejected with both slots named, and the same
+`Nat`-bounded recursion gives termination and the diagnosis. A dependency that
+is not itself in the work-list — an unchanged resource that already exists —
+does not block.
+
+Deletion is the transpose: the same graph, sorted and reversed, so a resource
+goes before everything it depends on. `destroy` reconciles against
+`Plan.absent`, which carries no specs and so no edges, which is why
+`orderActions` takes the plan to read deletion edges from separately. See
+`docs/diff-semantics.md` for what this replaced and why it was wrong.
+
 ## Basic local system services
 
 Basic file manipulation, network, and other IO use:

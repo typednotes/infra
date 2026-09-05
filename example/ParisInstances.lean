@@ -217,11 +217,18 @@ fleet webTier in paris where
   the group they sit in — which matters, because EC2 refuses to delete a
   security group that an instance still references.
 
-  **That order is currently incidental, not derived.** `orderActions`
-  topologically sorts *creations* and merely reverses destructions, so what
-  makes this come out right is that `securityGroup` precedes `awsInstance` in
-  the `Kind` enum. The guard below pins it, so reordering that enum fails here
-  rather than failing against a real account. -/
+  **That order is derived.** It used not to be: `orderActions` topologically
+  sorted creations and merely *reversed* destructions, so this came out right
+  only because `securityGroup` happens to precede `awsInstance` in the `Kind`
+  enum. It is now a topological sort of the same graph, reversed, so where the
+  enum sits no longer matters — the guard below stays as a check on the result
+  rather than as a tripwire on the enum.
+
+  One wrinkle worth knowing, because it shows up in the call below:
+  `Plan.absent` carries no specs, so it has no edges to sort by. The fleet's
+  own plan is what supplies them, which is `orderActions`' third argument.
+  `Infra.Cli` passes it for every teardown; a caller that forgets falls back to
+  the old, undeserved behaviour. -/
 
 /-- The same fleet, already applied: enough to make `.absent` produce deletes
     rather than no-ops, since `actions` only deletes what it can see. -/
@@ -243,17 +250,20 @@ def existing : World webTier.keys :=
 -- Two resources exist here, so the empty declaration deletes two.
 #guard (actions (Plan.absent webTier.keys) existing).length = 2
 
-/-- What `push` actually executes: `orderActions` schedules creations
-    topologically and *reverses* destructions, so this is the list to assert
-    on. Raw `actions` comes back in enumeration order — group first — which is
-    exactly the order that would fail against EC2. -/
+/-- What `push` actually executes. Raw `actions` comes back in enumeration
+    order — group first — which is exactly the order that would fail against
+    EC2; `orderActions` is what turns it round.
+
+    `webTier.plan` is the third argument: the edges to sort the deletions by,
+    which `Plan.absent` cannot supply. -/
 private def teardown : List String :=
-  match orderActions (Plan.absent webTier.keys) (actions (Plan.absent webTier.keys) existing) with
+  match orderActions (Plan.absent webTier.keys)
+          (actions (Plan.absent webTier.keys) existing) webTier.plan with
   | .ok ordered => ordered.map Action.slot
   | .error _    => []
 
--- The instance goes before the group it references. Reordering the `Kind`
--- enum would break this, which is why it is written down.
+-- The instance goes before the group it references, because the instance
+-- *references* it — not because of where either sits in the `Kind` enum.
 #guard teardown = ["aws/aws-instance/web-1", "aws/security-group/web"]
 
 /-! ## What the fleet says -/

@@ -411,12 +411,34 @@ outside the fleet.
   from the declaration instead removes its *key*, and an unkeyed resource is
   unmanaged rather than deleted — the same mechanism that makes scoping work
   is the one that makes deletion-by-omission impossible, deliberately.
-  Deletion *ordering*, though, is weaker than the creation side: `orderActions`
-  topologically sorts creations and merely reverses destructions, so on the way
-  down the schedule is the reverse of enumeration order rather than a sort of
-  the transposed graph. It comes out right for the fleets here — and
-  `infra check` and `example/ParisInstances.lean` both pin the order so a
-  `Kind` reordering fails a check rather than an account.
+  Deletion *ordering* used to be weaker than the creation side and no longer
+  is. `orderActions` sorted creations topologically and merely *reversed*
+  destructions, so on the way down the schedule was reverse-of-enumeration —
+  `Kind` order, then declaration order within a bucket — and related to the
+  dependency graph only by coincidence. Two counterexamples, both of them
+  ordinary fleets:
+
+  - Three resources of the *same kind* whose declaration order is not
+    topological (references may point forward, so this is legal) came out in
+    declaration order, deleting a dependency before its dependant.
+  - A composed secret reading a database endpoint got the **database deleted
+    first**, because `secrets` precedes `postgres` in the `Kind` enum. That is
+    the shape `typednotes-infra`'s `secrets-db-url`/`secrets-db` pair has.
+
+  Both halves are now sorted, and deletion is the reverse of a topological sort
+  of the same graph. The one wrinkle is that `destroy` reconciles against
+  `Plan.absent`, which carries no specs and therefore no edges — so
+  `orderActions` takes the plan to read deletion edges from as a third
+  argument, defaulting to the target, and `Infra.Cli` passes the fleet's own
+  declaration. A caller that forgets gets the old behaviour rather than a
+  wrong answer loudly, which is the remaining sharp edge here.
+
+  `Infra/Demo.lean`'s `DagGuards` is what holds this: a sixteen-resource graph
+  with a diamond, a fan-in of three, a redundant edge, a four-deep chain, edges
+  through three kinds and one crossing clouds, checked by an `isTopological`
+  that recomputes every edge from `HasDeps` rather than trusting the scheduler.
+  It asserts both directions, and that the teardown is exactly the build order
+  reversed.
 - **`Plan.outside` is declared but not consumed.** Nothing in `satisfiesAt`,
   `satisfies`, `actions`, or `pullEntries` reads it — a key type's absence
   from `Keys.build`'s table (`Nothing`) is what actually leaves a resource

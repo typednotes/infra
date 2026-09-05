@@ -491,4 +491,169 @@ section Guards
 
 end Guards
 
+/-! ## Scheduling: a DAG the easy cases would not catch
+
+  `orderActions` is Kahn's algorithm, and the fleets above exercise it only in
+  its easy shapes — short chains whose declaration order is already
+  topological. This section is the hard shape: a diamond, a fan-in of three, a
+  redundant edge that duplicates a path already implied, a four-deep chain,
+  edges through three different kinds, and one crossing clouds.
+
+  The point is not the fleet but the **checker**: `isTopological` recomputes
+  every edge from `HasDeps` and verifies the emitted order against them, rather
+  than trusting the scheduler's own notion of what depends on what. A bug that
+  dropped an edge would satisfy the scheduler and fail here.
+
+  Composed secrets are what make an arbitrary graph writable at all: a
+  `secretValueOf` may name any other secret, so secret→secret edges can be
+  wired into any shape. -/
+
+fleet dagFleet in paris where
+  provider scaleway where
+    resource secrets "root" as dagRoot { valueFrom := fromEnv "ROOT" }
+    -- Referenced by nothing and referencing nothing: an isolated node must
+    -- still be scheduled, not dropped.
+    resource secrets "iso" as _dagIso { valueFrom := fromEnv "ISO" }
+
+    -- Fan-out of three from one root...
+    resource secrets "b" as dagB { valueFrom := composed expr!"b={secretValueOf dagRoot}" }
+    resource secrets "c" as dagC { valueFrom := composed expr!"c={secretValueOf dagRoot}" }
+    resource secrets "d" as dagD { valueFrom := composed expr!"d={secretValueOf dagRoot}" }
+
+    -- ...fanning back in, plus a *redundant* direct edge to the root, which
+    -- the three paths above already imply. A scheduler that mishandled a
+    -- duplicated dependency would show up here.
+    resource secrets "sink" as dagSink
+      { valueFrom := composed
+          expr!"{secretValueOf dagB}|{secretValueOf dagC}|{secretValueOf dagD}|{secretValueOf dagRoot}" }
+
+    -- A chain off the sink, so the graph has depth as well as width.
+    resource secrets "tail1" as dagT1 { valueFrom := composed expr!"1={secretValueOf dagSink}" }
+    resource secrets "tail2" as dagT2 { valueFrom := composed expr!"2={secretValueOf dagT1}" }
+    resource secrets "tail3" as dagT3 { valueFrom := composed expr!"3={secretValueOf dagT2}" }
+
+    -- Edges through a different kind, in both directions: the database needs
+    -- a secret for its password, and a secret needs the endpoint the database
+    -- does not have until it exists.
+    resource postgres "db" as dagDb
+      { masterUsername := "admin", masterPasswordSecret := "root"
+      , minCapacity := 1, maxCapacity := 4 }
+    resource secrets "dburl" as _dagUrl
+      { valueFrom := composed expr!"u={secretValueOf dagT3}@{endpointOf dagDb}" }
+
+    -- Key-typed payload references rather than `Expr` ones: a different
+    -- `HasDeps` path (`depsKey`/`depsKeys`) reaching the same scheduler.
+    resource scalewayContainerNamespace "ns" as dagNs { description := "x" }
+    resource scalewayContainer "svc"
+      { namespace' := dagNs, image := "img"
+      , secretEnv := [("A", dagRoot), ("B", dagSink), ("C", dagT3)] }
+
+  provider aws where
+    -- Crossing clouds: an AWS secret composed from a Scaleway one.
+    resource secrets "xr" as _dagXr { valueFrom := composed expr!"x={secretValueOf dagRoot}" }
+    -- The library's only *required* key reference.
+    resource securityGroup "web" as dagGrp { description := "w" }
+    resource awsInstance "i1"
+      { imageId := "ami-1", instanceType := InstanceType.of .t3 .nano
+      , securityGroup := dagGrp }
+
+section DagGuards
+
+/-- The slots one action depends on, recomputed from `HasDeps` — deliberately
+    not reusing the scheduler's own `dependsOn`, which is what is under test. -/
+private def dagDeps (T : Plan dagFleet.keys) : Action dagFleet.keys → List String
+  | .create p k key | .update p k key | .replace p k key | .delete p k key =>
+    match T.assign p k key with
+    | .present spec => ((hasDepsOf k).deps spec).map fun d =>
+        slotId d.provider d.kind (dagFleet.keys.name d.provider d.kind d.key)
+    | _ => []
+
+/-- Every dependency that is itself scheduled appears strictly earlier.
+
+    `rest` rather than `as`: `as` is a parser token of the `fleet` command, so
+    it cannot be an identifier in a file that imports it. -/
+private def isTopological (T : Plan dagFleet.keys) (ordered : List (Action dagFleet.keys)) :
+    Bool :=
+  let ids := ordered.map Action.slot
+  let rec go (seen : List String) : List (Action dagFleet.keys) → Bool
+    | []        => true
+    | a :: rest =>
+      let needed := (dagDeps T a).filter fun d => ids.contains d && d != a.slot
+      needed.all seen.contains && go (seen ++ [a.slot]) rest
+  go [] ordered
+
+private def dagBuild : List (Action dagFleet.keys) :=
+  match orderActions dagFleet.plan (actions dagFleet.plan (worldOf [])) with
+  | .ok o    => o
+  | .error _ => []
+
+/- Sixteen resources, all scheduled — a vacuous pass is visible as a count. -/
+#guard (actions dagFleet.plan (worldOf [])).length = 16
+#guard dagBuild.length = 16
+
+/- The claim: every edge is respected. -/
+#guard isTopological dagFleet.plan dagBuild
+
+/- And the shape is really what it claims: the sink genuinely fans in on four. -/
+#guard (dagDeps dagFleet.plan (Action.create .scaleway .secrets dagSink)).length = 4
+
+private def dagAt (slot : String) : Nat := (dagBuild.map Action.slot).idxOf slot
+
+#guard dagAt "scaleway/secrets/root" < dagAt "scaleway/secrets/sink"
+#guard dagAt "scaleway/secrets/sink" < dagAt "scaleway/secrets/tail3"
+#guard dagAt "scaleway/postgres/db" < dagAt "scaleway/secrets/dburl"
+#guard dagAt "aws/security-group/web" < dagAt "aws/aws-instance/i1"
+#guard dagAt "scaleway/secrets/root" < dagAt "aws/secrets/xr"       -- crosses clouds
+#guard dagAt "scaleway/scaleway-container-namespace/ns"
+     < dagAt "scaleway/scaleway-container/svc"
+
+/-! ### Tearing the same graph down
+
+  Deletion is the transpose: a resource goes before everything it depends on.
+  `Plan.absent` carries no specs, so the fleet's own plan is what supplies the
+  edges — that is `orderActions`' `edges` argument, and `Infra.Cli` passes it
+  for exactly this. -/
+
+/-- The whole fleet, already applied. Only `observed` matters for producing
+    deletions; `reported` is never consulted by `actions` for an absent key. -/
+private def dagWorld : World dagFleet.keys :=
+  worldOf <| (Finite.elems (α := Kind)).flatMap fun k =>
+    (Finite.elems (α := ProviderId)).flatMap fun p =>
+      (Finite.elems (α := dagFleet.keys.Key p k)).map fun key =>
+        ⟨p, k, key, { observed := Infra.Providers.placeholderObserved k (dagFleet.keys.name p k key)
+                      reported := Infra.Providers.placeholderReported k
+                        ⟨dagFleet.keys.name p k key⟩ }⟩
+
+private def dagTeardown : List (Action dagFleet.keys) :=
+  match orderActions (Plan.absent dagFleet.keys)
+          (actions (Plan.absent dagFleet.keys) dagWorld) dagFleet.plan with
+  | .ok o    => o
+  | .error _ => []
+
+#guard dagTeardown.length = 16
+
+private def killAt (slot : String) : Nat := (dagTeardown.map Action.slot).idxOf slot
+
+/- Every creation edge, reversed. The root goes last of its component; the
+   deepest dependant goes first. -/
+#guard killAt "scaleway/secrets/sink" < killAt "scaleway/secrets/root"
+#guard killAt "scaleway/secrets/tail3" < killAt "scaleway/secrets/sink"
+#guard killAt "scaleway/secrets/dburl" < killAt "scaleway/postgres/db"
+#guard killAt "aws/aws-instance/i1" < killAt "aws/security-group/web"
+#guard killAt "aws/secrets/xr" < killAt "scaleway/secrets/root"
+#guard killAt "scaleway/scaleway-container/svc"
+     < killAt "scaleway/scaleway-container-namespace/ns"
+
+/- `dburl` before `db` is the case that used to come out backwards: `secrets`
+   precedes `postgres` in the `Kind` enum, so reverse-of-enumeration deleted
+   the database first. It is now derived from the graph, so where the enum sits
+   no longer matters. -/
+#guard killAt "scaleway/secrets/dburl" < killAt "scaleway/postgres/db"
+
+/- The transpose is exactly the reverse: deleting is the build order backwards,
+   restricted to the same slots. -/
+#guard dagTeardown.map Action.slot = (dagBuild.map Action.slot).reverse
+
+end DagGuards
+
 end Infra.Demo

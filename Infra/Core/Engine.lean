@@ -119,11 +119,14 @@ private structure Step (κ : Keys) where
   id     : String
   after  : List String
 
+/-- Uniform over the four verbs, including `delete`, which used to be given no
+    edges at all. Which *plan* the edges are read from is the caller's choice —
+    see `orderActions`. -/
 private def stepOf {κ : Keys} (T : Plan κ) : Action κ → Step κ
   | a@(.create p k key)  => { action := a, id := a.slot, after := dependsOn T p k key }
   | a@(.update p k key)  => { action := a, id := a.slot, after := dependsOn T p k key }
   | a@(.replace p k key) => { action := a, id := a.slot, after := dependsOn T p k key }
-  | a@(.delete _ _ _)    => { action := a, id := a.slot, after := [] }
+  | a@(.delete p k key)  => { action := a, id := a.slot, after := dependsOn T p k key }
 
 /-- Kahn's algorithm, bounded by the number of steps.
 
@@ -146,17 +149,35 @@ private def schedule {κ : Keys} : Nat → List (Step κ) → List String → Li
       schedule n (pending.filter fun st => !readyIds.contains st.id)
         (done ++ readyIds) (ready.reverse.map (·.action) ++ acc)
 
-/-- Order a work-list: dependencies first, and deletions last in reverse.
+/-- Order a work-list: dependencies first, then deletions against the
+    transpose of the same graph — create B then A means delete A then B.
 
-    Deletion edges are the transpose of creation edges — create B then A means
-    delete A then B — which is why `Action` carries its direction rather than
-    letting the scheduler guess it. -/
-def orderActions {κ : Keys} (T : Plan κ) (as : List (Action κ)) :
-    Except String (List (Action κ)) := do
+    Both halves are now *sorted*. Deletions used to be the input list simply
+    reversed, which is enumeration order — `Kind` order, then declaration
+    order within a bucket — and therefore related to the dependency graph only
+    by luck. It came out right for the fleets here and wrong for others: a
+    composed secret reading a database endpoint got the database deleted first,
+    because `secrets` precedes `postgres` in the `Kind` enum. Reversing a
+    topological sort is the same answer wherever the enum happens to sit.
+
+    `edges` is where a *deletion*'s dependencies are read from, and it is
+    separate from `T` for one reason: `destroy` reconciles against
+    `Plan.absent`, whose `assign` is `.absent` everywhere, so it carries no
+    specs and therefore no edges. The fleet's own declaration still does, and
+    is what `Infra.Cli` passes. Defaulting to `T` keeps every other caller —
+    and every plan that is not a teardown — exactly as it was.
+
+    A cycle here cannot be new: the deletion graph is the creation graph, so
+    anything cyclic has already been rejected by the first `schedule`. -/
+def orderActions {κ : Keys} (T : Plan κ) (as : List (Action κ))
+    (edges : Plan κ := T) : Except String (List (Action κ)) := do
   let builds := as.filter (!·.isDestructive)
-  let steps := builds.map (stepOf T)
-  let ordered ← schedule steps.length steps [] []
-  return ordered ++ (as.filter (·.isDestructive)).reverse
+  let ordered ← schedule builds.length (builds.map (stepOf T)) [] []
+  let kills := as.filter (·.isDestructive)
+  -- Sorted dependencies-first like the builds, then reversed: a resource is
+  -- deleted before everything it depends on.
+  let killOrder ← schedule kills.length (kills.map (stepOf edges)) [] []
+  return ordered ++ killOrder.reverse
 
 -- ══════════════════════════════════════════════════════════════
 -- Push
@@ -285,8 +306,8 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     have been. A dry run performs no backend IO at all: it does not skip the
     writes, it never reaches them. -/
 def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
-    (opts : PushOptions := {}) : IO (List String) := do
-  let work ← match orderActions T (plan T W) with
+    (opts : PushOptions := {}) (edges : Plan κ := T) : IO (List String) := do
+  let work ← match orderActions T (plan T W) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
   if work.isEmpty then

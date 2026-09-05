@@ -253,7 +253,11 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
     reporting <| withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
       let wanted := if tearDown then Plan.absent κ else target
-      for line in ← push bs wanted world { apply := doIt, colour } do IO.println line
+      -- `edges := target` matters only for a teardown: `Plan.absent` carries
+      -- no specs, so without the fleet's own declaration there is nothing to
+      -- order deletions by. See `orderActions`.
+      for line in ← push bs wanted world { apply := doIt, colour } (edges := target) do
+        IO.println line
   | _ =>
     IO.eprintln (usage exe)
     return 2
