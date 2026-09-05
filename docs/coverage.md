@@ -197,22 +197,22 @@ The `(provider, kind) → resource type` table is **unverified against either
 registry**, and the attribute names inside each block are a looser guess
 still. Same standing as the endpoint shapes in `Kinds/*.lean`.
 
-### Scaleway queues mint a credential per run where there is no keychain
+### `infra` is a reserved credential name on Scaleway Queues
 
 Scaleway's SQS-compatible endpoint refuses the main API key and needs a
 dedicated one, minted once and cached in the OS keychain. A CI runner has no
-keychain, so the cache always misses — and because the minted secret is shown
-only once, an existing credential cannot be recovered and reused. Minting
-really is the only option.
+keychain, so the cache always misses, and the minted secret is shown only
+once — so every run must mint afresh.
 
-So **every CI run leaves another credential named `infra`** in the Scaleway
-project, and nothing deletes them. Caching failures no longer fail the run
-(they warn), but the accumulation is real and is not yet handled. The fix is
-for the live test to delete what it minted, using the id from the mint
-response; it needs a `DELETE .../sqs-credentials/{id}` that does not exist here
-yet.
+Minting rejects a duplicate name. That combination is a trap: one uncaptured
+mint takes the name and every later attempt fails with `409 already_exists`,
+permanently, with nothing the tool can do about it. So the name is reclaimed
+instead — the credential holding it is deleted and replaced. An uncaptured
+secret is unrecoverable, so nothing that worked is destroyed, and exactly one
+credential named `infra` ever exists.
 
-Worth knowing before pointing a scheduled job at a real project.
+The consequence to know: **do not create a Scaleway SQS credential named
+`infra` by hand.** `infra` will delete it.
 
 ## Known defects
 
