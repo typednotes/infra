@@ -357,6 +357,45 @@ def checkTeardown : IO Unit := do
 
   IO.println "teardown: ok (no-op when absent, reverse order when present)"
 
+/-- A resource that vanishes between `list` and `read` is absent, not fatal.
+
+    This is the shape the first successful live AWS run failed on: `destroy`
+    deleted the queue, the post-delete `pull` still saw it in SQS's
+    eventually-consistent listing, and reading it then raised
+    `QueueDoesNotExist` — aborting a pull whose only honest answer was "it is
+    gone". The same happens whenever anything is deleted out of band while a
+    refresh is running.
+
+    The backend here lists one bucket and refuses to read it, each way round:
+    once with a not-found error, which must be absorbed, and once with a
+    permission error, which must not — mistaking that for absence would have
+    the engine propose creating something that already exists. -/
+def checkVanishingResource : IO Unit := do
+  let listsOneRefusingToRead (err : String) : Backend :=
+    { Infra.Providers.placeholderBackend "test" with
+      list := fun k => match k with
+        | .objectStore => pure [{ handle := ⟨"assets"⟩, url := "https://x.invalid" }]
+        | _            => pure []
+      read := fun _ _ => throw (IO.userError err) }
+  let backendsWith (err : String) : Backends :=
+    { backend := fun _ => listsOneRefusingToRead err }
+
+  -- Not found: the pull completes and reports nothing there.
+  let gone ← pull (κ := demoKeys) (← IO.FS.createTempDir)
+    (backendsWith "HTTP 400 com.amazonaws.sqs#QueueDoesNotExist: The specified queue does not exist.")
+  match gone.sighting .aws .objectStore .assets with
+  | none   => pure ()
+  | some _ => throw (IO.userError "a vanished resource was reported as present")
+
+  -- Denied: the pull must fail rather than silently report absence, because
+  -- "absent" would make the next apply create a duplicate.
+  match ← (pull (κ := demoKeys) (← IO.FS.createTempDir)
+            (backendsWith "HTTP 403 AccessDenied: not authorised")).toBaseIO with
+  | .error _ => pure ()
+  | .ok _    => throw (IO.userError "a permission error was mistaken for absence")
+
+  IO.println "pull: ok (a vanished resource is absent; a denied one still fails)"
+
 /-- A GCP service-account assertion is built, signed, and verifies.
 
     The crypto itself is `linen`'s and is tested there; what this checks is
@@ -402,6 +441,7 @@ def selfCheck : IO Unit := do
   checkTeardown
   checkSecretComposition
   checkGcpAssertion
+  checkVanishingResource
 
 /-- `infra gcp-check <key.json>` — does this service-account key actually work?
 

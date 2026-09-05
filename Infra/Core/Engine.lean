@@ -13,6 +13,27 @@ namespace Infra.Core
 -- Pull
 -- ══════════════════════════════════════════════════════════════
 
+/-- Whether a provider's error says the resource is not there.
+
+    Matched on the rendered message because `Http.sendChecked` flattens its
+    structured `ApiError` into an `IO.userError`, and `Infra.Core` sits below
+    `Infra.Providers` so the structure is not reachable from here anyway.
+    Substring matching on a curated list of codes is the honest version of
+    that: narrow, and wrong only by omission — an unrecognised not-found code
+    surfaces as a hard error, which is the safe direction.
+
+    It must stay narrow. Treating a *permission* error as "absent" would make
+    the engine propose creating a resource that already exists, which on a
+    second apply means a duplicate rather than a failure. -/
+private def readsAsAbsent (msg : String) : Bool :=
+  let codes :=
+    [ "NoSuchBucket", "NoSuchKey", "NoSuchEntity", "QueueDoesNotExist"
+    , "ResourceNotFoundException", "ResourceNotFound", "NotFoundException"
+    , "InvalidAMIID.NotFound", "InvalidGroup.NotFound", "InvalidInstanceID.NotFound"
+    , "DBInstanceNotFound", "RepositoryNotFoundException"
+    , "HTTP 404" ]
+  codes.any fun c => (msg.splitOn c).length > 1
+
 /-- Ask every backend to list every kind, and match what comes back to fleet
     keys by `Keys.name`.
 
@@ -43,8 +64,18 @@ def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
             | some o =>
               -- Only now, for a key the fleet actually claims, is the extra
               -- per-resource read worth paying for.
-              let reported ← b.read k (observedHandle k o)
-              acc := ⟨p, k, key, { observed := o, reported }⟩ :: acc
+              --
+              -- A resource can disappear between the listing and this read,
+              -- and it is not an exotic case: every cloud's list API is
+              -- eventually consistent, so a `refresh` moments after a delete
+              -- sees the deleted thing in the listing and then fails to read
+              -- it. Someone deleting a resource by hand mid-refresh does the
+              -- same. Treating that as "absent" is the truthful reading —
+              -- it *is* absent — and the alternative was an aborted pull.
+              match ← (b.read k (observedHandle k o)).toBaseIO with
+              | .ok reported => acc := ⟨p, k, key, { observed := o, reported }⟩ :: acc
+              | .error e =>
+                unless readsAsAbsent (toString e) do throw e
             | none   => pure ()
   return acc
 

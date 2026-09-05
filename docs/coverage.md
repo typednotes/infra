@@ -142,6 +142,13 @@ both directions by a checker that recomputes the edges independently.
 
 - **Most of AWS** — Lambda, RDS, ECR, Secrets Manager and IAM have never been
   called. S3 and EC2 have; the rest have not.
+- **`delete` is now partly exercised on AWS.** A live run created an SQS
+  queue, converged, and deleted it — and then found a *library* bug on the way
+  out: `pullEntries` assumed anything `list` returned still existed when it
+  read it, so the post-delete refresh saw the queue in SQS's
+  eventually-consistent listing, failed to read it, and aborted. Fixed; a
+  resource that vanishes between list and read is now treated as absent, while
+  a permission error still fails. `update` remains unexercised.
 - **Every `update` and `delete` path, on both clouds.** The first live AWS run
   of the test attempted one and the harness, not the library, got in the way:
   it read SQS's listing immediately after creating and reported a

@@ -8,6 +8,30 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.3.5] — 2026-09-06
+
+### Fixed
+
+- **A pull aborted if a resource vanished between `list` and `read`.** Every
+  cloud's list API is eventually consistent, so a refresh moments after a
+  delete sees the deleted resource listed and then fails to read it — which
+  took down the whole pull rather than reporting the resource as gone. The
+  same happens when anything is deleted out of band mid-refresh. A read that
+  fails with a recognised not-found code is now treated as absence; anything
+  else, notably a permission error, still fails, because mistaking *denied*
+  for *absent* would have the next apply create a duplicate. Found by the
+  first live AWS run that got far enough to try.
+
+### Added
+
+- **`AWS_ROLE_ARN` is trimmed** and read from either a variable or a secret;
+  a missing one now fails with a message naming the setting.
+- **The workflow prints its own OIDC claims** before assuming a role, since
+  `Not authorized to perform sts:AssumeRoleWithWebIdentity` names neither the
+  claim nor the condition that rejected it.
+- Trust policies use **immutable subject claims** (`owner@id/repo@id`), which
+  is what GitHub issues for repositories created after 15 July 2026.
+
 ## [0.3.4] — 2026-09-05
 
 ### Added
