@@ -219,6 +219,26 @@ private def remember {κ : Keys} (bs : Backends) (entries : List (Entry κ))
   let reported ← (bs.backend p).read k (observedHandle k o)
   return ⟨p, k, key, { observed := o, reported }⟩ :: entries
 
+/-- Run `act`, and if it fails, say what was being done to what.
+
+    A provider's error is about a *request* — "invalid runtime", "certificate
+    verify failed", "DependencyViolation" — and on its own it names neither the
+    resource nor the verb. That is the difference between
+
+        HTTP 400: invalid runtime
+
+    and
+
+        CREATE scaleway/scaleway-function/reindex failed: HTTP 400: invalid runtime
+
+    which is the same information plus the two facts the reader needs to know
+    where to look. Wrapping it here rather than in each backend means every
+    kind and every provider gets it from one place. -/
+private def inContext {α : Type} (what : String) (act : IO α) : IO α := do
+  match ← act.toBaseIO with
+  | .ok a    => return a
+  | .error e => throw (IO.userError s!"{what} failed: {e}")
+
 /-- Run one action, returning the updated set of known resources.
 
     Threading the resources forward is what lets a later step reference one an
@@ -226,24 +246,24 @@ private def remember {κ : Keys} (bs : Backends) (entries : List (Entry κ))
     work-list. -/
 private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     (entries : List (Entry κ)) : Action κ → IO (List (Entry κ))
-  | .create p k key => do
+  | .create p k key => inContext s!"CREATE {slotId p k (κ.name p k key)}" do
     let o ← (bs.backend p).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
-  | .update p k key => do
+  | .update p k key => inContext s!"UPDATE {slotId p k (κ.name p k key)}" do
     match (worldOf entries).sighting p k key with
     | some seen =>
       let o ← (bs.backend p).update k (observedHandle k seen.observed)
         (← settleFor T bs entries p k key)
       remember bs entries p k key o
     | none => throw (IO.userError s!"{slotId p k (κ.name p k key)}: vanished before update")
-  | .replace p k key => do
+  | .replace p k key => inContext s!"REPLACE {slotId p k (κ.name p k key)}" do
     -- Destroy then create: the key survives, the handle does not.
     match (worldOf entries).sighting p k key with
     | some seen => (bs.backend p).delete k (observedHandle k seen.observed)
     | none      => pure ()
     let o ← (bs.backend p).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
-  | .delete p k key => do
+  | .delete p k key => inContext s!"DELETE {slotId p k (κ.name p k key)}" do
     match (worldOf entries).sighting p k key with
     | some seen => (bs.backend p).delete k (observedHandle k seen.observed)
     | none      => pure ()

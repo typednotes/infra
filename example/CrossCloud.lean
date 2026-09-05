@@ -85,8 +85,12 @@ fleet crossCloud where
   resource scaleway scalewayFunctionNamespace "typednotes" as ns
     { description := "the cross-cloud example's functions" }
 
+  -- Scaleway spells runtimes without punctuation, so this is `python311`
+  -- rather than `python3.12` — which it rejected as `invalid runtime`. The
+  -- exact set is Scaleway's to define and changes with versions; if this one
+  -- has aged out, the error now lists what the region does accept.
   resource scaleway scalewayFunction "reindex" as reindex
-    { runtime      := "python3.12"
+    { runtime      := "python311"
     , namespace'   := ns
     , sourceBucket := some archive }
 

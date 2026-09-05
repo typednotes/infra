@@ -178,8 +178,18 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
     let (bs, creds) ← liveFor κ
     checkAccounts κ accounts creds colour
     act bs
+  -- Failures are reported, not thrown out of `main`. An escaping exception
+  -- prints as "uncaught exception: …", which reads like a crash in the tool
+  -- rather than a refusal by a cloud — and buries the message in a prefix
+  -- that carries no information.
+  let reporting (act : IO Unit) : IO UInt32 := do
+    match ← act.toBaseIO with
+    | .ok _    => return 0
+    | .error e =>
+      IO.eprintln s!"{Ansi.style colour Ansi.red "error"}: {e}"
+      return 1
   match args with
-  | [] | ["check"] => selfCheck; return 0
+  | [] | ["check"] => reporting selfCheck
   -- `refresh` rather than `pull`: it is Terraform's name for exactly this
   -- (observe reality, record it), and it deliberately has no destructive
   -- counterpart that rhymes with it — `pull`/`push` would differ by one
@@ -187,10 +197,9 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
   -- `state pull`/`state push` mean something else again: moving a state file
   -- to and from a remote backend.
   | ["refresh"] =>
-    withLive fun bs => do
+    reporting <| withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
-      IO.println s!"pulled; {(plan target world).length} action(s) outstanding"
-    return 0
+      IO.println s!"refreshed; {(plan target world).length} action(s) outstanding"
   -- Four commands, one body. They vary in two independent ways — *which*
   -- declaration to reconcile against, and whether to actually do it — so
   -- writing them out separately would be four copies of the same three lines.
@@ -198,11 +207,10 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
   | ["plan"] | ["apply"] | ["plan", "--destroy"] | ["destroy"] =>
     let tearDown := args == ["destroy"] || args == ["plan", "--destroy"]
     let doIt     := args == ["apply"] || args == ["destroy"]
-    withLive fun bs => do
+    reporting <| withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
       let wanted := if tearDown then Plan.absent κ else target
       for line in ← push bs wanted world { apply := doIt, colour } do IO.println line
-    return 0
   | _ =>
     IO.eprintln (usage exe)
     return 2

@@ -392,16 +392,39 @@ private def envFor (bucket : Option (Handle .s3Bucket)) : Value :=
   | some h => .object [("SOURCE_BUCKET", .string h.raw)]
   | none   => .object []
 
+/-- The runtime names this region will accept.
+
+    Scaleway spells them without punctuation — `python311`, `node22`, `go123` —
+    so `python3.12` is rejected as `invalid runtime`, an error that says
+    nothing about what *would* work. The set changes as versions come and go,
+    which is why it is fetched rather than hardcoded. -/
+def listRuntimes (creds : Credentials) : IO (List String) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/runtimes")
+  return (arrayField reply "runtimes").filterMap fun r => stringField r "name"
+
 def create (creds : Credentials) (name runtime ns : String)
     (bucket : Option (Handle .s3Bucket)) : IO String := do
   let nsId ← namespaceIdOf creds ns
-  let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/functions")
+  let attempt ← (Scaleway.call creds "POST" (prefix' creds.region ++ "/functions")
     (payload := some (.object
       [ ("namespace_id", .string nsId)
       , ("name", .string name)
       , ("runtime", .string runtime)
-      , ("environment_variables", envFor bucket) ]))
-  return (stringField reply "domain_name").getD ""
+      , ("environment_variables", envFor bucket) ]))).toBaseIO
+  match attempt with
+  | .ok reply => return (stringField reply "domain_name").getD ""
+  | .error e =>
+    -- "invalid runtime" is the one refusal here with a knowable answer, so
+    -- ask for it rather than making the operator go and look.
+    if ((toString e).splitOn "runtime").length > 1 then
+      let available ← (listRuntimes creds).toBaseIO
+      let hint := match available with
+        | .ok (_ :: _) =>
+          s!"; {creds.region} accepts: {String.intercalate ", " (available.toOption.getD [])}"
+        | _ => ""
+      throw (IO.userError s!"{e}: runtime '{runtime}' is not one this region offers{hint}")
+    else
+      throw e
 
 def update (creds : Credentials) (name : String)
     (bucket : Option (Handle .s3Bucket)) : IO Unit := do

@@ -122,6 +122,27 @@ Rules the spec cannot express — anything that is not a single TCP port with a
 CIDR — are dropped by `read` rather than misreported, so `ingress` diverging
 can also mean "the cloud has a rule this tool cannot see".
 
+## Errors name the action, and the fixable ones name the fix
+
+A provider's error is about a *request*, so on its own it identifies neither
+the resource nor the verb. `Engine.runAction` wraps every backend call so a
+failure reads
+
+```
+error: CREATE scaleway/scaleway-function/reindex failed: HTTP 400: invalid runtime
+```
+
+rather than `HTTP 400: invalid runtime`. One wrapper, so every kind and every
+provider gets it. `Infra.Cli` reports failures rather than letting them escape
+as `uncaught exception: …`, which read like a crash in the tool instead of a
+refusal by a cloud, and exits 1.
+
+Where a refusal has a knowable answer, the error fetches it. `invalid runtime`
+is the clearest case: Scaleway names runtimes without punctuation
+(`python311`, not `python3.12`), the set changes with versions, and
+`/functions/v1beta1/regions/{region}/runtimes` lists it — so the error appends
+what this region actually accepts.
+
 ## Namespaces are declared, not assumed
 
 Serverless Functions and Serverless Containers each group their resources into

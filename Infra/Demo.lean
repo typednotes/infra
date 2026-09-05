@@ -114,7 +114,7 @@ def apiSpec {K : ProviderId → Kind → Type} : ComputeSpec K Partial (Expr K) 
 
 def ingestSpec : ScalewayFunctionSpec demoKey Partial (Expr demoKey) where
   name         := "ingest"
-  runtime      := "python3.12"
+  runtime      := "python311"
   namespace'   := Ns.demo
   sourceBucket := some Archive.cold
 
