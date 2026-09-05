@@ -286,9 +286,10 @@ What it does not buy: a run that can still delete production data. So the
 compensating control is on the *other* side of the trust boundary — restrict
 who can assume the role, rather than what the role can do.
 
-### Gating on an environment
+### Gating on an environment — this is what the workflow does
 
-`ci/aws-trust-policy-environment.json` is the tighter variant. It replaces the
+`.github/workflows/live-test.yml` declares `environment: production`, so use
+`ci/aws-trust-policy-environment.json` when creating the role. It replaces the
 branch-agnostic `StringLike` with an exact match on a GitHub *environment*:
 
 ```json
@@ -304,9 +305,24 @@ anyone who can push, while an environment can carry **required reviewers** — s
 assuming the role needs a human to approve the run. That is what makes a broad
 permissions policy defensible.
 
-To use it, swap the document in and add `environment: production` to the job in
-`.github/workflows/live-test.yml`. Both halves are needed: the policy alone
-will reject every run until the workflow declares the environment.
+Both halves are needed and both are now in place. The workflow half is done;
+the policy half is the document you pass to `create-role`.
+
+Three things worth knowing about the ordering:
+
+- **The permissive policy still works.** `repo:typednotes/infra:*` matches
+  `repo:typednotes/infra:environment:production`, so a role created with
+  `aws-trust-policy.json` keeps working — it simply no longer buys anything,
+  since every run now carries the environment claim. Tighten it when
+  convenient; nothing breaks either way.
+- **GitHub creates the environment on first use** if it does not exist, with
+  no protection rules. So the job will run, and the gate will be a gate in
+  name only, until you add reviewers in *Settings → Environments →
+  production*. **That step is the whole point** and is the one thing neither
+  the workflow nor the policy can do for itself.
+- **Removing `environment: production` from the job does not loosen the
+  gate** — with the exact-match policy it breaks AWS authentication outright,
+  because the `sub` claim changes. That is the failure mode to want.
 
 ### 5. Point the workflow at it
 

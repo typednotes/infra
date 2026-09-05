@@ -17,6 +17,11 @@ been exercised; this file is what changed and when.
   token. The GCP key path is now confirmed working end to end against a real
   service account, including the credential chain reading
   `GOOGLE_APPLICATION_CREDENTIALS`.
+- **The live workflow declares `environment: production`**, which is what
+  makes the AWS role's environment-pinned trust policy usable — and where
+  required reviewers go, so assuming a `PowerUserAccess` role needs a human.
+  Adding the reviewers is a repository setting and the one part neither the
+  workflow nor the policy can do for itself.
 - **ASCII diagrams of both federation flows** in `docs/ci-auth.md`, because
   the difference between them is where the checks live and that does not
   survive prose: AWS puts both narrowings on the role's trust policy in one

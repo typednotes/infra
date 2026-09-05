@@ -38,6 +38,19 @@ permissions:
 jobs:
   live:
     runs-on: ubuntu-latest
+    # The environment is load-bearing, not decorative. The AWS role's trust
+    # policy pins `sub` to `repo:typednotes/infra:environment:production`, so
+    # the OIDC token only carries that claim when the job declares this — and
+    # `sts:AssumeRoleWithWebIdentity` is refused otherwise. Removing this line
+    # does not loosen the gate; it breaks AWS auth entirely, which is the
+    # failure mode to want.
+    #
+    # It is also where required reviewers live. Add them in
+    # Settings -> Environments -> production, and assuming a role with
+    # PowerUserAccess then needs a human to approve the run. That approval is
+    # the compensating control for the breadth of the policy, and it is the one
+    # thing this file cannot enforce for itself.
+    environment: production
     # A hung provider call must not hold a runner, and must not skip teardown:
     # the step timeout below is shorter, so the job's own cleanup still runs.
     timeout-minutes: 20
