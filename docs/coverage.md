@@ -12,7 +12,7 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| **GCP** | **types only** — declarable, placeable, referenceable, schedulable, diffable and exportable to HCL; no live client, every backend branch raises |
+| **GCP** | **`queues` live** (Pub/Sub topics: list, create, read, delete); every other kind is types only — declarable, placeable, referenceable, schedulable, diffable and exportable to HCL, with the backend branch raising |
 | Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
@@ -95,8 +95,15 @@ This is the section worth reading before trusting anything. Correctness of
   account on 2026-09-05: a key file parsed, an RFC 7523 assertion signed
   RS256, exchanged with Google for a live access token, and the credential
   chain picking the file up from `GOOGLE_APPLICATION_CREDENTIALS`. The key was
-  created for the test and deleted immediately after. Note this verifies
-  *authentication* only — there is still no GCP client for anything to call.
+  created for the test and deleted immediately after.
+- **GCP `queues`**, over Pub/Sub topics — `list`, `create`, `read`, `delete`,
+  exercised by the live CI round trip. The first live GCP client of any kind,
+  and the one that motivated three fixes above the backend: Google nests its
+  error body one level deeper than the other two clouds (so every GCP failure
+  had rendered with an empty message), federated credential files were being
+  read as service-account keys, and a topic is not a queue — the portable
+  `visibilityTimeoutSec` belongs to a Pub/Sub *subscription*, so it is
+  reported unknown rather than guessed at.
 - **Scaleway `queues`** — `list`, `create`, `read`, via
   `example/ScalewayQueue.lean`. Two bugs only surfaced here: the endpoint host
   was wrong in a way that did not resolve at all, and Scaleway's SQS-compatible

@@ -8,6 +8,7 @@ import Infra.Providers.Kinds.Postgres
 import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Scaleway.Sqs
 import Infra.Core.Backend
+import Infra.Providers.Gcp.PubSub
 
 /-
   The live backend: real calls to real clouds.
@@ -78,7 +79,15 @@ open Infra.Providers.Kinds
     it cannot then create. Saying so at the first call is the honest failure.
 
     Kept as one helper so that implementing a GCP product is a matter of
-    replacing its call, and `grep noGcp` is the to-do list. -/
+    replacing its call, and `grep noGcp` is *most* of the to-do list — with
+    one caveat worth stating, because it cost a confusing CI failure.
+
+    `.queues` never had one of these. It routed straight to the SQS client for
+    every cloud, which was right for AWS and Scaleway and wrong for GCP, so a
+    GCP queue failed deep inside `Scaleway.Sqs.credentialsFor` with a remark
+    about SQS compatibility instead of saying the backend was missing. A kind
+    that reuses another cloud's client can be unimplemented *without*
+    appearing in this list, so the list is a lower bound, not a census. -/
 private def noGcp {α : Type} : IO α :=
   throw (IO.userError
     "no live GCP backend yet — the types work, the client does not. \
@@ -140,10 +149,19 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
           { handle := ⟨i.1⟩, instanceId := i.2.1
             privateIp := i.2.2.1, state := i.2.2.2 }
     | .queues => do
-      let ep := sqsFor provider creds
-      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
-      return (← Queues.listQueues sqsCreds ep).map fun (name, url) =>
-        { handle := ⟨name⟩, url }
+      match provider with
+      -- Pub/Sub, not SQS: a different API, so a different client. The
+      -- resource name stands in for the URL — a topic has no endpoint of its
+      -- own, and the name is what identifies it everywhere else.
+      | .gcp =>
+        let project ← Gcp.requireProject creds
+        return (← Gcp.PubSub.listTopics creds project).map fun (name, resource) =>
+          { handle := ⟨name⟩, url := resource }
+      | .aws | .scaleway =>
+        let ep := sqsFor provider creds
+        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+        return (← Queues.listQueues sqsCreds ep).map fun (name, url) =>
+          { handle := ⟨name⟩, url }
     | .imageRegistry => do
       let entries ← match provider with
         | .gcp => noGcp
@@ -255,10 +273,21 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
                  handler := .unknown, memoryMb := memory
                  timeoutSec := timeout, env }
     | .queues, h => do
-      let ep := sqsFor provider creds
-      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
-      return { name := h.raw
-               visibilityTimeoutSec := ← Queues.readVisibilityTimeout sqsCreds ep h.raw }
+      match provider with
+      -- The read is what proves the topic is there; nothing is extracted from
+      -- it. `visibilityTimeoutSec` is a *subscription's* ack deadline on
+      -- Pub/Sub and there is no subscription here, so it is unknown rather
+      -- than invented — which is also what stops a declared timeout being
+      -- read as a change to apply on every run. See the module note.
+      | .gcp =>
+        let project ← Gcp.requireProject creds
+        discard <| Gcp.PubSub.readTopic creds project h.raw
+        return { name := h.raw, visibilityTimeoutSec := .unknown }
+      | .aws | .scaleway =>
+        let ep := sqsFor provider creds
+        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+        return { name := h.raw
+                 visibilityTimeoutSec := ← Queues.readVisibilityTimeout sqsCreds ep h.raw }
     -- `valueFrom` names an environment variable the cloud has never heard of,
     -- so it cannot be reported and is excluded from the divergence table. The
     -- value itself is never fetched: see the module note in `Kinds.Secrets`.
@@ -355,10 +384,16 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       ObjectStore.putVersioning creds ep spec.name spec.versioning
       return { handle := ⟨spec.name⟩, arn := s!"arn:aws:s3:::{spec.name}", region := ep.region }
     | .queues, spec => do
-      let ep := sqsFor provider creds
-      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
-      let url ← Queues.createQueue sqsCreds ep spec.name spec.visibilityTimeoutSec
-      return { handle := ⟨spec.name⟩, url }
+      match provider with
+      | .gcp =>
+        let project ← Gcp.requireProject creds
+        let resource ← Gcp.PubSub.createTopic creds project spec.name
+        return { handle := ⟨spec.name⟩, url := resource }
+      | .aws | .scaleway =>
+        let ep := sqsFor provider creds
+        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+        let url ← Queues.createQueue sqsCreds ep spec.name spec.visibilityTimeoutSec
+        return { handle := ⟨spec.name⟩, url }
     | .imageRegistry, spec => do
       let uri ← match provider with
         | .gcp => noGcp
@@ -468,10 +503,18 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       ObjectStore.putVersioning creds ep h.raw spec.versioning
       return { handle := h, arn := s!"arn:aws:s3:::{h.raw}", region := ep.region }
     | .queues, h, spec => do
-      let ep := sqsFor provider creds
-      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
-      Queues.setVisibilityTimeout sqsCreds ep h.raw spec.visibilityTimeoutSec
-      return { handle := h, url := ← Queues.queueUrl sqsCreds ep h.raw }
+      match provider with
+      -- Nothing in the portable spec is mutable on a topic: the only field is
+      -- the timeout, which belongs to a subscription. So this is a no-op that
+      -- re-reports, not an unimplemented branch.
+      | .gcp =>
+        let project ← Gcp.requireProject creds
+        return { handle := h, url := ← Gcp.PubSub.readTopic creds project h.raw }
+      | .aws | .scaleway =>
+        let ep := sqsFor provider creds
+        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+        Queues.setVisibilityTimeout sqsCreds ep h.raw spec.visibilityTimeoutSec
+        return { handle := h, url := ← Queues.queueUrl sqsCreds ep h.raw }
     | .imageRegistry, h, spec => do
       match provider with
       | .gcp => noGcp
@@ -554,7 +597,12 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | none                    => pure ()
       | some (instanceId, _, _) => Ec2.Instance'.delete creds ep instanceId
     | .queues, h      => do
-      Queues.deleteQueue (← Scaleway.Sqs.credentialsFor provider creds) (sqsFor provider creds) h.raw
+      match provider with
+      | .gcp =>
+        Gcp.PubSub.deleteTopic creds (← Gcp.requireProject creds) h.raw
+      | .aws | .scaleway =>
+        Queues.deleteQueue (← Scaleway.Sqs.credentialsFor provider creds)
+          (sqsFor provider creds) h.raw
     | .imageRegistry, h =>
       match provider with
       | .gcp => noGcp

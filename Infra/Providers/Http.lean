@@ -73,7 +73,22 @@ def parseJsonError (body : String) : Option (String × String) :=
           match x with | .string s => some s | _ => none
       let code := (get "__type").orElse fun _ => (get "type" |>.orElse fun _ => get "code")
       let msg  := (get "message").orElse fun _ => get "Message"
-      some (code.getD "", msg.getD "")
+      -- Google nests it: `{"error":{"code":404,"status":"NOT_FOUND","message":…}}`.
+      -- Read through one level when the flat lookup found nothing, or every
+      -- GCP failure renders as `HTTP 404 :` with the explanation — the only
+      -- part worth having — discarded.
+      let nested : Option (String × String) :=
+        (fields.find? (·.1 == "error")).bind fun (_, e) =>
+          match e with
+          | .object inner =>
+            let innerGet (k : String) : Option String :=
+              (inner.find? (·.1 == k)).bind fun (_, x) =>
+                match x with | .string v => some v | _ => none
+            some ((innerGet "status").getD "", (innerGet "message").getD "")
+          | _ => none
+      match code, msg with
+      | none, none => some (nested.getD ("", ""))
+      | _, _       => some (code.getD "", msg.getD "")
     | _ => none
 
 /-- Turn a response body into the best error description available, falling
