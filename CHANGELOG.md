@@ -17,6 +17,11 @@ been exercised; this file is what changed and when.
   token. The GCP key path is now confirmed working end to end against a real
   service account, including the credential chain reading
   `GOOGLE_APPLICATION_CREDENTIALS`.
+- **ASCII diagrams of both federation flows** in `docs/ci-auth.md`, because
+  the difference between them is where the checks live and that does not
+  survive prose: AWS puts both narrowings on the role's trust policy in one
+  hop; GCP splits them across a provider condition and a service account's own
+  IAM policy, in two.
 - **`docs/ci-auth.md` and `ci/`** — the AWS OIDC role, its trust policy and its
   permissions policy, as runnable documents rather than prose, alongside the
   GCP commands. Both clouds now federate; neither stores a key.

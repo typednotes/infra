@@ -11,6 +11,124 @@ Everything below was set up for real in `typednotes` (GCP) and is written out
 for AWS; the values are this project's and are not secrets — an AWS account id
 appears in every ARN, and a GCP project number in every resource name.
 
+## How the exchange actually works
+
+Both clouds do the same thing in the same order — GitHub vouches for the job,
+the cloud checks the claim against conditions you set, and hands back something
+short-lived. They differ in how many hops it takes and where the conditions
+live.
+
+### AWS: one hop
+
+```
+  ┌──────────────────────┐
+  │  GitHub Actions job  │   typednotes/infra, workflow_dispatch
+  └──────────┬───────────┘
+             │ 1. "give me an OIDC token for aud=sts.amazonaws.com"
+             │    (needs  permissions: id-token: write)
+             ▼
+  ┌──────────────────────┐
+  │  GitHub OIDC issuer  │   token.actions.githubusercontent.com
+  └──────────┬───────────┘
+             │ 2. a signed JWT whose claims say who the job is:
+             │
+             │       iss  token.actions.githubusercontent.com
+             │       aud  sts.amazonaws.com
+             │       sub  repo:typednotes/infra:ref:refs/heads/main
+             │
+             ▼
+  ┌──────────────────────┐
+  │  job calls AWS STS   │   sts:AssumeRoleWithWebIdentity
+  │  with the JWT + the  │   RoleArn = arn:aws:iam::616568506952:role/infra-ci
+  │  role ARN            │
+  └──────────┬───────────┘
+             │ 3. AWS verifies the signature against the IAM OIDC provider
+             │    registered for that issuer, then evaluates the ROLE'S
+             │    TRUST POLICY:
+             │
+             │       aud == sts.amazonaws.com          ← anyone gets this
+             │       sub LIKE repo:typednotes/infra:*  ← THIS is the boundary
+             │                                     ↑
+             │                 without it, any repo on GitHub passes
+             ▼
+  ┌──────────────────────┐
+  │  temporary creds     │   AccessKeyId + SecretAccessKey + SessionToken,
+  │  for role infra-ci   │   expiring in an hour
+  └──────────┬───────────┘
+             │ 4. exported into the environment
+             ▼
+       `infra` reads them through its ordinary credential chain and
+       signs SigV4 exactly as it would with a static key. Nothing
+       below `Infra.Cli` knows the difference.
+```
+
+What the role may *do* is a separate document
+(`ci/aws-permissions-policy.json`) and a separate question from who may
+assume it. Both conditions live on the role.
+
+### GCP: two hops
+
+GCP splits it, because the pool identity and the service account are different
+things. The federated identity cannot call APIs itself; it can only ask to
+*impersonate* a service account, and that is a second permission.
+
+```
+  ┌──────────────────────┐
+  │  GitHub Actions job  │
+  └──────────┬───────────┘
+             │ 1. OIDC token, same as above but aud = the provider
+             ▼
+  ┌──────────────────────┐
+  │  GitHub OIDC issuer  │
+  └──────────┬───────────┘
+             │ 2.  sub                 repo:typednotes/infra:...
+             │     repository          typednotes/infra
+             │     repository_owner    typednotes
+             ▼
+  ┌──────────────────────────────────────────────┐
+  │  GCP STS — sts.googleapis.com                │
+  │  pool `github`, provider `github-provider`   │
+  └──────────┬───────────────────────────────────┘
+             │ 3. verifies the issuer, then evaluates the PROVIDER'S
+             │    attribute-condition:
+             │
+             │       assertion.repository_owner == 'typednotes'
+             │                    ↑  narrowing #1 — the org
+             │
+             │    and maps claims onto attributes IAM can match on:
+             │       assertion.repository  →  attribute.repository
+             ▼
+  ┌──────────────────────┐
+  │  a federated token   │   principalSet://…/attribute.repository/
+  │  — cannot call any   │              typednotes/infra
+  │    API on its own    │
+  └──────────┬───────────┘
+             │ 4. asks to impersonate the service account
+             │    (iamcredentials.generateAccessToken)
+             ▼
+  ┌──────────────────────────────────────────────┐
+  │  service account infra-ci                    │
+  │  its IAM policy says who may impersonate it: │
+  │                                              │
+  │    roles/iam.workloadIdentityUser to         │
+  │    principalSet://…/typednotes/infra         │
+  │                 ↑  narrowing #2 — the repo   │
+  └──────────┬───────────────────────────────────┘
+             │ 5. an OAuth2 access token for infra-ci, ~1 hour
+             ▼
+       exported as GOOGLE_OAUTH_ACCESS_TOKEN; `infra` sends it as
+       `Authorization: Bearer …`. Same place a `gcloud` token or a
+       service-account key would have landed.
+```
+
+What `infra-ci` may *do* is a third thing again — a project role binding
+(`roles/pubsub.editor`) — and is why steps 3 and 4 can both succeed while every
+API call still returns 403.
+
+The asymmetry is the thing to remember when moving between them: **AWS puts
+both narrowings in one document; GCP puts them in two different places**, and
+it is easy to set up one and believe you have set up both.
+
 ## The shape of it
 
 Two independent narrowings on each cloud, because one is not enough:
@@ -140,6 +258,55 @@ aws iam put-role-policy \
 
 An inline policy rather than a managed one: it belongs to this role, is deleted
 with it, and cannot be attached to something else by accident.
+
+### What this project actually grants
+
+`PowerUserAccess`, not the least-privilege policy above, and not
+`AdministratorAccess`:
+
+```sh
+aws iam attach-role-policy --role-name infra-ci \
+  --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+```
+
+The reasoning, so the trade is visible rather than implied. The live test needs
+six SQS calls; `PowerUserAccess` is far more than that, and the reason to take
+it anyway is that the next backend to be exercised live will need something
+else, and widening a policy per product is friction that ends with someone
+reaching for `AdministratorAccess` instead.
+
+What it buys over `AdministratorAccess` is the thing that matters most:
+**`PowerUserAccess` excludes IAM.** A compromised run can create and destroy
+resources — which is expensive — but cannot grant itself a role, create a user,
+or alter the trust policy that let it in. It cannot make itself persistent, and
+it cannot quietly widen its own access. The blast radius is bounded and
+recoverable; with admin it is neither.
+
+What it does not buy: a run that can still delete production data. So the
+compensating control is on the *other* side of the trust boundary — restrict
+who can assume the role, rather than what the role can do.
+
+### Gating on an environment
+
+`ci/aws-trust-policy-environment.json` is the tighter variant. It replaces the
+branch-agnostic `StringLike` with an exact match on a GitHub *environment*:
+
+```json
+"StringEquals": {
+  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+  "token.actions.githubusercontent.com:sub":
+    "repo:typednotes/infra:environment:production"
+}
+```
+
+An environment is stronger than a branch, because a branch can be created by
+anyone who can push, while an environment can carry **required reviewers** — so
+assuming the role needs a human to approve the run. That is what makes a broad
+permissions policy defensible.
+
+To use it, swap the document in and add `environment: production` to the job in
+`.github/workflows/live-test.yml`. Both halves are needed: the policy alone
+will reject every run until the workflow declares the environment.
 
 ### 5. Point the workflow at it
 
