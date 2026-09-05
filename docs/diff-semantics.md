@@ -243,6 +243,7 @@ misplaced fleet never reaches a DNS lookup:
 |---|---|
 | A place one of the fleet's clouds is not in | `Assert (l.covers κ)` on `Regions.everywhere` — AWS has no Warsaw region, so `in warsaw` fails for any fleet using AWS |
 | A region code from the wrong cloud, or a typo | `Assert ((knownRegions p).contains code)` on `Region.of` |
+| An instance type that does not exist | `Assert (f.sizes.contains s)` on `InstanceType.of` — `t3` has no `32xlarge` |
 | A placement leaving one of the fleet's clouds unplaced | `Assert (rs.covers κ)` on `Regions.covering` |
 
 The first is decidable rather than structural because `Locality` is one enum
@@ -358,6 +359,16 @@ outside the fleet.
 - **Unreportable fields are unenforced, not rejected.** A target asking for
   something a cloud cannot express is accepted and quietly ignored; see
   `docs/providers.md` for the list.
+- **An instance type valid in the abstract may not exist in the fleet's
+  region.** `InstanceType.of` checks that a family comes in a size; it does
+  not check that the pair is offered where the fleet is placed, and `eu-west-3`
+  carries a narrower catalogue than `us-east-1`. Both facts are now declared —
+  the placement in `Regions`, the type in `InstanceType` — so the check is
+  *possible* in a way it was not before, and it is still not done: the family ×
+  region matrix is large, moves constantly, and a stale row would reject a
+  valid declaration, which is a worse failure than the one it prevents. Nor is
+  per-account quota knowable from any table. So `RunInstances` can still refuse
+  a type that elaborated; what it can no longer refuse is a misspelt one.
 - **`S3BucketSpec.region` can ask for a replacement that never converges.**
   The field does not place the bucket — `Live.lean` creates it at the endpoint
   the fleet's placement builds, and reports that region back — so the field is

@@ -23,6 +23,12 @@ import Infra.Core.Stage
 
   ## What is not implemented, and why
 
+  `instanceType` reaches this file as a plain string and leaves it as one:
+  `Infra.Core.InstanceType` is a string underneath precisely so that neither
+  `RunInstances` nor `DescribeInstances` needs a parse that could fail. The
+  family/size split is how a *declaration* is written and checked, not how the
+  value travels.
+
   `instanceType` is classified `forcesReplace` even though EC2 can resize a
   *stopped* instance. Doing that in place would mean stopping the instance,
   polling until it is actually stopped, modifying, and starting again — a

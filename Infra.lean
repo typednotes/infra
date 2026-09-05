@@ -9,6 +9,7 @@ import Infra.Core.Kind
 import Infra.Core.Expr
 import Infra.Core.Spec
 import Infra.Core.Coe
+import Infra.Core.InstanceType
 import Infra.Core.Compose
 import Infra.Specs.Basic
 import Infra.Specs.Build

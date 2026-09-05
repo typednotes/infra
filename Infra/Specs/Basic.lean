@@ -1,5 +1,6 @@
 import Infra.Core.Spec
 import Infra.Core.Coe
+import Infra.Core.InstanceType
 
 /-
   One spec per `Kind`.
@@ -367,7 +368,10 @@ structure AwsInstanceSpec (K : ProviderId → Kind → Type) (o : Type u → Typ
   name          : Field .required o f String
   /-- The AMI to launch. Immutable: changing it replaces the instance. -/
   imageId       : Field .required o f String
-  instanceType  : Field .required o f String
+  /-- The hardware shape, as a family and a size rather than a string: see
+      `Infra.Core.InstanceType`. `forcesReplace` below, so a typo used to be
+      a plan proposing to replace an instance with an identical one. -/
+  instanceType  : Field .required o f InstanceType
   /-- The security group this instance sits in — required, and a reference
       into this very fleet, so it can neither be omitted nor dangle. -/
   securityGroup : Field .required o f (K .aws .securityGroup)

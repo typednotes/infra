@@ -53,7 +53,8 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .s3Bucket,         h => { name := h.raw, versioning := .unknown,
                               objectLock := .unknown, region := .unknown }
   | .securityGroup,    h => { name := h.raw, description := "", ingress := .unknown }
-  | .awsInstance,      h => { name := h.raw, imageId := "", instanceType := ""
+  | .awsInstance,      h => { name := h.raw, imageId := ""
+                              instanceType := InstanceType.raw ""
                               securityGroup := ⟨""⟩, keyName := .unknown
                               subnetId := .unknown }
   | .scalewayFunctionNamespace,  h => { name := h.raw, description := .unknown }

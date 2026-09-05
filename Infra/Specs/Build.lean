@@ -121,7 +121,7 @@ def securityGroup (name : Expr K String) (description : Expr K String)
     cannot be built without naming one. That is the whole point of the kind —
     see `AwsInstanceSpec`. -/
 def awsInstance (name : Expr K String) (imageId : Expr K String)
-    (instanceType : Expr K String) (securityGroup : Expr K (K .aws .securityGroup))
+    (instanceType : Expr K InstanceType) (securityGroup : Expr K (K .aws .securityGroup))
     (keyName : Partial (Expr K String) := .unknown)
     (subnetId : Partial (Expr K String) := .unknown) :
     AwsInstanceSpec K Partial (Expr K) :=
@@ -192,7 +192,7 @@ def scalewayContainer (name : Expr K String)
                             S3BucketSpec K Partial (Expr K) := @s3Bucket; ()
   | .securityGroup     => let _ : ∀ {K}, Expr K String → Expr K String → _ →
                             SecurityGroupSpec K Partial (Expr K) := @securityGroup; ()
-  | .awsInstance       => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
+  | .awsInstance       => let _ : ∀ {K}, Expr K String → Expr K String → Expr K InstanceType →
                             Expr K (K .aws .securityGroup) → _ → _ →
                             AwsInstanceSpec K Partial (Expr K) := @awsInstance; ()
   | .scalewayFunctionNamespace  =>

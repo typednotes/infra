@@ -196,8 +196,12 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       let (imageId, instanceType, group, keyName, subnetId) ←
         Ec2.Instance'.read creds (ec2For creds) h.raw
       -- The security group comes back as a *name*, which is exactly what the
-      -- settled spec holds, so the two are directly comparable.
-      return { name := h.raw, imageId, instanceType
+      -- settled spec holds, so the two are directly comparable. The instance
+      -- type comes back as a string and is wrapped rather than parsed:
+      -- `InstanceType` is a string underneath precisely so that reading one
+      -- cannot fail, even for a family this library's table does not name.
+      return { name := h.raw, imageId
+               instanceType := InstanceType.raw instanceType
                securityGroup := ⟨group⟩, keyName, subnetId }
     -- Nothing was read, so nothing is claimed. `unknown` is exactly that, and
     -- is why an unimplemented kind cannot masquerade as already matching.
@@ -305,8 +309,10 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       -- reaches `Handle` through the reducible `Resolved`, and chaining `.raw`
       -- straight onto it makes the code generator emit "invalid projection".
       let group : Handle .securityGroup := spec.securityGroup
+      -- Bound with its type for the same reason as `group` above.
+      let itype : InstanceType := spec.instanceType
       let r ← Ec2.Instance'.create creds (ec2For creds)
-        spec.name spec.imageId spec.instanceType group.raw
+        spec.name spec.imageId itype.name group.raw
         spec.keyName spec.subnetId
       return { handle := ⟨spec.name⟩, instanceId := r.1
                privateIp := r.2.1, state := r.2.2 }

@@ -260,6 +260,51 @@ a `region` field that predates this and is *not* that mechanism: it is
 compared against the region the bucket is reported in, and must agree with
 where the fleet places AWS. See `docs/providers.md`.
 
+## Values that are not really strings
+
+Placement was one case of a wider shape, and `instanceType` is the second:
+a spec field typed `String` whose inhabitants are actually drawn from a small
+closed set the provider publishes. Written as a string, `"t3.nanoo"`
+elaborates, plans, and fails at `RunInstances` — after the security group it
+references has been created — and the author gets no help discovering what
+`t3` even comes in.
+
+`Infra/Core/InstanceType.lean` splits it the way AWS names it, into a family
+and a size, and checks the *pair*:
+
+```lean
+instanceType := InstanceType.of .t3 .nano
+```
+
+Autocomplete lists the families, then the sizes, and `InstanceType.of .t3
+.xlarge32` does not elaborate because `t3` has no `32xlarge`. Twenty-six
+families share nine size lists between them, so the cross product covers 257
+types from a table small enough to keep true — and the differences between
+those nine lists (gen-7 Intel skips `32xlarge`; Gravitons before gen-8 stop at
+`16xlarge`; bare metal is spelled `metal` on some families and `metal-24xl` on
+others) are each stated once rather than three times.
+
+The pattern generalises, and its three parts are worth naming because the next
+such field should reuse them:
+
+1. **A string underneath.** `InstanceType` wraps a `String`, so the backend
+   hands it to the API and reads it back with no parse that can fail. The
+   axes are how a value is *written*, not how it is stored — which is what
+   keeps the read path total for a family the table has never heard of.
+2. **A decidable check at the call site**, `Assert … := by decide`, the same
+   auto-param `NamedKey.of` uses.
+3. **A visibly-spelled escape hatch.** `InstanceType.raw` and `Region.raw`
+   exist because both tables are snapshots of catalogues that grow. A stale
+   table must cost the author a more conspicuous spelling, never a hard block.
+   `AGENTS.md` records the obligation to check them against the providers'
+   docs.
+
+What this does *not* check is whether the type exists in the region the fleet
+is placed in, or whether the account's quota allows it — see
+`docs/diff-semantics.md`'s soft spots. `imageId` is deliberately left a string:
+an AMI id is region- and account-specific and there is no table to check it
+against.
+
 ## Declaring a fleet, continued
 
 **This table is the scoping mechanism** the project's `AGENTS.md` calls for ("the ability to

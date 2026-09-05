@@ -83,7 +83,11 @@ def al2023Paris : String := "ami-0d3c032f5934e1b41"
 -- `Locality.paris` region, which for AWS is `eu-west-3`. The alternative
 -- spelling is AWS's own code, `in aws "eu-west-3"`, and both are checked while
 -- this file elaborates. See "Where it cannot be" below.
-fleet paris in paris where
+--
+-- The fleet is `webTier` rather than `paris`: `fleet paris in paris` read as
+-- though the two names were one thing, and they are not — the first is this
+-- declaration, the second is a `Locality`. Only the second is Paris.
+fleet webTier in paris where
   -- Referenced by both instances below. Nothing references *it*, which is why
   -- it has no `as`-less twin: `as web` is what the instances name.
   resource aws securityGroup "web" as web
@@ -96,12 +100,12 @@ fleet paris in paris where
 
   resource aws awsInstance "web-1"
     { imageId       := al2023Paris
-    , instanceType  := "t3.nano"
+    , instanceType  := InstanceType.of .t3 .nano
     , securityGroup := web }
 
   resource aws awsInstance "web-2"
     { imageId       := al2023Paris
-    , instanceType  := "t3.nano"
+    , instanceType  := InstanceType.of .t3 .nano
     , securityGroup := web }
 
 /-! ## What cannot be written
@@ -114,7 +118,7 @@ fleet paris in paris where
 -- a missing required field, with the binder naming it:
 --
 --   resource aws awsInstance "web-3"
---     { imageId := al2023Paris, instanceType := "t3.nano" }
+--     { imageId := al2023Paris, instanceType := InstanceType.of .t3 .nano }
 --
 --   Application type mismatch: The argument
 --     fun securityGroup => Build.awsInstance (Expr.lit "no-group") … securityGroup
@@ -131,11 +135,11 @@ fleet paris in paris where
 -- the groups declared above — a string naming some other group is not of that
 -- type, and `NamedKey.of` rejects an unlisted name at elaboration:
 --
---   NamedKey.of paris.names.aws.securityGroup "does-not-exist"
+--   NamedKey.of webTier.names.aws.securityGroup "does-not-exist"
 --
 --   could not synthesize default value for parameter 'h' using tactics
 --   Tactic `decide` proved that the proposition
---     Assert (NamedKey.indexOfAux paris.names.aws.securityGroup "does-not-exist").isSome
+--     Assert (NamedKey.indexOfAux webTier.names.aws.securityGroup "does-not-exist").isSome
 --   is false
 
 -- **Something that is not a security group.** Right cloud, wrong kind:
@@ -149,6 +153,22 @@ fleet paris in paris where
 --   but is expected to have type
 --     Expr keys.Key (keys.Key ProviderId.aws Kind.securityGroup)
 
+-- **A size the family does not come in.** `instanceType` is a family and a
+-- size rather than a string, so the pair is checked: `t3` stops at `2xlarge`
+-- and has no bare metal at all.
+--
+--   instanceType := InstanceType.of .t3 .xlarge32
+--
+--   could not synthesize default value for parameter '_h' using tactics
+--   Tactic `decide` proved that the proposition
+--     Assert (InstanceFamily.t3.sizes.contains InstanceSize.xlarge32)
+--   is false
+--
+-- The same check catches the subtler cases a curated list of strings would
+-- not: gen-7 Intel skips `32xlarge` and jumps `24xlarge` → `48xlarge`, so
+-- `InstanceType.of .m7i .xlarge32` is rejected while `.m7a .xlarge32` is
+-- fine. And there is no longer a `"t3.nanoo"` to write.
+
 /-! ## Where it cannot be
 
   Placement is checked the same way, and by the same mechanism — a decidable
@@ -157,10 +177,10 @@ fleet paris in paris where
 -- **A place this fleet's cloud is not in.** Scaleway has a Warsaw region and
 -- AWS does not, so `in warsaw` is a compile error *for this fleet* and would
 -- not be for a Scaleway-only one. The proposition names both the place and
--- the fleet. `keys` in the message is this fleet's own `paris.keys`, printed
+-- the fleet. `keys` in the message is this fleet's own `webTier.keys`, printed
 -- without its prefix:
 --
---   fleet paris in warsaw where …
+--   fleet webTier in warsaw where …
 --
 --   could not synthesize default value for parameter '_h' using tactics
 --   Tactic `decide` proved that the proposition
@@ -170,7 +190,7 @@ fleet paris in paris where
 -- **A region code from the wrong cloud**, or one that does not exist. Both are
 -- the same check, against the codes that cloud actually has:
 --
---   fleet paris in aws "fr-par" where …
+--   fleet webTier in aws "fr-par" where …
 --
 --   Tactic `decide` proved that the proposition
 --     Assert ((knownRegions ProviderId.aws).contains "fr-par")
@@ -179,12 +199,12 @@ fleet paris in paris where
 -- Both hold for this fleet, which is what the two errors above assert the
 -- negation of. `covers` is the whole check: every cloud the fleet uses has a
 -- region at that place.
-#guard Locality.paris.covers paris.keys = true
-#guard Locality.warsaw.covers paris.keys = false
+#guard Locality.paris.covers webTier.keys = true
+#guard Locality.warsaw.covers webTier.keys = false
 
 -- And the placement it produced is AWS's own name for Paris.
-#guard (paris.regions.region .aws).map Region.code = some "eu-west-3"
-#guard paris.regions.covers paris.keys = true
+#guard (webTier.regions.region .aws).map Region.code = some "eu-west-3"
+#guard webTier.regions.covers webTier.keys = true
 
 /-! ## Tearing it down
 
@@ -205,29 +225,30 @@ fleet paris in paris where
 
 /-- The same fleet, already applied: enough to make `.absent` produce deletes
     rather than no-ops, since `actions` only deletes what it can see. -/
-def existing : World paris.keys :=
+def existing : World webTier.keys :=
   worldOf
     [ ⟨.aws, .securityGroup, web,
         { observed := { handle := ⟨"web"⟩, groupId := "sg-x", vpcId := "vpc-x" }
           reported := { name := "web"
                         description := "http and https from anywhere, ssh from nowhere"
                         ingress := .unknown } }⟩
-    , ⟨.aws, .awsInstance, NamedKey.of paris.names.aws.awsInstance "web-1",
+    , ⟨.aws, .awsInstance, NamedKey.of webTier.names.aws.awsInstance "web-1",
         { observed := { handle := ⟨"web-1"⟩, instanceId := "i-1"
                         privateIp := "10.0.0.1", state := "running" }
           reported := { name := "web-1", imageId := al2023Paris
-                        instanceType := "t3.nano", securityGroup := ⟨"web"⟩
+                        instanceType := InstanceType.of .t3 .nano
+                        securityGroup := ⟨"web"⟩
                         keyName := .unknown, subnetId := .unknown } }⟩ ]
 
 -- Two resources exist here, so the empty declaration deletes two.
-#guard (actions (Plan.absent paris.keys) existing).length = 2
+#guard (actions (Plan.absent webTier.keys) existing).length = 2
 
 /-- What `push` actually executes: `orderActions` schedules creations
     topologically and *reverses* destructions, so this is the list to assert
     on. Raw `actions` comes back in enumeration order — group first — which is
     exactly the order that would fail against EC2. -/
 private def teardown : List String :=
-  match orderActions (Plan.absent paris.keys) (actions (Plan.absent paris.keys) existing) with
+  match orderActions (Plan.absent webTier.keys) (actions (Plan.absent webTier.keys) existing) with
   | .ok ordered => ordered.map Action.slot
   | .error _    => []
 
@@ -237,30 +258,34 @@ private def teardown : List String :=
 
 /-! ## What the fleet says -/
 
-#guard paris.keys.count .aws .securityGroup = 1
-#guard paris.keys.count .aws .awsInstance = 2
+-- The two axes render to AWS's own spelling, which is what reaches the wire.
+#guard (InstanceType.of .t3 .nano).name = "t3.nano"
+
+#guard webTier.keys.count .aws .securityGroup = 1
+#guard webTier.keys.count .aws .awsInstance = 2
 
 -- AWS only: no Scaleway credentials are read, and no Scaleway API is called.
-#guard paris.keys.providers = [.aws]
+#guard webTier.keys.providers = [.aws]
 
 -- Three resources: the group and two instances.
-#guard (actions paris.plan (worldOf [])).length = 3
+#guard (actions webTier.plan (worldOf [])).length = 3
 
 -- Each instance depends on the group — and on exactly one thing. This is the
 -- required reference showing up as a scheduling edge; `sourceBucket`, being
 -- optional, contributes nothing when unset, whereas this cannot be unset.
 #guard (HasDeps.deps (S := AwsInstanceSpec)
-         (Build.awsInstance (K := paris.keys.Key)
+         (Build.awsInstance (K := webTier.keys.Key)
            (name := "web-1") (imageId := al2023Paris)
-           (instanceType := "t3.nano") (securityGroup := web))).length = 1
+           (instanceType := InstanceType.of .t3 .nano)
+           (securityGroup := web))).length = 1
 
 /-- `check` (the default) stays offline: `Infra.Cli.run`'s own `offlinePlan`
     shows the plan from the placeholder backends. `plan` reads the account;
     `apply` creates **real, billable** instances that run until
     terminated. -/
 def main (args : List String) : IO UInt32 := do
-  Infra.Cli.run "paris-instances" paris.plan
-    (selfCheck := Infra.Cli.offlinePlan paris.plan
+  Infra.Cli.run "paris-instances" webTier.plan
+    (selfCheck := Infra.Cli.offlinePlan webTier.plan
       "paris: two t3.nano behind one security group")
     (accounts := ← Infra.Cli.Accounts.fromEnv)
-    (regions := paris.regions) (args := args)
+    (regions := webTier.regions) (args := args)
