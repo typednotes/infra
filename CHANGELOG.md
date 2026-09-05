@@ -12,6 +12,10 @@ been exercised; this file is what changed and when.
 
 ### Added
 
+- **`docs/ci-auth.md` and `ci/`** — the AWS OIDC role, its trust policy and its
+  permissions policy, as runnable documents rather than prose, alongside the
+  GCP commands. Both clouds now federate; neither stores a key.
+
 - **GCP Workload Identity Federation** is set up and wired into the live
   workflow: `google-github-actions/auth@v2` exchanges GitHub's OIDC token for
   a short-lived one, so neither AWS nor GCP has a stored credential any more.

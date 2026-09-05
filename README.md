@@ -283,6 +283,8 @@ extending anything:
 - [`docs/persistence.md`](docs/persistence.md) — how observed state is cached
 - [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the
   trademark policies that constrain them
+- [`docs/ci-auth.md`](docs/ci-auth.md) — how CI authenticates without storing
+  a key, for AWS and GCP, with the policies in [`ci/`](ci/)
 - [`CHANGELOG.md`](CHANGELOG.md) — what changed, and when
 - [`docs/providers.md`](docs/providers.md) — how each `Kind` maps onto each cloud's API, and what is actually verified live
 - [`docs/diff-semantics.md`](docs/diff-semantics.md) — how target vs. observed state is compared

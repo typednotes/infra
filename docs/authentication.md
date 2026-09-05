@@ -262,6 +262,9 @@ where the code runs rather than on which cloud it talks to.
 | A server | instance role | scoped API key | service-account key, or workload identity |
 | A laptop | `aws configure` | `scw init` | `gcloud auth login` |
 
+The setup for both is written out in [`ci-auth.md`](ci-auth.md), with the AWS
+policies as files under `ci/` so the commands are runnable.
+
 **Prefer federation wherever it exists.** OIDC and WIF both work by having the
 CI platform vouch for the job, so no long-lived credential is stored anywhere:
 nothing to leak, nothing to rotate, nothing to revoke in a hurry. This
