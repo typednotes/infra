@@ -85,7 +85,11 @@
 
   /* ── hero ── */
   .hero { padding: 72px 0 56px; }
-  .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: start; }
+  /* `minmax(0, …)`, not `1fr`: a bare `1fr` is `minmax(auto, 1fr)`, so a wide
+     code block widens its own column and the two halves shift as the carousel
+     changes example. This pins the split. */
+  .hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+               gap: 56px; align-items: start; }
   @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 36px; } }
   h1 { font-size: clamp(34px, 5vw, 52px); line-height: 1.1; margin: 0 0 20px;
        letter-spacing: -1.5px; font-weight: 700; }
@@ -144,8 +148,8 @@
   section { padding: 64px 0; border-top: 1px solid var(--border); }
   h2 { font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -1px; margin: 0 0 10px; font-weight: 700; }
   .sub { color: var(--ink-2); margin: 0 0 40px; font-size: 17px; max-width: 68ch; }
-  .band { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; align-items: center;
-          margin-bottom: 44px; }
+  .band { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+          gap: 44px; align-items: center; margin-bottom: 44px; }
   .band:nth-child(even) .band-text { order: 2; }
   @media (max-width: 900px) { .band { grid-template-columns: 1fr; gap: 24px; }
                               .band:nth-child(even) .band-text { order: 0; } }
@@ -153,6 +157,9 @@
   .band p { margin: 0; color: var(--ink-2); }
 
   /* ── clouds ── */
+  .cloudband { padding: 8px 24px 56px; }
+  .cloudband-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
+                     color: var(--ink-2); margin: 0 0 14px; }
   .clouds { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 0; }
   .cloud { display: flex; align-items: center; gap: 10px; padding: 14px 20px;
            border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
@@ -160,12 +167,12 @@
   .cloud.is-on { opacity: 1; color: var(--ink); border-color: var(--ink-2); }
   /* Declarable but not yet reachable: the types work, the client does not. */
   .cloud.is-partial { opacity: .8; color: var(--ink); border-style: dashed; }
-  .cloud img { height: 20px; width: auto; display: block; }
+  .cloud img { height: 24px; width: auto; display: block; }
   .cloud span { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
                 border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
 
   /* ── coverage ── */
-  .cov { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .cov { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
   @media (max-width: 820px) { .cov { grid-template-columns: 1fr; } }
   .cov-card { background: var(--surface); border: 1px solid var(--border);
               border-radius: 10px; padding: 20px 22px; }
@@ -192,9 +199,9 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.3.0</strong> — early software. Three clouds, 14 resource kinds, and
-  verification that <strong>varies a lot by kind</strong>.
-  <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">See exactly what is covered →</a>
+  <strong>0.3.1</strong> — three clouds, placement per resource, and Terraform
+  conversion in both directions.
+  <a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -331,6 +338,17 @@
   </div>
 </div>
 
+<div class="wrap cloudband">
+  <p class="cloudband-label">Clouds</p>
+  <div class="clouds">
+    <div class="cloud is-on"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></div>
+    <div class="cloud is-on"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></div>
+    <div class="cloud is-partial"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>types only</span></div>
+    <div class="cloud"><img src="providers/azure.svg" alt="Azure" width="190" height="60"><span>planned</span></div>
+    <div class="cloud"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"><span>planned</span></div>
+  </div>
+</div>
+
 <section id="catches">
   <div class="wrap">
     <h2>What the compiler catches</h2>
@@ -426,12 +444,12 @@ would CREATE scaleway/secrets/db-url
   <div class="wrap">
     <h2>Why this instead of Terraform or OpenTofu</h2>
     <p class="sub">
-      Honestly: not for the coverage — they have thousands of providers and this
-      has two. For what the type system buys, and only if that trade is worth it
-      to you.
+      Not for the breadth — they have thousands of providers and this has three.
+      For what the type system buys, which is a different thing and worth being
+      precise about.
     </p>
 
-    <div class="cov" style="grid-template-columns:repeat(2,1fr)">
+    <div class="cov" style="grid-template-columns:repeat(2,minmax(0,1fr))">
       <div class="cov-card">
         <h4 style="color:var(--blue)">Errors move to compile time</h4>
         <p>
@@ -539,19 +557,6 @@ would CREATE scaleway/secrets/db-url
       established; correctness of <em>what is being signed</em> mostly is not. This
       is a summary — <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">coverage.md</a>
       is the full breakdown and is kept current, including the embarrassing parts.
-    </p>
-
-    <div class="clouds">
-      <div class="cloud is-on"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></div>
-      <div class="cloud is-on"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></div>
-      <div class="cloud is-partial"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>types only</span></div>
-      <div class="cloud"><img src="providers/azure.svg" alt="Azure" width="190" height="60"><span>planned</span></div>
-      <div class="cloud"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"><span>planned</span></div>
-    </div>
-    <p class="sub" style="margin:16px 0 40px">
-      Adding a cloud is a constructor on one enum, after which every total match
-      over it fails to compile until it is handled — mechanical and loud, rather
-      than a plugin boundary that can be half-finished.
     </p>
 
     <div class="cov">

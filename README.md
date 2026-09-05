@@ -41,7 +41,8 @@ provider-local) · every `(provider, kind)` pair implemented.
 GCP is **types only**: its resources can be declared, placed, referenced,
 scheduled, diffed and exported to HCL, and there is no live client yet.
 
-Maturity is uneven and worth knowing before you rely on it:
+Verification varies by kind, and it is worth knowing which before you rely on
+any one of them:
 
 | | |
 |---|---|
