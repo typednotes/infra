@@ -13,6 +13,39 @@ The general architecture is defined in `docs/architecture.md`.
 
 When something does not work and should be changed, the user should be asked to change the doc and implemented then.
 
+## Code, docs, examples and the page move together
+
+There are now four places that describe this project, and they drift in
+different directions if left alone. A change is not finished until all four
+agree:
+
+| Surface | Where | What it must not do |
+|---|---|---|
+| Code | `Infra/` | — |
+| Design docs | `docs/*.md` | describe a mechanism that no longer exists |
+| Examples | `example/`, `Infra/Demo.lean` | stop compiling, or demonstrate the old way |
+| The page | `site/index.html` | claim a feature or a number the repo cannot back |
+
+Concretely, when a change lands:
+
+- **Grep for the thing you removed or renamed**, across `docs/`, `site/`,
+  `README.md` and `AGENTS.md` — not just `Infra/`. The compiler covers the Lean
+  side and covers none of the rest.
+- **`docs/coverage.md` is the canonical statement of what exists.** A new
+  feature adds a row; a fixed defect leaves the "known defects" list. It is
+  what the README and the page summarise, so it is the one to change first.
+- **The page quotes real output and real error messages.** If you change an
+  error message, re-provoke it and paste what the compiler now says. The same
+  rule as the examples' headers.
+- **Numbers are checked, not recalled** — resource counts, kind counts, "N of
+  M verified". Run the thing and read the output. Several numbers in these
+  files were wrong when first written from reading the code.
+- **A removed defect is deleted from the ledger, not softened.** If it is gone,
+  say it is gone and say what replaced it; `docs/diff-semantics.md`'s ledger is
+  only useful while it is true.
+- **`docs/branding.md` governs the artwork.** Do not add a third-party logo
+  without reading it first.
+
 ## The examples must work
 
 `example/` is test surface, not decoration: several `#guard`s in there pin

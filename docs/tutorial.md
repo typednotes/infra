@@ -232,11 +232,11 @@ innermost `in` block  →  outer `in` block  →  fleet-level `in`  →  credent
 Only the regions your fleet actually names are ever listed during a refresh, so
 a single-region fleet costs exactly what it always did.
 
-> **Wart, flagged honestly.** `s3Bucket` has its own `region` *field* that
-> predates all of this. It does **not** place the bucket — it is only compared
-> — so it must agree with the block around it, and leaving it off means
-> `eu-west-1` rather than "wherever the fleet is". Write it out to match. This
-> is a known defect, recorded in `docs/diff-semantics.md`.
+> **One mechanism only.** A resource has no region field of its own to
+> disagree with the block around it. `s3Bucket` used to carry one, which did
+> not place anything and was only compared — so a bucket declared without it
+> proposed a replacement that could never converge. It is gone; the blocks are
+> the only thing that places anything.
 
 ## 6. One resource referring to another
 

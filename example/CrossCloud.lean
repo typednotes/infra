@@ -85,16 +85,8 @@ fleet crossCloud in paris where
   -- `objectLock` is settable only at creation — so changing it is a REPLACE,
   -- not an UPDATE. Reaching for `s3Bucket` is how that becomes expressible,
   -- at the cost of portability, which the kind's name makes obvious.
-  --
-  -- `region` here is the *bucket's own* field, not the fleet's placement, and
-  -- the two must agree: the backend creates the bucket at the endpoint the
-  -- placement builds and then reports that region back, so a spec saying
-  -- anything else diverges on a field marked `forcesReplace` and proposes a
-  -- replacement that could never converge. `in paris` above is what makes
-  -- `eu-west-3` the right thing to write. See `docs/providers.md`.
   resource aws s3Bucket "typednotes-archive" as archive
-    { objectLock := true
-    , region     := "eu-west-3" }
+    { objectLock := true }
 
   -- A Scaleway function that reads the AWS bucket. `sourceBucket` has type
   -- `Option (K .aws .s3Bucket)`, so it can only ever name a bucket that this
@@ -222,10 +214,10 @@ fleet crossCloud in paris where
 #guard Locality.ireland.covers crossCloud.keys = false    -- AWS yes, Scaleway no
 #guard (Finite.elems (α := Locality)).filter (·.covers crossCloud.keys) = [.paris, .milan]
 
--- The bucket's own `region` field agrees with where the fleet places AWS.
--- They are separate mechanisms and nothing couples them, so this guard is
--- what notices if one moves without the other.
-#guard (crossCloud.regions.region .aws).map Region.code = some "eu-west-3"
+-- The bucket has no region of its own to disagree with the placement: the
+-- `s3Bucket` spec used to carry one, and removing it is what made that class
+-- of disagreement unrepresentable rather than merely guarded against.
+#guard (crossCloud.regions.codeFor .aws .s3Bucket "typednotes-archive") = some "eu-west-3"
 
 -- The function depends on the bucket it reads, and on nothing else.
 #guard (HasDeps.deps (S := ScalewayFunctionSpec)

@@ -107,10 +107,9 @@ def postgresClassic (name : Expr K String) (masterUsername : Expr K String)
 
 def s3Bucket (name : Expr K String)
     (versioning : Partial (Expr K Bool) := .unknown)
-    (objectLock : Partial (Expr K Bool) := .unknown)
-    (region : Partial (Expr K String) := .unknown) :
+    (objectLock : Partial (Expr K Bool) := .unknown) :
     S3BucketSpec K Partial (Expr K) :=
-  { name, versioning, objectLock, region }
+  { name, versioning, objectLock }
 
 def securityGroup (name : Expr K String) (description : Expr K String)
     (ingress : Partial (Expr K (List (Nat × String))) := .unknown) :
@@ -188,7 +187,7 @@ def scalewayContainer (name : Expr K String)
   | .postgres          => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
                             Expr K Nat → Expr K Nat → _ → _ →
                             PostgresSpec K Partial (Expr K) := @postgres; ()
-  | .s3Bucket          => let _ : ∀ {K}, Expr K String → _ → _ → _ →
+  | .s3Bucket          => let _ : ∀ {K}, Expr K String → _ → _ →
                             S3BucketSpec K Partial (Expr K) := @s3Bucket; ()
   | .securityGroup     => let _ : ∀ {K}, Expr K String → Expr K String → _ →
                             SecurityGroupSpec K Partial (Expr K) := @securityGroup; ()

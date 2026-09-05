@@ -78,29 +78,34 @@ A cloud the fleet does not place still reads its region from the credentials,
 and `Credentials.requireRegion` is what turns a missing one into a message
 naming all three ways to supply it, before any call is attempted.
 
-### `S3BucketSpec.region` is not the placement mechanism
+### There is no per-resource region *field*
 
-`s3Bucket` has a `region` field, and it predates fleet placement. It does not
-*choose* where the bucket goes: `ObjectStore.createBucket` sends the location
-constraint from `ep.region` — the endpoint the placement built — and `read`
-reports that same value back. The spec field is therefore only ever *compared*
-against where the bucket actually is, on a `forcesReplace` row of the
-divergence table.
+`s3Bucket` used to have a `region` field, and it was a trap. It did not place
+the bucket — `createBucket` sends the location constraint from `ep.region`, the
+endpoint the placement builds, and `read` reported that same value back — so
+the field was only ever *compared*, on a `forcesReplace` row. `Fillable` filled
+an unwritten one with `eu-west-1`, so any bucket in a fleet placed elsewhere
+diverged on an immutable field and proposed a replacement that recreated it
+exactly where it already was. It never converged, and `REPLACE` is
+`DeleteBucket` first.
 
-The consequence is worth stating plainly, because it is a trap:
+The field is removed. Placement is the one mechanism, and there is nothing left
+that can disagree with it — the inconsistency is unrepresentable rather than
+guarded against.
 
-- If the field agrees with where the fleet places AWS, nothing happens. This is
-  what `example/CrossCloud.lean` does, and it has a `#guard` pinning the two
-  together since nothing in the types couples them.
-- If it disagrees, the plan proposes a **replacement that cannot converge** —
-  the replacement recreates the bucket at the endpoint's region, which is the
-  region the spec already disagreed with, so the next plan proposes it again.
+The *observed* region survives, in `S3BucketObserved.region`, which is where
+the cloud says the bucket is. This is the same split Terraform's AWS provider
+made in v6.0: an authored `region` that routes the call, and a read-only
+`bucket_region` that reports where the thing actually is. Our placement plays
+the role of their `region` argument; `S3BucketObserved.region` plays the role
+of `bucket_region`.
 
-`Fillable` fills an unset `region` with `.lit "eu-west-1"`, which makes that
-the default rather than an opt-in: an `s3Bucket` in a fleet placed anywhere
-other than Ireland diverges unless its region is written out. That default is a
-fabricated value of exactly the kind `docs/diff-semantics.md` argues against,
-and it is a known soft spot rather than a design: see the ledger.
+One consequence worth knowing: **changing where a resource is placed does not
+move it.** Listing happens per region, so a bucket whose block moved is not
+found in the new region, the plan proposes a create there, and the old one is
+left behind unmanaged — the same thing that happens when a resource is removed
+from the declaration. Terraform has exactly this hole with provider aliases and
+does not document it. `destroy` before re-placing is the safe path.
 
 ## What is not portable, and is not pretended to be
 

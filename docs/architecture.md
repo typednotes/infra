@@ -324,9 +324,14 @@ which took Lean down with a stack overflow on a six-resource fleet.
 `Infra.Cli.liveFor` asks it per cloud before requiring a credential region.
 Nothing is lost: a resource in a block is placed by construction.
 
-`S3BucketSpec` has a `region` field that predates all of this and is *not*
-this mechanism: it is compared against the region the bucket is reported in,
-and must agree with where the fleet places that bucket. See
+There is exactly **one** mechanism for where a resource lives, and that is the
+point. `S3BucketSpec` used to carry a `region` field that did not place
+anything and was only compared, which meant two sources of truth and a
+replacement that could never converge; it is gone. The *observed* region
+survives on `S3BucketObserved`, which is the same split Terraform's AWS
+provider made in v6.0 — an authored `region` that routes the call, and a
+read-only `bucket_region` that says where the thing is. Our placement is
+theirs; `S3BucketObserved.region` is `bucket_region`. See
 `docs/providers.md`.
 
 ## Values that are not really strings

@@ -253,10 +253,21 @@ def attrsOf (nameOf : (p : ProviderId) → (k : Kind) → K p k → String) :
 
 /-! ## Export -/
 
-/-- One `resource` block. -/
-def blockOf (p : ProviderId) (k : Kind) (name : String) (attrs : List Attr) : Option String :=
+/-- One `resource` block.
+
+    `region` is emitted as a top-level attribute when the fleet places the
+    resource, which is exactly the AWS provider's own per-resource `region`
+    argument (v6.0+): optional, defaulting to the provider block's region, and
+    forcing replacement if changed. It is the faithful translation of a
+    placement, and it is why the aliased-provider dance is usually
+    unnecessary. -/
+def blockOf (p : ProviderId) (k : Kind) (name : String) (region : Option String)
+    (attrs : List Attr) : Option String :=
   (resourceType p k).map fun ty =>
-    let body := String.intercalate "\n" (attrs.map Attr.render)
+    let all := match region with
+      | some r => attrs ++ [Attr.str "region" r]
+      | none   => attrs
+    let body := String.intercalate "\n" (all.map Attr.render)
     s!"resource {quote ty} {quote (label name)} \{\n{body}\n}"
 
 /-- The `provider` blocks a fleet's placement implies — one per cloud, with
@@ -274,13 +285,12 @@ def providerBlocks (κ : Keys) (rs : Regions) : List String :=
     match regions with
     | []      => s!"provider {quote p.name} \{\n  # TODO region: this fleet does not declare one\n}"
     | [r]     => s!"provider {quote p.name} \{\n  region = {quote r}\n}"
-    | r :: rest =>
-      let aliases := String.intercalate "\n" (rest.map fun c =>
-        s!"provider {quote p.name} \{\n  alias  = {quote (label c)}\n  region = {quote c}\n}")
-      s!"provider {quote p.name} \{\n  region = {quote r}\n}\n\n{aliases}\n\n\
-# NOTE: this fleet spans several regions of {p.name}. Terraform needs one\n\
-# aliased provider per region and a `provider = {p.name}.<alias>` argument on\n\
-# each resource; which resource belongs to which is NOT emitted here."
+    | r :: _ =>
+      -- No aliases. A fleet spanning several regions of one cloud is carried
+      -- by the per-resource `region` attribute instead, which is what the AWS
+      -- provider added in v6.0 precisely to avoid one aliased provider per
+      -- region. The first region is the default for anything unplaced.
+      s!"provider {quote p.name} \{\n  region = {quote r}\n}"
 
 /-- A whole fleet as `.tf` text.
 
@@ -298,7 +308,9 @@ def toHcl {κ : Keys} (T : Plan κ) (rs : Regions := {}) : String :=
     (Finite.elems (α := Kind)).flatMap fun k =>
       (Finite.elems (α := κ.Key p k)).filterMap fun key =>
         match T.assign p k key with
-        | .present spec => blockOf p k (κ.name p k key) (attrsOf κ.name k spec)
+        | .present spec =>
+          blockOf p k (κ.name p k key) (rs.codeFor p k (κ.name p k key))
+            (attrsOf κ.name k spec)
         | _             => none
   String.intercalate "\n\n" (header :: providers ++ resources) ++ "\n"
 

@@ -160,7 +160,6 @@ instance : HasDeps PostgresSpec where
 
 instance : HasDeps S3BucketSpec where
   deps s := depsReq s.name ++ depsOpt s.versioning ++ depsOpt s.objectLock
-            ++ depsOpt s.region
 
 /-- The cross-cloud edge — a Scaleway function reading from an AWS bucket —
     and the first of the two key-typed *payload* reads. -/

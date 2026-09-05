@@ -269,7 +269,6 @@ structure S3BucketSpec (K : ProviderId → Kind → Type) (o : Type u → Type u
       it later means replacing the bucket, which is what makes this kind's
       `Mutability` table non-trivial. -/
   objectLock       : Field .optional o f Bool
-  region           : Field .optional o f String
 
 /-- A Serverless namespace, for either product.
 
@@ -457,8 +456,7 @@ instance : Fillable S3BucketSpec where
   fill s :=
     { name       := s.name
       versioning := s.versioning.getD (.lit true)
-      objectLock := s.objectLock.getD (.lit false)
-      region     := s.region.getD (.lit "eu-west-1") }
+      objectLock := s.objectLock.getD (.lit false) }
 
 /-- `sourceBucket` defaults to `.lit none` — "said: nothing" — rather than to a faked
     `Inhabited` witness. This is the honest fix `Cloud.lean` §13 asks for. -/

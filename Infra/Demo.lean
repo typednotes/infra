@@ -125,7 +125,7 @@ def demoPlan : Plan demoKeys where
     | .scaleway, .compute,          _ => .present apiSpec
     | .aws,      .s3Bucket,         _ =>
         .present { name := "cold", versioning := .unknown
-                   objectLock := true, region := .unknown }
+                   objectLock := true }
     | .scaleway, .scalewayFunctionNamespace, _ =>
         .present { name := "demo", description := "the demo fleet's functions" }
     | .scaleway, .scalewayFunction, _ => .present ingestSpec
@@ -409,7 +409,7 @@ def immutableDriftWorld : World demoKeys :=
   worldOf [⟨.aws, .s3Bucket, .cold,
     { observed := { handle := ⟨"cold"⟩, arn := "arn:aws:s3:::cold", region := "eu-west-1" }
       reported := { name := "cold", versioning := .unknown
-                    objectLock := .known false, region := .known "eu-west-1" } }⟩]
+                    objectLock := .known false } }⟩]
 
 section Guards
 

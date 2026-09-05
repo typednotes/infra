@@ -330,7 +330,7 @@ def checkTeardown : IO Unit := do
     [ ⟨.aws, .s3Bucket, .cold,
         { observed := { handle := ⟨"cold"⟩, arn := "arn:x", region := "eu-west-1" }
           reported := { name := "cold", versioning := .unknown
-                        objectLock := .unknown, region := .unknown } }⟩
+                        objectLock := .unknown } }⟩
     , ⟨.scaleway, .scalewayFunction, .api,
         { observed := { handle := ⟨"ingest"⟩, url := "https://x.invalid" }
           reported := { name := "ingest", runtime := "python3.12"

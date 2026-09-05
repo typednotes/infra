@@ -60,23 +60,16 @@ open Infra.Specs
 fleet spread in paris where
   provider aws where
     -- No block: takes the fleet's own placement, which for AWS is `eu-west-3`.
-    --
-    -- `region` is written out on every `s3Bucket` here, and it must agree with
-    -- the block around it. That is a wart, not a feature — see "The `region`
-    -- field is a trap" below. Leaving it off does not mean "wherever the fleet
-    -- is"; it means `eu-west-1`, and the plan then proposes a replacement that
-    -- can never converge.
-    resource s3Bucket "typednotes-eu-assets"
-      { versioning := true, region := "eu-west-3" }
+    -- Nothing here names a region, because the blocks are the only thing that
+    -- places anything.
+    resource s3Bucket "typednotes-eu-assets" { versioning := true }
 
     in nVirginia where
-      resource s3Bucket "typednotes-us-east-assets"
-        { versioning := true, region := "us-east-1" }
+      resource s3Bucket "typednotes-us-east-assets" { versioning := true }
       resource objectStore "typednotes-us-east-logs" { versioning := true }
 
     in oregon where
-      resource s3Bucket "typednotes-us-west-assets"
-        { versioning := true, region := "us-west-2" }
+      resource s3Bucket "typednotes-us-west-assets" { versioning := true }
 
   provider scaleway where
     resource objectStore "typednotes-eu-cache" { versioning := true }
@@ -113,29 +106,29 @@ fleet spread in paris where
 #guard spread.regions.used spread.keys .aws .objectStore "" = ["us-east-1"]
 #guard spread.regions.used spread.keys .scaleway .objectStore "" = ["fr-par", "nl-ams"]
 
-/-! ## The `region` field is a trap, and this is the guard against it
+/-! ## Applying twice changes nothing
 
-  `S3BucketSpec.region` predates fleet placement and does **not** place
-  anything: `Live.lean` creates the bucket at the endpoint the placement builds
-  and reports that region back, so the field is only ever *compared* — on a
-  `forcesReplace` row, because a bucket cannot move.
+  This example used to carry a `region :=` on every `s3Bucket`, and a paragraph
+  explaining why it had to. `S3BucketSpec` had a `region` field that did not
+  place anything — the placement did that — so the field was only ever
+  *compared*, on a `forcesReplace` row. Unwritten, it filled to `eu-west-1`, so
+  every bucket here diverged on an immutable field and proposed a replacement
+  that recreated the bucket exactly where it already was. It never converged.
 
-  `Fillable` fills an unwritten one with `.lit "eu-west-1"`. So a bucket
-  declared without a region, in a fleet placed anywhere else, diverges on an
-  immutable field; the replacement recreates it at the endpoint's region, which
-  is the region it already had, and the next plan proposes the same
-  replacement. It never converges, and `REPLACE` is `DeleteBucket` first.
+  The field is gone. There is one mechanism for where a resource lives, the
+  blocks above are it, and there is nothing left that can disagree with it.
 
-  This example had exactly that bug: all three buckets replaced forever. The
-  guard below is the property that was violated — **a converged fleet has
-  nothing to do** — and it is worth more than the three `region :=` lines,
-  because it fails if either the placement or the field moves without the
-  other. See `docs/diff-semantics.md`'s soft spots. -/
+  The guard survives the fix, because it is the property that was actually
+  violated and it is worth keeping whatever the cause: **a converged fleet has
+  nothing to do.** -/
 
+/-- `region` survives on the *observed* side — where the cloud reports the
+    bucket to be. That is Terraform's read-only `bucket_region`, not its
+    `region` argument, and it is no longer something a target can disagree
+    with. -/
 private def bucketSighting (name region : String) : Sighting .s3Bucket :=
   { observed := { handle := ⟨name⟩, arn := s!"arn:aws:s3:::{name}", region }
-    reported := { name, versioning := .known true
-                  objectLock := .known false, region := .known region } }
+    reported := { name, versioning := .known true, objectLock := .known false } }
 
 private def storeSighting (name : String) : Sighting .objectStore :=
   { observed := { handle := ⟨name⟩, url := s!"https://{name}" }
@@ -160,9 +153,9 @@ private def applied : World spread.keys :=
         NamedKey.of spread.names.scaleway.objectStore "typednotes-nl-cache",
         storeSighting "typednotes-nl-cache"⟩ ]
 
--- **Applying twice changes nothing.** This is the guard that was failing:
--- before the `region :=` lines above, all three buckets proposed a REPLACE
--- against a fleet that was already exactly right.
+-- **Applying twice changes nothing.** This is the guard that was failing
+-- before `S3BucketSpec.region` was removed: all three buckets proposed a
+-- REPLACE against a fleet that was already exactly right.
 #guard actions spread.plan applied = []
 
 /-! ## What cannot be written

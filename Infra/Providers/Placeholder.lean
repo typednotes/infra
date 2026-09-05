@@ -51,7 +51,7 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
                               storageGb := .unknown, minCapacity := .unknown
                               maxCapacity := .unknown }
   | .s3Bucket,         h => { name := h.raw, versioning := .unknown,
-                              objectLock := .unknown, region := .unknown }
+                              objectLock := .unknown }
   | .securityGroup,    h => { name := h.raw, description := "", ingress := .unknown }
   | .awsInstance,      h => { name := h.raw, imageId := ""
                               instanceType := InstanceType.raw ""

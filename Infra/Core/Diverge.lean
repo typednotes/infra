@@ -137,8 +137,6 @@ instance : Divergent .s3Bucket where
     ++ diverges "versioning" .mutable t.versioning r.versioning
     -- Object Lock can only be set when the bucket is created.
     ++ diverges "objectLock" .forcesReplace t.objectLock r.objectLock
-    -- A bucket cannot move region.
-    ++ diverges "region" .forcesReplace t.region r.region
 
 instance : Divergent .securityGroup where
   divergence t r :=

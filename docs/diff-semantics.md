@@ -243,6 +243,7 @@ misplaced fleet never reaches a DNS lookup:
 |---|---|
 | A place one of the fleet's clouds is not in | `Assert (l.covers κ)` on `Regions.everywhere` — AWS has no Warsaw region, so `in warsaw` fails for any fleet using AWS |
 | A region code from the wrong cloud, or a typo | `Assert ((knownRegions p).contains code)` on `Region.of` |
+| A resource's region disagreeing with where the fleet places it | structural — there is no per-resource region *field* to disagree with the placement |
 | An instance type that does not exist | `Assert (f.sizes.contains s)` on `InstanceType.of` — `t3` has no `32xlarge` |
 | A placement leaving one of the fleet's clouds unplaced | `Assert (rs.covers κ)` on `Regions.covering` |
 | A *resource* placed in a region its cloud does not have | `Assert (l.code p).isSome` on `Locality.region`, one resource at a time |
@@ -378,40 +379,6 @@ outside the fleet.
   valid declaration, which is a worse failure than the one it prevents. Nor is
   per-account quota knowable from any table. So `RunInstances` can still refuse
   a type that elaborated; what it can no longer refuse is a misspelt one.
-- **`S3BucketSpec.region` can ask for a replacement that never converges.**
-  The field does not place the bucket — `Live.lean` creates it at the endpoint
-  the fleet's placement builds, and reports that region back — so the field is
-  only ever *compared*, on a `forcesReplace` row. A spec naming a region other
-  than where the fleet places AWS therefore diverges, and the replacement
-  recreates the bucket in the same place it already was, so the next plan
-  proposes the same replacement forever. Worse, `Fillable` fills an unset
-  `region` with `.lit "eu-west-1"`, so this is the *default* for any fleet not
-  placed in Ireland: a fabricated value standing in for "the author said
-  nothing", which is exactly what this document argues a fill must never be.
-  Fleet placement (`docs/architecture.md`, "Where a fleet is") makes the field
-  redundant for choosing, and the honest resolutions are to drop it or to have
-  the backend actually honour it per bucket; neither is done.
-  `example/CrossCloud.lean` keeps the two in step with a `#guard`, and
-  `example/MultiRegion.lean` guards the property that was actually violated —
-  **applying twice changes nothing** — against a hand-built converged world.
-  That example had the bug: all three of its buckets proposed a replacement
-  against a fleet that was already exactly right, because none of them wrote
-  `region` and the fill supplied `eu-west-1`. Per-resource placement makes the
-  wart worse rather than better: the correct value now differs per resource, so
-  the workaround is writing the region twice — once in the block, once in the
-  field — with nothing coupling them but that guard.
-- **Ordering is not the same as waiting.** The scheduler gets the *sequence*
-  right — an instance is deleted before its security group — but a provider's
-  delete can be asynchronous, so "the previous action returned" does not mean
-  "the resource is gone". `TerminateInstances` accepts the request and leaves
-  the instance in `shutting-down` with its network interface still holding the
-  security group, and the group delete then fails with `DependencyViolation`.
-  Found by running `destroy` against a real account, which is the only way it
-  could have been found. `Kinds/Ec2.lean` now waits for `terminated` and
-  retries the group delete while AWS still reports a dependent object; nothing
-  in the *engine* knows about waiting, so every other asynchronous delete has
-  the same latent problem until its backend handles it. A general answer would
-  be a per-kind "settled?" predicate the scheduler consults between actions.
 - **Tearing down is `Plan.absent`, not an empty file.** `destroy` reconciles
   against the fleet's own keys with every status `.absent`, which is what
   `Status.absent`'s "must not exist ⇒ DELETE" was for. Removing a resource

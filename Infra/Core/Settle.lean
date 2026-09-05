@@ -135,8 +135,7 @@ instance : Settleable .s3Bucket where
   settle env s := do
     return { name := ← settleField env s.name
              versioning := ← settleField env s.versioning
-             objectLock := ← settleField env s.objectLock
-             region := ← settleField env s.region }
+             objectLock := ← settleField env s.objectLock }
 
 instance : Settleable .securityGroup where
   settle env s := do

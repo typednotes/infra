@@ -149,16 +149,18 @@ still. Same standing as the endpoint shapes in `Kinds/*.lean`.
 
 ## Known defects
 
-Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger; the two
-that will bite a user first:
+Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger. The one
+most likely to matter:
 
-- **`S3BucketSpec.region` proposes a replacement that never converges.** The
-  field does not place the bucket — it is only compared — so it must be
-  written out to match the fleet's placement. Leaving it off means `eu-west-1`.
 - **`Plan.outside` is declared and not consumed.** Scoping works through the
   key family instead, which is the mechanism to rely on.
 
-Neither is a surprise waiting to be discovered; both are written down.
+Not a surprise waiting to be discovered; it is written down.
+
+`S3BucketSpec.region` used to head this list — a field that did not place the
+bucket and was only compared, so a bucket declared without it proposed a
+replacement that could never converge. It is removed: placement is the one
+mechanism, and the disagreement is now unrepresentable rather than documented.
 
 ## Not in this version
 

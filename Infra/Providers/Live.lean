@@ -187,8 +187,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       let ep := s3For provider creds
       return { name := h.raw
                versioning := ← ObjectStore.readVersioning creds ep h.raw
-               objectLock := ← ObjectStore.readObjectLock creds ep h.raw
-               region := .known ep.region }
+               objectLock := ← ObjectStore.readObjectLock creds ep h.raw }
     | .securityGroup, h => do
       let (_, description, ingress) ← Ec2.SecurityGroup.read creds (ec2For creds) h.raw
       return { name := h.raw, description, ingress }
