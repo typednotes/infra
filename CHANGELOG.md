@@ -8,6 +8,21 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.3.3] — 2026-09-05
+
+### Added
+
+- **GCP service-account key files.** `GOOGLE_APPLICATION_CREDENTIALS` is now
+  the first GCP credential source: `Infra.Core.GcpAuth` reads the key, builds
+  an RFC 7523 assertion, signs it RS256 and exchanges it for an access token,
+  with no `gcloud` in the picture. **Requires linen ≥ 0.13.0**, which is where
+  the RSA signing came from — this is what that addition was for.
+- **AWS OIDC in CI.** The live-test workflow federates a role instead of
+  storing a key, so there is no long-lived AWS secret in the repository at
+  all. Needs a repository *variable* `AWS_ROLE_ARN` — not a secret.
+- `docs/authentication.md` now has a table of which method belongs where, and
+  says plainly why browser login is not implemented for any of the three.
+
 ## [0.3.2] — 2026-09-05
 
 ### Added

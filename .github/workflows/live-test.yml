@@ -28,6 +28,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write   # required to mint the OIDC token AWS trades for a role
 
 jobs:
   live:
@@ -60,6 +61,18 @@ jobs:
           done
           echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
 
+      # AWS via OIDC: no long-lived key. GitHub mints a short-lived token, AWS
+      # trades it for role credentials that expire with the job. `id-token:
+      # write` above is what allows the mint, and the role's trust policy is
+      # what restricts it to this repository.
+      - name: Authenticate to AWS (OIDC)
+        if: inputs.provider == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+          role-session-name: infra-live-test
+
       - name: Build
         run: lake build live-test
 
@@ -84,7 +97,7 @@ jobs:
           # Checking here means the failure names the missing secret instead of
           # surfacing later as an opaque 403.
           case "${{ inputs.provider }}" in
-            aws)      need="AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY" ;;
+            aws)      need="" ;;   # OIDC: no static secret to check
             scaleway) need="SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID" ;;
             gcp)      need="GOOGLE_OAUTH_ACCESS_TOKEN GOOGLE_CLOUD_PROJECT" ;;
           esac

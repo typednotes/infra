@@ -1,6 +1,7 @@
 import Infra.Core.Engine
 import Infra.Core.Credentials
 import Infra.Core.Region
+import Infra.Core.GcpAuth
 import Infra.Providers.Live
 import Infra.Providers.Placeholder
 import Infra.Providers.Kinds.Identity
@@ -54,7 +55,16 @@ def liveFor (κ : Keys) (regions : Regions := {}) :
     IO (Backends × (ProviderId → Option Credentials)) := do
   let mut creds : List (ProviderId × Credentials) := []
   for p in κ.providers do
-    let c ← Credentials.load p
+    -- GCP has a fourth source that cannot live in `Credentials.load`: minting
+    -- a token from a service-account key needs HTTP, and HTTP needs
+    -- `Credentials`. Tried first, because a key file is an explicit choice
+    -- whereas `gcloud` is whatever the developer last logged into.
+    let c ← match p with
+      | .gcp => do
+        match ← Infra.Core.GcpAuth.fromKeyFile with
+        | some c => pure c
+        | none   => Credentials.load p
+      | _ => Credentials.load p
     -- Every endpoint is built from the region, so an empty one produces a
     -- malformed host (`ec2..amazonaws.com`) and surfaces as
     -- "hostname resolution failed" — an error that says nothing about the

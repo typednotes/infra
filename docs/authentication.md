@@ -250,3 +250,57 @@ credential does not contain the secret.
   `Data.Ini` and `Data.Yaml`, which are real parsers — but see
   `docs/providers.md` for what each config format is actually relied upon to
   contain.
+
+## Which method to use
+
+Four now exist. They are not interchangeable, and the right one depends on
+where the code runs rather than on which cloud it talks to.
+
+| Where | AWS | Scaleway | GCP |
+|---|---|---|---|
+| **CI** | **OIDC** — federate a role, no stored key | scoped API key (no federation exists) | **Workload Identity Federation** |
+| A server | instance role | scoped API key | service-account key, or workload identity |
+| A laptop | `aws configure` | `scw init` | `gcloud auth login` |
+
+**Prefer federation wherever it exists.** OIDC and WIF both work by having the
+CI platform vouch for the job, so no long-lived credential is stored anywhere:
+nothing to leak, nothing to rotate, nothing to revoke in a hurry. This
+repository's live-test workflow uses OIDC for AWS, and needs only a repository
+*variable* `AWS_ROLE_ARN` — not a secret, because it is not one.
+
+Scaleway has no federation, so a scoped API key is the only option; keep it
+project-scoped rather than organization-scoped.
+
+### GCP, specifically
+
+Three sources, tried in this order:
+
+1. **`GOOGLE_APPLICATION_CREDENTIALS`** — a path to a service-account key
+   file. `Infra.Core.GcpAuth` reads it, builds an RFC 7523 assertion, signs it
+   RS256 and exchanges it for an access token. No `gcloud` needed.
+2. **`gcloud auth print-access-token`** — whatever the developer last logged
+   into.
+3. **`GOOGLE_OAUTH_ACCESS_TOKEN`** — a token supplied directly, which is what
+   Workload Identity Federation produces.
+
+The first is new, and only became possible when `linen` gained RSA *signing*
+— it could verify a signature and not produce one, which is why this used to
+shell out to a CLI. It requires **linen ≥ 0.13.0**.
+
+A key file is a real secret: long-lived, copyable, and usable from anywhere.
+It exists because not every environment can federate, not because it is a good
+default.
+
+### What is still not implemented
+
+**Browser-based login**, and the reason is worth stating rather than leaving as
+an absence. `Infra/Core/Auth.lean` sketches the OAuth2 *authorization-code*
+flow, and it is unused:
+
+- **Scaleway** has no browser flow for programmatic credentials at all.
+- **AWS**'s browser login is IAM Identity Center, which uses the *device
+  authorization* grant — a different flow from the one sketched, so that file
+  is not the head start it appears to be.
+- **GCP** does have an installed-app flow, and it is the one place a browser
+  login would fit. It is also the place where `gcloud` already does the job,
+  which is why it has not been built.
