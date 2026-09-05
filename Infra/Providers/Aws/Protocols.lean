@@ -61,6 +61,12 @@ def endpoint (provider : ProviderId) (region : String) : Endpoint :=
   match provider with
   | .aws      => { host := s!"s3.{region}.amazonaws.com", service := "s3", region }
   | .scaleway => { host := s!"s3.{region}.scw.cloud",     service := "s3", region }
+  -- Cloud Storage does expose an S3-compatible XML API on one global host,
+  -- but it authenticates with HMAC interoperability keys rather than the
+  -- bearer token this library holds for GCP. Written down because it is where
+  -- a live `objectStore` backend for GCP would start, and unused until then —
+  -- `Providers.Gcp.backend` is a placeholder.
+  | .gcp      => { host := "storage.googleapis.com", service := "s3", region }
 
 /-- Path-style addressing: `/` for service-level calls, `/bucket` otherwise.
 
@@ -186,6 +192,11 @@ def sqsEndpoint (provider : ProviderId) (region : String) : Endpoint :=
   match provider with
   | .aws      => { host := s!"sqs.{region}.amazonaws.com",      service := "sqs", region }
   | .scaleway => { host := s!"sqs.mnq.{region}.scaleway.com", service := "sqs", region }
+  -- GCP has no SQS-compatible API at all: its queues are Pub/Sub, a different
+  -- protocol that this client cannot speak. A `.invalid` host is a reserved
+  -- TLD that never resolves, so reaching here fails immediately and says why,
+  -- rather than signing a request against something plausible.
+  | .gcp      => { host := "gcp-queues-are-pubsub-not-sqs.invalid", service := "sqs", region }
 
 /-- Invoke an operation. `target` is the wire name, e.g.
     `secretsmanager.CreateSecret`; `version` selects the JSON protocol flavour

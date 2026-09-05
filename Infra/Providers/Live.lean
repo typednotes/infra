@@ -68,6 +68,22 @@ open Infra.Core
 open Infra.Providers.Aws
 open Infra.Providers.Kinds
 
+/-- Every GCP branch in this file. There is no live GCP backend yet: the types,
+    placement, scheduling, diffing and HCL export all work for GCP, but nothing
+    here can talk to it.
+
+    Raising rather than returning `[]` or `unknown` is deliberate and is the
+    same rule the rest of this file follows: an empty list would say "nothing
+    exists there", which would make the engine propose creating a whole fleet
+    it cannot then create. Saying so at the first call is the honest failure.
+
+    Kept as one helper so that implementing a GCP product is a matter of
+    replacing its call, and `grep noGcp` is the to-do list. -/
+private def noGcp {α : Type} : IO α :=
+  throw (IO.userError
+    "no live GCP backend yet — the types work, the client does not. \
+See docs/coverage.md for what is implemented")
+
 /-- The SQS endpoint this cloud uses. Scaleway's queues are SQS-compatible, so
     only the host differs — the same reuse as object storage. -/
 private def sqsFor (provider : ProviderId) (creds : Credentials) : Endpoint :=
@@ -109,12 +125,14 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         { handle := ⟨n⟩, arn := s!"arn:aws:s3:::{n}", region := ep.region }
     | .securityGroup => do
       match provider with
+      | .gcp => noGcp
       | .scaleway => return []            -- AWS-only kind
       | .aws =>
         let groups ← Ec2.SecurityGroup.list creds (ec2For creds)
         return groups.map fun g => { handle := ⟨g.1⟩, groupId := g.2.1, vpcId := g.2.2 }
     | .awsInstance => do
       match provider with
+      | .gcp => noGcp
       | .scaleway => return []            -- AWS-only kind
       | .aws =>
         let insts ← Ec2.Instance'.list creds (ec2For creds)
@@ -128,11 +146,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         { handle := ⟨name⟩, url }
     | .imageRegistry => do
       let entries ← match provider with
+        | .gcp => noGcp
         | .aws      => ImageRegistry.Ecr.list creds (ecrFor creds)
         | .scaleway => ImageRegistry.Scw.list creds
       return entries.map fun (name, uri) => { handle := ⟨name⟩, repositoryUri := uri }
     | .secrets => do
       let names ← match provider with
+        | .gcp => noGcp
         | .aws      => Secrets.Asm.list creds (asmFor creds)
         | .scaleway => Secrets.Scw.list creds
       -- The version is metadata the caller may want; fetching it per secret
@@ -140,39 +160,46 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return names.map fun n => { handle := ⟨n⟩, version := "" }
     | .compute => do
       let names ← match provider with
+        | .gcp => noGcp
         | .aws      => Compute.Lambda.list creds (lambdaFor creds)
         | .scaleway => Compute.Containers.list creds
       return names.map fun n => { handle := ⟨n⟩, status := "" }
     | .iam => do
       match provider with
+      | .gcp => noGcp
       | .aws =>
         return (← Iam.Aws'.list creds).map fun (n, arn) => { handle := ⟨n⟩, arn }
       | .scaleway =>
         return (← Iam.Scw.list creds).map fun n => { handle := ⟨n⟩, arn := "" }
     | .postgres => do
       let entries ← match provider with
+        | .gcp => noGcp
         | .aws      => Postgres.Rds.list creds (rdsFor creds)
         | .scaleway => Postgres.Rdb.list creds
       return entries.map fun (n, host) => { handle := ⟨n⟩, endpoint := host }
     | .scalewayFunctionNamespace => do
       match provider with
+      | .gcp => noGcp
       | .scaleway =>
         return (← Compute.Functions.listNamespaces creds).map fun (n, i) =>
           { handle := ⟨n⟩, namespaceId := i }
       | .aws => return []      -- Scaleway-only kind
     | .scalewayContainerNamespace => do
       match provider with
+      | .gcp => noGcp
       | .scaleway =>
         return (← Compute.Containers.listNamespaces creds).map fun (n, i) =>
           { handle := ⟨n⟩, namespaceId := i, registryEndpoint := "" }
       | .aws => return []      -- Scaleway-only kind
     | .scalewayFunction => do
       match provider with
+      | .gcp => noGcp
       | .scaleway =>
         return (← Compute.Functions.list creds).map fun (n, url) => { handle := ⟨n⟩, url }
       | .aws => return []      -- Scaleway-only kind
     | .scalewayContainer => do
       match provider with
+      | .gcp => noGcp
       | .scaleway =>
         return (← Compute.Containers.listFull creds).map fun (n, url) => { handle := ⟨n⟩, url }
       | .aws => return []      -- Scaleway-only kind
@@ -206,11 +233,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     -- is why an unimplemented kind cannot masquerade as already matching.
     | .iam, h => do
       let policies ← match provider with
+        | .gcp => noGcp
         | .aws      => Iam.Aws'.readPolicies creds h.raw
         | .scaleway => Iam.Scw.readPolicies
       return { name := h.raw, policies }
     | .compute, h => do
       match provider with
+      | .gcp => noGcp
       | .aws =>
         let (role, memory, timeout, env, image) ← Compute.Lambda.read creds (lambdaFor creds) h.raw
         -- `runtime` and `namespace'` are not reported by either cloud, and are
@@ -236,11 +265,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     | .secrets, h          => pure { name := h.raw, valueFrom := .fromEnv "" }
     | .imageRegistry, h => do
       let immutable ← match provider with
+        | .gcp => noGcp
         | .aws      => ImageRegistry.Ecr.readImmutable creds (ecrFor creds) h.raw
         | .scaleway => ImageRegistry.Scw.readImmutable
       return { name := h.raw, immutableTags := immutable }
     | .postgres, h => do
       let (cls, user, ver, storage) ← match provider with
+        | .gcp => noGcp
         | .aws      => Postgres.Rds.read creds (rdsFor creds) h.raw
         | .scaleway => Postgres.Rdb.read creds h.raw
       -- `masterPasswordSecret` is our bookkeeping, not the database's: it is
@@ -258,6 +289,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { name := h.raw, description := ← Compute.Containers.readNamespace creds h.raw }
     | .scalewayFunction, h => do
       match provider with
+      | .gcp => noGcp
       | .scaleway =>
         let (runtime, bucketName) ← Compute.Functions.read creds h.raw
         -- The reference is reported as the handle the function was told about,
@@ -277,6 +309,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     -- — same limitation as `.secrets`' own `valueFrom`.
     | .scalewayContainer, h => do
       match provider with
+      | .gcp => noGcp
       | .scaleway =>
         let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image) ←
           Compute.Containers.readFull creds h.raw
@@ -328,6 +361,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := ⟨spec.name⟩, url }
     | .imageRegistry, spec => do
       let uri ← match provider with
+        | .gcp => noGcp
         | .aws      => ImageRegistry.Ecr.create creds (ecrFor creds) spec.name spec.immutableTags
         | .scaleway => ImageRegistry.Scw.create creds spec.name
       return { handle := ⟨spec.name⟩, repositoryUri := uri }
@@ -339,11 +373,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .fromEnv v  => Secrets.valueFromEnv v
         | .composed v => pure v
       let version ← match provider with
+        | .gcp => noGcp
         | .aws      => Secrets.Asm.create creds (asmFor creds) spec.name value
         | .scaleway => Secrets.Scw.create creds spec.name value
       return { handle := ⟨spec.name⟩, version }
     | .compute, spec => do
       match provider with
+      | .gcp => noGcp
       | .aws => Compute.Lambda.create creds (lambdaFor creds) spec.name spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
       | .scaleway => Compute.Containers.create creds spec.name spec.image
@@ -351,6 +387,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := ⟨spec.name⟩, status := "creating" }
     | .iam, spec => do
       match provider with
+      | .gcp => noGcp
       | .aws =>
         let arn ← Iam.Aws'.create creds spec.name spec.policies
         return { handle := ⟨spec.name⟩, arn }
@@ -366,12 +403,14 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       let host ←
         if spec.instanceClass.isEmpty then
           match provider with
+          | .gcp => noGcp
           | .aws => throw (IO.userError
               "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
           | .scaleway => Postgres.ServerlessSql.create creds spec.name spec.masterUsername
                            password spec.version spec.minCapacity spec.maxCapacity
         else
           match provider with
+          | .gcp => noGcp
           | .aws => Postgres.Rds.create creds (rdsFor creds) spec.name spec.instanceClass
                       spec.masterUsername password spec.version spec.storageGb
           | .scaleway => Postgres.Rdb.create creds spec.name spec.instanceClass
@@ -435,6 +474,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := h, url := ← Queues.queueUrl sqsCreds ep h.raw }
     | .imageRegistry, h, spec => do
       match provider with
+      | .gcp => noGcp
       | .aws =>
         ImageRegistry.Ecr.setImmutable creds (ecrFor creds) h.raw spec.immutableTags
         return { handle := h, repositoryUri := "" }
@@ -448,11 +488,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .fromEnv v  => Secrets.valueFromEnv v
         | .composed v => pure v
       let version ← match provider with
+        | .gcp => noGcp
         | .aws      => Secrets.Asm.putValue creds (asmFor creds) h.raw value
         | .scaleway => Secrets.Scw.putValue creds h.raw value
       return { handle := h, version }
     | .compute, h, spec => do
       match provider with
+      | .gcp => noGcp
       | .aws => Compute.Lambda.update creds (lambdaFor creds) h.raw spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
       | .scaleway => Compute.Containers.update creds h.raw spec.image
@@ -460,6 +502,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := h, status := "updating" }
     | .iam, h, spec => do
       match provider with
+      | .gcp => noGcp
       | .aws =>
         Iam.Aws'.setPolicies creds h.raw spec.policies
         return { handle := h, arn := "" }
@@ -470,11 +513,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     | .postgres, h, spec => do
       if spec.instanceClass.isEmpty then
         match provider with
+        | .gcp => noGcp
         | .aws => throw (IO.userError
             "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
         | .scaleway => Postgres.ServerlessSql.modify creds h.raw spec.minCapacity spec.maxCapacity
       else
         match provider with
+        | .gcp => noGcp
         | .aws => Postgres.Rds.modify creds (rdsFor creds) h.raw spec.instanceClass spec.storageGb
         | .scaleway => Postgres.Rdb.modify creds h.raw spec.instanceClass
       return { handle := h, endpoint := "" }
@@ -512,22 +557,27 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       Queues.deleteQueue (← Scaleway.Sqs.credentialsFor provider creds) (sqsFor provider creds) h.raw
     | .imageRegistry, h =>
       match provider with
+      | .gcp => noGcp
       | .aws      => ImageRegistry.Ecr.delete creds (ecrFor creds) h.raw
       | .scaleway => ImageRegistry.Scw.delete creds h.raw
     | .secrets, h =>
       match provider with
+      | .gcp => noGcp
       | .aws      => Secrets.Asm.delete creds (asmFor creds) h.raw
       | .scaleway => Secrets.Scw.delete creds h.raw
     | .compute, h =>
       match provider with
+      | .gcp => noGcp
       | .aws      => Compute.Lambda.delete creds (lambdaFor creds) h.raw
       | .scaleway => Compute.Containers.delete creds h.raw
     | .iam, h =>
       match provider with
+      | .gcp => noGcp
       | .aws      => Iam.Aws'.delete creds h.raw
       | .scaleway => Iam.Scw.delete creds h.raw
     | .postgres, h =>
       match provider with
+      | .gcp => noGcp
       | .aws      => Postgres.Rds.delete creds (rdsFor creds) h.raw
       | .scaleway => Postgres.Rdb.delete creds h.raw
     | .scalewayFunctionNamespace, h => Compute.Functions.deleteNamespace creds h.raw
@@ -538,14 +588,21 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
   -- already exists and is already the narrowly-scoped reader for both clouds.
   secretValue h := Secrets.fetchValue provider creds h.raw
 
-/-- Both clouds, live, using each one's own credentials. -/
-def live (aws scaleway : Credentials) : Backends where
+/-- Every cloud, live, using each one's own credentials.
+
+    GCP is included for totality and will raise on first use — see `noGcp`.
+    `Infra.Cli.liveFor` is the path real fleets take and it only authenticates
+    the clouds a fleet actually declares, so a fleet with no GCP resources
+    never reaches this. -/
+def live (aws scaleway gcp : Credentials) : Backends where
   backend
     | .aws      => liveBackend .aws aws
     | .scaleway => liveBackend .scaleway scaleway
+    | .gcp      => liveBackend .gcp gcp
 
-/-- Load credentials for both clouds and build the live backends. -/
+/-- Load credentials for every cloud and build the live backends. -/
 def liveFromEnvironment : IO Backends := do
   return live (← Credentials.load .aws) (← Credentials.load .scaleway)
+    (← Credentials.load .gcp)
 
 end Infra.Providers

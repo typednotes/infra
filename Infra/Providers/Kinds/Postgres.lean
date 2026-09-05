@@ -46,6 +46,9 @@ def fetchMasterPassword (provider : ProviderId) (creds : Credentials) (secretNam
     throw (IO.userError
       "postgres needs masterPasswordSecret: the name of a secret holding the master password")
   match provider with
+  | .gcp => throw (IO.userError
+      s!"postgres on gcp: no backend yet, so the master password in '{secretName}' \
+cannot be read from Secret Manager")
   | .aws =>
     let ep := Json.secretsEndpoint creds.region
     let reply ← Json.call creds ep "secretsmanager.GetSecretValue"

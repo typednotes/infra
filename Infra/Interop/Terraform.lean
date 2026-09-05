@@ -81,6 +81,20 @@ def resourceType : ProviderId → Kind → Option String
   | .scaleway, .s3Bucket                   => none
   | .scaleway, .securityGroup              => none
   | .scaleway, .awsInstance                => none
+  | .gcp, .iam                        => some "google_service_account"
+  | .gcp, .objectStore                => some "google_storage_bucket"
+  | .gcp, .compute                    => some "google_cloud_run_v2_service"
+  | .gcp, .queues                     => some "google_pubsub_topic"
+  | .gcp, .secrets                    => some "google_secret_manager_secret"
+  | .gcp, .imageRegistry              => some "google_artifact_registry_repository"
+  | .gcp, .postgres                   => some "google_sql_database_instance"
+  | .gcp, .s3Bucket                   => none
+  | .gcp, .securityGroup              => none
+  | .gcp, .awsInstance                => none
+  | .gcp, .scalewayFunctionNamespace  => none
+  | .gcp, .scalewayFunction           => none
+  | .gcp, .scalewayContainerNamespace => none
+  | .gcp, .scalewayContainer          => none
 
 /-- The reverse lookup, for import. Ambiguity is resolved toward the portable
     kind: `aws_s3_bucket` maps to `objectStore` rather than `s3Bucket`, because
@@ -107,6 +121,13 @@ def kindOfResourceType (ty : String) : Option (ProviderId × Kind) :=
   | "scaleway_function"             => some (.scaleway, .scalewayFunction)
   | "scaleway_container_namespace"  => some (.scaleway, .scalewayContainerNamespace)
   | "scaleway_container"            => some (.scaleway, .scalewayContainer)
+  | "google_service_account"              => some (.gcp, .iam)
+  | "google_storage_bucket"               => some (.gcp, .objectStore)
+  | "google_cloud_run_v2_service"         => some (.gcp, .compute)
+  | "google_pubsub_topic"                 => some (.gcp, .queues)
+  | "google_secret_manager_secret"        => some (.gcp, .secrets)
+  | "google_artifact_registry_repository" => some (.gcp, .imageRegistry)
+  | "google_sql_database_instance"        => some (.gcp, .postgres)
   | _                               => none
 
 /-! ## Rendering HCL values -/

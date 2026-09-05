@@ -169,10 +169,64 @@ private def scalewayCode : Locality → Option String
   | .tokyo | .osaka | .seoul | .mumbai | .hyderabad
   | .singapore | .jakarta | .sydney | .hongKong => none
 
+/-- GCP's code for a place, or `none` where GCP is not.
+
+    Sparser than AWS's on purpose. GCP puts several regions in places this enum
+    does not name — `europe-west1` is St. Ghislain in **Belgium**, not Ireland;
+    `europe-west4` is Eemshaven in the **Netherlands**, not Amsterdam — and
+    mapping those onto the nearest locality would be wrong in the way that
+    actually matters, since the whole point of a locality is that it names one
+    place. Where GCP is somewhere this enum has no name for, the answer is
+    `none` and the escape hatch is `Region.raw`; adding the locality is the
+    real fix.
+
+    Checked against Google's Cloud Run, Cloud Storage, BigQuery and
+    region-carbon location lists on 2026-09-05, which agree on all of these.
+    GCP has 43 GA regions; this names 20 of them, being the ones whose place
+    this enum already has a name for. -/
+private def gcpCode : Locality -> Option String
+  | .paris      => some "europe-west9"
+  | .london     => some "europe-west2"
+  | .frankfurt  => some "europe-west3"
+  | .zurich     => some "europe-west6"
+  | .milan      => some "europe-west8"
+  | .warsaw     => some "europe-central2"
+  | .nVirginia  => some "us-east4"
+  | .ohio       => some "us-east5"
+  | .oregon     => some "us-west1"
+  | .saoPaulo   => some "southamerica-east1"
+  | .tokyo      => some "asia-northeast1"
+  | .osaka      => some "asia-northeast2"
+  | .seoul      => some "asia-northeast3"
+  | .mumbai     => some "asia-south1"
+  | .singapore  => some "asia-southeast1"
+  | .jakarta    => some "asia-southeast2"
+  | .sydney     => some "australia-southeast1"
+  | .hongKong   => some "asia-east2"
+  | .telAviv    => some "me-west1"
+  | .stockholm  => some "europe-north2"
+  -- Somewhere else, or somewhere this enum does not name. Grouped rather than
+  -- wildcarded, so adding a locality still breaks this match.
+  --
+  -- Four of these are traps rather than gaps, and are why this table is
+  -- sparse on purpose:
+  --   `.amsterdam`  — `europe-west4` is *Eemshaven*, a different Dutch city
+  --   `.ireland`    — `europe-west1` is St. Ghislain, *Belgium*; Google has a
+  --                   Dublin data centre but no GCP region behind it
+  --   `.spain`      — `europe-southwest1` is *Madrid*; AWS's `eu-south-2` is
+  --                   Aragón, so these are not the same place
+  --   `.canadaCentral` — `northamerica-northeast1` is *Montréal*; AWS names
+  --                   its Canadian region only "Canada (Central)"
+  -- GCP is simply absent from the rest.
+  | .amsterdam | .ireland | .spain
+  | .nCalifornia | .canadaCentral | .calgary | .mexicoCentral
+  | .uae | .capeTown | .hyderabad => none
+
 /-- What this cloud calls this place, if it is there at all. -/
 def Locality.code (l : Locality) : ProviderId → Option String
   | .aws      => awsCode l
   | .scaleway => scalewayCode l
+  | .gcp      => gcpCode l
 
 /-- Whether every cloud `κ` declares resources in has a region at `l`.
 
@@ -359,10 +413,21 @@ end Regions
 #guard (knownRegions .scaleway).length = 4
 #guard knownRegions .scaleway = ["fr-par", "nl-ams", "pl-waw", "it-mil"]
 
--- The two clouds overlap in exactly these places, which is the set a
--- cross-cloud fleet can be declared at.
+-- AWS and Scaleway overlap in exactly these places, which is the set a fleet
+-- using both can be declared at.
 #guard (Finite.elems (α := Locality)).filter
   (fun l => (l.code .aws).isSome && (l.code .scaleway).isSome) = [.paris, .milan]
+
+-- And all *three* clouds overlap in the same two, which is the strongest form
+-- of the portability claim this table can make: a fleet spanning every cloud
+-- this library supports has exactly two places it can be declared at.
+#guard (Finite.elems (α := Locality)).filter
+  (fun l => (Finite.elems (α := ProviderId)).all fun p => (l.code p).isSome)
+  = [.paris, .milan]
+
+-- GCP is in 20 of the places this enum names, out of its 43 GA regions — the
+-- rest are places this enum has no name for yet, reachable via `Region.raw`.
+#guard (knownRegions .gcp).length = 20
 
 -- `Region.of`'s check is exactly membership in that list, which is what makes
 -- an AWS code at Scaleway a compile error rather than a DNS failure:

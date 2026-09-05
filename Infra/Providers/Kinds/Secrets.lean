@@ -55,6 +55,11 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
   if secretName.isEmpty then
     throw (IO.userError "a secretEnv reference points at an unnamed secret")
   match provider with
+  -- Secret Manager on GCP is a real product and a real endpoint; there is
+  -- simply no backend for it yet. Raising names the pairing, which is the
+  -- convention for every unimplemented pair here.
+  | .gcp => throw (IO.userError
+      s!"secrets on gcp: no backend yet, so the value of '{secretName}' cannot be read")
   | .aws =>
     let ep := Json.secretsEndpoint creds.region
     let reply ← Json.call creds ep "secretsmanager.GetSecretValue"

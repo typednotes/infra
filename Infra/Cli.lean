@@ -107,6 +107,9 @@ structure Accounts where
 def Accounts.envVar : ProviderId → String
   | .aws      => "INFRA_EXPECT_AWS_ACCOUNT"
   | .scaleway => "INFRA_EXPECT_SCALEWAY_ORG"
+  -- GCP's unit of ownership is the project, which is also what every API call
+  -- is scoped to — so unlike the other two this is not a separate lookup.
+  | .gcp      => "INFRA_EXPECT_GCP_PROJECT"
 
 /-- The accounts named by the environment, for a fleet that cannot hardcode
     them.
@@ -147,6 +150,11 @@ def checkAccounts (κ : Keys) (want : Accounts) (creds : ProviderId → Option C
         pure (some account, s!" ({arn})")
       | .scaleway =>
         pure (← Infra.Providers.Kinds.Identity.scalewayOwner c, "")
+      -- No API call: the project is part of the credential itself, from
+      -- `gcloud config get-value project` or `GOOGLE_CLOUD_PROJECT`. Checking
+      -- it is still worth doing — it is the difference between building in
+      -- your sandbox and building in production.
+      | .gcp => pure (c.projectId, "")
     let some actual := actual
       | throw (IO.userError s!"could not establish which {p.name} account these \
 credentials belong to; for Scaleway, set default_organization_id (or \

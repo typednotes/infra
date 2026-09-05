@@ -67,6 +67,11 @@ private def mint (creds : Credentials) (region project : String) : IO Credential
 def credentialsFor (provider : ProviderId) (creds : Credentials) : IO Credentials := do
   match provider with
   | .aws => pure creds
+  -- GCP's queues are Pub/Sub, which this SQS client cannot speak. Raising
+  -- names the pairing rather than handing back a credential that would be
+  -- used to sign a request to a host that does not exist.
+  | .gcp => throw (IO.userError
+      "queues on gcp: Pub/Sub is not SQS-compatible, and no Pub/Sub backend exists yet")
   | .scaleway =>
     match ← fromKeychainAccount keychainAccount with
     | some c => return c

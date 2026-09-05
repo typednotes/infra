@@ -41,14 +41,26 @@ structure Credentials where
   /-- Scaleway IAM is organization-scoped rather than project-scoped, so a
       second identifier is needed for that one product. AWS has no analogue. -/
   organizationId : Option String := none
+  /-- An OAuth2 bearer token.
+
+      GCP is the first cloud here that does not sign its requests: there is no
+      access-key pair to derive a signature from, only a short-lived token sent
+      as `Authorization: Bearer …`. So `accessKey` and `secretKey` are empty
+      for GCP and this carries the credential instead.
+
+      Minting one from a service-account key needs an RS256 *signature*, which
+      Linen can verify but not produce — see `docs/authentication.md`. Until it
+      can, the token comes from `gcloud` or from the environment. -/
+  accessToken : Option String := none
 
 /-- Redacting. The secret and any session token are never rendered, so no
     amount of debug printing or error formatting can spill them. -/
 instance : Repr Credentials where
   reprPrec c _ :=
     let tok := if c.sessionToken.isSome then "<redacted>" else "none"
+    let bearer := if c.accessToken.isSome then "<redacted>" else "none"
     f!"Credentials \{ accessKey := {repr c.accessKey}, secretKey := <redacted>, \
-region := {repr c.region}, sessionToken := {tok} }"
+region := {repr c.region}, sessionToken := {tok}, accessToken := {bearer} }"
 
 instance : ToString Credentials where
   toString c := toString (repr c)
@@ -123,6 +135,43 @@ def fromScalewayFile (paths : Paths) : IO (Option Credentials) := do
       projectId      := str "default_project_id"
       organizationId := str "default_organization_id" }
 
+/-- Ask the `gcloud` CLI for a token, the way the other two clouds' config
+    files are read: whatever the official tool has already set up should just
+    work.
+
+    GCP is different in kind from the other two, though, and the difference is
+    worth naming. AWS and Scaleway keep a *long-lived* secret on disk that this
+    library reads and signs with. `gcloud` keeps a refresh token and mints
+    short-lived access tokens on demand, and minting one directly would need an
+    RS256 signature over a service-account key — which Linen can verify but not
+    produce. So this shells out rather than reading a file.
+
+    Two consequences, both real:
+
+    - **The token expires**, typically within the hour. A long apply can outlive
+      one. There is no refresh here; the failure is a 401 partway through.
+    - **It needs `gcloud` on PATH and logged in.** A missing binary is not an
+      error, it is a source that has nothing to offer, so it falls through to
+      the keychain and then the environment — which is what CI uses.
+
+    Both go away if `linen` gains RSA signing; the types here would not
+    change. See `docs/authentication.md`. -/
+def fromGcloud : IO (Option Credentials) := do
+  let run (args : Array String) : IO (Option String) := do
+    try
+      let out ← IO.Process.output { cmd := "gcloud", args }
+      if out.exitCode == 0 then
+        let v := out.stdout.trim
+        -- `gcloud config get-value` prints this for an unset key.
+        return if v.isEmpty || v == "(unset)" then none else some v
+      else return none
+    catch _ => return none          -- no gcloud on PATH: nothing to offer
+  let some token ← run #["auth", "print-access-token"] | return none
+  return some
+    { accessKey := "", secretKey := "", accessToken := some token
+      projectId := ← run #["config", "get-value", "project"]
+      region := (← run #["config", "get-value", "compute/region"]).getD "" }
+
 -- ── Source 2: the OS credential store ──
 
 /-- The keychain service these entries live under. -/
@@ -185,6 +234,9 @@ def envVars : ProviderId → (String × String × String × Option String)
   | .aws      => ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION",
                   some "AWS_SESSION_TOKEN")
   | .scaleway => ("SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_REGION", none)
+  -- GCP has no access-key pair. The first two are empty and `fromEnvironment`
+  -- branches on that rather than requiring them; the token is the credential.
+  | .gcp      => ("", "", "GOOGLE_CLOUD_REGION", some "GOOGLE_OAUTH_ACCESS_TOKEN")
 
 /-- "Set but empty" means unset.
 
@@ -210,19 +262,27 @@ private def getEnvNonEmpty (name : String) : IO (Option String) :=
 
 def fromEnvironment (provider : ProviderId) : IO (Option Credentials) := do
   let (kv, sv, rv, tv) := envVars provider
-  let some accessKey ← getEnvNonEmpty kv | return none
-  let some secretKey ← getEnvNonEmpty sv | return none
   let region := (← getEnvNonEmpty rv).getD ""
-  let sessionToken ← match tv with
-    | some v => getEnvNonEmpty v
-    | none   => pure none
-  let projectId ← match provider with
-    | .scaleway => getEnvNonEmpty "SCW_DEFAULT_PROJECT_ID"
-    | .aws      => pure none
-  let organizationId ← match provider with
-    | .scaleway => getEnvNonEmpty "SCW_DEFAULT_ORGANIZATION_ID"
-    | .aws      => pure none
-  return some { accessKey, secretKey, region, sessionToken, projectId, organizationId }
+  match provider with
+  | .gcp =>
+    -- A bearer token is the whole credential; there is no pair to require.
+    let some accessToken ← getEnvNonEmpty "GOOGLE_OAUTH_ACCESS_TOKEN" | return none
+    return some
+      { accessKey := "", secretKey := "", region, accessToken := some accessToken
+        projectId := ← getEnvNonEmpty "GOOGLE_CLOUD_PROJECT" }
+  | .aws | .scaleway =>
+    let some accessKey ← getEnvNonEmpty kv | return none
+    let some secretKey ← getEnvNonEmpty sv | return none
+    let sessionToken ← match tv with
+      | some v => getEnvNonEmpty v
+      | none   => pure none
+    let projectId ← match provider with
+      | .scaleway => getEnvNonEmpty "SCW_DEFAULT_PROJECT_ID"
+      | _         => pure none
+    let organizationId ← match provider with
+      | .scaleway => getEnvNonEmpty "SCW_DEFAULT_ORGANIZATION_ID"
+      | _         => pure none
+    return some { accessKey, secretKey, region, sessionToken, projectId, organizationId }
 
 -- ── The chain ──
 
@@ -240,6 +300,10 @@ private def sourceDescriptions (paths : Paths) (provider : ProviderId) (profile 
     [ s!"config file {paths.scwConfig}"
     , s!"keychain service '{keychainService}' account 'scaleway'"
     , s!"environment {kv} and {sv}" ]
+  | .gcp =>
+    [ "`gcloud auth print-access-token` (is the CLI installed and logged in?)"
+    , s!"keychain service '{keychainService}' account 'gcp'"
+    , "environment GOOGLE_OAUTH_ACCESS_TOKEN" ]
 
 /-- Try each source in order and return the first that yields credentials.
 
@@ -251,6 +315,8 @@ def loadFrom (paths : Paths) (provider : ProviderId) : IO Credentials := do
   let fromFiles ← match provider with
     | .aws      => fromAwsFiles paths profile
     | .scaleway => fromScalewayFile paths
+    -- Not a file for GCP: `gcloud` mints the token rather than storing one.
+    | .gcp      => fromGcloud
   let found ← match fromFiles with
     | some c => pure (some c)
     | none   => do
@@ -266,6 +332,18 @@ def loadFrom (paths : Paths) (provider : ProviderId) : IO Credentials := do
 /-- Load credentials for a cloud from the conventional locations. -/
 def Credentials.load (provider : ProviderId) : IO Credentials := do
   loadFrom (← Paths.default) provider
+
+/-- The OAuth2 bearer token, or a clear failure.
+
+    Every GCP call carries one and nothing else, so its absence is not a
+    subtle failure — it is a 401 on the first request with no indication of
+    which of the three sources was supposed to supply it. -/
+def Credentials.requireToken (c : Credentials) (provider : ProviderId) : IO String := do
+  match c.accessToken with
+  | some t => return t
+  | none   => throw (IO.userError
+      s!"no {provider.name} access token; run `gcloud auth login` or set \
+GOOGLE_OAUTH_ACCESS_TOKEN")
 
 /-- The Scaleway project, or a clear failure. Creating anything on Scaleway
     needs one, and its absence otherwise surfaces as an opaque API error. -/

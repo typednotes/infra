@@ -1,5 +1,6 @@
 import Infra.Providers.Aws
 import Infra.Providers.Scaleway
+import Infra.Providers.Gcp
 
 /-
   Every cloud the engine can reach, as one total function over `ProviderId`.
@@ -15,5 +16,6 @@ def all : Backends where
   backend
     | .aws      => Aws.backend
     | .scaleway => Scaleway.backend
+    | .gcp      => Gcp.backend
 
 end Infra.Providers

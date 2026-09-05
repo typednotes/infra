@@ -18,16 +18,18 @@ open Lean (ToJson FromJson)
 inductive ProviderId
   | aws
   | scaleway
+  | gcp
   deriving Repr, DecidableEq, BEq
 
 instance : Finite ProviderId where
-  elems := [.aws, .scaleway]
+  elems := [.aws, .scaleway, .gcp]
   complete := by intro a; cases a <;> simp
   nodup := by decide
 
 def ProviderId.name : ProviderId → String
   | .aws      => "aws"
   | .scaleway => "scaleway"
+  | .gcp      => "gcp"
 
 /-- The sort of resource.
 
@@ -287,7 +289,7 @@ instance : (k : Kind) → FromJson (ObservedOf k)
 section Guards
 
 #guard card Kind = 14
-#guard card ProviderId = 2
+#guard card ProviderId = 3
 #guard card Nothing = 0
 
 -- A handle is kind-indexed: this is the same raw string at two kinds, and the types differ.
