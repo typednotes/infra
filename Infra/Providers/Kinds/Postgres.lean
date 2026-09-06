@@ -46,9 +46,13 @@ def fetchMasterPassword (provider : ProviderId) (creds : Credentials) (secretNam
     throw (IO.userError
       "postgres needs masterPasswordSecret: the name of a secret holding the master password")
   match provider with
-  | .gcp => throw (IO.userError
-      s!"postgres on gcp: no backend yet, so the master password in '{secretName}' \
-cannot be read from Secret Manager")
+  -- Delegated rather than duplicated. This function's per-cloud bodies are
+  -- near-copies of `Secrets.fetchValue`'s, which is exactly how GCP came to be
+  -- implemented in one and missing from the other: the value-read path was
+  -- added to Secret Manager's client and to `fetchValue`, and this copy still
+  -- said "no backend yet". The other two branches below are the remaining
+  -- duplication and should go the same way.
+  | .gcp => Secrets.fetchValue provider creds secretName
   | .aws =>
     let ep := Json.secretsEndpoint creds.region
     let reply ← Json.call creds ep "secretsmanager.GetSecretValue"

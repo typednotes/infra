@@ -8,6 +8,28 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.4] — 2026-09-06
+
+### Fixed
+
+- **A GCP secret's value could not be read**, so composed secrets failed on
+  GCP. `Gcp.SecretManager` had list, create, put, delete and describe —
+  everything except reading a value, which nothing in the `secrets` kind itself
+  needs. What needs it is a *dependency between resources*: a composed secret
+  builds its value from another's at settle time. Implemented via the
+  `versions/latest:access` sub-resource.
+
+- **`postgres` on GCP had the same gap, in a different file.**
+  `Postgres.fetchMasterPassword` was a near-copy of `Secrets.fetchValue`, and
+  GCP had been implemented in one and not the other, so a GCP `postgres` would
+  have failed identically. It delegates now, and the remaining duplication is
+  marked.
+
+  The general point is in `docs/coverage.md`: per-kind CRUD is not the whole
+  surface. Cross-resource paths — reading a secret's value, resolving a key
+  reference — are separate, are not exercised by a fleet of independent
+  resources, and live in files named after a different kind.
+
 ## [0.4.3] — 2026-09-06
 
 ### Fixed

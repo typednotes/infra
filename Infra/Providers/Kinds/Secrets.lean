@@ -1,5 +1,6 @@
 import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
+import Infra.Providers.Gcp.SecretManager
 import Infra.Core.Stage
 import Linen.Data.Base64
 import Linen.Data.Time.Clock
@@ -56,11 +57,31 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
   if secretName.isEmpty then
     throw (IO.userError "a secretEnv reference points at an unnamed secret")
   match provider with
-  -- Secret Manager on GCP is a real product and a real endpoint; there is
-  -- simply no backend for it yet. Raising names the pairing, which is the
-  -- convention for every unimplemented pair here.
-  | .gcp => throw (IO.userError
-      s!"secrets on gcp: no backend yet, so the value of '{secretName}' cannot be read")
+  -- Google's `:access` sub-resource on a version, which is the only call in
+  -- this file that returns plaintext by design. `latest` is an alias the API
+  -- accepts in place of a version number, so this is one call rather than a
+  -- list-and-sort.
+  --
+  -- This branch was missing while `Gcp.SecretManager` had list, create, put
+  -- and delete — everything except *reading a value*, which nothing else
+  -- needs. Composed secrets do, and the gap surfaced the first time a live
+  -- GCP fleet declared one: `derived-a` could not be built because the base
+  -- secret's value could not be fetched. A kind can be "implemented" and
+  -- still be missing the one path a dependency between resources requires.
+  | .gcp =>
+    let project ← Gcp.requireProject creds
+    let reply ← Gcp.call creds "GET" Gcp.SecretManager.host
+      s!"/v1/projects/{project}/secrets/{secretName}/versions/latest:access"
+    match (field reply "payload").bind (stringField · "data") with
+    | some encoded =>
+      -- Base64 in the wire format: the API's encoding of a byte string, not
+      -- an attempt to obscure anything.
+      match Data.Base64.decode encoded with
+      | some bytes => return String.fromUTF8! bytes
+      | none       => throw (IO.userError
+          s!"gcp secret '{secretName}': value is not valid base64")
+    | none => throw (IO.userError
+        s!"gcp secret '{secretName}': the access response carried no payload")
   | .aws =>
     let ep := Json.secretsEndpoint creds.region
     let reply ← Json.call creds ep "secretsmanager.GetSecretValue"

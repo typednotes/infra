@@ -388,6 +388,30 @@ Only one was a permissions gap of the kind expected.
   bodies are the terse ones. Its calls now prefix failures with the method and
   path, which identifies the product and operation.
 
+### A kind can be "implemented" and still miss the path a dependency needs
+
+Worth its own heading, because it happened twice in the same shape and the
+second one was found by reading rather than by a failure.
+
+`Gcp.SecretManager` had `list`, `create`, `putValue`, `delete` and
+`describeVersion` — everything except **reading a value**. Nothing in the
+`secrets` kind itself needs that: a secret's value is written, never read
+back, and `read` deliberately reports only a version identifier. What needs it
+is a *dependency between resources*: a composed secret builds its value from
+another secret's value at settle time. So the first live GCP fleet with a
+composed secret failed on `derived-a` with "no backend yet", from a kind whose
+own CRUD was complete.
+
+Then the same gap existed a second time in a different file.
+`Postgres.fetchMasterPassword` was a near-copy of `Secrets.fetchValue`, and the
+GCP branch had been implemented in one and not the other — so a GCP `postgres`
+would have failed identically. It delegates now.
+
+The general lesson, for whoever adds the fourth cloud: per-kind CRUD is not the
+whole surface. The cross-resource paths — reading a secret's value, resolving a
+key reference — are separate, they are not exercised by a fleet of independent
+resources, and they live in files named after a different kind.
+
 ### Implemented, never exercised
 
 - **Scaleway Serverless SQL Database** — the `postgres` kind's serverless
