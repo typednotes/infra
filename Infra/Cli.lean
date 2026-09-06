@@ -316,10 +316,10 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
       -- `.absent`. So `destroy` is not a second teardown mechanism, it is
       -- this one with an empty target, and the guard below checks that.
       let wanted := if tearDown then Plan.absent κ else target
-      -- A teardown means all of it, so the "most of the fleet" brake would
-      -- fire on every destroy and would teach people to pass `--force`
-      -- habitually. Saying `destroy` is the explicit statement the brake
-      -- exists to ask for.
+      -- No teardown special-case here: `push` decides that from the target,
+      -- because `Plan.absent` declares nothing and that is exactly what a
+      -- teardown is. `--force` stays for the other case, a declaration that
+      -- still declares things and drops most of them.
       let store : Store κ :=
         { root     := some cacheRoot
         , rows, forgets
@@ -327,7 +327,7 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
         -- region the resource was actually created in rather than a second,
         -- differently-defaulted answer.
         , regionOf := fun p k nm => (regions.codeFor p k nm).getD "" }
-      let opts : PushOptions := { apply := doIt, colour, force := forced || tearDown }
+      let opts : PushOptions := { apply := doIt, colour, force := forced }
       -- `edges := target` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
       -- order deletions by. See `orderActions`.

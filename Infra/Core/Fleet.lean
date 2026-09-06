@@ -181,6 +181,20 @@ def releasing (κ : Keys) (p : ProviderId) (k : Kind) (name : String)
     (_h : Assert (!claimedByKey κ p k name) := by decide) : Released κ :=
   .mk p k name
 
+/-- Whether this declaration asks for anything to exist.
+
+    False for `Plan.absent`, and false for a declaration with no resources in
+    it — which is the same statement, and is what makes a teardown recognisable
+    from the target alone rather than from a flag the caller has to remember to
+    pass. Decidable because every key type is `Finite`. -/
+def Plan.declaresAnything {κ : Keys} (T : Plan κ) : Bool :=
+  (Finite.elems (α := ProviderId)).any fun p =>
+    (Finite.elems (α := Kind)).any fun k =>
+      (Finite.elems (α := κ.Key p k)).any fun key =>
+        match T.assign p k key with
+        | .present _ => true
+        | _          => false
+
 /-- Whether the world realises the target everywhere. Decidable, because every key type is
     `Finite`: fold over the enumerations. -/
 def satisfies {κ : Keys} (T : Plan κ) (W : World κ) : Bool :=

@@ -148,9 +148,20 @@ This is the section worth reading before trusting anything. Correctness of
 
 `lake test` runs the offline driver on every push, and every example with it.
 `lake test -- <provider>` is the live sequence, run from a manual workflow
-trigger, one cloud at a time. **All three legs passed as of 2026-09-06, in the
-single-declaration shape they had then; the sequence below is newer and has not
-been run.**
+trigger, one cloud at a time.
+
+**Where the staged sequence has got to, as of 2026-09-07.** Stages 1 and 2 pass
+on all three clouds — which is the first time membership has been exercised
+live: stage 2 drops two resources whose lines are gone from the declaration, so
+the ledger is the only thing that can name them, and the account came back
+holding exactly what the stage declared. Stage 3 failed on all three, for one
+reason in the tool and not in any cloud: the "destroying most of the ledger"
+brake fired on the teardown, which is the one plan it was never meant to
+question. Fixed by deriving the exemption from the target
+(`Plan.declaresAnything`) instead of taking a flag every caller had to
+remember. **The full three-stage sequence has not yet completed on any cloud**,
+and the resources from those runs had to be cleaned up with
+`lake test -- <cloud> destroy`.
 
 #### What one live leg does
 

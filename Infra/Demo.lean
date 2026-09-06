@@ -663,6 +663,11 @@ end DagGuards
   is a third name, in the ledger and in neither list: that is a resource whose
   line was deleted, and destroying it is the whole point of the ledger. -/
 
+/-! A declaration with nothing in it, which is what the last stage of a live
+  sequence applies. Its key family is empty, so it cannot name anything. -/
+
+fleet nothingDeclared where
+
 fleet ledgerFleet in paris where
   resource scaleway queues "keep" { visibilityTimeoutSec := 30 }
   -- Released: still in the ledger, must not be destroyed.
@@ -724,6 +729,32 @@ private def ledgerRows : List Ledger.Row :=
                     { observed := { handle := ⟨"keep"⟩, url := "" }
                       reported := { name := "keep", visibilityTimeoutSec := .unknown } }⟩])).map
          Action.verb = ["DELETE"]
+
+/-! ### The brake, and what it must not stop
+
+  `push` refuses a plan that destroys most of the ledger — the hazard being a
+  declaration edited by mistake, or a rename that orphans everything. What it
+  must *not* refuse is a teardown, and the first live run of the staged test
+  failed on exactly that: all three clouds created and trimmed correctly, then
+  the final stage could not delete anything, because the brake fired on the one
+  plan it was never meant to question.
+
+  The lesson was about depth, not about a missing flag. The brake originally
+  took `force` from its caller, so every caller had to remember to set it for a
+  teardown; the CLI did and the test driver did not. It now decides from the
+  target, because "asks for nothing to exist" is what a teardown *is* and the
+  target already says it. -/
+
+/- An empty declaration declares nothing, and `Plan.absent` says the same
+   thing about a fleet that has keys. Both are teardowns. -/
+#guard nothingDeclared.plan.declaresAnything = false
+#guard (Plan.absent ledgerFleet.keys).declaresAnything = false
+
+/- A declaration with resources in it does declare something, however many of
+   them are on their way out. This is the case the brake is for: dropping most
+   of a fleet while still declaring the rest. -/
+#guard ledgerFleet.plan.declaresAnything = true
+#guard dagFleet.plan.declaresAnything = true
 
 /-! ### Negative checks
 

@@ -792,19 +792,35 @@ def liveTeardown (name : String) (regions : Regions) : IO Unit := do
 def liveSequence (name : String) (stages : List Stage) (regions : Regions) :
     IO Unit := do
   let root : System.FilePath := ".infra" / s!"live-{name}"
-  let body : IO Unit := stages.forM (runStage name root)
-  match ← body.toBaseIO with
-  | .ok _ =>
-    -- The last stage already emptied it; this asserts that rather than
-    -- assuming it.
-    let rows ← Ledger.load root
-    unless rows.isEmpty do
-      throw (IO.userError s!"[{name}] the sequence finished with \
+  -- Stage by stage rather than `forM`, so that a failure knows *which* stage
+  -- failed. That matters for one case: the last stage is itself the teardown,
+  -- and re-running it as a fallback would issue the same request, fail the
+  -- same way, and print everything twice. The first live run of this test did
+  -- exactly that on all three clouds — the same shape as the workflow backstop
+  -- that used to re-run a create after a failed create.
+  let rec go : List Stage → IO Unit
+    | [] => pure ()
+    | st :: rest => do
+      match ← (runStage name root st).toBaseIO with
+      | .ok _ => go rest
+      | .error e =>
+        if st.declared.isEmpty then
+          -- The teardown is what failed. There is nothing else to try, and
+          -- resources are still standing: say so plainly rather than
+          -- reporting one error twice.
+          throw (IO.userError s!"{e}\n\
+[{name}] the teardown stage itself failed, so resources are still standing. \
+`lake test -- {name} destroy` retries it and nothing else")
+        else
+          match ← (liveTeardown name regions).toBaseIO with
+          | .ok _     => throw e
+          | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
+  go stages
+  -- The last stage already emptied it; this asserts that rather than assuming.
+  let rows ← Ledger.load root
+  unless rows.isEmpty do
+    throw (IO.userError s!"[{name}] the sequence finished with \
 {rows.length} resource(s) still managed")
-  | .error e =>
-    match ← (liveTeardown name regions).toBaseIO with
-    | .ok _     => throw e
-    | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
 
 def usage : String :=
   "usage: lake test [-- <aws|scaleway|gcp> [destroy]]\n\n\

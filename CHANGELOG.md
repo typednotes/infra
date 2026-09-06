@@ -84,6 +84,11 @@ only the ledger knows they exist. If membership still came from the
 declaration, they would be silently abandoned and every assertion would still
 pass, leaking two billable resources per cloud.
 
+When the final stage fails, the sequence no longer re-runs it as a fallback.
+It *is* the teardown, so re-running it issued the same request, failed the same
+way, and printed every error twice — the same shape as the workflow backstop
+that used to re-run a create after a failed create.
+
 The dependency graph is the same on all three clouds and is no longer just a
 fan-out: five secrets forming a fan-out of two, a fan-in of three including a
 redundant edge, and a four-deep chain — the shape `Infra/Demo.lean`'s
@@ -111,11 +116,20 @@ was right; answering the second per resource was not.
   the ledger as the authority on membership, so that nothing has to be written
   back from CI. Nothing writes the marker and nothing reads the boundary yet:
   it decides nothing today, and says so.
-- `apply` refuses a plan that would destroy more than half the ledger without
-  `--force`. HashiCorp deprecated `terraform refresh` because misconfigured
-  credentials could make it read every object as deleted and destroy them all
-  with no prompt; the same hazard exists wherever an observation can mean
-  "gone".
+- `apply` refuses a plan that would destroy more than half the ledger *while
+  still declaring other resources*. HashiCorp deprecated `terraform refresh`
+  because misconfigured credentials could make it read every object as deleted
+  and destroy them all with no prompt; the same hazard exists wherever an
+  observation can mean "gone", and an edited-by-mistake declaration is the
+  local version of it.
+
+  The exemption is derived, not passed: a declaration that asks for nothing to
+  exist *is* a teardown, and `Plan.declaresAnything` reads that off the target.
+  It took a flag at first, so every caller had to remember to set it for a
+  teardown — the CLI did, the live-test driver did not, and the first live run
+  of the staged sequence created and trimmed correctly on all three clouds and
+  then could not delete anything. The brake had fired on the one plan it was
+  never meant to question.
 - `docs/persistence.md`'s claim that the cache is gitignored because it can
   hold secret values was false and is corrected: `SecretsObserved` is a handle
   and a version, no `ObservedOf` has a value field, and `Backend.read` for

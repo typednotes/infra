@@ -439,14 +439,25 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     return (work.map fun a =>
         Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
       [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
-  -- The brake. Counted against the ledger rather than against the work-list,
-  -- because the question is "how much of what I manage is about to go", and
-  -- a plan that also creates things would otherwise dilute the ratio.
+  -- The brake, and note what it is *not* asked on: a declaration that asks for
+  -- nothing to exist. That is a teardown, it is the explicit statement this
+  -- check exists to demand, and it is recognisable from the target itself —
+  -- `Plan.absent` and a declaration with no resources in it are the same
+  -- statement. Deciding it here rather than taking a flag is what stops every
+  -- caller having to remember one; the first live run of the staged test
+  -- failed on exactly that, because the test driver built its own
+  -- `PushOptions` and the CLI's teardown flag was not in them.
+  --
+  -- Counted against the ledger rather than the work-list, because the question
+  -- is "how much of what I manage is about to go", and a plan that also
+  -- creates things would otherwise dilute the ratio.
   let doomed := work.countP (·.isDestructive)
-  if !opts.force && store.rows.length > 1 && doomed * 2 > store.rows.length then
+  if !opts.force && T.declaresAnything && store.rows.length > 1
+      && doomed * 2 > store.rows.length then
     throw (IO.userError s!"this would destroy {doomed} of {store.rows.length} managed \
-      resources. If that is a teardown, `destroy` says so explicitly; if it is not, check \
-      the credentials are for the right account before overriding with --force")
+      resources while still declaring others, which is not a teardown. If the declaration \
+      is right, re-run with --force; if it is not, check the credentials are for the \
+      account you meant")
   -- Reuse what the caller already observed. Re-reading would double the API
   -- calls on every apply, and the two pulls are microseconds apart, so they
   -- cannot usefully disagree.
