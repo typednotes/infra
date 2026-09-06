@@ -8,6 +8,41 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.1] — 2026-09-06
+
+Everything the first extended live runs found after 0.4.0 was tagged. All of
+it is prerequisites and diagnostics rather than the engine — which is the
+useful signal: the parts that had never met a real account were the edges, not
+the core.
+
+### Fixed
+
+- **An EC2 security group description could not contain an apostrophe**, and
+  saying so was left to raw XML. EC2 allows only
+  `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*`, so "created and destroyed by infra's live
+  test" was refused. A fleet's descriptions are compile-time constants, so this
+  would have failed every apply rather than intermittently. The client
+  validates the set and names the offending characters, and the live fleet's
+  descriptions are pinned by a guard.
+
+- **The live workflow's backstop re-created what it was meant to remove.**
+  `lake test -- <provider>` is a create *and* a destroy, and the comment
+  justifying the backstop said "destroy against the same fleet is idempotent"
+  — true of destroy, and this was not destroy. A failed leg was followed by a
+  second create that failed identically, so the cleanup could leave more behind
+  than it removed. The driver takes a `destroy` argument now, sharing one code
+  path with the round trip's own teardown rather than being a second
+  implementation of the operation where being wrong costs money.
+
+### Documentation
+
+- **Google Cloud needs its APIs enabled**, which is a separate act from
+  granting a role to call them — the permission list was complete and the
+  calls still failed with `Secret Manager API has not been used in project …
+  before or it is disabled`. `ci/README.md` now has the
+  `gcloud services enable` line for the seven APIs the live fleet touches, and
+  says why `sqladmin` is deliberately absent.
+
 ## [0.4.0] — 2026-09-06
 
 A minor bump rather than a patch: GCP stopped being a type-level cloud, and
@@ -114,18 +149,6 @@ the way a project is started changed shape.
   live AWS secret — nothing offline distinguishes a field an SDK supplies from
   one the service defaults — and now covered by an offline check on the
   token's shape and freshness.
-
-- **An EC2 security group description could not contain an apostrophe**, and
-  saying so was left to raw XML. EC2 allows only
-  `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*`, so "created and destroyed by infra's live
-  test" was refused — a compile-time constant, so it would have failed every
-  apply. The client validates the set and names the offending characters.
-
-- **The live workflow's backstop re-created what it was meant to remove.**
-  `lake test -- <provider>` is a create *and* a destroy, so cleaning up after a
-  failed leg by re-running it created again and failed again. The driver now
-  takes a `destroy` argument that tears down and nothing else, sharing one code
-  path with the round trip's teardown.
 
 - **Scaleway failures did not say which call failed.** Its error bodies are
   the terse ones of the three clouds: a refused request reports
