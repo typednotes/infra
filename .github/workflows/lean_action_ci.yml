@@ -66,6 +66,13 @@ jobs:
       # once, and the drift broke the link on Linux in every scaffolded
       # project while this repo itself kept building. Cheap to check, so it is
       # checked.
+      # An IAM policy document cannot carry a comment, and one shipped with a
+      # top-level "Comment" key. `create-policy` rejected it, and the failure
+      # showed up one command later as `NoSuchEntity … is not attachable` from
+      # the attach step — naming neither the cause nor the file. Grammar is
+      # cheap to check offline, so it is checked.
+      - name: Check the AWS CI policy document is well-formed
+        run: ./ci/check-aws-policy.py
       - name: Check the scaffolder's lakefile copy has not drifted
         run: ./ci/check-lakefile-sync.sh
       # `pages.yml` publishes `site/` alone, so the page carries its own copy

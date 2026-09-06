@@ -52,8 +52,20 @@ only shape available.
 
 ### AWS
 
-`ci/aws-permissions-policy.json` in this repository is the policy document.
-Apply it as a new version of the inline or managed policy on `infra-ci`:
+`ci/aws-permissions-policy.json` in this repository is the policy document. It
+is scoped to `ci-tests-infra-*` wherever the API lets a permission name a
+resource; the listing actions in the last statement cannot be scoped, and are
+read-only.
+
+That note lives here rather than in the file because **an IAM policy document
+cannot carry a comment.** The grammar admits only `Version`, `Id` and
+`Statement`, JSON has no comments, and a `"Comment"` key makes
+`create-policy` fail — which then surfaces one command later as
+`NoSuchEntity … does not exist or is not attachable` from the *attach* step,
+naming neither the cause nor the file. `ci/check-aws-policy.py` runs in CI to
+stop that recurring.
+
+Apply it as a managed policy on `infra-ci`:
 
 ```sh
 # As a managed policy (recommended: versioned, and detachable in one step)
@@ -82,6 +94,28 @@ To check what is actually attached:
 ```sh
 aws iam list-attached-role-policies --role-name infra-ci
 aws iam list-role-policies --role-name infra-ci          # inline policies
+```
+
+**If `attach-role-policy` says the policy does not exist**, the `create-policy`
+before it failed — attach reports only that the ARN is absent, not why. Run the
+create on its own and read its error; `MalformedPolicyDocument` means the
+document, not the role. Two ways to check the document before sending it:
+
+```sh
+./ci/check-aws-policy.py                    # grammar, offline, no credentials
+
+aws accessanalyzer validate-policy \
+  --policy-document file://ci/aws-permissions-policy.json \
+  --policy-type IDENTITY_POLICY              # AWS's own validator
+```
+
+An alternative to the managed policy, which avoids the two-step entirely: put
+it inline on the role, where there is nothing to attach afterwards.
+
+```sh
+aws iam put-role-policy --role-name infra-ci \
+  --policy-name infra-ci-live-tests \
+  --policy-document file://ci/aws-permissions-policy.json
 ```
 
 ### Google Cloud
