@@ -55,16 +55,30 @@ the way a project is started changed shape.
   its host actually gates on, because an approval that does not gate is
   decorative.
 
-- **The live round trip covers nine of the fourteen kinds** — 19 (cloud, kind)
-  pairs — all created from nothing, checked, and deleted. `create` and `delete`
-  each run seven times in a pass, so the scheduler is exercised live rather
-  than the single-resource path.
+- **The live round trip now declares eleven of the fourteen kinds** — 22
+  (cloud, kind) pairs, nine or ten resources per leg — each created from
+  nothing, checked, and deleted.
 
-  Five kinds are excluded for reasons a test cannot arrange, listed in
-  `docs/coverage.md`: `compute`, `scalewayContainer` and `scalewayFunction`
-  need an artefact that already exists; `awsInstance` needs a stale-prone AMI
-  id and bills by the second; `postgres` takes longer to create than the
-  workflow's step timeout.
+  It also has **shape**, not just size: a chain (a secret composed from
+  another's value), a fan-out (two secrets from one base), and a fan-in
+  (Scaleway's container depending on its namespace by key reference *and* on a
+  secret through `secretEnv`). Ordering is the part of the engine most likely
+  to be wrong in a way only a real cloud reveals, and each pattern fails
+  differently when the schedule is wrong. All three are pinned offline by
+  guards on the create order, negative ones included.
+
+  What has actually *run* is still `queues` on all three clouds. The
+  seven-kind legs are blocked on permissions neither CI identity holds, and
+  `docs/coverage.md` keeps those two facts apart rather than counting code
+  that has not executed.
+
+  Three kinds remain excluded, listed in `docs/coverage.md`:
+  `scalewayFunction` needs deployable code rather than an image;
+  `awsInstance` needs a stale-prone AMI id and bills by the second;
+  `postgres` takes longer to create than the workflow's step timeout.
+  `compute` and `scalewayContainer` came *in* once a public image was allowed
+  — Cloud Run and Serverless Containers both pull one, so nothing has to be
+  built first. Lambda still cannot, needing an ECR image in-account.
 
   Buckets are included for the first time. Their names are unique across a
   whole cloud and a fleet's names are compile-time constants, which is why they

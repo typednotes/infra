@@ -374,7 +374,8 @@ rate limiting"), and does not support private ones at all — so
 No live test has confirmed either half of that.
 
 **Not verified here**: the endpoint paths, field names and payload shapes in
-`Kinds/*.lean` — roughly 1,200 lines. Those can only be confirmed against real
+`Kinds/*.lean` and `Gcp/*.lean` — about 2,250 lines, counted rather than
+recalled. Those can only be confirmed against real
 accounts. Signing correctness is established; *what* is being signed is not.
 
 **Verified against a real account**: Scaleway `.queues` — `list`, `create`,

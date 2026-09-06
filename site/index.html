@@ -214,8 +214,10 @@
   .slide[hidden] { display: none; }
   /* The frame keeps its shape between examples: without this the card grows
      and shrinks as slides change, and the controls beneath it jump. Measured
-     from the tallest slide (371px) rather than guessed — the four are 282,
-     371, 326 and 371. Re-measure if a slide is edited. */
+     from the tallest slide rather than guessed — in a browser at 1280px the
+     four are 281, 370, 326 and 370, so 371 clears all of them. Re-measure if
+     a slide is edited; the numbers here were read out of the page on
+     2026-09-06, not estimated. */
   .slides { min-height: 371px; }
   @media (max-width: 900px) { .slides { min-height: 0; } }
 
@@ -235,15 +237,13 @@
   .cloudband { padding: 8px 24px 40px; }
   .cloudband-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
                      color: var(--ink-2); margin: 0 0 14px; }
-  .cloudband-note { font-size: 15px; color: var(--ink-2); max-width: 68ch; margin: 16px 0 0; }
-  .cloudband-note strong { color: var(--ink); }
   .clouds { display: flex; flex-wrap: wrap; align-items: center; gap: 34px; margin: 8px 0 0; }
-  /* No tile. The marks sit on the page: a bordered card around someone else's
-     logo reads as a UI control and competes with the logo it contains. The
-     status tag alone carries what the border used to. */
-  .cloud { display: flex; align-items: center; gap: 10px; padding: 6px 0;
-           color: var(--ink-2); }
-  .cloud.is-on, .cloud.is-partial { color: var(--ink); }
+  /* No tile, and no per-cloud status. The strip answers one question — which
+     clouds are supported — and all three are, equally. A tag on one logo and
+     not the others read as a caveat attached to that vendor rather than as
+     information about this project; the coverage section is where per-kind
+     detail belongs. */
+  .cloud { display: flex; align-items: center; padding: 6px 0; }
   .cloud img { height: 24px; width: auto; display: block; }
   /* No `<picture>` on the page today: the three vendor marks are single
      unmodified files. Kept for the documented socket — an official reversed
@@ -267,11 +267,7 @@
      Measured in the browser in both schemes, not assumed. */
   @media (prefers-color-scheme: dark) {
     .clouds { background: #FFFFFF; border-radius: 12px; padding: 20px 30px; gap: 40px; }
-    .cloud, .cloud.is-on, .cloud.is-partial { color: #3F5372; }
-    .cloud span { color: #4B5B70; border-color: #C3D0E2; }
   }
-  .cloud span { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
-                border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
 
   /* ── coverage ── */
   .cov { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
@@ -449,9 +445,9 @@
        support — and a roadmap is the thing most likely to be read as a promise.
        Alphabetical, so the order carries no ranking. -->
   <div class="clouds">
-    <div class="cloud is-on has-mark"><img class="mark mark-aws" src="providers/aws.svg" alt="AWS" width="57" height="34"></div>
-    <div class="cloud is-partial has-mark"><img class="mark mark-gcp" src="providers/gcp.svg" alt="Google Cloud" width="129" height="20"><span>7 of 7 kinds live</span></div>
-    <div class="cloud is-on has-mark"><img class="mark mark-scaleway" src="providers/scaleway.svg" alt="Scaleway" width="103" height="20"></div>
+    <div class="cloud"><img class="mark mark-aws" src="providers/aws.svg" alt="AWS" width="57" height="34"></div>
+    <div class="cloud"><img class="mark mark-gcp" src="providers/gcp.svg" alt="Google Cloud" width="129" height="20"></div>
+    <div class="cloud"><img class="mark mark-scaleway" src="providers/scaleway.svg" alt="Scaleway" width="103" height="20"></div>
   </div>
 </div>
 
@@ -668,9 +664,11 @@ would CREATE scaleway/secrets/db-url
       <div class="cov-card ok">
         <h4>Verified live</h4>
         <p>A create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy round
-           trip on <strong>all three clouds</strong>, in CI. Plus Scaleway
-           <code>list</code> for every kind, and on AWS real S3 buckets, a
-           security group and two running instances.</p>
+           trip for <code>queues</code> on <strong>all three clouds</strong>, in
+           CI. Plus Scaleway <code>list</code> for every kind, and on AWS real
+           S3 buckets, a security group and two running instances. The live
+           fleets declare eleven of the fourteen kinds, with chain, fan-out and
+           fan-in dependencies; those legs have not run yet.</p>
       </div>
       <div class="cov-card warn">
         <h4>Verified offline</h4>
@@ -679,10 +677,11 @@ would CREATE scaleway/secrets/db-url
       </div>
       <div class="cov-card bad">
         <h4>Never run</h4>
-        <p>Most of AWS — Lambda, RDS, ECR, Secrets Manager, IAM — and every
-           <code>update</code> path. Roughly 1,200 lines of endpoint shapes are
-           still best guesses. <code>delete</code> left this list: it is on the
-           CI path for all three clouds now.</p>
+        <p>Most of AWS — Lambda, RDS, ECR, Secrets Manager, IAM — every
+           Google Cloud client but Pub/Sub, and every <code>update</code> path.
+           That is about <strong>2,250 lines</strong> of endpoint shapes no
+           account has ever answered. <code>delete</code> left this list: it is
+           on the CI path for all three clouds now.</p>
       </div>
     </div>
 

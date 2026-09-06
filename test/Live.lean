@@ -118,8 +118,17 @@ def bucketSuffix : String := "7c1f9a2e"
 fleet awsLive in ireland where
   provider aws where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
-    resource secrets "ci-tests-infra-secret"
+    resource secrets "ci-tests-infra-secret" as awsBase
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    -- Two secrets composed from the same one: a chain (base → derived) and a
+    -- fan-out (one node with two dependents). Both edges come from
+    -- `HasDeps SecretsSpec`'s `depsReq s.valueFrom`, and both force the base
+    -- to be created first and deleted last — in one apply, with no operator
+    -- pasting a value in between.
+    resource secrets "ci-tests-infra-derived-a"
+      { valueFrom := composed expr!"a:{secretValueOf awsBase}" }
+    resource secrets "ci-tests-infra-derived-b"
+      { valueFrom := composed expr!"b:{secretValueOf awsBase}" }
     resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
     resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
     -- Both bucket kinds: they differ in Object Lock, which is creation-time
@@ -133,15 +142,37 @@ fleet awsLive in ireland where
 fleet scalewayLive in paris where
   provider scaleway where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
-    resource secrets "ci-tests-infra-secret"
+    resource secrets "ci-tests-infra-secret" as scwBase
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-derived-a"
+      { valueFrom := composed expr!"a:{secretValueOf scwBase}" }
+    resource secrets "ci-tests-infra-derived-b"
+      { valueFrom := composed expr!"b:{secretValueOf scwBase}" }
     resource imageRegistry "ci-tests-infra-images" {}
     resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
     resource iam "ci-tests-infra-app" {}
     resource scalewayFunctionNamespace "ci-tests-infra-fns"
       { description := "created and destroyed by infra's live test" }
-    resource scalewayContainerNamespace "ci-tests-infra-ctrs"
+    resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrs
       { description := "created and destroyed by infra's live test" }
+    -- Fan-in: this depends on the namespace above (a *key* reference, via
+    -- `depsKey`) and on the base secret (via `depsKeys s.secretEnv`), so two
+    -- edges of two different provenances converge on one resource. It is the
+    -- only place the live test exercises `depsKey`/`depsKeys` rather than an
+    -- expression reference, and teardown has to reverse both.
+    --
+    -- A public image, which is what makes this includable at all: Serverless
+    -- Containers can pull from an external registry, so nothing has to be
+    -- built and pushed first.
+    resource scalewayContainer "ci-tests-infra-ctr"
+      { namespace' := scwCtrs
+      , image      := "docker.io/library/nginx:alpine"
+      , port       := 80
+      , minScale   := 0
+      , maxScale   := 1
+      , memoryMb   := 256
+      , timeoutSec := 60
+      , secretEnv  := [("BASE", scwBase)] }
 
 
 /-! GCP's leg used to be expected to fail: there was no live GCP backend, so
@@ -160,10 +191,25 @@ fleet scalewayLive in paris where
 fleet gcpLive in paris where
   provider gcp where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
-    resource secrets "ci-tests-infra-secret"
+    resource secrets "ci-tests-infra-secret" as gcpBase
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-derived-a"
+      { valueFrom := composed expr!"a:{secretValueOf gcpBase}" }
+    resource secrets "ci-tests-infra-derived-b"
+      { valueFrom := composed expr!"b:{secretValueOf gcpBase}" }
     resource imageRegistry "ci-tests-infra-images" {}
     resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
+    -- `compute` becomes testable here and nowhere else, because Cloud Run will
+    -- pull a public image. Google's own sample is used rather than something
+    -- of ours: nothing to build, and it will not disappear.
+    --
+    -- Lambda is why AWS has no `compute` here — a container function must come
+    -- from an ECR repository in the same account, so it cannot be created from
+    -- nothing.
+    resource compute "ci-tests-infra-run"
+      { image      := "gcr.io/cloudrun/hello"
+      , memoryMb   := 512
+      , timeoutSec := 60 }
     -- Google constrains a service-account id to 6-30 lowercase characters
     -- starting with a letter. `Gcp.Iam.checkAccountId` rejects a bad one by
     -- naming the rule, because the name is fixed at compile time — so a bad
@@ -171,10 +217,10 @@ fleet gcpLive in paris where
     resource iam "ci-tests-infra-sa" {}
 
 -- One guard per (fleet, kind): the count is what would silently drift if a
--- resource were added to a fleet and forgotten here, and the prefix guards are
--- what make anything this ever leaks identifiable in a console at a glance.
+-- resource were added to a fleet and forgotten here. It has already caught two
+-- scripted edits that added resources to some fleets and not others.
 #guard awsLive.keys.count .aws .queues = 1
-#guard awsLive.keys.count .aws .secrets = 1
+#guard awsLive.keys.count .aws .secrets = 3
 #guard awsLive.keys.count .aws .imageRegistry = 1
 #guard awsLive.keys.count .aws .objectStore = 1
 #guard awsLive.keys.count .aws .s3Bucket = 1
@@ -182,22 +228,24 @@ fleet gcpLive in paris where
 #guard awsLive.keys.count .aws .iam = 1
 
 #guard scalewayLive.keys.count .scaleway .queues = 1
-#guard scalewayLive.keys.count .scaleway .secrets = 1
+#guard scalewayLive.keys.count .scaleway .secrets = 3
 #guard scalewayLive.keys.count .scaleway .imageRegistry = 1
 #guard scalewayLive.keys.count .scaleway .objectStore = 1
 #guard scalewayLive.keys.count .scaleway .iam = 1
 #guard scalewayLive.keys.count .scaleway .scalewayFunctionNamespace = 1
 #guard scalewayLive.keys.count .scaleway .scalewayContainerNamespace = 1
+#guard scalewayLive.keys.count .scaleway .scalewayContainer = 1
 
 #guard gcpLive.keys.count .gcp .queues = 1
-#guard gcpLive.keys.count .gcp .secrets = 1
+#guard gcpLive.keys.count .gcp .secrets = 3
 #guard gcpLive.keys.count .gcp .imageRegistry = 1
 #guard gcpLive.keys.count .gcp .objectStore = 1
 #guard gcpLive.keys.count .gcp .iam = 1
+#guard gcpLive.keys.count .gcp .compute = 1
 
 -- Every name carries the prefix, on every kind. Checked per kind rather than
 -- in aggregate, because a name that escaped the convention would otherwise be
--- invisible until it leaked.
+-- invisible until it leaked into an account.
 #guard awsLive.names.aws.queues.all (ciPrefix.isPrefixOf ·)
 #guard awsLive.names.aws.secrets.all (ciPrefix.isPrefixOf ·)
 #guard awsLive.names.aws.imageRegistry.all (ciPrefix.isPrefixOf ·)
@@ -212,22 +260,24 @@ fleet gcpLive in paris where
 #guard scalewayLive.names.scaleway.iam.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.scalewayFunctionNamespace.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.scalewayContainerNamespace.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.scalewayContainer.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.queues.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.secrets.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.imageRegistry.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.objectStore.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.iam.all (ciPrefix.isPrefixOf ·)
+#guard gcpLive.names.gcp.compute.all (ciPrefix.isPrefixOf ·)
 
--- The bucket names carry the uniqueness suffix. Without it they are one
--- collision away from making this test permanently unrunnable, and the whole
--- reason buckets could be included at all.
+-- The bucket names carry the uniqueness suffix, which is the whole reason
+-- buckets could be included at all.
 #guard awsLive.names.aws.objectStore.all (·.endsWith bucketSuffix)
 #guard awsLive.names.aws.s3Bucket.all (·.endsWith bucketSuffix)
 #guard scalewayLive.names.scaleway.objectStore.all (·.endsWith bucketSuffix)
 #guard gcpLive.names.gcp.objectStore.all (·.endsWith bucketSuffix)
 
--- No plaintext secret is committed, in any of the three. Decidable, so the
--- compiler establishes it rather than a reviewer.
+-- No plaintext secret is committed, in any of the three, including the two
+-- composed ones. Decidable, so the compiler establishes it rather than a
+-- reviewer.
 #guard awsLive.plan.secretsAreSound
 #guard scalewayLive.plan.secretsAreSound
 #guard gcpLive.plan.secretsAreSound
@@ -237,6 +287,57 @@ fleet gcpLive in paris where
 #guard awsLive.keys.providers = [.aws]
 #guard scalewayLive.keys.providers = [.scaleway]
 #guard gcpLive.keys.providers = [.gcp]
+
+/-! ## The dependency patterns, pinned offline before they are run live
+
+  Three shapes, and the point of testing them against a real account is that
+  each fails differently when ordering is wrong:
+
+  - **A chain.** `derived-a` composes the base secret's *value*, so the base
+    must exist and be readable before the derived one is written. Get this
+    backwards live and the create fails on a secret that is not there.
+  - **A fan-out.** `derived-a` and `derived-b` both depend on the same base, so
+    one node has two dependents — and on teardown, both must go before it.
+  - **A fan-in.** Scaleway's container depends on its namespace *and* on the
+    base secret, by two different mechanisms: `depsKey` for the namespace and
+    `depsKeys` for `secretEnv`. It is the only place here that exercises key
+    references rather than expression references.
+
+  The guards below pin the ordering in the plan, so a regression in the
+  scheduler is a compile error rather than something discovered against a
+  cloud. `liveRoundTrip` then checks the same fleets converge and tear down
+  for real.
+-/
+
+/-- Where a slot first appears in the create order, or `none`. -/
+private def createIndexOf {κ : Keys} (T : Plan κ) (slot : String) : Option Nat :=
+  ((actions T (worldOf [])).map Action.render).findIdx?
+    (fun rendered => (rendered.splitOn slot).length > 1)
+
+/-- Does `a` come strictly before `b` in the create order? `false` if either is
+    absent, so a typo in a slot name fails the guard rather than passing it
+    vacuously. -/
+private def before {κ : Keys} (T : Plan κ) (a b : String) : Bool :=
+  match createIndexOf T a, createIndexOf T b with
+  | some i, some j => i < j
+  | _,      _      => false
+
+-- The chain, and the fan-out's two arms, on every cloud.
+#guard before awsLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-a"
+#guard before awsLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-b"
+#guard before scalewayLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-a"
+#guard before scalewayLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-b"
+#guard before gcpLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-a"
+#guard before gcpLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-b"
+
+-- The fan-in: both of the container's dependencies are scheduled before it.
+#guard before scalewayLive.plan "container-namespace/ci-tests-infra-ctrs" "container/ci-tests-infra-ctr"
+#guard before scalewayLive.plan "secrets/ci-tests-infra-secret" "container/ci-tests-infra-ctr"
+
+-- And the negative direction, so the guards above are not passing for the
+-- trivial reason that everything is "before" everything.
+#guard before awsLive.plan "secrets/ci-tests-infra-derived-a" "secrets/ci-tests-infra-secret" = false
+#guard before scalewayLive.plan "container/ci-tests-infra-ctr" "container-namespace/ci-tests-infra-ctrs" = false
 
 /-- How long to let a cloud's listing catch up before calling it a failure.
 

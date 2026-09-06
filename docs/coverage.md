@@ -178,33 +178,65 @@ if the driver dies between create and delete. Everything created is named
 
 #### What it covers, and what it does not
 
-**One kind, on three clouds.** Each fleet declares exactly one `queues`
-resource — SQS on AWS, Scaleway Queues, a Pub/Sub topic on GCP.
+**What has actually run is one kind, on three clouds**: `queues` — SQS on AWS,
+Scaleway Queues, a Pub/Sub topic on GCP. All three legs passed on 2026-09-06.
 
-| Cloud | Kinds covered |
-|---|---|
-| AWS | `queues`, `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`, `securityGroup`, `iam` |
-| Scaleway | `queues`, `secrets`, `imageRegistry`, `objectStore`, `iam`, `scalewayFunctionNamespace`, `scalewayContainerNamespace` |
-| GCP | `queues`, `secrets`, `imageRegistry`, `objectStore`, `iam` |
+**What the fleets now declare is nine kinds**, and that has *not* run yet. The
+two are separated deliberately, because a document whose whole job is to say
+how far this has been exercised must not count code that has never executed.
 
-**Nine of the fourteen kinds**, 19 (cloud, kind) pairs, all created from
-nothing and deleted again. The set matters as much as the count: a fleet is
-applied and torn down as a *set*, so `create` and `delete` each run seven times
-in one pass and the absence check covers all of them — a single-resource test
-cannot tell a working scheduler from a lucky one.
+| Cloud | Kinds the live fleet declares | Resources |
+|---|---|---|
+| AWS | `queues`, `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`, `securityGroup`, `iam` | 9 |
+| Scaleway | the same minus `s3Bucket`/`securityGroup`, plus both namespaces and `scalewayContainer` | 10 |
+| GCP | the same minus `s3Bucket`/`securityGroup`, plus `compute` | 9 |
 
-**The five that are not covered, each for a reason a test cannot arrange:**
+**Eleven of the fourteen kinds.** `compute` became testable once a *public*
+image was allowed — Cloud Run pulls Google's own sample, so nothing has to be
+built — and `scalewayContainer` for the same reason, since Serverless
+Containers can pull from an external registry. Lambda still cannot: a container
+function must come from an ECR repository in the same account.
+
+Eleven of the fourteen kinds, 22 (cloud, kind) pairs. Every one is written to be
+created from nothing and deleted again, and the set matters as much as the
+count: a fleet is applied and torn down as a *set*, so `create` and `delete`
+each run seven times in one pass and the absence check covers all of them — a
+single-resource test cannot tell a working scheduler from a lucky one.
+
+**None of the multi-kind legs has been run.** They are blocked on permissions
+neither CI identity holds — AWS's role was scoped to SQS alone and GCP's
+service account holds only `roles/pubsub.editor` — so the first run of each
+will most likely fail with the cloud's own refusal until `ci/README.md`'s grants
+are applied. This section will say so when they pass, and not before.
+
+**The three that are not covered, each for a reason a test cannot arrange:**
 
 | Kind | Why not |
 |---|---|
-| `compute` | Cannot be created from nothing — Lambda (container), Cloud Run and Scaleway Containers all need an image that already exists in a registry |
-| `scalewayContainer` | Same: needs an image |
-| `scalewayFunction` | Needs deployable code |
-| `awsInstance` | Needs a region-specific AMI id that goes stale, bills by the second, and takes minutes to terminate |
+| `scalewayFunction` | Needs deployable code, not just an image — there is no public equivalent to pull |
+| `awsInstance` | Needs a region-specific AMI id that goes stale, which would put a rotting constant in a test whose failure looks like a library bug. Bills by the second and takes minutes to terminate |
 | `postgres` | Five to fifteen minutes to create and as long to delete, on every cloud — longer than the workflow's step timeout, so it would not be a slow test but a failing one |
 
-The namespaces the Scaleway ones depend on *are* covered, because they can be
-created from nothing.
+### Three dependency patterns, exercised live
+
+Ordering is the part of this engine most likely to be wrong in a way that only
+a real cloud reveals, so the fleets are built to have shape rather than just
+size. Each pattern fails differently when the schedule is wrong:
+
+| Pattern | How it is built | What breaks if ordering is wrong |
+|---|---|---|
+| **Chain** | `derived-a` composes the base secret's *value* | The create fails reading a secret that does not exist yet |
+| **Fan-out** | `derived-a` and `derived-b` both compose the same base | Teardown deletes the base while two dependents still reference it |
+| **Fan-in** | Scaleway's container depends on its namespace (`depsKey`) *and* the base secret (`depsKeys secretEnv`) | Either dependency missing at create time is a hard failure |
+
+The fan-in is the only place the live test exercises **key** references rather
+than expression references — two edges of different provenance converging on
+one resource, both of which teardown has to reverse.
+
+All three are also pinned offline by `#guard`s on the create order, including
+negative ones, so a scheduler regression is a compile error rather than
+something found against an account. The negative guards matter: without them
+the positive ones would pass if everything were trivially "before" everything.
 
 **Buckets needed a decision.** Object storage names are unique across an
 entire cloud, not per account, and a fleet's names are compile-time constants —
@@ -311,7 +343,7 @@ both directions by a checker that recomputes the edges independently.
 - **Ingress rules and tags** — `CreateSecurityGroup` succeeded, but whether
   `AuthorizeSecurityGroupIngress` applied the rules correctly, and whether tags
   land, is not established by a group merely existing.
-- **Most endpoint shapes** — roughly 1,200 lines across `Kinds/*.lean`.
+- **Most endpoint shapes** — roughly 2,250 lines across `Kinds/*.lean`.
 - **`scalewayContainer.secretEnv`** — how Scaleway actually binds a secret to
   an environment variable. Implemented against the plaintext-at-set-time
   assumption; if the real mechanism is a native reference, the backend

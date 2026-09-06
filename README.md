@@ -41,7 +41,8 @@ provider-local) · every `(provider, kind)` pair implemented.
 All seven portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
 service accounts and Cloud SQL. A create-and-destroy round trip passes on each
-cloud in CI, covering two kinds per leg.
+cloud in CI for `queues`; the live fleets declare nine kinds, and those legs
+are blocked on CI permissions rather than on code.
 
 Two GCP limits are stated rather than papered over. A serverless `postgres`
 declaration **raises**, because Cloud SQL has no capacity range that scales to
@@ -59,7 +60,7 @@ any one of them:
 |---|---|
 | Verified against a real account | Scaleway `list` for every kind and queues end to end; on AWS, S3 and EC2 `create` |
 | Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets |
-| **Never run against an account** | most of AWS (Lambda, RDS, ECR, Secrets Manager, IAM), every `update`/`delete` path, ~1,200 lines of endpoint shapes |
+| **Never run against an account** | most of AWS (Lambda, RDS, ECR, Secrets Manager, IAM), every Google Cloud client but Pub/Sub, every `update` path — about 2,250 lines of endpoint shapes |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
 references, and a `# TODO` for anything HCL cannot express), and
