@@ -212,8 +212,14 @@ jobs:
       # separate `if: always()` step, deliberately: it needs the same fleet,
       # cache and backends the create used, and a shell step would have to
       # reconstruct all three.
+      # Sized from the driver, not guessed: two polls of `settleSeconds`
+      # (180s each) plus creation and deletion of nine resources, some of
+      # which — Scaleway's Functions and Containers namespaces, and a
+      # container pulling an image — take tens of seconds each way. That is
+      # about nine minutes at worst, and a step timeout must exceed the worst
+      # case or a slow-but-working run is reported as a failure.
       - name: Live round trip — ${{ inputs.provider }}
-        timeout-minutes: 12
+        timeout-minutes: 16
         env:
           # Scaleway only. AWS arrives from the OIDC step as real environment
           # variables, and GCP's token likewise — neither is passed here, and

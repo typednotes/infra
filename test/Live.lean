@@ -400,6 +400,20 @@ private def before {κ : Keys} (T : Plan κ) (a b : String) : Bool :=
 #guard before awsLive.plan "secrets/ci-tests-infra-derived-a" "secrets/ci-tests-infra-secret" = false
 #guard before scalewayLive.plan "container/ci-tests-infra-ctr" "container-namespace/ci-tests-infra-ctrs" = false
 
+/-- Print a progress line and flush it.
+
+    `IO.println` alone is not enough here. Stdout is buffered, so on a run that
+    takes minutes the progress lines all appear at once when the process
+    exits — while the notes and warnings, which go to stderr, appear
+    immediately. The result is a CI log that shows a credential warning and
+    then nothing at all for eight minutes, which is indistinguishable from a
+    hang.
+
+    Everything this driver prints as progress goes through here. -/
+def progress (line : String) : IO Unit := do
+  IO.println line
+  (← IO.getStdout).flush
+
 /-- How long to let a cloud's listing catch up before calling it a failure.
 
     Raised from 60 when the fleets went from one resource to seven. It is not
@@ -423,14 +437,26 @@ def settleSeconds : Nat := 180
     backoff would make the worst case unpredictable in a job that has a
     timeout. No `partial` — `go` recurses on a decreasing `Nat`, so the bound
     is a real measure. -/
-def waitFor {κ : Keys} (root : System.FilePath) (bs : Backends)
+def waitFor {κ : Keys} (label : String) (root : System.FilePath) (bs : Backends)
     (done : World κ → Bool) (report : World κ → List String) : IO (List String) := do
   let rec go (left : Nat) : IO (List String) := do
     let w ← pull (κ := κ) root bs
     if done w then return []
     match left with
     | 0     => return report w
-    | n + 1 => IO.sleep 1000; go n
+    | n + 1 =>
+      -- A heartbeat every fifteen seconds, naming what is still outstanding.
+      -- Without it this loop is silent for up to three minutes, which reads
+      -- as a hang — and when it does eventually fail, the reader has no idea
+      -- whether it was one slow resource or all of them. Which resource is
+      -- still missing is the whole diagnosis.
+      if (settleSeconds - left) % 15 == 0 && left != settleSeconds then
+        let outstanding := report w
+        progress s!"[{label}] waiting {settleSeconds - left}s — \
+{outstanding.length} outstanding: {String.intercalate ", " (outstanding.take 3)}\
+{if outstanding.length > 3 then s!" (+{outstanding.length - 3} more)" else ""}"
+      IO.sleep 1000
+      go n
   go settleSeconds
 
 /-- Delete everything the fleet declares, and prove it is gone.
@@ -444,14 +470,15 @@ def liveTeardown {κ : Keys} (name : String) (target : Plan κ) (regions : Regio
     IO Unit := do
   let cacheRoot : System.FilePath := ".infra" / s!"live-{name}"
   let (bs, _) ← Infra.Cli.liveFor κ regions
-  IO.println s!"[{name}] destroying…"
+  progress s!"[{name}] destroying…"
   let w ← pull (κ := κ) cacheRoot bs
   discard <| push bs (Plan.absent κ) w { apply := true } (edges := target)
   -- Waiting for it to *appear* is not possible in general, so what this
   -- asserts is that after the delete settles a fresh listing shows nothing —
   -- and it polls to get there, because a destroy issued while a resource was
   -- still invisible would find nothing to do and report success.
-  let leftover ← waitFor cacheRoot bs (fun w => (actions (Plan.absent κ) w).isEmpty)
+  let leftover ← waitFor s!"{name} destroy" cacheRoot bs
+    (fun w => (actions (Plan.absent κ) w).isEmpty)
     (fun w => (actions (Plan.absent κ) w).map Action.render)
   unless leftover.isEmpty do
     throw (IO.userError s!"[{name}] {leftover.length} resource(s) survived destroy \
@@ -460,7 +487,7 @@ after {settleSeconds}s — look for 'ci-tests-infra-*' in the account")
   unless cached.isEmpty do
     throw (IO.userError
       s!"[{name}] destroyed, but the cache still lists {cached.length} resource(s)")
-  IO.println s!"[{name}] destroyed, and the cache is empty"
+  progress s!"[{name}] destroyed, and the cache is empty"
 
 /-- Create, check, and delete — with the delete guaranteed.
 
@@ -472,7 +499,7 @@ def liveRoundTrip {κ : Keys} (name : String) (target : Plan κ) (regions : Regi
     IO Unit := do
   let cacheRoot : System.FilePath := ".infra" / s!"live-{name}"
   let (bs, _) ← Infra.Cli.liveFor κ regions
-  IO.println s!"[{name}] creating…"
+  progress s!"[{name}] creating…"
   let world ← pull (κ := κ) cacheRoot bs
   discard <| push bs target world { apply := true } (edges := target)
 
@@ -485,12 +512,13 @@ def liveRoundTrip {κ : Keys} (name : String) (target : Plan κ) (regions : Regi
     -- may simply not be visible yet. Checking immediately tests the API's
     -- propagation delay rather than this library, which is what the first live
     -- run of this test actually did.
-    let outstanding ← waitFor cacheRoot bs (fun w => (plan target w).isEmpty)
+    let outstanding ← waitFor s!"{name} converge" cacheRoot bs
+      (fun w => (plan target w).isEmpty)
       (fun w => (plan target w).map Action.render)
     unless outstanding.isEmpty do
       throw (IO.userError s!"[{name}] did not converge after {settleSeconds}s: \
 {String.intercalate ", " outstanding}")
-    IO.println s!"[{name}] converged: a second apply would do nothing"
+    progress s!"[{name}] converged: a second apply would do nothing"
 
   match ← checks.toBaseIO with
   | .ok _ => teardown
@@ -529,7 +557,7 @@ def main (args : List String) : IO UInt32 := do
       | "gcp"      => pure (liveRoundTrip "gcp" gcpLive.plan gcpLive.regions)
       | other      => throw (IO.userError s!"unknown provider '{other}'\n\n{usage}")
     match ← run.toBaseIO with
-    | .ok _    => IO.println s!"[{p}] ok"; return 0
+    | .ok _    => progress s!"[{p}] ok"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   -- Teardown without the round trip. The workflow's backstop used to re-run
   -- the whole test, on the reasoning that destroy is idempotent — but `lake
@@ -544,6 +572,6 @@ def main (args : List String) : IO UInt32 := do
       | "gcp"      => pure (liveTeardown "gcp" gcpLive.plan gcpLive.regions)
       | other      => throw (IO.userError s!"unknown provider '{other}'\n\n{usage}")
     match ← run.toBaseIO with
-    | .ok _    => IO.println s!"[{p}] torn down"; return 0
+    | .ok _    => progress s!"[{p}] torn down"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | _ => IO.eprintln usage; return 2
