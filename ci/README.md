@@ -37,3 +37,150 @@ owner and repository IDs are public.
 
 GCP's equivalent is not here because `gcloud` takes those conditions as command
 arguments rather than documents; the commands are in the same guide.
+
+## Upgrading the CI permissions for the extended live tests
+
+The live legs went from one kind to nine, and neither identity was allowed to
+do the extra work. Each leg will fail with the cloud's own permission error
+until this is granted — which is the right failure, but it is not a bug in the
+library and it is worth not spending an afternoon on.
+
+Everything below is scoped to `ci-tests-infra-*` wherever the cloud lets a
+permission name a resource. Where it does not — every *listing* call, on all
+three clouds — the grant is read-only and account-wide, because that is the
+only shape available.
+
+### AWS
+
+`ci/aws-permissions-policy.json` in this repository is the policy document.
+Apply it as a new version of the inline or managed policy on `infra-ci`:
+
+```sh
+# As a managed policy (recommended: versioned, and detachable in one step)
+aws iam create-policy \
+  --policy-name infra-ci-live-tests \
+  --policy-document file://ci/aws-permissions-policy.json
+
+aws iam attach-role-policy \
+  --role-name infra-ci \
+  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests
+
+# Later, to update it in place
+aws iam create-policy-version \
+  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests \
+  --policy-document file://ci/aws-permissions-policy.json \
+  --set-as-default
+```
+
+If `PowerUserAccess` is attached instead, note what it does **not** cover:
+`PowerUserAccess` explicitly denies almost all of IAM, so the `iam` resource in
+the live fleet will fail under it. Either attach the policy above alongside it,
+or drop `resource iam` from `awsLive` in `test/Live.lean`.
+
+To check what is actually attached:
+
+```sh
+aws iam list-attached-role-policies --role-name infra-ci
+aws iam list-role-policies --role-name infra-ci          # inline policies
+```
+
+### Google Cloud
+
+`infra-ci@typednotes.iam.gserviceaccount.com` holds `roles/pubsub.editor`,
+which covers `queues` and nothing else. The remaining four kinds need one role
+each. These are **project-level** grants, which is broader than the AWS policy
+above — Google's predefined roles are not resource-scoped, and writing a custom
+role for this is a larger job than the test justifies:
+
+```sh
+PROJECT=typednotes
+SA=infra-ci@typednotes.iam.gserviceaccount.com
+
+for ROLE in \
+  roles/pubsub.editor \
+  roles/secretmanager.admin \
+  roles/artifactregistry.admin \
+  roles/storage.admin \
+  roles/iam.serviceAccountAdmin
+do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:$SA" --role="$ROLE" --condition=None
+done
+```
+
+What each is for:
+
+| Role | Kind |
+|---|---|
+| `roles/pubsub.editor` | `queues` — already granted |
+| `roles/secretmanager.admin` | `secrets` |
+| `roles/artifactregistry.admin` | `imageRegistry` |
+| `roles/storage.admin` | `objectStore` |
+| `roles/iam.serviceAccountAdmin` | `iam` |
+
+Two not on that list, deliberately. `roles/cloudsql.admin` is not granted
+because `postgres` is not in the live fleet — it takes longer to create than
+the workflow's step timeout. And nothing grants
+`resourcemanager.projects.setIamPolicy`: `Gcp.Iam` refuses to write policy
+bindings by design, so the permission would be unused, and granting the ability
+to rewrite a project's IAM policy to a CI identity is not something to do for
+an unused code path.
+
+`Gcp.Iam.readPolicies` does read the project policy, and degrades to `unknown`
+rather than failing if it may not — so `roles/browser` or
+`roles/iam.securityReviewer` is optional and only makes `plan` more
+informative.
+
+To check what is granted:
+
+```sh
+gcloud projects get-iam-policy typednotes \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:infra-ci@typednotes.iam.gserviceaccount.com" \
+  --format="table(bindings.role)"
+```
+
+### Scaleway
+
+Scaleway grants permission *sets* to an IAM application through a policy, and
+they are coarse — one per product family:
+
+```sh
+ORG=$(scw config get default-organization-id)
+APP_ID=<the application id whose API key CI uses>
+
+scw iam policy create \
+  name=infra-ci-live-tests \
+  application-id="$APP_ID" \
+  rules.0.organization-id="$ORG" \
+  rules.0.permission-set-names.0=MessagingAndQueuingFullAccess \
+  rules.1.organization-id="$ORG" \
+  rules.1.permission-set-names.0=SecretManagerFullAccess \
+  rules.2.organization-id="$ORG" \
+  rules.2.permission-set-names.0=ContainerRegistryFullAccess \
+  rules.3.organization-id="$ORG" \
+  rules.3.permission-set-names.0=ObjectStorageFullAccess \
+  rules.4.organization-id="$ORG" \
+  rules.4.permission-set-names.0=IAMManager \
+  rules.5.organization-id="$ORG" \
+  rules.5.permission-set-names.0=FunctionsFullAccess \
+  rules.6.organization-id="$ORG" \
+  rules.6.permission-set-names.0=ContainersFullAccess
+```
+
+`MessagingAndQueuingFullAccess` is the one already needed, and note it covers
+more than the queue itself: minting the dedicated SQS credential is an IAM-ish
+operation on the Queues product, which is why the reclaim path in
+`Scaleway.Sqs` needs it too.
+
+`IAMManager` is the coarse one and the one to think about — it is what lets the
+`iam` resource create and delete an application, and Scaleway has no
+narrower set for that. Dropping `resource iam` from `scalewayLive` is the
+alternative.
+
+To see what an application currently has:
+
+```sh
+scw iam policy list application-id="$APP_ID"
+scw iam permission-set list
+```

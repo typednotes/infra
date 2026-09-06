@@ -1,23 +1,75 @@
 {
   "Version": "2012-10-17",
+  "Comment": "Attached to role infra-ci. Scoped to ci-tests-infra-* wherever the API lets a resource be named; the listing actions cannot be scoped and are read-only.",
   "Statement": [
     {
-      "Sid": "ManageTestQueuesOnly",
+      "Sid": "Queues",
       "Effect": "Allow",
       "Action": [
-        "sqs:CreateQueue",
-        "sqs:DeleteQueue",
-        "sqs:GetQueueUrl",
-        "sqs:GetQueueAttributes",
-        "sqs:SetQueueAttributes",
-        "sqs:TagQueue"
+        "sqs:CreateQueue", "sqs:DeleteQueue", "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes", "sqs:SetQueueAttributes", "sqs:TagQueue"
       ],
       "Resource": "arn:aws:sqs:eu-west-1:616568506952:ci-tests-infra-*"
     },
     {
+      "Sid": "Secrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret", "secretsmanager:DeleteSecret",
+        "secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret",
+        "secretsmanager:TagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:eu-west-1:616568506952:secret:ci-tests-infra-*"
+    },
+    {
+      "Sid": "ImageRegistry",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:CreateRepository", "ecr:DeleteRepository",
+        "ecr:DescribeRepositories", "ecr:PutImageTagMutability"
+      ],
+      "Resource": "arn:aws:ecr:eu-west-1:616568506952:repository/ci-tests-infra-*"
+    },
+    {
+      "Sid": "Buckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket", "s3:DeleteBucket", "s3:PutBucketVersioning",
+        "s3:GetBucketVersioning", "s3:PutBucketTagging", "s3:GetBucketTagging",
+        "s3:PutBucketObjectLockConfiguration", "s3:GetBucketObjectLockConfiguration",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::ci-tests-infra-*"
+    },
+    {
+      "Sid": "SecurityGroups",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "ec2:Region": "eu-west-1" }
+      }
+    },
+    {
+      "Sid": "IamUser",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateUser", "iam:DeleteUser", "iam:GetUser",
+        "iam:ListAttachedUserPolicies", "iam:AttachUserPolicy", "iam:DetachUserPolicy"
+      ],
+      "Resource": "arn:aws:iam::616568506952:user/ci-tests-infra-*"
+    },
+    {
       "Sid": "ListingCannotBeScoped",
       "Effect": "Allow",
-      "Action": "sqs:ListQueues",
+      "Action": [
+        "sqs:ListQueues", "secretsmanager:ListSecrets", "ecr:DescribeRepositories",
+        "s3:ListAllMyBuckets", "ec2:DescribeSecurityGroups", "iam:ListUsers"
+      ],
       "Resource": "*"
     }
   ]

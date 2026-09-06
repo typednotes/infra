@@ -181,18 +181,47 @@ if the driver dies between create and delete. Everything created is named
 **One kind, on three clouds.** Each fleet declares exactly one `queues`
 resource — SQS on AWS, Scaleway Queues, a Pub/Sub topic on GCP.
 
-| Cloud | Kinds | Backends | Status |
-|---|---|---|---|
-| AWS | `queues`, `secrets` | SQS, Secrets Manager | passing |
-| Scaleway | `queues`, `secrets` | Queues (SQS-compatible, via a minted credential), Secret Manager | passing |
-| GCP | `queues`, `secrets` | Pub/Sub topics, Secret Manager | passing |
+| Cloud | Kinds covered |
+|---|---|
+| AWS | `queues`, `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`, `securityGroup`, `iam` |
+| Scaleway | `queues`, `secrets`, `imageRegistry`, `objectStore`, `iam`, `scalewayFunctionNamespace`, `scalewayContainerNamespace` |
+| GCP | `queues`, `secrets`, `imageRegistry`, `objectStore`, `iam` |
 
-Two resources per leg, not one, and that difference is the point: a fleet is
-applied and torn down as a *set*, so `create` runs twice in one apply,
-`delete` twice in one destroy, and the absence check covers both. A
-single-resource test cannot tell a working scheduler from a lucky one.
+**Nine of the fourteen kinds**, 19 (cloud, kind) pairs, all created from
+nothing and deleted again. The set matters as much as the count: a fleet is
+applied and torn down as a *set*, so `create` and `delete` each run seven times
+in one pass and the absence check covers all of them — a single-resource test
+cannot tell a working scheduler from a lucky one.
 
-So of 14 kinds × 3 clouds, the live path covers **6 pairs**. It is not a
+**The five that are not covered, each for a reason a test cannot arrange:**
+
+| Kind | Why not |
+|---|---|
+| `compute` | Cannot be created from nothing — Lambda (container), Cloud Run and Scaleway Containers all need an image that already exists in a registry |
+| `scalewayContainer` | Same: needs an image |
+| `scalewayFunction` | Needs deployable code |
+| `awsInstance` | Needs a region-specific AMI id that goes stale, bills by the second, and takes minutes to terminate |
+| `postgres` | Five to fifteen minutes to create and as long to delete, on every cloud — longer than the workflow's step timeout, so it would not be a slow test but a failing one |
+
+The namespaces the Scaleway ones depend on *are* covered, because they can be
+created from nothing.
+
+**Buckets needed a decision.** Object storage names are unique across an
+entire cloud, not per account, and a fleet's names are compile-time constants —
+which is why buckets were excluded until now. A fixed random suffix
+(`bucketSuffix`) resolves it: unique in practice, still constant. The honest
+cost is that a **fork will collide with this repository's buckets** unless it
+changes the suffix, and `test/Live.lean` says so where someone will read it.
+
+**Permissions are the current gate.** Nine kinds need more than the identities
+hold — AWS's role was scoped to SQS alone, GCP's service account holds only
+`roles/pubsub.editor`. `ci/README.md` gives the CLI commands per cloud.
+Until they are granted a leg fails with the cloud's own refusal, which is the
+correct failure but is not a defect in the library.
+
+The settle window is 180 seconds, up from 60: it is not the resource count
+that raised it but the slowest member — Scaleway's Functions and Containers
+namespaces take tens of seconds to appear and tens more to go. It is not a
 coverage matrix; it is a proof that the whole engine — credential chain,
 region resolution, list, create, diff, delete, settle, persistence — works
 end to end against three different real APIs. Everything it does *not* cover

@@ -55,9 +55,26 @@ the way a project is started changed shape.
   its host actually gates on, because an approval that does not gate is
   decorative.
 
-- **The live round trip creates two resources per cloud**, a queue and a
-  secret, so the scheduler is exercised live and not only the single-resource
-  path. All three legs pass.
+- **The live round trip covers nine of the fourteen kinds** — 19 (cloud, kind)
+  pairs — all created from nothing, checked, and deleted. `create` and `delete`
+  each run seven times in a pass, so the scheduler is exercised live rather
+  than the single-resource path.
+
+  Five kinds are excluded for reasons a test cannot arrange, listed in
+  `docs/coverage.md`: `compute`, `scalewayContainer` and `scalewayFunction`
+  need an artefact that already exists; `awsInstance` needs a stale-prone AMI
+  id and bills by the second; `postgres` takes longer to create than the
+  workflow's step timeout.
+
+  Buckets are included for the first time. Their names are unique across a
+  whole cloud and a fleet's names are compile-time constants, which is why they
+  were excluded before; a fixed random suffix resolves it, at the stated cost
+  that a fork must change it to avoid colliding.
+
+  This needs permissions neither CI identity had — AWS's role was scoped to
+  SQS alone, GCP's service account holds only `roles/pubsub.editor`.
+  `ci/README.md` now gives the CLI commands per cloud, and
+  `ci/aws-permissions-policy.json` is the extended policy.
 
 - **Scaleway Serverless SQL Database** is implemented, where it used to be a
   stub that raised. `postgres` with capacity bounds and no instance class now

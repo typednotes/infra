@@ -7,16 +7,18 @@ import Infra
   (or `scaleway`, or `gcp`) creates a real resource, checks it converged,
   and deletes it again.
 
-  ## Why a queue
+  ## What a leg creates
 
-  Every live fleet here declares exactly one `queues` resource. Queues are the
-  right shape for this: their names are scoped to a region rather than
-  globally unique, so two accounts running this concurrently do not collide,
-  they cost approximately nothing, and they create and delete in seconds. An
-  S3 bucket would be the obvious choice and is the wrong one — bucket names
-  are globally unique across all of AWS, and a fleet's resource names are
-  fixed at compile time, so the test would be one name away from being
-  permanently unrunnable by anyone else.
+  Nine of the fourteen kinds, on the clouds that have them — see the note
+  above the fleets for which five are excluded and why each is a real
+  obstacle rather than a to-do.
+
+  This began as one queue per cloud, and the reasoning for that choice is
+  still the reasoning behind every name here: region-scoped rather than
+  globally unique so concurrent runs in different accounts do not collide,
+  costing approximately nothing, and creating and deleting in seconds. Buckets
+  were excluded for failing the first of those; they are included now because
+  a fixed random suffix satisfies it without making the name dynamic.
 
   ## AWS: sixty seconds between runs
 
@@ -49,52 +51,98 @@ open Infra.Specs
     CI run of this repository and can be deleted. -/
 def ciPrefix : String := "ci-tests-infra-"
 
-/-! ## The second kind: a secret
+/-! ## What the live fleets cover, and what they cannot
 
-  One resource proved the engine works end to end. A second one proves
-  something the first could not: that the **scheduler** works live, and that a
-  fleet is applied and torn down as a set rather than as one lucky resource.
-  Two independent resources means `create` twice in one apply and `delete`
-  twice in one destroy, with the absence check covering both.
+  Nine of the fourteen kinds, on the clouds that have them. Every one is
+  created from nothing, checked, and deleted, so a leg exercises `create`,
+  `list`, `read`, the diff, `delete` and the absence check across most of the
+  library rather than one corner of it.
 
-  `secrets` is the kind that can be added safely, and the reasoning is the same
-  shape as the one that chose queues:
+  Two resources were already better than one, because a set is applied and
+  torn down as a set — `create` runs more than once in an apply, `delete` more
+  than once in a destroy, and a single-resource test cannot tell a working
+  scheduler from a lucky one. Nine makes that argument properly.
 
-  - **All three clouds implement it** — Secrets Manager, Scaleway Secret
-    Manager, GCP Secret Manager.
-  - **Names are scoped**, to an account and region or to a project. Not
-    global, so concurrent runs in different accounts do not collide.
-  - **Deletion is immediate.** This one nearly disqualified AWS: Secrets
-    Manager *schedules* deletion with a recovery window of at least seven days
-    by default, and a name under scheduled deletion cannot be reused — which
-    would make this test unrunnable a second time. `Secrets.Asm.delete` passes
-    `ForceDeleteWithoutRecovery`, so it is not scheduled, it is gone.
-  - **It costs approximately nothing** for the minute it exists.
+  ## The five that are not here, and why each is a real obstacle
 
-  What is deliberately still *not* here is `objectStore`. Bucket names are
-  globally unique across all of AWS, and a fleet's names are fixed at compile
-  time, so that test would be one name away from being permanently unrunnable
-  by anyone but us. Nothing about having more kinds implemented changes that.
+  Not an oversight, and not a list that can be worked through by adding lines.
+  Each fails for a reason a test cannot arrange:
 
-  The value comes from the environment rather than the file, which is what
-  `secretsAreSound` proves below: no plaintext is committed. CI sets it; a
-  developer running this locally must too, and the failure names the variable.
+  - **`compute`** cannot be created from nothing. Lambda (container image),
+    Cloud Run and Scaleway Containers all require an image that already exists
+    in a registry, so testing it means building and pushing a real one first —
+    a different job from this one.
+  - **`scalewayContainer`** needs an image for the same reason, and
+    **`scalewayFunction`** needs deployable code.
+  - **`awsInstance`** needs an AMI id, which is region-specific and goes stale.
+    Hard-coding one puts a rotting constant in a test whose failure would look
+    like a bug in this library. It also bills by the second and takes minutes
+    to terminate.
+  - **`postgres`** takes five to fifteen minutes to create, and as long to
+    delete, on every cloud — longer than the workflow's own step timeout. It
+    would not be a slow test but a failing one, and it costs real money while
+    it exists.
+
+  The namespaces the Scaleway ones depend on are covered, because those *can*
+  be created from nothing.
+
+  ## Bucket names are global, which needed solving rather than avoiding
+
+  Object storage names are unique across an entire cloud, not per account, and
+  a fleet's names are fixed at compile time. That is why buckets were kept out
+  of this test until now, and the reasoning was sound.
+
+  What makes them includable is a fixed random suffix: unique in practice, so
+  nobody else holds the name, and still a compile-time constant. The cost is
+  small and worth stating rather than hiding — a **fork running this test will
+  collide with this repository's buckets**, and changing `bucketSuffix` is the
+  fix. A name that looked generic and failed mysteriously for the next person
+  would be worse.
+
+  ## The clouds must be allowed to do all this
+
+  More kinds means more permissions, and the CI identities do not have them
+  yet — AWS's role is scoped to SQS alone, and GCP's service account holds only
+  `roles/pubsub.editor`. `ci/README.md` lists what to grant per cloud. Until
+  it is granted a leg fails with a permission error, which is the correct
+  failure: the cloud's own refusal, reported rather than papered over.
 -/
 
 /-- The environment variable holding the test secret's value. -/
 def secretValueVar : String := "CI_TESTS_INFRA_SECRET"
+
+/-- The suffix that makes the bucket names globally unique. See the note above:
+    change it in a fork. -/
+def bucketSuffix : String := "7c1f9a2e"
 
 fleet awsLive in ireland where
   provider aws where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
     resource secrets "ci-tests-infra-secret"
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
+    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
+    -- Both bucket kinds: they differ in Object Lock, which is creation-time
+    -- only, so nothing short of a real create exercises it.
+    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
+      { versioning := true, objectLock := true }
+    resource securityGroup "ci-tests-infra-sg"
+      { description := "created and destroyed by infra's live test" }
+    resource iam "ci-tests-infra-user" {}
 
 fleet scalewayLive in paris where
   provider scaleway where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
     resource secrets "ci-tests-infra-secret"
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource imageRegistry "ci-tests-infra-images" {}
+    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
+    resource iam "ci-tests-infra-app" {}
+    resource scalewayFunctionNamespace "ci-tests-infra-fns"
+      { description := "created and destroyed by infra's live test" }
+    resource scalewayContainerNamespace "ci-tests-infra-ctrs"
+      { description := "created and destroyed by infra's live test" }
+
 
 /-! GCP's leg used to be expected to fail: there was no live GCP backend, so
     it raised on the first call, and this comment said the day one landed the
@@ -114,22 +162,69 @@ fleet gcpLive in paris where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
     resource secrets "ci-tests-infra-secret"
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource imageRegistry "ci-tests-infra-images" {}
+    resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
+    -- Google constrains a service-account id to 6-30 lowercase characters
+    -- starting with a letter. `Gcp.Iam.checkAccountId` rejects a bad one by
+    -- naming the rule, because the name is fixed at compile time — so a bad
+    -- one fails every apply rather than one of them.
+    resource iam "ci-tests-infra-sa" {}
 
--- Two resources per cloud, of two kinds, and every name carries the prefix.
--- The prefix guards are what make anything this ever leaks identifiable in a
--- console at a glance, so they cover both kinds rather than just the first.
+-- One guard per (fleet, kind): the count is what would silently drift if a
+-- resource were added to a fleet and forgotten here, and the prefix guards are
+-- what make anything this ever leaks identifiable in a console at a glance.
 #guard awsLive.keys.count .aws .queues = 1
-#guard scalewayLive.keys.count .scaleway .queues = 1
-#guard gcpLive.keys.count .gcp .queues = 1
 #guard awsLive.keys.count .aws .secrets = 1
+#guard awsLive.keys.count .aws .imageRegistry = 1
+#guard awsLive.keys.count .aws .objectStore = 1
+#guard awsLive.keys.count .aws .s3Bucket = 1
+#guard awsLive.keys.count .aws .securityGroup = 1
+#guard awsLive.keys.count .aws .iam = 1
+
+#guard scalewayLive.keys.count .scaleway .queues = 1
 #guard scalewayLive.keys.count .scaleway .secrets = 1
+#guard scalewayLive.keys.count .scaleway .imageRegistry = 1
+#guard scalewayLive.keys.count .scaleway .objectStore = 1
+#guard scalewayLive.keys.count .scaleway .iam = 1
+#guard scalewayLive.keys.count .scaleway .scalewayFunctionNamespace = 1
+#guard scalewayLive.keys.count .scaleway .scalewayContainerNamespace = 1
+
+#guard gcpLive.keys.count .gcp .queues = 1
 #guard gcpLive.keys.count .gcp .secrets = 1
+#guard gcpLive.keys.count .gcp .imageRegistry = 1
+#guard gcpLive.keys.count .gcp .objectStore = 1
+#guard gcpLive.keys.count .gcp .iam = 1
+
+-- Every name carries the prefix, on every kind. Checked per kind rather than
+-- in aggregate, because a name that escaped the convention would otherwise be
+-- invisible until it leaked.
 #guard awsLive.names.aws.queues.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.queues.all (ciPrefix.isPrefixOf ·)
-#guard gcpLive.names.gcp.queues.all (ciPrefix.isPrefixOf ·)
 #guard awsLive.names.aws.secrets.all (ciPrefix.isPrefixOf ·)
+#guard awsLive.names.aws.imageRegistry.all (ciPrefix.isPrefixOf ·)
+#guard awsLive.names.aws.objectStore.all (ciPrefix.isPrefixOf ·)
+#guard awsLive.names.aws.s3Bucket.all (ciPrefix.isPrefixOf ·)
+#guard awsLive.names.aws.securityGroup.all (ciPrefix.isPrefixOf ·)
+#guard awsLive.names.aws.iam.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.queues.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.secrets.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.imageRegistry.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.objectStore.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.iam.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.scalewayFunctionNamespace.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.scalewayContainerNamespace.all (ciPrefix.isPrefixOf ·)
+#guard gcpLive.names.gcp.queues.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.secrets.all (ciPrefix.isPrefixOf ·)
+#guard gcpLive.names.gcp.imageRegistry.all (ciPrefix.isPrefixOf ·)
+#guard gcpLive.names.gcp.objectStore.all (ciPrefix.isPrefixOf ·)
+#guard gcpLive.names.gcp.iam.all (ciPrefix.isPrefixOf ·)
+
+-- The bucket names carry the uniqueness suffix. Without it they are one
+-- collision away from making this test permanently unrunnable, and the whole
+-- reason buckets could be included at all.
+#guard awsLive.names.aws.objectStore.all (·.endsWith bucketSuffix)
+#guard awsLive.names.aws.s3Bucket.all (·.endsWith bucketSuffix)
+#guard scalewayLive.names.scaleway.objectStore.all (·.endsWith bucketSuffix)
+#guard gcpLive.names.gcp.objectStore.all (·.endsWith bucketSuffix)
 
 -- No plaintext secret is committed, in any of the three. Decidable, so the
 -- compiler establishes it rather than a reviewer.
@@ -143,8 +238,17 @@ fleet gcpLive in paris where
 #guard scalewayLive.keys.providers = [.scaleway]
 #guard gcpLive.keys.providers = [.gcp]
 
-/-- How long to let a cloud's listing catch up before calling it a failure. -/
-def settleSeconds : Nat := 60
+/-- How long to let a cloud's listing catch up before calling it a failure.
+
+    Raised from 60 when the fleets went from one resource to seven. It is not
+    the count that matters but the slowest member: Scaleway's Functions and
+    Containers namespaces take tens of seconds to become visible and tens more
+    to disappear, and a bucket's listing is not instant either. The old bound
+    was comfortable for a queue and would have made those look like failures.
+
+    Both polls use it, so the worst case is twice this, which still fits inside
+    the workflow's twelve-minute step timeout. -/
+def settleSeconds : Nat := 180
 
 /-- Re-`pull` until `done` holds, or until `settleSeconds` have passed.
 
