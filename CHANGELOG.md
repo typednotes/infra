@@ -8,6 +8,40 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.7] — 2026-09-06
+
+### Fixed
+
+- **A Scaleway run minted an SQS credential per API call.**
+  `Sqs.credentialsFor` is reached a few hundred times in one live run — five
+  call sites, once per listing, inside a poll loop — and cached only in the OS
+  keychain. A CI runner has none, so every call missed; and once `reclaim` made
+  a duplicate-name mint *succeed* rather than fail at `409`, each miss deleted
+  the previous credential and minted another. One run churned two dozen.
+
+  That was worse than the deadlock reclaiming had replaced: it hammers
+  Scaleway's IAM and would eventually be rate-limited. There is now an
+  in-process memo keyed by project and region, so a run mints at most once
+  whatever the keychain does — and a self-check establishes the memo
+  short-circuits, rather than a comment asserting it.
+
+### Documentation
+
+- **CI gets its own Scaleway project.** The live fleet creates and destroys
+  real resources, and a credential able to do that in the project holding
+  production is a credential worth not having. `ci/README.md` has the commands,
+  scoping the policy with `project-ids` rather than `organization-id`.
+
+  With the caveat that a project cannot isolate everything: Scaleway's IAM
+  applications live in the *organization*, so the `iam` kind is org-scoped
+  whatever project CI uses. Dropping `resource iam` from `scalewayLive` is the
+  tightest posture and costs one kind of coverage; `IAMApplicationManager` is
+  the narrower grant if you keep it.
+
+- **A policy on the wrong application is indistinguishable from no policy** —
+  the 403 names the call, not the identity. Named as a trap, with the two
+  commands that check it.
+
 ## [0.4.6] — 2026-09-06
 
 ### Fixed

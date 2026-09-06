@@ -58,6 +58,34 @@ open Data.Json (Value)
 
 private def prefix' (region : String) : String := Scaleway.regionalPrefix "mnq" "v1beta1" region
 
+/-! ## Why there is an in-process cache as well as a keychain one
+
+  `credentialsFor` is called by every queues operation — five call sites in
+  `Infra.Providers.Live` — and `pull` runs one of them per listing. The live
+  test polls `pull` once a second for up to three minutes, so a single run
+  reaches this function a few hundred times.
+
+  With a working keychain that is free: the first call mints, the rest read the
+  cache. Without one — a CI runner has no keychain daemon — every call missed,
+  and once `reclaim` made a duplicate-name mint *succeed* instead of failing at
+  `409`, each miss deleted the previous credential and minted another. One run
+  churned two dozen before anyone looked.
+
+  That is worse than the deadlock it replaced. It hammers Scaleway's IAM, it
+  will eventually be rate-limited, and it leaves the account's credential list
+  thrashing.
+
+  So the memo below is not an optimisation, it is the fix: mint at most once
+  per process, whatever the keychain does. The keychain cache stays because it
+  makes the *next run* free too, on a machine that has one.
+-/
+
+/-- Credentials minted in this process, keyed by project and region.
+
+    Not a `Credentials` on its own: a fleet can name resources in more than one
+    region, and Scaleway's SQS credentials are regional. -/
+initialize mintedThisRun : IO.Ref (List ((String × String) × Credentials)) ← IO.mkRef []
+
 /-- The keychain account the dedicated SQS credential is cached under. Distinct
     from the main `scaleway` account `Infra.Core.Credentials` uses. -/
 private def keychainAccount : String := "scaleway-sqs"
@@ -178,10 +206,17 @@ def credentialsFor (provider : ProviderId) (creds : Credentials) : IO Credential
   | .gcp => throw (IO.userError
       "queues on gcp: Pub/Sub is not SQS-compatible, and no Pub/Sub backend exists yet")
   | .scaleway =>
+    let project ← creds.requireProject
+    let key := (project, creds.region)
+    -- Checked before the keychain, because it is the cheaper of the two and
+    -- because it is the one that holds on a runner with no keychain at all.
+    if let some c := (← mintedThisRun.get).lookup key then
+      return c
     match ← fromKeychainAccount keychainAccount with
-    | some c => return c
-    | none =>
-      let project ← creds.requireProject
+    | some c =>
+      mintedThisRun.modify ((key, c) :: ·)
+      return c
+    | none => do
       let activationError ← activate creds creds.region project
       -- Name the call, the path and the region. `HTTP 404 not_found` on its
       -- own does not say which of the three requests in this flow produced
@@ -213,17 +248,41 @@ be retrieved; replacing it"
               | .ok c  => pure c
               | .error e2 => fail e2
           else fail e
-      -- Caching is an optimisation, not a requirement, and it must not be
+      -- The in-process memo first, and unconditionally. This is what bounds a
+      -- run to one mint: without it every one of the few hundred calls that
+      -- reach this function on a keychain-less runner would mint again, and
+      -- since `reclaim` makes a duplicate name succeed, each would delete the
+      -- last. That is not a slow path, it is a churn loop.
+      mintedThisRun.modify ((key, c) :: ·)
+      -- The keychain cache second, and it is the optional one: it must not be
       -- able to fail the operation it is optimising. A CI runner has no
-      -- keychain daemon, so this throws there — after a successful mint,
-      -- which would waste the credential and report a confusing error.
+      -- keychain daemon, so this throws there — after a successful mint, which
+      -- would waste the credential and report a confusing error.
       match ← (storeInKeychainAccount keychainAccount c).toBaseIO with
       | .ok _ => pure ()
       | .error e =>
-        -- Said out loud, because the consequence is not free: see the module
-        -- note. Without a cache every run mints another credential.
+        -- Said out loud, but no longer alarming: the memo above means this
+        -- costs one extra mint per *run*, not per call.
         IO.eprintln s!"warning: minted a Scaleway SQS credential but could not \
-cache it ({e}); it will be minted again next run — see docs/providers.md"
+cache it beyond this process ({e}); the next run will mint again — see \
+docs/providers.md"
       return c
+
+/-! ## Self-check: the memo short-circuits
+
+  The runaway this fixes was invisible offline — it needed a keychain-less
+  machine *and* a real account. What is checkable here is the mechanism: that a
+  stored credential is found on lookup, so the mint path is not re-entered. -/
+
+/-- Exposed for the self-check suite. -/
+def memoRoundTripsForCheck : IO Bool := do
+  let key := ("check-project", "fr-par")
+  let before := (← mintedThisRun.get).lookup key
+  mintedThisRun.modify ((key, { accessKey := "a", secretKey := "b", region := "fr-par" }) :: ·)
+  let after := (← mintedThisRun.get).lookup key
+  -- Leave the ref as it was found: this runs in the same process as anything
+  -- else that might use it.
+  mintedThisRun.modify (·.filter (fun e => e.1 != key))
+  return before.isNone && after.isSome
 
 end Infra.Providers.Scaleway.Sqs

@@ -452,6 +452,23 @@ def checkSecretsRequestToken : IO Unit := do
     seen := t :: seen
   IO.println "secrets: request tokens are 32 hex characters and never repeat"
 
+/-- The Scaleway SQS credential memo short-circuits.
+
+    `credentialsFor` is reached a few hundred times in one live run — five call
+    sites, once per listing, inside a poll loop. On a machine with a keychain
+    that costs one mint; without one, every call missed, and once `reclaim`
+    made a duplicate-name mint succeed instead of failing, each miss deleted
+    the previous credential and minted another. A run churned two dozen.
+
+    The memo bounds it to one per process. This checks the mechanism, which is
+    all that is checkable without a keychain-less machine and a real account. -/
+def checkSqsCredentialMemo : IO Unit := do
+  unless ← Infra.Providers.Scaleway.Sqs.memoRoundTripsForCheck do
+    throw (IO.userError
+      "scaleway sqs: the credential memo did not retain a stored credential, so \
+a live run would mint one per call")
+  IO.println "scaleway sqs: the credential memo short-circuits (one mint per run)"
+
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
 
@@ -467,6 +484,7 @@ def selfCheck : IO Unit := do
   checkGcpAssertion
   checkVanishingResource
   checkSecretsRequestToken
+  checkSqsCredentialMemo
 
 /-- `infra gcp-check <key.json>` — does this service-account key actually work?
 

@@ -263,6 +263,65 @@ gcloud projects get-iam-policy typednotes \
 
 ### Scaleway
 
+#### Run CI in its own project
+
+The live fleet creates and destroys real resources, and a credential that can
+do that in the project holding production is a credential worth not having. So
+CI gets its own project — `Typednotes CI` — and its permissions are scoped to
+that project alone.
+
+```sh
+scw account project create name="Typednotes CI" \
+  description="Isolated project for infra's live CI tests"
+# note the id it prints; call it $CI_PROJECT below
+```
+
+Then point the repository secret `SCW_DEFAULT_PROJECT_ID` at that id, and scope
+the policy to it rather than to the organization:
+
+```sh
+ORG=8460bf58-4c44-431e-9df4-8eae3888b1ce
+APP=<the application id whose API key CI uses>
+
+scw iam policy create \
+  name=infra-ci-live-tests \
+  application-id="$APP" \
+  rules.0.project-ids.0="$CI_PROJECT" \
+  rules.0.permission-set-names.0=MessagingAndQueuingFullAccess \
+  rules.1.project-ids.0="$CI_PROJECT" \
+  rules.1.permission-set-names.0=SecretManagerFullAccess \
+  rules.2.project-ids.0="$CI_PROJECT" \
+  rules.2.permission-set-names.0=ContainerRegistryFullAccess \
+  rules.3.project-ids.0="$CI_PROJECT" \
+  rules.3.permission-set-names.0=ObjectStorageFullAccess \
+  rules.4.project-ids.0="$CI_PROJECT" \
+  rules.4.permission-set-names.0=FunctionsFullAccess \
+  rules.5.project-ids.0="$CI_PROJECT" \
+  rules.5.permission-set-names.0=ContainersFullAccess
+```
+
+`project-ids` rather than `organization-id` is the point: with the former, a
+credential that goes wrong cannot reach anything outside the CI project.
+
+**What a project cannot isolate.** Scaleway's IAM applications live in the
+*organization*, not in a project, so the `iam` kind is org-scoped whatever
+project CI uses — the policy above deliberately omits it. Two options:
+
+- Drop `resource iam` from `scalewayLive` in `test/Live.lean`. CI then needs no
+  organization-level rights at all, which is the tightest posture available and
+  costs one kind of live coverage.
+- Add `IAMApplicationManager` (organization scope). Narrower than `IAMManager`,
+  which also carries ProjectManager, but still lets CI create and delete
+  applications org-wide.
+
+The first is the better default. Only a separate *organization* would isolate
+the `iam` kind properly, and that means separate credentials and separate
+billing for one kind of test.
+
+#### The permission sets, and one trap
+
+
+
 Scaleway grants permission *sets* to an IAM application through a policy, and
 they are coarse — one per product family:
 
@@ -294,10 +353,20 @@ more than the queue itself: minting the dedicated SQS credential is an IAM-ish
 operation on the Queues product, which is why the reclaim path in
 `Scaleway.Sqs` needs it too.
 
-`IAMManager` is the coarse one and the one to think about — it is what lets the
-`iam` resource create and delete an application, and Scaleway has no
-narrower set for that. Dropping `resource iam` from `scalewayLive` is the
-alternative.
+`IAMManager` is the coarse one, and there *is* a narrower set:
+`IAMApplicationManager` covers applications alone, where `IAMManager` also
+carries ProjectManager. Prefer the narrower one — or drop `resource iam` from
+`scalewayLive` and grant no organization-level rights at all.
+
+**A trap worth naming**, because it cost a round of debugging: a policy
+attached to the wrong *application* is indistinguishable from no policy. The
+403 names the call, not the identity. Check which application CI's key belongs
+to before creating a policy:
+
+```sh
+scw iam api-key list          # shows application_id or user_id per key
+scw iam application list      # names them
+```
 
 To see what an application currently has:
 
