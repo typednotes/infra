@@ -128,11 +128,30 @@
   .car-head h3 { margin: 0; font-size: 17px; font-weight: 700; }
   .car-head p { margin: 4px 0 0; font-size: 14px; color: var(--ink-2); }
   .car-nav { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
-  .car-btn { width: 34px; height: 34px; border-radius: 6px; border: 1px solid var(--border);
-             background: var(--surface); color: var(--ink); cursor: pointer; font-size: 15px;
-             line-height: 1; display: grid; place-items: center; }
-  .car-btn:hover { border-color: var(--ink-2); }
-  .dots { display: flex; gap: 7px; margin-left: 6px; }
+  /* Arrows overlay the frame's left and right edges and appear on hover,
+     rather than sitting in a row beneath it. `--code-bg` is dark in both
+     themes — it is a code card — so one treatment works for both.
+
+     They must not be hover-only in practice: a keyboard user never hovers, and
+     a touch device has no hover at all. So `:focus-visible` reveals them, and
+     the `hover: none` query below pins them visible where hovering is not a
+     thing. */
+  .car-card { position: relative; }
+  .car-arrow { position: absolute; top: 0; bottom: 0; width: 44px;
+               border: 0; padding: 0; cursor: pointer;
+               display: grid; place-items: center;
+               font-family: inherit; font-size: 20px; font-weight: 600; line-height: 1;
+               color: #E4EAF4; opacity: 0; transition: opacity .16s ease;
+               -webkit-tap-highlight-color: transparent; }
+  .car-prev { left: 0;  background: linear-gradient(to right, rgba(4,9,18,.72), rgba(4,9,18,0)); }
+  .car-next { right: 0; background: linear-gradient(to left,  rgba(4,9,18,.72), rgba(4,9,18,0)); }
+  .car-card:hover .car-arrow { opacity: 1; }
+  .car-arrow:hover { color: #FFFFFF; }
+  /* Focus is not a hover: reveal on it, and keep the ring visible. */
+  .car-arrow:focus-visible { opacity: 1; outline: 2px solid var(--blue); outline-offset: -4px; }
+  @media (hover: none) { .car-arrow { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .car-arrow { transition: none; } }
+  .dots { display: flex; gap: 7px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; border: 0; padding: 0;
          background: var(--border); cursor: pointer; }
   .dot[aria-current="true"] { background: var(--blue); }
@@ -278,7 +297,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card car-card">
         <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span id="slide-file">Main.lean</span></div>
 
         <div class="slides">
@@ -348,11 +367,12 @@
 <span class="s">              @{endpointOf mainDb}/main"</span> }</pre>
         </div>
         </div>
+
+        <button class="car-arrow car-prev" id="prev" aria-label="Previous example">&lt;</button>
+        <button class="car-arrow car-next" id="next" aria-label="Next example">&gt;</button>
       </div>
 
       <div class="car-nav">
-        <button class="car-btn" id="prev" aria-label="Previous example">&#8592;</button>
-        <button class="car-btn" id="next" aria-label="Next example">&#8594;</button>
         <div class="dots" id="dots" role="tablist" aria-label="Choose example"></div>
       </div>
     </div>
@@ -577,7 +597,7 @@ would CREATE scaleway/secrets/db-url
     <p class="sub">
       The part most project pages leave out. Correctness of <em>signing</em> is
       established; correctness of <em>what is being signed</em> mostly is not. This
-      is a summary — <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">coverage.md</a>
+      is a summary — <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
       is the full breakdown and is kept current, including the embarrassing parts.
     </p>
 
