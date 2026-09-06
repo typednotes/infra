@@ -631,25 +631,28 @@ would CREATE scaleway/secrets/db-url
       plan/apply split already wired. It builds on <code>lake init</code>, so
       Lake still owns the toolchain pin — what it adds is the part Lake cannot
       know about, chiefly the native link flags every consumer needs and would
-      otherwise copy by hand. You need no existing Lean project, and should not
-      make one with <code>lake new</code> first — this replaces that step.
-      <code>infra init</code> does the same to a directory you already have,
-      writing only what is absent. Your declaration is a Lean program, so
+      otherwise copy by hand — and it converts <code>lakefile.toml</code> to
+      Lean, because those flags cannot be expressed in TOML. It writes only
+      what is absent, so it is safe to re-run and safe on a project with work
+      in it. Your declaration is a Lean program, so
       <code>lake exe my_infra</code> <em>is</em> the CLI: nothing to keep in
       step with your code, and no state file to lose.
     </p>
     <div class="card" style="max-width:760px">
       <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>
-<pre><span class="c"># once — no published binary yet, so this is the install</span>
-git clone https://github.com/typednotes/infra &amp;&amp; <span class="k">cd</span> infra &amp;&amp; lake build
-cp .lake/build/bin/infra ~/.local/bin/
+<pre>lake init my_infra &amp;&amp; <span class="k">cd</span> my_infra
 
-<span class="c"># then, per project</span>
-infra new my-infra &amp;&amp; <span class="k">cd</span> my-infra
-lake update                   <span class="c"># fetch infra</span>
-lake exe my_infra             <span class="c"># offline plan — free, no credentials</span>
-lake exe my_infra plan        <span class="c"># read real accounts, change nothing</span>
-lake exe my_infra apply       <span class="c"># make it so</span></pre>
+<span class="c"># add to lakefile.toml:</span>
+<span class="c">#   [[require]]</span>
+<span class="c">#   name = "infra"</span>
+<span class="c">#   git = "https://github.com/typednotes/infra"</span>
+<span class="c">#   rev = "main"</span>
+
+lake update                <span class="c"># fetch infra</span>
+lake exe infra init        <span class="c"># turn this into an infra project</span>
+lake build
+lake exe my_infra          <span class="c"># offline plan — free, no credentials</span>
+lake exe my_infra apply    <span class="c"># make it so</span></pre>
     </div>
     <p class="sub" style="margin:26px 0 12px">
       You get <code>Fleet.lean</code> (the whole declaration),

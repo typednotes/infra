@@ -77,64 +77,70 @@ a first tagged release.
 
 ## Start a project
 
-You do not need an existing Lean project, and you should not make one with
-`lake new` first — `infra new` replaces that step and does more.
-
-**Once**, build the tool and put it on your `PATH`:
-
-```sh
-git clone https://github.com/typednotes/infra && cd infra && lake build
-cp .lake/build/bin/infra ~/.local/bin/          # or /usr/local/bin
-```
-
-There is no published binary yet, so this is the install. The result is
-self-contained — you never need the checkout again.
-
-**Then, per project**, one command and you have a repository to commit:
+An infra project is an ordinary Lean project with one dependency, so it starts
+the ordinary way. `lake init`, add the dependency, then one command turns it
+into a declaration repository:
 
 ```sh
-infra new my-infra && cd my-infra
-lake update                   # fetch infra
-lake exe my_infra             # offline plan — no credentials, no charges
-lake exe my_infra plan        # read your real accounts, change nothing
-lake exe my_infra apply       # make it so
+lake init my_infra && cd my_infra
 ```
 
-That is the whole loop. Your declaration is a Lean program, so `lake exe
-my_infra` *is* the CLI — there is no separate binary to keep in step with your
-code, and no state file to lose.
+Add `infra` to the `lakefile.toml` Lake just wrote:
 
-What `infra new` writes: `Fleet.lean` (the declaration, with commented
-examples of every kind), `Main.lean` (five lines), a `.gitignore` that excludes
-the state cache, a README, and CI for **GitHub and GitLab** with the
-plan/apply split already wired — plan on every push, apply only when a person
-presses the button. Fill in the account ids, add your secrets, commit.
+```toml
+[[require]]
+name = "infra"
+git = "https://github.com/typednotes/infra"
+rev = "main"
+```
 
-It wraps `lake init`, so Lake still owns the toolchain pin. What it adds is
-the part Lake cannot know about: chiefly the native link flags every consumer
-needs, which Lake does not propagate from a dependency and which are otherwise
-copied by hand.
-
-### If you already have a Lean project
-
-`infra init` sets up the directory you are in rather than making a new one —
-the same distinction Lake draws between its own `new` and `init`:
+Then:
 
 ```sh
-cd my-existing-project && infra init
+lake update                # fetch infra
+lake exe infra init        # turn this project into an infra project
+lake build
+lake exe my_infra          # offline plan — free, no credentials
+lake exe my_infra plan     # read your real accounts, change nothing
+lake exe my_infra apply    # make it so
 ```
 
-It writes only what is absent and names what it kept, so it cannot destroy
-work in progress. Two things to know:
+`lake exe infra` runs the scaffolder straight out of the dependency, so there
+is nothing to install and nothing to keep on your `PATH`.
 
-- If it keeps a `lakefile.lean` you wrote, it prints the dependency and
-  link-flag block for you to paste in. Both are required.
-- If your project uses **`lakefile.toml`**, it will not touch it — and cannot
-  add to it. The link flags are computed at build time by running
-  `pkg-config`, which TOML has no way to express, so the lakefile has to be
-  Lean. It tells you this and leaves your file alone. (Lake ignores
-  `lakefile.toml` entirely once a `lakefile.lean` exists, so a scaffolder that
-  wrote one next to yours would silently discard your configuration.)
+**What `infra init` does to the project.** It adds `Fleet.lean` (the
+declaration, with commented examples), rewrites Lake's stub `Main.lean` to run
+the fleet, adds a `.gitignore` that excludes the state cache, and adds CI for
+**GitHub and GitLab** with the plan/apply split wired — plan on every push,
+apply only when a person presses the button. It writes only what is absent and
+names what it kept, so it is safe to re-run and safe on a project with work in
+it. Your own libraries and executables are preserved.
+
+It also **converts `lakefile.toml` to `lakefile.lean`**, keeping the original
+as `lakefile.toml.replaced-by-infra`. That conversion is not cosmetic: the
+native link flags are computed on the build machine by running `pkg-config`,
+which TOML cannot express, and they are not optional because Lake does not
+propagate a dependency's `moreLinkArgs`. Without them the link fails on
+undefined symbols from the FFI. If the TOML contains anything the converter
+does not recognise it refuses and says so, rather than rewriting a lakefile on
+a guess.
+
+Your declaration is a Lean program, so `lake exe my_infra` *is* the CLI —
+there is no separate binary to keep in step with your code, and no state file
+to lose.
+
+### Starting from nothing
+
+`infra new <dir>` does all of the above *and* the `lake init`, for a directory
+that does not exist yet:
+
+```sh
+lake exe infra new my_infra   # from any project that has infra
+cd my_infra && lake update && lake build
+```
+
+Both commands produce the same project. `new` is the shortcut when there is
+nothing there yet; `init` is the one to use on a project that already exists.
 
 ## Build this repository
 

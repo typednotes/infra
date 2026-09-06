@@ -590,6 +590,158 @@ lean_exe «" ++ name ++ "» where
   root := `Main
 "
 
+/-! ## Converting `lakefile.toml`
+
+  The flow this exists for is the one a Terraform user would expect:
+
+      lake init my-infra
+      cd my-infra
+      # add infra to lakefile.toml
+      lake update
+      lake exe infra init
+
+  and the obstacle is the first line. `lake init` writes **`lakefile.toml`**,
+  and TOML cannot express what this needs: the native link flags are computed
+  on the build machine by running `pkg-config`, so the lakefile has to be a
+  program. Telling someone to port it by hand is the friction the last command
+  is supposed to remove — so it is converted instead.
+
+  Only the subset `lake init` and `lake new` actually emit is understood, plus
+  the `require` forms someone would add by hand. Anything else refuses the
+  conversion rather than guessing: a lakefile is the one file where a
+  well-meaning rewrite that drops a line is worse than doing nothing. The
+  original is renamed, never deleted. -/
+
+/-- A `[table]` or `[[table]]` and the `key = value` lines under it. -/
+private structure TomlSection where
+  header : String
+  kvs    : List (String × String) := []
+
+/-- Split into sections. Comments and blank lines are dropped; a line that is
+    neither a header nor a `key = value` is kept as an unnamed key so the
+    caller can refuse rather than silently ignore it. -/
+private def tomlSections (contents : String) : List TomlSection :=
+  let step : (List TomlSection) → String → (List TomlSection) := fun acc raw =>
+    let line := raw.trimAscii.copy
+    if line.isEmpty || line.startsWith "#" then acc
+    else if line.startsWith "[" then
+      { header := line, kvs := [] } :: acc
+    else
+      match line.splitOn "=" with
+      | k :: rest =>
+        let kv := (k.trimAscii.copy, (String.intercalate "=" rest).trimAscii.copy)
+        match acc with
+        | s :: tl => { s with kvs := s.kvs ++ [kv] } :: tl
+        | []      => [{ header := "", kvs := [kv] }]
+      | [] => acc
+  let sections := ((contents.splitOn "\n").foldl step [{ header := "", kvs := [] }]).reverse
+  sections
+
+/-- A TOML string literal's contents. -/
+private def tomlStr (v : String) : Option String :=
+  let t := v.trimAscii.copy
+  if t.length ≥ 2 && t.startsWith "\"" && t.endsWith "\"" then
+    some ((t.drop 1).dropRight 1).copy
+  else none
+
+/-- What a converted lakefile needs to reproduce. -/
+private structure Ported where
+  name     : String := ""
+  version  : String := "0.1.0"
+  libs     : List String := []
+  exes     : List (String × String) := []
+  requires : List String := []
+  deriving Inhabited
+
+private def lookup (s : TomlSection) (k : String) : Option String :=
+  (s.kvs.find? (·.1 == k)).bind fun kv => tomlStr kv.2
+
+/-- Render one `[[require]]` as Lake's Lean syntax, or refuse.
+
+    Refusing matters more than covering every form. A `require` that is
+    silently dropped turns into a missing-import error a long way from here,
+    and one that is rendered wrongly is worse still. -/
+private def portRequire (s : TomlSection) : Except String String := do
+  let some name := lookup s "name"
+    | throw "a [[require]] with no name"
+  match lookup s "git", lookup s "rev", lookup s "path", lookup s "version" with
+  | some git, rev, _, _ =>
+    let pin := match rev with | some r => s!" @ \"{r}\"" | none => ""
+    return s!"require «{name}» from git \"{git}\"{pin}"
+  | none, _, some path, _ =>
+    return s!"require «{name}» from \"{path}\""
+  | none, _, none, some v =>
+    return s!"require «{name}» @ \"{v}\""
+  | none, _, none, none =>
+    return s!"require «{name}»"
+
+/-- Read a `lakefile.toml` into the pieces a Lean one has to restate. -/
+private def portToml (contents : String) : Except String Ported := do
+  let mut p : Ported := {}
+  for s in tomlSections contents do
+    let h := s.header
+    if h.isEmpty then
+      if let some n := lookup s "name" then p := { p with name := n }
+      if let some v := lookup s "version" then p := { p with version := v }
+      -- `defaultTargets` is re-derived: the targets change, because a Fleet
+      -- library is being added and the executable now runs it.
+      for (k, _) in s.kvs do
+        unless ["name", "version", "defaultTargets", "testDriver", "lintDriver",
+                "leanOptions", "buildType", "precompileModules", "platformIndependent",
+                "moreLinkArgs", "moreLeanArgs", "moreServerArgs", "srcDir",
+                "packagesDir", "keywords", "description", "homepage", "license",
+                "licenseFiles", "readmeFile", "reservoir", "defaultFacets",
+                "weakLeanArgs", "weakLinkArgs", "moreLeancArgs", "weakLeancArgs",
+                "restoreAllPackages", "version_tags"].contains k do
+          throw s!"a package field this does not understand: '{k}'"
+    else if h == "[[lean_lib]]" then
+      let some n := lookup s "name" | throw "a [[lean_lib]] with no name"
+      p := { p with libs := p.libs ++ [n] }
+    else if h == "[[lean_exe]]" then
+      let some n := lookup s "name" | throw "a [[lean_exe]] with no name"
+      p := { p with exes := p.exes ++ [(n, (lookup s "root").getD "Main")] }
+    else if h == "[[require]]" then
+      p := { p with requires := p.requires ++ [← portRequire s] }
+    else
+      throw s!"a table this does not understand: {h}"
+  if p.name.isEmpty then throw "no package name"
+  return p
+
+/-- A lakefile.lean equivalent to the TOML one, plus what `infra` adds.
+
+    Their libraries and executables are preserved rather than replaced: this is
+    a conversion, and a project that had a `MyInfra` library still has one
+    afterwards. What is added is the `Fleet` library, the link flags, and
+    `infra` itself if it was not already required. -/
+private def lakefileFromToml (p : Ported) : String :=
+  let hasInfra := p.requires.any fun r => (r.splitOn "«infra»").length > 1
+  let requires :=
+    if hasInfra then p.requires
+    else p.requires ++ ["require infra from git \"https://github.com/typednotes/infra\" @ \"main\""]
+  let libs := (p.libs ++ ["Fleet"]).eraseDups
+  let exes := if p.exes.isEmpty then [(p.name, "Main")] else p.exes
+  "import Lake\nopen System Lake DSL\n\n" ++
+"/-\n  Build configuration for an `infra` declaration repository.\n\n\
+  Converted from `lakefile.toml` by `infra init`, which had to: the link-flag\n\
+  block below is computed by running `pkg-config` on the build machine, and\n\
+  TOML has no way to express that. The original is kept as\n\
+  `lakefile.toml.replaced-by-infra`.\n-/\n\n" ++
+  linkFlags ++ "\n\npackage «" ++ p.name ++ "» where\n  version := v!\"" ++ p.version ++
+  "\"\n  moreLinkArgs := nativeLinkArgs\n\n" ++
+  String.intercalate "\n" requires ++ "\n\n" ++
+  String.intercalate "\n\n" (libs.map fun l => "@[default_target]\nlean_lib " ++ l) ++ "\n\n" ++
+  String.intercalate "\n\n" (exes.map fun (n, r) =>
+    "@[default_target]\nlean_exe «" ++ n ++ "» where\n  root := `" ++ r) ++ "\n"
+
+/-- Is this `Main.lean` the stub `lake init` writes?
+
+    It matters because transforming a project means replacing its entry point,
+    and replacing code someone wrote would be unforgivable. Lake's stub prints
+    a greeting and nothing else, so it is recognisable and safe to overwrite;
+    anything else is kept, with the five lines to add printed instead. -/
+private def isLakeStubMain (contents : String) : Bool :=
+  (contents.splitOn "Hello,").length > 1 && contents.length < 400
+
 /-- Scaffold a project into `dir`.
 
     Two modes, mirroring Lake's own pair, because they answer two different
@@ -671,21 +823,48 @@ lake exe infra init {dir}"
   let keep (rel : String) : Bool := preexisting.contains rel
   -- Not `keep`: that only declines to *overwrite*, and here the file to leave
   -- alone is `lakefile.toml` while the one we would create — `lakefile.lean` —
-  -- does not exist yet. So this is a skip, not a no-clobber.
+  -- does not exist yet. So this is a conversion, not a no-clobber.
+  -- One name, used for the fleet's namespace, the executable, the CI scripts
+  -- and `Main.lean`'s reference to the fleet. It defaults to the directory,
+  -- but a converted project already *has* a name — its package's — and using
+  -- the directory there produced a `Fleet.lean` declaring `fleet flow` beside
+  -- a `Main.lean` calling `my_infra.plan`. It compiled in neither direction.
+  let mut exeName := ident
   let wroteLakefile ←
     if inPlace && hasToml then do
-      IO.println "  lakefile.lean (skipped — lakefile.toml is yours; see below)"
-      pure false
+      let contents ← IO.FS.readFile (root / "lakefile.toml")
+      match portToml contents with
+      | .ok p =>
+        IO.FS.writeFile (root / "lakefile.lean") (lakefileFromToml p)
+        -- Renamed, not removed. Lake ignores `lakefile.toml` once a Lean one
+        -- exists, so leaving it in place would be a trap for the next reader;
+        -- deleting it would be taking a decision that is not this command's
+        -- to take.
+        IO.FS.rename (root / "lakefile.toml") (root / "lakefile.toml.replaced-by-infra")
+        if let some (n, _) := p.exes[0]? then exeName := n
+        IO.println "  lakefile.lean (converted from lakefile.toml)"
+        IO.println "  lakefile.toml → lakefile.toml.replaced-by-infra"
+        pure true
+      | .error e =>
+        IO.println s!"  lakefile.lean (NOT written — {e})"
+        pure false
     else put root "lakefile.lean" (lakefile ident) (keep "lakefile.lean")
-  discard <| put root "Fleet.lean"                 (fleetLean ident) (keep "Fleet.lean")
-  discard <| put root "Main.lean"                  (mainLean ident) (keep "Main.lean")
+  discard <| put root "Fleet.lean"                 (fleetLean exeName) (keep "Fleet.lean")
+  -- Transforming a project means replacing its entry point, and Lake's stub
+  -- prints a greeting and nothing else — recognisable, and no loss to
+  -- overwrite. Anything else is someone's code and is kept.
+  let keepMain ←
+    if keep "Main.lean" then
+      pure !(isLakeStubMain (← IO.FS.readFile (root / "Main.lean")))
+    else pure false
+  let wroteMain ← put root "Main.lean" (mainLean exeName) keepMain
   discard <| put root ".gitignore"                 gitignore (keep ".gitignore")
-  discard <| put root "README.md"                  (readme ident) (keep "README.md")
-  discard <| put root ".github/workflows/plan.yml" (githubPlan ident)
+  discard <| put root "README.md"                  (readme exeName) (keep "README.md")
+  discard <| put root ".github/workflows/plan.yml" (githubPlan exeName)
     (keep ".github/workflows/plan.yml")
-  discard <| put root ".github/workflows/apply.yml" (githubApply ident)
+  discard <| put root ".github/workflows/apply.yml" (githubApply exeName)
     (keep ".github/workflows/apply.yml")
-  discard <| put root ".gitlab-ci.yml"             (gitlabCi ident) (keep ".gitlab-ci.yml")
+  discard <| put root ".gitlab-ci.yml"             (gitlabCi exeName) (keep ".gitlab-ci.yml")
 
   -- Written line by line rather than as one escaped literal: the indentation
   -- is part of the message, and a string gap would eat it.
@@ -695,21 +874,18 @@ lake exe infra init {dir}"
   -- this command exists.
   unless wroteLakefile do
     if hasToml then
-      IO.println "Your project uses lakefile.toml, which was left alone."
+      IO.println "Your lakefile.toml was left exactly as it was, because this"
+      IO.println "could not convert it safely — the reason is on the line above."
       IO.println ""
-      IO.println "TOML cannot express what this needs: the native link flags are"
-      IO.println "computed at build time by running `pkg-config`, and they are"
-      IO.println "required — Lake does not propagate them from a dependency."
-      IO.println "So the lakefile has to be Lean. Two ways round it:"
+      IO.println "It has to become a lakefile.lean either way: the native link"
+      IO.println "flags are computed by running `pkg-config` on the build machine,"
+      IO.println "and TOML cannot express that. They are not optional, because"
+      IO.println "Lake does not propagate them from a dependency."
       IO.println ""
-      IO.println "  - Easiest: scaffold a fresh project and move your code across."
-      IO.println s!"      lake exe infra new {dir}-infra"
+      IO.println "Port it by hand and re-run this, and it will fill in the rest."
+      IO.println "For a reference lakefile.lean to copy the block from:"
       IO.println ""
-      IO.println "  - Or port lakefile.toml to lakefile.lean by hand, then re-run"
-      IO.println "    this command; it will fill in the rest."
-      IO.println ""
-      IO.println "Note that Lake ignores lakefile.toml completely once a"
-      IO.println "lakefile.lean exists, so do not leave both in place."
+      IO.println "  infra new /tmp/reference && cat /tmp/reference/lakefile.lean"
       IO.println ""
     else
     IO.println "Your lakefile was kept, so the dependency and the native link"
@@ -726,8 +902,17 @@ lake exe infra init {dir}"
   IO.println ""
   unless inPlace do IO.println s!"  cd {dir}"
   IO.println  "  lake update                # fetch infra"
-  IO.println s!"  lake exe {ident}           # offline plan — no credentials, no charges"
+  IO.println s!"  lake exe {exeName}           # offline plan — no credentials, no charges"
   IO.println ""
+  unless wroteMain do
+    IO.println "Your Main.lean was kept, so it does not run the fleet yet. It needs:"
+    IO.println ""
+    IO.println "  import Fleet"
+    IO.println "  def main (args : List String) : IO UInt32 :="
+    IO.println s!"    Infra.Cli.run \"{exeName}\" Fleet.plan (accounts := accounts) (args := args)"
+    IO.println ""
+    IO.println "See the Main.lean that `infra new` writes for the whole file."
+    IO.println ""
   IO.println "Then edit Fleet.lean, fill in `accounts` in Main.lean, and commit."
   IO.println "CI for GitHub and GitLab is already there; add your secrets and it runs."
   return 0
