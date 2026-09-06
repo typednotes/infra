@@ -8,6 +8,33 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.10] — 2026-09-06
+
+### Fixed
+
+- **The live test's settle window counted iterations, not seconds**, so a
+  Scaleway leg hit the workflow's step timeout and was reported as a hang
+  having done nothing wrong. `waitFor` decremented `settleSeconds` once per
+  loop, and each loop is a whole `pull` — sixteen HTTP calls for the Scaleway
+  fleet — plus a one-second sleep. A "180 second" window therefore took
+  180 × (pull + 1s), which at three seconds per pull is twelve minutes.
+
+  It measures elapsed wall-clock time now. Both polls use the same window, so
+  the worst case is twice it plus create and delete.
+
+- **A long run printed nothing while running.** Progress lines went through
+  `IO.println`, and stdout is buffered, so they appeared only when the process
+  exited — while stderr notes appeared immediately. A credential warning
+  followed by eight minutes of silence is indistinguishable from a hang. They
+  flush now, and `waitFor` emits a heartbeat every fifteen seconds naming what
+  is still outstanding, because *which* resource has not appeared is the whole
+  diagnosis.
+
+- **The step timeout is sized from the driver**, 12 minutes to 16. A timeout
+  below the worst case turns a slow-but-working run into a reported failure,
+  which leaves resources behind *and* sends the reader hunting a bug that is
+  not there.
+
 ## [0.4.9] — 2026-09-06
 
 ### Fixed

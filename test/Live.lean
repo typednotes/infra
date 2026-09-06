@@ -422,42 +422,70 @@ def progress (line : String) : IO Unit := do
     to disappear, and a bucket's listing is not instant either. The old bound
     was comfortable for a queue and would have made those look like failures.
 
-    Both polls use it, so the worst case is twice this, which still fits inside
-    the workflow's twelve-minute step timeout. -/
+    Seconds, and now actually seconds: `waitFor` measures elapsed wall-clock
+    time. It used to decrement this once per poll iteration, and an iteration
+    is a whole `pull` — so the number was silently multiplied by the cost of
+    listing the fleet, and a 180 here meant twelve minutes for Scaleway.
+
+    Both polls use it, so the worst case is twice this plus the time to create
+    and delete, which fits inside the workflow's step timeout. -/
 def settleSeconds : Nat := 180
 
-/-- Re-`pull` until `done` holds, or until `settleSeconds` have passed.
+/-- Re-`pull` until `done` holds, or until `settleSeconds` have actually
+    elapsed.
 
     Every cloud list API here is eventually consistent to some degree, so a
     single read immediately after a write measures propagation delay rather
-    than correctness. Returns whatever `report` says is outstanding at the end,
-    which is empty exactly when it succeeded.
+    than correctness.
+
+    **The deadline is wall-clock, and it was not always.** This used to count
+    iterations: `settleSeconds` decremented once per loop, and each loop is a
+    whole `pull` — for the Scaleway fleet that is sixteen HTTP calls — plus a
+    one-second sleep. So a "180 second" window took 180 × (pull + 1s), which at
+    three seconds per pull is twelve minutes. It hit the workflow's step
+    timeout and reported a hang, having done nothing wrong except take four
+    times longer than its own name promised.
 
     Fixed one-second steps rather than a backoff: the waits are short, and a
     backoff would make the worst case unpredictable in a job that has a
-    timeout. No `partial` — `go` recurses on a decreasing `Nat`, so the bound
-    is a real measure. -/
+    timeout. Fuel bounds the recursion so this is not `partial`, but the
+    deadline is what stops it. -/
 def waitFor {κ : Keys} (label : String) (root : System.FilePath) (bs : Backends)
     (done : World κ → Bool) (report : World κ → List String) : IO (List String) := do
-  let rec go (left : Nat) : IO (List String) := do
+  let start ← Data.Time.getCurrentTime
+  let deadline := start.nanosSinceEpoch + settleSeconds * 1000000000
+  let elapsed : IO Nat := do
+    let now ← Data.Time.getCurrentTime
+    return (now.nanosSinceEpoch - start.nanosSinceEpoch) / 1000000000
+  -- Fuel bounds the recursion so this is not `partial` and the measure is
+  -- real; the *deadline* is what actually stops it, and the fuel can only be
+  -- reached if a pull returns instantly, which it cannot.
+  let rec go (fuel : Nat) (lastBeat : Nat) : IO (List String) := do
     let w ← pull (κ := κ) root bs
     if done w then return []
-    match left with
+    let secs ← elapsed
+    let now ← Data.Time.getCurrentTime
+    if now.nanosSinceEpoch ≥ deadline then return report w
+    match fuel with
     | 0     => return report w
     | n + 1 =>
-      -- A heartbeat every fifteen seconds, naming what is still outstanding.
-      -- Without it this loop is silent for up to three minutes, which reads
-      -- as a hang — and when it does eventually fail, the reader has no idea
-      -- whether it was one slow resource or all of them. Which resource is
-      -- still missing is the whole diagnosis.
-      if (settleSeconds - left) % 15 == 0 && left != settleSeconds then
+      -- A heartbeat roughly every fifteen seconds, naming what is still
+      -- outstanding. Without it this loop is silent for minutes, which reads
+      -- as a hang — and when it fails, *which* resource never appeared is the
+      -- whole diagnosis. One slow namespace and nine missing resources are
+      -- very different situations.
+      let beat := secs / 15
+      if beat > lastBeat then
         let outstanding := report w
-        progress s!"[{label}] waiting {settleSeconds - left}s — \
+        progress s!"[{label}] {secs}s of {settleSeconds}s — \
 {outstanding.length} outstanding: {String.intercalate ", " (outstanding.take 3)}\
 {if outstanding.length > 3 then s!" (+{outstanding.length - 3} more)" else ""}"
-      IO.sleep 1000
-      go n
-  go settleSeconds
+        IO.sleep 1000
+        go n beat
+      else
+        IO.sleep 1000
+        go n lastBeat
+  go settleSeconds 0
 
 /-- Delete everything the fleet declares, and prove it is gone.
 
