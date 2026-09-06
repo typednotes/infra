@@ -178,12 +178,31 @@ if the driver dies between create and delete. Everything created is named
 
 #### What it covers, and what it does not
 
-**What has actually run is one kind, on three clouds**: `queues` — SQS on AWS,
-Scaleway Queues, a Pub/Sub topic on GCP. All three legs passed on 2026-09-06.
+**What has actually run:**
 
-**What the fleets now declare is nine kinds**, and that has *not* run yet. The
-two are separated deliberately, because a document whose whole job is to say
-how far this has been exercised must not count code that has never executed.
+- **AWS, the full leg** — 9 resources across 7 kinds, on 2026-09-06:
+  `queues`, three `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`,
+  `securityGroup`, `iam`. Created, converged (`a second apply would do
+  nothing`), deleted, and the state cache verified empty afterwards. The
+  workflow's backstop step was skipped, which is the evidence that the
+  driver's own teardown ran and left nothing behind.
+
+  This also exercised two of the three dependency patterns for real: the
+  **chain** and the **fan-out**, since `derived-a` and `derived-b` both compose
+  the base secret's value and the base was scheduled before both.
+
+- **Scaleway and GCP** — `queues` only, on 2026-09-06. Their multi-kind legs
+  are blocked on grants rather than on code: Scaleway's permission sets are
+  ungranted, and GCP needs both `roles/run.admin` and its APIs *enabled*,
+  which is a separate act. `ci/README.md` has both.
+
+The **fan-in** pattern is Scaleway-only (a container depending on its
+namespace by key reference and on a secret through `secretEnv`), so it is the
+one shape still unexercised live.
+
+These two facts are kept apart deliberately: a document whose whole job is to
+say how far this has been exercised must not count code that has never
+executed.
 
 | Cloud | Kinds the live fleet declares | Resources |
 |---|---|---|
@@ -203,11 +222,9 @@ count: a fleet is applied and torn down as a *set*, so `create` and `delete`
 each run seven times in one pass and the absence check covers all of them — a
 single-resource test cannot tell a working scheduler from a lucky one.
 
-**None of the multi-kind legs has been run.** They are blocked on permissions
-neither CI identity holds — AWS's role was scoped to SQS alone and GCP's
-service account holds only `roles/pubsub.editor` — so the first run of each
-will most likely fail with the cloud's own refusal until `ci/README.md`'s grants
-are applied. This section will say so when they pass, and not before.
+**AWS's leg passes.** Scaleway's and GCP's are blocked on grants, not on code —
+see the list above. This section says which have passed and which have not,
+rather than counting the fleets as coverage.
 
 **The three that are not covered, each for a reason a test cannot arrange:**
 
@@ -284,8 +301,10 @@ meaningful, because an unknown field is not a divergence, but it does not mean
 that 30 was stored anywhere.
 
 That closes the gap this document named a version ago: `destroy` was "the least
-exercised code in the library relative to how much it can cost to get wrong",
-and it is now on the CI path for all three clouds.
+exercised code in the library relative to how much it can cost to get wrong".
+It is now on the CI path for all three clouds, and on AWS it has actually
+deleted seven kinds of resource and been checked against both a fresh listing
+and the state cache.
 
 ### Verified offline, on every build
 
@@ -392,25 +411,35 @@ Only one was a permissions gap of the kind expected.
 
 ### Never run against any account
 
-- **Most of AWS** — Lambda, RDS, ECR, Secrets Manager and IAM have never been
-  called. S3 and EC2 have; the rest have not.
-- **`delete` is now partly exercised on AWS.** A live run created an SQS
-  queue, converged, and deleted it — and then found a *library* bug on the way
-  out: `pullEntries` assumed anything `list` returned still existed when it
-  read it, so the post-delete refresh saw the queue in SQS's
-  eventually-consistent listing, failed to read it, and aborted. Fixed; a
-  resource that vanishes between list and read is now treated as absent, while
-  a permission error still fails. `update` remains unexercised.
-- **Every `update` and `delete` path, on both clouds.** The first live AWS run
-  of the test attempted one and the harness, not the library, got in the way:
-  it read SQS's listing immediately after creating and reported a
-  non-convergence that was really propagation delay, then tore down against a
-  world it could not see and left the queue behind while reporting success.
-  Both directions poll now. `destroy` remains unverified against a real
-  account. What is confirmed is
-  creation and observation. Nothing here has been seen to modify or tear down
-  a real resource, and `destroy` in particular is the least exercised code in
-  the library relative to how much it can cost to get wrong.
+Rewritten after AWS's full leg passed, because most of what this section said
+about AWS is no longer true. It listed ECR, Secrets Manager and IAM as never
+called; all three now create, read and delete on every AWS live run.
+
+- **AWS: Lambda and RDS.** The two remaining never-called clients, and the two
+  kinds the live fleet cannot include — `compute` needs an ECR image in the
+  same account, `postgres` takes longer to create than the workflow's step
+  timeout.
+- **Scaleway: everything except queues.** `list` for all fourteen kinds is
+  verified (`example/ScalewayPull.lean`), and `queues` round-trips, but no
+  Scaleway `create` beyond a queue has run. Its leg is blocked on permission
+  sets, not on code.
+- **GCP: everything except Pub/Sub.** Cloud Storage, Secret Manager, Artifact
+  Registry, Cloud Run, IAM service accounts and Cloud SQL are written and
+  unexercised.
+- **Every `update` path, on all three clouds.** This is the significant
+  remaining hole, and the live test cannot close it by design: it creates and
+  deletes, so it never diffs a *changed* target against an existing resource.
+  Closing it needs a second apply with a modified fleet, which is a different
+  test shape.
+
+  `delete`, which used to sit here beside `update`, is now exercised on AWS
+  across seven kinds and checked against both a fresh listing and the state
+  cache. Two library bugs were found on the way out of that: `pullEntries`
+  assumed anything `list` returned still existed when it read it — so the
+  post-delete refresh saw the queue in SQS's eventually-consistent listing,
+  failed to read it, and aborted the pull — and before that, the harness read
+  the listing immediately after creating and reported propagation delay as
+  non-convergence. Both directions poll now.
 - **Ingress rules and tags** — `CreateSecurityGroup` succeeded, but whether
   `AuthorizeSecurityGroupIngress` applied the rules correctly, and whether tags
   land, is not established by a group merely existing.

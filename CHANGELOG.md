@@ -8,6 +8,29 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.2] — 2026-09-06
+
+### Verified
+
+- **AWS's full live leg passes.** Nine resources across seven kinds —
+  `queues`, three `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`,
+  `securityGroup`, `iam` — created, converged, deleted, with the state cache
+  checked empty afterwards. Two of the three dependency patterns were
+  exercised for real: the chain and the fan-out.
+
+  `docs/coverage.md`'s "never run" ledger is rewritten rather than amended.
+  It listed ECR, Secrets Manager and IAM as never called; all three now create,
+  read and delete on every AWS run. What remains on AWS is Lambda and RDS —
+  the two kinds the live fleet cannot include.
+
+  The significant remaining hole is now **`update`**, on all three clouds, and
+  the live test cannot close it by design: it creates and deletes, so it never
+  diffs a *changed* target against an existing resource. That needs a second
+  apply with a modified fleet, which is a different test shape.
+
+  Scaleway and GCP still pass for `queues` only; their legs are blocked on
+  grants, not code.
+
 ## [0.4.1] — 2026-09-06
 
 Everything the first extended live runs found after 0.4.0 was tagged. All of

@@ -298,8 +298,8 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.4.1</strong> — all seven portable kinds on all three clouds, and a
-  live round trip across eleven of the fourteen kinds.
+  <strong>0.4.2</strong> — all seven portable kinds on all three clouds, and a
+  full live round trip passing on AWS across seven kinds.
   <a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
@@ -663,12 +663,12 @@ would CREATE scaleway/secrets/db-url
     <div class="cov">
       <div class="cov-card ok">
         <h4>Verified live</h4>
-        <p>A create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy round
-           trip for <code>queues</code> on <strong>all three clouds</strong>, in
-           CI. Plus Scaleway <code>list</code> for every kind, and on AWS real
-           S3 buckets, a security group and two running instances. The live
-           fleets declare eleven of the fourteen kinds, with chain, fan-out and
-           fan-in dependencies; those legs have not run yet.</p>
+        <p>On AWS a full create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy
+           round trip in CI: <strong>9 resources across 7 kinds</strong>,
+           with chained and fanned-out dependencies, deleted again and the
+           state cache checked empty. Scaleway and Google Cloud pass for
+           <code>queues</code>; their remaining kinds wait on CI permissions,
+           not on code.</p>
       </div>
       <div class="cov-card warn">
         <h4>Verified offline</h4>
