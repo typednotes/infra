@@ -33,10 +33,32 @@ while IFS= read -r f; do
   fi
 done < <(find site/providers -type f -name '*.svg')
 
-if ! cmp -s assets/logo.svg site/logo.svg; then
-  echo "error: assets/logo.svg and site/logo.svg differ (assets/ is the source)." >&2
-  fail=1
-fi
+# Top-level assets the page serves from its own directory. Listed rather than
+# globbed so that adding one is a deliberate act.
+for f in logo.svg social-card.png; do
+  if [ ! -f "site/$f" ]; then
+    echo "error: site/$f is missing (assets/$f is the source)." >&2
+    fail=1
+  elif ! cmp -s "assets/$f" "site/$f"; then
+    echo "error: assets/$f and site/$f differ (assets/ is the source)." >&2
+    echo "  refresh with: cp assets/$f site/$f" >&2
+    fail=1
+  fi
+done
+
+# Absolute URLs the page points at itself — `og:image` and friends. A social
+# card that 404s is invisible: the crawler drops the image and the preview
+# silently becomes a bare link, which nothing else here would catch.
+while IFS= read -r ref; do
+  rel="${ref#https://typednotes.github.io/infra/}"
+  [ -n "$rel" ] || continue
+  case "$rel" in http*) continue ;; esac
+  if [ ! -f "site/$rel" ]; then
+    echo "error: metadata points at '$ref', but site/$rel does not exist" >&2
+    fail=1
+  fi
+done < <(grep -oE 'content="https://typednotes\.github\.io/infra/[^"]+"' site/index.html \
+         | sed -E 's/^content="//; s/"$//')
 
 # Every image the page references must exist in the published tree. This is the
 # check that would have caught the broken dark sources.

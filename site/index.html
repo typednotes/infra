@@ -9,6 +9,55 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#FBFCFE" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0D131C" media="(prefers-color-scheme: dark)">
+
+<!-- Discovery metadata. The keywords mirror the repository's topics on
+     purpose: the same words should find this whether someone searches GitHub
+     or the web, and two lists that are meant to agree drift unless they are
+     written to agree. -->
+<link rel="canonical" href="https://typednotes.github.io/infra/">
+<meta name="keywords" content="infrastructure-as-code, IaC, terraform, opentofu, lean, lean4, cloud, cloud-management, devops, dependent types, AWS, Google Cloud, Scaleway">
+<meta name="author" content="typednotes">
+
+<!-- Open Graph, for the link previews in chat clients and social sites. The
+     image is a real 1200x630 PNG rather than the logo SVG: most crawlers do
+     not rasterise SVG, so an SVG here is silently dropped and the preview
+     falls back to a bare link. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="infra">
+<meta property="og:title" content="infra — infrastructure as code, in Lean 4">
+<meta property="og:description" content="Terraform-style infrastructure as code in the Lean programming language. Target and observed cloud state are dependently-typed values, so an unrealisable target is a compile error. AWS, Google Cloud and Scaleway.">
+<meta property="og:url" content="https://typednotes.github.io/infra/">
+<meta property="og:image" content="https://typednotes.github.io/infra/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The infra mark — an isometric cube with an existential quantifier on its Lean-blue face — beside the words: infrastructure as code, in Lean 4.">
+<meta property="og:locale" content="en">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="infra — infrastructure as code, in Lean 4">
+<meta name="twitter:description" content="An unrealisable target is a compile error. Terraform-style IaC in Lean 4, for AWS, Google Cloud and Scaleway.">
+<meta name="twitter:image" content="https://typednotes.github.io/infra/social-card.png">
+
+<!-- Structured data. `SoftwareSourceCode` rather than `SoftwareApplication`:
+     this is a library and a repository, not something a reader installs and
+     runs as an app, and describing it as the latter is the kind of small
+     overclaim that search engines are entitled to distrust. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "infra",
+  "description": "Terraform-style infrastructure as code in the Lean programming language. Target and observed cloud state are dependently-typed values, so an unrealisable target is a compile error.",
+  "url": "https://typednotes.github.io/infra/",
+  "codeRepository": "https://github.com/typednotes/infra",
+  "programmingLanguage": { "@type": "ComputerLanguage", "name": "Lean 4" },
+  "license": "https://github.com/typednotes/infra/blob/main/LICENSE",
+  "keywords": "infrastructure-as-code, IaC, terraform, opentofu, lean4, cloud, cloud-management, devops",
+  "image": "https://typednotes.github.io/infra/social-card.png",
+  "runtimePlatform": "Lean 4",
+  "operatingSystem": ["Linux", "macOS"]
+}
+</script>
 <style>
   :root {
     color-scheme: light dark;

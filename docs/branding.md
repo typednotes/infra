@@ -233,6 +233,33 @@ intrinsic `width`/`height` changed. Do not let an agent fetch them for you from
 a search result — logo aggregator sites host outdated and unofficial
 variants, and using one is worse than using no logo at all.
 
+## The social card and the repository's topics
+
+`assets/social-card.png` is a 1200x630 raster of the mark plus a line of text,
+rendered from `assets/../` — the same three cube faces and the same `∃`, at
+scale, with no recolouring. It is referenced by `og:image` and
+`twitter:image`.
+
+It is a **PNG on purpose**. Most crawlers do not rasterise SVG, so pointing
+`og:image` at `logo.svg` is silently dropped and the link preview degrades to a
+bare URL — a failure with no error anywhere. `ci/check-site-assets-sync.sh`
+resolves every self-referential absolute URL in the page's metadata against the
+published tree, because a social card that 404s is invisible in exactly the
+same way.
+
+To regenerate it after a change to the mark:
+
+    rsvg-convert -w 1200 -h 630 -o assets/social-card.png <the card source>
+    cp assets/social-card.png site/social-card.png
+
+The page's `keywords` and the repository's **topics** are deliberately the same
+list — `infrastructure-as-code`, `iac`, `terraform`, `opentofu`, `lean`,
+`lean4`, `cloud`, `cloud-management`, `devops`, `dependent-types`, `aws`,
+`gcp`, `scaleway`. The same words should find this project whether someone
+searches GitHub or the web, and two lists meant to agree will drift unless
+they are written down as agreeing. Topics are set through the API, not in this
+repository, so this paragraph is the only record of what they are.
+
 ## Open question
 
 There is no conventional "made with Lean" badge — Lean is not in Simple Icons,
