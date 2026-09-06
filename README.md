@@ -77,53 +77,64 @@ a first tagged release.
 
 ## Start a project
 
-`infra new` scaffolds a declaration repository you can commit and deploy the
-same day. It wraps `lake init`, so Lake still owns the toolchain pin; what it
-adds is the part Lake cannot know about — chiefly the native link flags every
-consumer needs, which Lake does not propagate from a dependency and which are
-otherwise copied by hand.
+You do not need an existing Lean project, and you should not make one with
+`lake new` first — `infra new` replaces that step and does more.
 
-First, the scaffolder itself. It is a command in *this* repository, so it comes
-from a checkout of it — there is no published binary to install yet:
+**Once**, build the tool and put it on your `PATH`:
 
 ```sh
-git clone https://github.com/typednotes/infra && cd infra
-lake build
+git clone https://github.com/typednotes/infra && cd infra && lake build
+cp .lake/build/bin/infra ~/.local/bin/          # or /usr/local/bin
 ```
 
-Then either make a new project, or set up a directory you already have. The
-two are the same distinction Lake draws with `new` and `init`, and the second
-is the one to use if you already have a repository:
+There is no published binary yet, so this is the install. The result is
+self-contained — you never need the checkout again.
+
+**Then, per project**, one command and you have a repository to commit:
 
 ```sh
-# a new project, in a new directory
-lake exe infra new ~/my-infra
-cd ~/my-infra
-
-# or: a directory that already exists — your own repo, freshly `git init`ed
-cd ~/my-infra && lake exe infra init
-```
-
-`init` writes only what is absent and says what it kept, so it cannot destroy
-work in progress. If it keeps a lakefile you wrote, it prints the dependency
-and link-flag block for you to add by hand — those are required, and Lake will
-not propagate them from a dependency.
-
-Either way, the project is then ordinary Lake:
-
-```sh
+infra new my-infra && cd my-infra
 lake update                   # fetch infra
 lake exe my_infra             # offline plan — no credentials, no charges
+lake exe my_infra plan        # read your real accounts, change nothing
+lake exe my_infra apply       # make it so
 ```
 
-The scaffolder does not have to stay in the checkout: `.lake/build/bin/infra`
-is a self-contained binary, so copying it onto your `PATH` makes `infra new`
-and `infra init` available anywhere.
+That is the whole loop. Your declaration is a Lean program, so `lake exe
+my_infra` *is* the CLI — there is no separate binary to keep in step with your
+code, and no state file to lose.
 
-You get `Fleet.lean` (the whole declaration), `Main.lean` (five lines), a
-`.gitignore` that excludes the state cache, a README, and CI for **GitHub and
-GitLab** with the plan/apply split wired: plan on every push, apply only when a
-person presses the button.
+What `infra new` writes: `Fleet.lean` (the declaration, with commented
+examples of every kind), `Main.lean` (five lines), a `.gitignore` that excludes
+the state cache, a README, and CI for **GitHub and GitLab** with the
+plan/apply split already wired — plan on every push, apply only when a person
+presses the button. Fill in the account ids, add your secrets, commit.
+
+It wraps `lake init`, so Lake still owns the toolchain pin. What it adds is
+the part Lake cannot know about: chiefly the native link flags every consumer
+needs, which Lake does not propagate from a dependency and which are otherwise
+copied by hand.
+
+### If you already have a Lean project
+
+`infra init` sets up the directory you are in rather than making a new one —
+the same distinction Lake draws between its own `new` and `init`:
+
+```sh
+cd my-existing-project && infra init
+```
+
+It writes only what is absent and names what it kept, so it cannot destroy
+work in progress. Two things to know:
+
+- If it keeps a `lakefile.lean` you wrote, it prints the dependency and
+  link-flag block for you to paste in. Both are required.
+- If your project uses **`lakefile.toml`**, it will not touch it — and cannot
+  add to it. The link flags are computed at build time by running
+  `pkg-config`, which TOML has no way to express, so the lakefile has to be
+  Lean. It tells you this and leaves your file alone. (Lake ignores
+  `lakefile.toml` entirely once a `lakefile.lean` exists, so a scaffolder that
+  wrote one next to yours would silently discard your configuration.)
 
 ## Build this repository
 

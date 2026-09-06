@@ -60,41 +60,121 @@ private def linkFlags : String :=
 -- `SecItemCopyMatching`/`CFRelease`. This block is the fix, and it is why this
 -- file is `.lean` rather than `.toml` — TOML cannot express a conditional.
 --
--- Copied from `infra`'s own lakefile. If linking ever fails with undefined
--- symbols after an `infra` upgrade, re-copy it from there.
-
+-- This is a VERBATIM copy of the same block in `infra`'s own lakefile, kept
+-- identical by `ci/check-lakefile-sync.sh`. Do not \"simplify\" it: every
+-- branch below is load-bearing on some platform, and the two that look most
+-- redundant (dropping `-L`, and omitting OpenSSL) are the two whose absence
+-- breaks the Linux link outright.
+-- ⟪native-link-flags:begin⟫ — mirrored verbatim into `Infra/Cli/New.lean`.
+-- `ci/check-lakefile-sync.sh` fails the build if the two ever differ.
+/-- Ask `pkg-config` for a package's flags, degrading to `#[]` when it or the
+    package is missing — matching how Linen treats optional native
+    dependencies. -/
 def pkgConfigFlags (args : Array String) : IO (Array String) := do
-  let out ← IO.Process.output { cmd := \"pkg-config\", args }
-  if out.exitCode != 0 then return #[]
-  return out.stdout.splitOn \" \" |>.filterMap (fun s =>
-    let t := s.trim
-    if t.isEmpty then none else some t) |>.toArray
+  try
+    let out ← IO.Process.output { cmd := \"pkg-config\", args }
+    if out.exitCode != 0 then return #[]
+    return (out.stdout.trimAscii.copy.splitOn \" \").toArray.map (·.trimAscii.copy)
+      |>.filter (· != \"\")
+  catch _ => return #[]
 
+/-- Link flags naming each library file outright, rather than adding its
+    directory to the search path.
+
+    On Linux, `pkg-config --variable=libdir` is typically
+    `/usr/lib/x86_64-linux-gnu`, which holds the *system* `libc.so` alongside
+    everything else. Passing that as `-L` makes `ld.lld` prefer the system
+    glibc over the one Lean bundles, and Lean's own `Scrt1.o` references
+    `__libc_csu_init` — removed in glibc 2.34. The result is a link that fails
+    with an undefined symbol in the C runtime, nowhere near anything this
+    package wrote.
+
+    Linen has the same `-L` and never hits this, because only `lean_lib Linen`
+    is a default target there: `lake build` never links an executable. `infra`
+    does.
+
+    Naming `<libdir>/libfoo.so` directly links exactly the intended file and
+    shadows nothing. Falls back to `-lfoo` if the file is absent, so a distro
+    with a different layout still gets a chance. -/
+def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
+  let libs ← pkgConfigFlags #[\"--libs\", pkg]
+  let libdirs ← pkgConfigFlags #[\"--variable=libdir\", pkg]
+  let libdir : Option String := (libdirs.filter (· != \"\"))[0]?
+  let mut out : Array String := #[]
+  for tok in libs do
+    if tok.startsWith \"-L\" then
+      continue                                  -- deliberately dropped
+    else if tok.startsWith \"-l\" then
+      let name := (tok.drop 2).toString
+      match libdir with
+      | some d =>
+        let candidate : FilePath := (d : FilePath) / s!\"lib{name}.so\"
+        if ← candidate.pathExists then
+          out := out.push candidate.toString
+        else
+          out := out.push tok
+      | none => out := out.push tok
+    else
+      out := out.push tok
+  return out
+
+/-- The active macOS SDK's framework and library search paths. Lean ships its
+    own `lld`, which has no default framework path, so these are required for
+    `-framework` to resolve. `#[]` off macOS. -/
 def macSdkArgs : IO (Array String) := do
-  if System.Platform.isOSX then
+  try
     let out ← IO.Process.output { cmd := \"xcrun\", args := #[\"--show-sdk-path\"] }
-    if out.exitCode == 0 then
-      return #[\"-isysroot\", out.stdout.trim]
-  return #[]
+    if out.exitCode != 0 then return #[]
+    let sdk := out.stdout.trimAscii.copy
+    if sdk.isEmpty then return #[]
+    return #[\"-F\", sdk ++ \"/System/Library/Frameworks\", \"-L\", sdk ++ \"/usr/lib\"]
+  catch _ => return #[]
 
 open Lean Elab Command in
 run_cmd do
-  let frameworks : Array String :=
+  let mkDef (n : Name) (flags : Array String) : CommandElabM Unit := do
+    let lits : Array (TSyntax `term) := flags.map (fun s => quote s)
+    elabCommand (← `(def $(mkIdent n) : Array String := #[$lits,*]))
+  -- `System.Keychain`: Security.framework on macOS, libsecret on Linux.
+  let keychain : Array String ←
     if System.Platform.isOSX then
-      -- The OS keychain, reached through Linen's `System.Keychain`.
-      #[\"-framework\", \"Security\", \"-framework\", \"CoreFoundation\"]
+      (macSdkArgs).map (· ++ #[\"-framework\", \"Security\", \"-framework\", \"CoreFoundation\"])
+    else if System.Platform.isWindows then
+      pure #[\"-ladvapi32\", \"-lcredui\"]
     else
-      -- libsecret on Linux, discovered rather than hardcoded.
-      (← liftM (pkgConfigFlags #[\"--libs\", \"libsecret-1\"]))
-  let ssl ← liftM (pkgConfigFlags #[\"--libs\", \"openssl\"])
-  let sdk ← liftM macSdkArgs
-  let all := frameworks ++ ssl ++ sdk
-  elabCommand (← `(def nativeLinkArgs : Array String := #[$[$(all.map quote)],*]))
+      pkgAbsoluteLibs \"libsecret-1\"
+  -- OpenSSL is deliberately absent, though `jose.o` and `tls.o` both reference
+  -- it. Lean already ends every executable link with its own
+  -- `LEANC_INTERNAL_LINKER_FLAGS`:
+  --
+  --     -L <toolchain>/lib … -lgmp -luv -lssl -lcrypto
+  --
+  -- which resolves against the *static* `libssl.a`/`libcrypto.a` the release
+  -- toolchain bundles (`script/prepare-llvm-linux.sh`: `cp $OPENSSL/lib/libssl.a
+  -- $OPENSSL/lib/libcrypto.a stage1/lib/`). Those archives are already the
+  -- last thing on the line, which is exactly where an archive has to sit to
+  -- satisfy `liblinenffi.a` above it.
+  --
+  -- Naming the system OpenSSL as well is not merely redundant on Linux, it is
+  -- fatal. A current distro's `libssl.so`/`libcrypto.so` need
+  -- `stat@GLIBC_2.33`, `dlopen@GLIBC_2.34` and `__isoc23_strtol@GLIBC_2.38`,
+  -- while the glibc Lean bundles under `lib/glibc` predates all three — it
+  -- still has the `__libc_csu_init` that glibc 2.34 removed. Under lld's
+  -- default `--no-allow-shlib-undefined` that is an immediate link failure on
+  -- eighteen symbols no code here can reach.
+  --
+  -- Dropping it retires the macOS hazard too: the reason to point at
+  -- Homebrew's OpenSSL was that dyld could otherwise bind to the system's
+  -- incompatible `libboringssl` and crash on the first TLS call. A static
+  -- archive cannot be re-bound at runtime, so the failure mode is gone rather
+  -- than merely avoided.
+  --
+  -- The Linux CI still installs `libssl-dev`, for the *headers* Linen's
+  -- `jose.c`/`tls.c` compile against. Only the link flags are unnecessary.
+  mkDef `nativeLinkArgs keychain
+-- ⟪native-link-flags:end⟫
 "
 
-/-- The example fleet. Everything a first declaration needs, and nothing it
-    does not — with the reasoning inline, because the point of a scaffold is
-    to be read. -/
 private def fleetLean (name : String) : String :=
 "import Infra
 
@@ -564,6 +644,13 @@ lake exe infra init {dir}"
              , ".gitlab-ci.yml" ] do
       if ← (root / f).pathExists then preexisting := f :: preexisting
 
+  -- `lake new` writes `lakefile.toml`, and with both present Lake announces
+  -- "using lakefile.lean" and ignores the TOML one *entirely* — including any
+  -- dependency declared in it. Writing ours next to theirs would therefore
+  -- silently discard their configuration while appearing to work, which is
+  -- worse than doing nothing. So a TOML lakefile counts as a lakefile.
+  let hasToml ← (root / "lakefile.toml").pathExists
+
   IO.println s!"{if inPlace then "Setting up" else "Creating"} {dir}…\n"
 
   -- Lake first: it owns how a Lean project starts, including the toolchain
@@ -582,7 +669,14 @@ lake exe infra init {dir}"
       return 1
 
   let keep (rel : String) : Bool := preexisting.contains rel
-  let wroteLakefile ← put root "lakefile.lean"     (lakefile ident) (keep "lakefile.lean")
+  -- Not `keep`: that only declines to *overwrite*, and here the file to leave
+  -- alone is `lakefile.toml` while the one we would create — `lakefile.lean` —
+  -- does not exist yet. So this is a skip, not a no-clobber.
+  let wroteLakefile ←
+    if inPlace && hasToml then do
+      IO.println "  lakefile.lean (skipped — lakefile.toml is yours; see below)"
+      pure false
+    else put root "lakefile.lean" (lakefile ident) (keep "lakefile.lean")
   discard <| put root "Fleet.lean"                 (fleetLean ident) (keep "Fleet.lean")
   discard <| put root "Main.lean"                  (mainLean ident) (keep "Main.lean")
   discard <| put root ".gitignore"                 gitignore (keep ".gitignore")
@@ -600,6 +694,24 @@ lake exe infra init {dir}"
   -- build, and saying "Done" would be a lie. The flags are the whole reason
   -- this command exists.
   unless wroteLakefile do
+    if hasToml then
+      IO.println "Your project uses lakefile.toml, which was left alone."
+      IO.println ""
+      IO.println "TOML cannot express what this needs: the native link flags are"
+      IO.println "computed at build time by running `pkg-config`, and they are"
+      IO.println "required — Lake does not propagate them from a dependency."
+      IO.println "So the lakefile has to be Lean. Two ways round it:"
+      IO.println ""
+      IO.println "  - Easiest: scaffold a fresh project and move your code across."
+      IO.println s!"      lake exe infra new {dir}-infra"
+      IO.println ""
+      IO.println "  - Or port lakefile.toml to lakefile.lean by hand, then re-run"
+      IO.println "    this command; it will fill in the rest."
+      IO.println ""
+      IO.println "Note that Lake ignores lakefile.toml completely once a"
+      IO.println "lakefile.lean exists, so do not leave both in place."
+      IO.println ""
+    else
     IO.println "Your lakefile was kept, so the dependency and the native link"
     IO.println "flags are NOT in it yet. Both are required — Lake does not"
     IO.println "propagate link flags from a dependency. Add to lakefile.lean:"

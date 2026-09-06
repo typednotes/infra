@@ -20,6 +20,8 @@ open System Lake DSL
   nothing is hardcoded to one developer's paths.
 -/
 
+-- ⟪native-link-flags:begin⟫ — mirrored verbatim into `Infra/Cli/New.lean`.
+-- `ci/check-lakefile-sync.sh` fails the build if the two ever differ.
 /-- Ask `pkg-config` for a package's flags, degrading to `#[]` when it or the
     package is missing — matching how Linen treats optional native
     dependencies. -/
@@ -125,6 +127,7 @@ run_cmd do
   -- The Linux CI still installs `libssl-dev`, for the *headers* Linen's
   -- `jose.c`/`tls.c` compile against. Only the link flags are unnecessary.
   mkDef `nativeLinkArgs keychain
+-- ⟪native-link-flags:end⟫
 
 package infra where
   version := v!"0.3.5"

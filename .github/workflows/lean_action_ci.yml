@@ -60,6 +60,24 @@ jobs:
       # see `.github/workflows/live-test.yml`, which is manual only.
       - name: Run the test driver (offline)
         run: lake test
+      # The native link-flag block exists in two places — this repo's lakefile
+      # and the copy `infra new` writes into a scaffolded project — because
+      # Lake cannot propagate `moreLinkArgs` from a dependency. They drifted
+      # once, and the drift broke the link on Linux in every scaffolded
+      # project while this repo itself kept building. Cheap to check, so it is
+      # checked.
+      - name: Check the scaffolder's lakefile copy has not drifted
+        run: ./ci/check-lakefile-sync.sh
+      # Scaffolding is only really tested by building the thing it produces —
+      # which is the one check AGENTS.md names for it, and the one that would
+      # have caught the drift above. The generated lakefile points at `main`,
+      # so it is repointed at this checkout to test *these* flags.
+      - name: Scaffold a project and build it
+        run: |
+          lake exe infra new /tmp/scaffold-check
+          sed -i 's|require infra from git "[^"]*" @ "main"|require infra from "'"$PWD"'"|'             /tmp/scaffold-check/lakefile.lean
+          cp lean-toolchain /tmp/scaffold-check/
+          cd /tmp/scaffold-check && lake build && ./.lake/build/bin/scaffold_check
       # Every example is test surface, per AGENTS.md. All but `scaleway-pull`
       # are offline and free, so CI runs them; a bare invocation plans against
       # the placeholder backends.
