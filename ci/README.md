@@ -270,35 +270,44 @@ do that in the project holding production is a credential worth not having. So
 CI gets its own project — `Typednotes CI` — and its permissions are scoped to
 that project alone.
 
+CI has **its own project and its own application**, so its credential can
+reach neither production resources nor any identity:
+
+| | |
+|---|---|
+| Project | `Typednotes CI` — `93e968f6-3d1e-4f28-ac82-b7ed6b4b6658` |
+| Application | `Typednotes-CI` — `b9037b93-b20f-4cce-b02b-5b03bf5ec603` |
+
+A dedicated **application** matters as much as the project. Before this, CI
+authenticated with a *user* API key, which inherits the user's own rights —
+org-wide, every project — so an isolated project would have bought nothing.
+The tell was that CI created resources in the `default` project while no
+application held any permission there.
+
 ```sh
-scw account project create name="Typednotes CI" \
-  description="Isolated project for infra's live CI tests"
-# note the id it prints; call it $CI_PROJECT below
+CI=93e968f6-3d1e-4f28-ac82-b7ed6b4b6658
+APP=b9037b93-b20f-4cce-b02b-5b03bf5ec603
+
+# The key. Its secret is shown ONCE — put it straight into the repository
+# secrets and nowhere else.
+scw iam api-key create application-id="$APP" \
+  description="GitHub Actions live tests" \
+  default-project-id="$CI"
+
+# Product permissions, confined to the CI project. No IAM permission sets:
+# `resource iam` is dropped from `scalewayLive`, so CI needs no
+# organization-level rights at all.
+scw iam policy create name=infra-ci-live-tests application-id="$APP" \
+  rules.0.project-ids.0="$CI" rules.0.permission-set-names.0=MessagingAndQueuingFullAccess \
+  rules.1.project-ids.0="$CI" rules.1.permission-set-names.0=SecretManagerFullAccess \
+  rules.2.project-ids.0="$CI" rules.2.permission-set-names.0=ContainerRegistryFullAccess \
+  rules.3.project-ids.0="$CI" rules.3.permission-set-names.0=ObjectStorageFullAccess \
+  rules.4.project-ids.0="$CI" rules.4.permission-set-names.0=FunctionsFullAccess \
+  rules.5.project-ids.0="$CI" rules.5.permission-set-names.0=ContainersFullAccess
 ```
 
-Then point the repository secret `SCW_DEFAULT_PROJECT_ID` at that id, and scope
-the policy to it rather than to the organization:
-
-```sh
-ORG=8460bf58-4c44-431e-9df4-8eae3888b1ce
-APP=<the application id whose API key CI uses>
-
-scw iam policy create \
-  name=infra-ci-live-tests \
-  application-id="$APP" \
-  rules.0.project-ids.0="$CI_PROJECT" \
-  rules.0.permission-set-names.0=MessagingAndQueuingFullAccess \
-  rules.1.project-ids.0="$CI_PROJECT" \
-  rules.1.permission-set-names.0=SecretManagerFullAccess \
-  rules.2.project-ids.0="$CI_PROJECT" \
-  rules.2.permission-set-names.0=ContainerRegistryFullAccess \
-  rules.3.project-ids.0="$CI_PROJECT" \
-  rules.3.permission-set-names.0=ObjectStorageFullAccess \
-  rules.4.project-ids.0="$CI_PROJECT" \
-  rules.4.permission-set-names.0=FunctionsFullAccess \
-  rules.5.project-ids.0="$CI_PROJECT" \
-  rules.5.permission-set-names.0=ContainersFullAccess
-```
+Then three repository secrets: `SCW_ACCESS_KEY` and `SCW_SECRET_KEY` from the
+key, and `SCW_DEFAULT_PROJECT_ID` = the CI project id.
 
 `project-ids` rather than `organization-id` is the point: with the former, a
 credential that goes wrong cannot reach anything outside the CI project.
