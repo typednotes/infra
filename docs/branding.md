@@ -99,8 +99,49 @@ observer would read it as endorsement.
 
 ## The cloud marks are names, not logos
 
-`assets/providers/*.svg` are **wordmarks set in this project's own type**,
-supplied as a light/dark pair per provider (see the socket below). They are not AWS's or Scaleway's
+As of 2026-09-06 this is **mixed**, deliberately, and the two halves are
+governed differently.
+
+**AWS, Google Cloud and Scaleway are those vendors' own marks**, installed
+byte-identical to what was downloaded. `assets/providers/SOURCES.md` is the
+ledger: where each came from, when, what the host says about its licence, and
+— the part that matters — that all three carry a `trademarked` restriction
+which the copyright licence does not touch. Apache-2.0 §6 declines to grant
+trademark rights explicitly; a public-domain dedication of a *file* says
+nothing about the *mark*. Read that file before touching any of the three.
+
+They came from Wikipedia and Wikimedia Commons at the repository owner's
+explicit direction, which is a step below what the section below asks for, and
+recorded as such rather than quietly. They were checked on arrival — no
+scripts, no external references, each vendor's real colours — so they are not
+wrong; they are simply not authoritative, and a vendor rebrand will not reach
+them.
+
+**Azure and OVHcloud are still wordmarks set in this project's own type**,
+supplied as a light/dark pair. Those are not their logos, and the distinction
+is the point: naming a product you interoperate with is nominative use, while
+reproducing its mark is a different act.
+
+### Contrast without recolouring
+
+All three real marks are dark-on-light artwork — `#252F3E` text for AWS,
+`#5f6368` for Google Cloud's wordmark, `#521094` for Scaleway. On a dark page
+the first is invisible and the others are poor.
+
+The obvious fix is the forbidden one. Recolouring a vendor's mark to make a
+reversed variant produces a *modified* mark, which is what their guidelines
+prohibit and what the note further down already warned about. A vendor that
+publishes only one variant has, in effect, said it should not be inverted.
+
+So the marks are not touched, and the *tile* changes instead: in dark mode the
+three vendor tiles get a white plate (`.cloud.has-mark`), which is the
+sanctioned way to carry dark-on-light artwork onto a dark background. The two
+wordmark tiles beside them do not get a plate, because they are ours and
+invert cleanly.
+
+If an official reversed file is ever obtained for one of the three, it belongs
+at `<name>-dark.svg` and that tile can drop its plate. The socket below is
+still the mechanism. They are not AWS's or Scaleway's
 logos, and that is deliberate: the same caution that applies to Lean and
 OpenTofu applies here, and AWS's guidelines in particular are strict about
 their marks.

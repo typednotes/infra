@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 290 60" width="290" height="60"
-     role="img" aria-label="Scaleway">
-  <title>Scaleway</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 60" width="190" height="60"
+     role="img" aria-label="Azure">
+  <title>Azure</title>
   <!-- Theme variant. The pair (name.svg, name-dark.svg) is the drop-in socket
        for a vendor's OWN two files: replace both and change only the width and
        height in site/index.html. Do not recolour a vendor's single file to make
@@ -13,5 +13,5 @@
        reproducing a mark. -->
   <text x="0" y="44" fill="#f2f4f8"
         font-family="'DM Sans','Inter','Helvetica Neue',Helvetica,Arial,sans-serif"
-        font-size="42" font-weight="700" letter-spacing="-1.4">Scaleway</text>
+        font-size="42" font-weight="700" letter-spacing="-1.4">Azure</text>
 </svg>

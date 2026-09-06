@@ -68,6 +68,15 @@ jobs:
       # checked.
       - name: Check the scaffolder's lakefile copy has not drifted
         run: ./ci/check-lakefile-sync.sh
+      # `pages.yml` publishes `site/` alone, so the page carries its own copy
+      # of the artwork and there are two copies of every file. They drifted
+      # the day they were introduced — a `<picture>` source was added pointing
+      # at a file that existed only on the source side, and a matching
+      # `<source>` that 404s does not fall back to its `<img>`, so dark mode
+      # would have shown broken images on the published site with every local
+      # check passing.
+      - name: Check the published site's assets are in sync and resolve
+        run: ./ci/check-site-assets-sync.sh
       # Scaffolding is only really tested by building the thing it produces —
       # which is the one check AGENTS.md names for it, and the one that would
       # have caught the drift above. The generated lakefile points at `main`,

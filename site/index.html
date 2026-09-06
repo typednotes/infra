@@ -171,6 +171,19 @@
   .cloud.is-partial { opacity: .8; color: var(--ink); border-style: dashed; }
   .cloud img { height: 24px; width: auto; display: block; }
   .cloud picture { display: block; line-height: 0; }
+  /* Vendors' own marks, unmodified. Each is dark-on-light artwork, so on a
+     dark page it is set on a light plate rather than recoloured — recolouring
+     a mark is what their guidelines forbid, and a plate is the sanctioned way
+     to keep contrast. Only these three tiles get it; the neighbouring
+     wordmarks are ours and invert cleanly. */
+  .cloud.has-mark { background: transparent; }
+  .mark-aws      { height: 34px; }
+  .mark-gcp      { height: 20px; }
+  .mark-scaleway { height: 20px; }
+  @media (prefers-color-scheme: dark) {
+    .cloud.has-mark { background: #ffffff; border-color: #ffffff; }
+    .cloud.has-mark span { color: #3f5372; }
+  }
   .cloud span { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
                 border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
 
@@ -349,11 +362,11 @@
        status anyway, so the grouping was carrying no information the reader
        could not already see. -->
   <div class="clouds">
-    <div class="cloud is-on"><picture><source srcset="providers/aws-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></picture></div>
+    <div class="cloud is-on has-mark"><img class="mark mark-aws" src="providers/aws.svg" alt="AWS" width="57" height="34"></div>
     <div class="cloud"><picture><source srcset="providers/azure-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/azure.svg" alt="Azure" width="190" height="60"></picture><span>planned</span></div>
-    <div class="cloud is-partial"><picture><source srcset="providers/gcp-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"></picture><span>3 of 7 kinds live</span></div>
+    <div class="cloud is-partial has-mark"><img class="mark mark-gcp" src="providers/gcp.svg" alt="Google Cloud" width="129" height="20"><span>3 of 7 kinds live</span></div>
     <div class="cloud"><picture><source srcset="providers/ovh-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"></picture><span>planned</span></div>
-    <div class="cloud is-on"><picture><source srcset="providers/scaleway-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></picture></div>
+    <div class="cloud is-on has-mark"><img class="mark mark-scaleway" src="providers/scaleway.svg" alt="Scaleway" width="103" height="20"></div>
   </div>
   <p class="cloudband-note">
     <strong>&ldquo;Types only&rdquo;</strong> means GCP resources can be declared,
