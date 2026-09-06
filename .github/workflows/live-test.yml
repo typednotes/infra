@@ -221,6 +221,11 @@ jobs:
           SCW_ACCESS_KEY: ${{ inputs.provider == 'scaleway' && secrets.SCW_ACCESS_KEY || '' }}
           SCW_SECRET_KEY: ${{ inputs.provider == 'scaleway' && secrets.SCW_SECRET_KEY || '' }}
           SCW_DEFAULT_PROJECT_ID: ${{ inputs.provider == 'scaleway' && secrets.SCW_DEFAULT_PROJECT_ID || '' }}
+          # Unused as things stand: only `Iam.Scw` reads the organization id,
+          # and `resource iam` is out of `scalewayLive` because Scaleway's IAM
+          # applications are organization-scoped and CI holds no org-level
+          # rights. Passed anyway so that re-adding the kind does not also
+          # require remembering this line.
           SCW_DEFAULT_ORGANIZATION_ID: ${{ inputs.provider == 'scaleway' && secrets.SCW_DEFAULT_ORGANIZATION_ID || '' }}
         run: lake test -- ${{ inputs.provider }}
 

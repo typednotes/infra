@@ -306,8 +306,17 @@ scw iam policy create name=infra-ci-live-tests application-id="$APP" \
   rules.5.project-ids.0="$CI" rules.5.permission-set-names.0=ContainersFullAccess
 ```
 
-Then three repository secrets: `SCW_ACCESS_KEY` and `SCW_SECRET_KEY` from the
-key, and `SCW_DEFAULT_PROJECT_ID` = the CI project id.
+Then three repository secrets:
+
+| Secret | Value |
+|---|---|
+| `SCW_ACCESS_KEY` | from `scw iam api-key create` |
+| `SCW_SECRET_KEY` | from the same command — shown once, so capture it then |
+| `SCW_DEFAULT_PROJECT_ID` | `93e968f6-3d1e-4f28-ac82-b7ed6b4b6658` |
+
+`SCW_DEFAULT_ORGANIZATION_ID` is **not** required. Only `Iam.Scw` reads it, and
+`resource iam` is out of `scalewayLive`. The workflow still passes it, so that
+re-adding the kind does not also mean remembering this line.
 
 `project-ids` rather than `organization-id` is the point: with the former, a
 credential that goes wrong cannot reach anything outside the CI project.
