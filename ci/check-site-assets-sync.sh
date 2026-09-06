@@ -16,17 +16,22 @@ cd "$(dirname "$0")/.."
 
 fail=0
 
-# Only the artwork is compared. `assets/providers/SOURCES.md` is the provenance
-# ledger and has no business being served, so it lives on the source side only.
-if ! diff -rq --exclude='*.md' assets/providers site/providers > /tmp/providers-diff 2>&1; then
-  echo "error: assets/providers and site/providers differ." >&2
-  echo "  assets/ is the source; refresh the copy with:" >&2
-  echo "    rm -rf site/providers && cp -r assets/providers site/providers \\" >&2
-  echo "      && rm -f site/providers/*.md" >&2
-  echo >&2
-  cat /tmp/providers-diff >&2
-  fail=1
-fi
+# One-way, not a mirror. `assets/` is the source and may legitimately hold more
+# than the page currently uses — artwork for a cloud that is not supported yet,
+# and the `SOURCES.md` ledger, which has no business being served. What must
+# hold is that every file the site publishes is byte-identical to its source.
+while IFS= read -r f; do
+  rel="${f#site/providers/}"
+  if [ ! -f "assets/providers/$rel" ]; then
+    echo "error: site/providers/$rel has no counterpart in assets/providers/" >&2
+    echo "  assets/ is the source: add it there, or delete the published copy." >&2
+    fail=1
+  elif ! cmp -s "$f" "assets/providers/$rel"; then
+    echo "error: site/providers/$rel differs from assets/providers/$rel" >&2
+    echo "  assets/ is the source; refresh with: cp assets/providers/$rel $f" >&2
+    fail=1
+  fi
+done < <(find site/providers -type f -name '*.svg')
 
 if ! cmp -s assets/logo.svg site/logo.svg; then
   echo "error: assets/logo.svg and site/logo.svg differ (assets/ is the source)." >&2
@@ -47,7 +52,15 @@ done < <(grep -oE '(src|srcset)="[^"]+"' site/index.html | sed -E 's/^(src|srcse
 
 [ "$missing" -eq 0 ] || fail=1
 
+# Not a failure, but worth saying: artwork carried in the source and not
+# published. Silence here is how an unused file becomes a file nobody knows the
+# status of.
+while IFS= read -r f; do
+  rel="${f#assets/providers/}"
+  [ -f "site/providers/$rel" ] || echo "note: assets/providers/$rel is not published (unused by the page)"
+done < <(find assets/providers -type f -name '*.svg')
+
 if [ "$fail" -eq 0 ]; then
-  echo "site assets: in sync, and every reference resolves"
+  echo "site assets: every published file matches its source, and every reference resolves"
 fi
 exit "$fail"

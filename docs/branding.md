@@ -147,16 +147,33 @@ OpenTofu applies here, and AWS's guidelines in particular are strict about
 their marks.
 
 Naming a product you interoperate with is nominative use and is ordinarily
-fine; reproducing its logo is a different act. Since the page only needs to say
-*which clouds this supports*, the name does the whole job and carries none of
-the risk. It also happens to make the strip trivially extensible — a new cloud
-is one more file with one more word in it, and the three greyed "planned" tiles
-cost nothing.
+fine; reproducing its logo is a different act.
 
-The strip is ordered **alphabetically**. It was grouped by status first, which
-reads as arbitrary unless you already know the statuses — and each tile carries
-its status as a tag anyway, so the grouping conveyed nothing the reader could
-not already see.
+### The strip shows supported clouds only
+
+It used to list planned ones too, greyed, with "planned" tags — on the
+reasoning that they cost nothing. They did cost something: a strip that mixes
+supported and unsupported clouds is a roadmap as much as a statement of
+support, and a roadmap on a landing page is the thing most likely to be read as
+a promise. It now shows AWS, Google Cloud and Scaleway, which are exactly the
+clouds that have a client.
+
+`azure.svg`, `ovh.svg` and their dark variants are therefore **kept in
+`assets/` and not published**. They are correct artwork for a strip they are
+not currently in, and `ci/check-site-assets-sync.sh` reports them as unused on
+every run rather than letting them become files whose status nobody knows.
+Adding one of those clouds is putting its tile back.
+
+The strip is ordered **alphabetically**, so the order carries no ranking. It
+was grouped by status first, which reads as arbitrary unless you already know
+the statuses.
+
+The note that used to sit under the strip — explaining what "types only" meant
+for GCP — is gone, because GCP has clients for three kinds now and the
+sentence described a state that no longer holds. What replaced it is the
+per-cloud tag on the tile itself and the coverage section further down, both of
+which are derived from `docs/coverage.md` rather than restating it in prose
+that has to be remembered separately.
 
 ### The light/dark socket
 

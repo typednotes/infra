@@ -157,7 +157,7 @@
   .band p { margin: 0; color: var(--ink-2); }
 
   /* ── clouds ── */
-  .cloudband { padding: 8px 24px 56px; }
+  .cloudband { padding: 8px 24px 40px; }
   .cloudband-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
                      color: var(--ink-2); margin: 0 0 14px; }
   .cloudband-note { font-size: 15px; color: var(--ink-2); max-width: 68ch; margin: 16px 0 0; }
@@ -170,6 +170,9 @@
   /* Declarable but not yet reachable: the types work, the client does not. */
   .cloud.is-partial { opacity: .8; color: var(--ink); border-style: dashed; }
   .cloud img { height: 24px; width: auto; display: block; }
+  /* No `<picture>` on the page today: the three vendor marks are single
+     unmodified files. Kept for the documented socket — an official reversed
+     variant at `<name>-dark.svg` — see docs/branding.md. */
   .cloud picture { display: block; line-height: 0; }
   .livehead { font-size: 21px; letter-spacing: -.01em; margin: 40px 0 8px; }
   td.gap { color: var(--ink-2); }
@@ -358,25 +361,15 @@
 
 <div class="wrap cloudband">
   <p class="cloudband-label">Clouds</p>
-  <!-- Alphabetical. It was grouped by status before, which reads as arbitrary
-       unless you already know the statuses — and the tag on each one says the
-       status anyway, so the grouping was carrying no information the reader
-       could not already see. -->
+  <!-- Only the clouds this actually supports. It listed planned ones too, with
+       "planned" tags, which made the strip a roadmap as much as a statement of
+       support — and a roadmap is the thing most likely to be read as a promise.
+       Alphabetical, so the order carries no ranking. -->
   <div class="clouds">
     <div class="cloud is-on has-mark"><img class="mark mark-aws" src="providers/aws.svg" alt="AWS" width="57" height="34"></div>
-    <div class="cloud"><picture><source srcset="providers/azure-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/azure.svg" alt="Azure" width="190" height="60"></picture><span>planned</span></div>
     <div class="cloud is-partial has-mark"><img class="mark mark-gcp" src="providers/gcp.svg" alt="Google Cloud" width="129" height="20"><span>3 of 7 kinds live</span></div>
-    <div class="cloud"><picture><source srcset="providers/ovh-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"></picture><span>planned</span></div>
     <div class="cloud is-on has-mark"><img class="mark mark-scaleway" src="providers/scaleway.svg" alt="Scaleway" width="103" height="20"></div>
   </div>
-  <p class="cloudband-note">
-    <strong>&ldquo;Types only&rdquo;</strong> means GCP resources can be declared,
-    placed, referenced, scheduled, diffed and exported to HCL today — everything
-    above the backend works. What is missing is the client that talks to it, so
-    an apply raises rather than quietly doing nothing. Authentication is
-    already done: a service-account key, <code>gcloud</code>, or Workload
-    Identity Federation.
-  </p>
 </div>
 
 <section id="catches">
