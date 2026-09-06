@@ -307,13 +307,16 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     | .compute, h => do
       match provider with
       | .gcp =>
-        let (image, memory, timeout, env) ←
+        let (image, memory, timeout, env, serviceAccount) ←
           Gcp.CloudRun.read creds (← Gcp.requireProject creds) creds.region h.raw
-        -- `executionRole` is Lambda's concept and Cloud Run's service account
-        -- is a different one, so it is not reported — alongside the fields
-        -- the other two clouds already leave unknown.
+        -- `executionRole` *is* reported: it is the service's runtime
+        -- identity, and a Cloud Run service with none runs as the default
+        -- compute service account, which Google grants `roles/editor`. See
+        -- the module note in `Gcp.CloudRun` — leaving it unmapped meant a
+        -- declaration could say nothing about identity and silently get an
+        -- Editor on the project.
         return { name := h.raw, runtime := .unknown, image
-                 executionRole := .unknown, namespace' := .unknown
+                 executionRole := serviceAccount, namespace' := .unknown
                  handler := .unknown, memoryMb := memory
                  timeoutSec := timeout, env }
       | .aws =>
@@ -488,6 +491,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .gcp =>
         Gcp.CloudRun.create creds (← Gcp.requireProject creds) creds.region
           spec.name spec.image spec.memoryMb spec.timeoutSec spec.env
+          spec.executionRole
       | .aws => Compute.Lambda.create creds (lambdaFor creds) spec.name spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
       | .scaleway => Compute.Containers.create creds spec.name spec.image
@@ -629,6 +633,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .gcp =>
         Gcp.CloudRun.update creds (← Gcp.requireProject creds) creds.region
           h.raw spec.image spec.memoryMb spec.timeoutSec spec.env
+          spec.executionRole
       | .aws => Compute.Lambda.update creds (lambdaFor creds) h.raw spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
       | .scaleway => Compute.Containers.update creds h.raw spec.image

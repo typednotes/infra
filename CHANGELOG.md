@@ -8,6 +8,32 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.3] — 2026-09-06
+
+### Fixed
+
+- **A Cloud Run service could silently run as project Editor.**
+  `ComputeSpec.executionRole` was left unmapped on GCP, on the reasoning that
+  it is Lambda's concept and Cloud Run's service account is a different one.
+  Both name the identity the code runs as, and not sending one is *not*
+  neutral: Cloud Run then uses the project's default compute service account,
+  which Google grants `roles/editor`. So a declaration that said nothing about
+  identity got an Editor on the whole project — the opposite of what leaving a
+  field unspoken means everywhere else here, where it means "whatever the
+  cloud has, stays". On a create there is no such thing; there is a default,
+  and this one is enormous.
+
+  `executionRole` now maps to the service's `serviceAccount`, `read` reports it
+  so a declared identity is diffable, and omitting it warns. Found by a live
+  run failing with `iam.serviceaccounts.actAs denied` — an error about
+  permission that revealed a problem about which identity was being chosen.
+
+### Documentation
+
+- **`iam.serviceAccounts.actAs` is a grant, not a role**, and is not implied by
+  `roles/run.admin`. `ci/README.md` has it, along with why the live fleet names
+  a runtime identity rather than accepting the default.
+
 ## [0.4.2] — 2026-09-06
 
 ### Verified

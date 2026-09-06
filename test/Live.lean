@@ -106,11 +106,19 @@ def ciPrefix : String := "ci-tests-infra-"
 
   ## The clouds must be allowed to do all this
 
-  More kinds means more permissions, and the CI identities do not have them
-  yet — AWS's role is scoped to SQS alone, and GCP's service account holds only
-  `roles/pubsub.editor`. `ci/README.md` lists what to grant per cloud. Until
-  it is granted a leg fails with a permission error, which is the correct
-  failure: the cloud's own refusal, reported rather than papered over.
+  More kinds means more permissions. `ci/README.md` lists what to grant per
+  cloud, and until it is granted a leg fails with the cloud's own refusal —
+  which is the correct failure, reported rather than papered over.
+
+  As of 0.4.2: **AWS's leg passes.** Scaleway's is blocked on its permission
+  sets. GCP has every role and API it needs and one grant more subtle than a
+  role — deploying a Cloud Run service as an identity requires
+  `iam.serviceAccounts.actAs` on that identity, which is not implied by being
+  allowed to create services.
+
+  Google needs a third thing besides roles and `actAs`, and it is easy to
+  mistake for a permission problem: each **API must be enabled on the
+  project**, separately from anyone being allowed to call it.
 -/
 
 /-- The environment variable holding the test secret's value. -/
@@ -214,7 +222,14 @@ fleet gcpLive in paris where
     resource compute "ci-tests-infra-run"
       { image      := "gcr.io/cloudrun/hello"
       , memoryMb   := 512
-      , timeoutSec := 60 }
+      , timeoutSec := 60
+      -- Naming the runtime identity, rather than letting Cloud Run pick. Its
+      -- default is the project's compute service account, which Google grants
+      -- `roles/editor` — so a test that said nothing here would deploy a
+      -- container running as an Editor on the whole project, and enshrine
+      -- that as the example. Deploying as an identity still requires
+      -- `iam.serviceAccounts.actAs` on it; `ci/README.md` has the grant.
+      , executionRole := "infra-ci@typednotes.iam.gserviceaccount.com" }
     -- Google constrains a service-account id to 6-30 lowercase characters
     -- starting with a letter. `Gcp.Iam.checkAccountId` rejects a bad one by
     -- naming the rule, because the name is fixed at compile time — so a bad

@@ -22,12 +22,35 @@ import Infra.Core.Stage
   guessed, because a wrong number here is a divergence that would be
   "corrected" on every single apply.
 
-  ## `v2`, and the fields that do not exist
+  ## `executionRole` is the runtime identity, and silence about it is dangerous
 
-  `executionRole` is Lambda's concept; Cloud Run has a service account, which
-  is a different thing with different semantics, so it is not reported.
-  `runtime`, `namespace'` and `handler` are likewise not Cloud Run concepts —
-  the same fields AWS and Scaleway already leave `unknown`.
+  This was originally left unmapped on the grounds that `executionRole` is
+  Lambda's concept and Cloud Run's service account is "a different thing with
+  different semantics". That was wrong in the way that matters: both name the
+  identity the code runs as, and *not sending one is not neutral.*
+
+  A Cloud Run service with no service account runs as the project's **default
+  compute service account**, which Google grants `roles/editor` on creation.
+  So a declaration that says nothing about identity gets an Editor on the whole
+  project — the opposite of what leaving a field unspoken is supposed to mean
+  elsewhere in this library, where it means "whatever the cloud has, stays".
+  On a create there is no "whatever the cloud has"; there is a default, and
+  this one is enormous.
+
+  So `executionRole` maps to the service's `serviceAccount`, and omitting it
+  warns rather than passing quietly. It is a warning and not a refusal because
+  the field is optional in the portable spec and a project may legitimately
+  have tightened its default — but it is said out loud, because nobody would
+  otherwise learn it from the declaration.
+
+  Found by a live run: deploying without one fails with
+  `iam.serviceaccounts.actAs denied on …-compute@developer.gserviceaccount.com`,
+  which is Google refusing to let the deployer borrow that identity. The error
+  is about permission; the problem it reveals is about which identity was being
+  chosen.
+
+  `runtime`, `namespace'` and `handler` really are not Cloud Run concepts, and
+  stay `unknown` — the same fields AWS and Scaleway already leave unset.
 
   Endpoints and field names checked against Google's Cloud Run Admin API
   reference (`v2`, `projects.locations.services`), 2026-09.
@@ -104,7 +127,8 @@ private def firstContainer (svc : Value) : Option Value :=
 
 /-- What `read` needs: image, memory, timeout, environment. -/
 def read (creds : Credentials) (project location name : String) :
-    IO (String × Partial Nat × Partial Nat × Partial (List (String × String))) := do
+    IO (String × Partial Nat × Partial Nat × Partial (List (String × String))
+        × Partial String) := do
   let svc ← Gcp.call creds "GET" host (servicePath project location name)
   let container := firstContainer svc
   let image := (container.bind (stringField · "image")).getD ""
@@ -133,26 +157,46 @@ def read (creds : Credentials) (project location name : String) :
         -- than reported as empty — the same choice `securityGroup` makes for
         -- a rule it cannot represent.
         | _,      _      => none)
-  return (image, memory, timeout, env)
+  let serviceAccount : Partial String :=
+    match (field svc "template").bind (stringField · "serviceAccount") with
+    | some sa => if sa.isEmpty then .unknown else .known sa
+    | none    => .unknown
+  return (image, memory, timeout, env, serviceAccount)
 
 private def bodyOf (image : String) (memoryMb timeoutSec : Nat)
-    (env : List (String × String)) : Value :=
+    (env : List (String × String)) (serviceAccount : String) : Value :=
   .object
     [ ("template", .object
-        [ ("timeout", .string s!"{timeoutSec}s")
-        , ("containers", .array
+        ([ ("timeout", .string s!"{timeoutSec}s") ]
+         -- Only when named. An empty string is not a service account, and
+         -- sending one would be rejected rather than defaulted.
+         ++ (if serviceAccount.isEmpty then []
+             else [("serviceAccount", .string serviceAccount)])
+         ++
+        [ ("containers", .array
             #[ .object
                  [ ("image", .string image)
                  , ("resources", .object
                      [("limits", .object [("memory", .string s!"{memoryMb}Mi")])])
                  , ("env", .array ((env.map fun (k, v) =>
-                     Value.object [("name", .string k), ("value", .string v)]).toArray)) ] ]) ]) ]
+                     Value.object [("name", .string k), ("value", .string v)]).toArray)) ] ]) ])) ]
+
+/-- Say so when no runtime identity was named. See the module note: the
+    default is an Editor on the project, so this is not a detail. -/
+private def warnIfNoIdentity (name serviceAccount : String) : IO Unit := do
+  if serviceAccount.isEmpty then
+    IO.eprintln s!"warning: cloud run '{name}' declares no executionRole, so it \
+will run as the project's default compute service account — which Google grants \
+roles/editor. Name one to avoid that."
 
 /-- Create the service and wait for it. -/
 def create (creds : Credentials) (project location name image : String)
-    (memoryMb timeoutSec : Nat) (env : List (String × String)) : IO Unit := do
+    (memoryMb timeoutSec : Nat) (env : List (String × String))
+    (serviceAccount : String) : IO Unit := do
+  warnIfNoIdentity name serviceAccount
   let started ← Gcp.call creds "POST" host (parent project location)
-    [("serviceId", some name)] (payload := some (bodyOf image memoryMb timeoutSec env))
+    [("serviceId", some name)]
+    (payload := some (bodyOf image memoryMb timeoutSec env serviceAccount))
   discard <| Gcp.awaitLro creds host "v2" started s!"cloud run: create {name}"
 
 /-- Update the service and wait for it.
@@ -162,9 +206,11 @@ def create (creds : Credentials) (project location name image : String)
     the others. That is the opposite of the Artifact Registry call above, and
     the difference is the API's, not a choice made here. -/
 def update (creds : Credentials) (project location name image : String)
-    (memoryMb timeoutSec : Nat) (env : List (String × String)) : IO Unit := do
+    (memoryMb timeoutSec : Nat) (env : List (String × String))
+    (serviceAccount : String) : IO Unit := do
+  warnIfNoIdentity name serviceAccount
   let started ← Gcp.call creds "PATCH" host (servicePath project location name)
-    (payload := some (bodyOf image memoryMb timeoutSec env))
+    (payload := some (bodyOf image memoryMb timeoutSec env serviceAccount))
   discard <| Gcp.awaitLro creds host "v2" started s!"cloud run: update {name}"
 
 /-- Delete the service and wait for it. Already gone is not an error. -/

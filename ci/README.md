@@ -225,6 +225,33 @@ rather than failing if it may not — so `roles/browser` or
 `roles/iam.securityReviewer` is optional and only makes `plan` more
 informative.
 
+#### And one grant that is not a role
+
+Deploying a Cloud Run service as an identity requires
+`iam.serviceAccounts.actAs` **on that identity**, which is not implied by
+`roles/run.admin`. Without it:
+
+    PERMISSION_DENIED: Permission 'iam.serviceaccounts.actAs' denied on
+    service account …@… (or it may not exist)
+
+The live fleet names `infra-ci` as its own Cloud Run runtime identity, so the
+grant is `infra-ci` being allowed to act as itself:
+
+```sh
+gcloud iam service-accounts add-iam-policy-binding \
+  infra-ci@typednotes.iam.gserviceaccount.com \
+  --member=serviceAccount:infra-ci@typednotes.iam.gserviceaccount.com \
+  --role=roles/iam.serviceAccountUser \
+  --project=typednotes
+```
+
+It names an identity deliberately. A Cloud Run service with none runs as the
+project's **default compute service account**, which Google grants
+`roles/editor` — so a declaration silent about identity gets an Editor on the
+whole project. `infra` warns when `executionRole` is unset for exactly that
+reason, and the test names one rather than enshrining the default as the
+example.
+
 To check what is granted:
 
 ```sh
