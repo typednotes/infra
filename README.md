@@ -38,13 +38,15 @@ the portability rules.
 **3 clouds** (AWS, Scaleway, GCP) · **14 resource kinds** (7 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
 
-GCP is **mostly types only**. `queues` is live, over Pub/Sub topics, and is
-exercised by a real create-and-destroy round trip in CI. Every other kind can
-be declared, placed, referenced, scheduled, diffed and exported to HCL today —
-everything above the backend works — but an apply raises rather than quietly
-doing nothing. Authentication is done in all three forms (a service-account
-key, `gcloud`, or Workload Identity Federation), so what remains is the
-per-product REST calls.
+GCP is **partly live**. `queues` (Pub/Sub topics), `objectStore` (Cloud
+Storage) and `secrets` (Secret Manager) have full clients; `queues` is
+additionally exercised by a real create-and-destroy round trip in CI. Four
+kinds remain types only — `compute`, `iam`, `imageRegistry` and `postgres` —
+and for those an apply raises rather than quietly doing nothing. Everything
+above the backend already works for all of them: declaring, placing,
+referencing, scheduling, diffing and exporting to HCL. Authentication is done
+in all three forms (a service-account key, `gcloud`, or Workload Identity
+Federation).
 
 Verification varies by kind, and it is worth knowing which before you rely on
 any one of them:

@@ -9,6 +9,8 @@ import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Scaleway.Sqs
 import Infra.Core.Backend
 import Infra.Providers.Gcp.PubSub
+import Infra.Providers.Gcp.SecretManager
+import Infra.Providers.Gcp.Storage
 
 /-
   The live backend: real calls to real clouds.
@@ -69,6 +71,19 @@ open Infra.Core
 open Infra.Providers.Aws
 open Infra.Providers.Kinds
 
+/-- The kind is another cloud's local concept, and GCP has no counterpart.
+
+    Deliberately not `noGcp`, which promises a client that has not been
+    written yet. This is not a to-do: there is no GCP security group and no
+    Scaleway container namespace on GCP, so the honest report is that the
+    declaration names something which cannot exist there — not that nobody has
+    got round to it. Conflating the two made `grep noGcp` overstate the work
+    remaining by about a third. -/
+private def notOnGcp {α : Type} (kind : String) : IO α :=
+  throw (IO.userError s!"{kind} is a provider-local kind and has no GCP \
+counterpart; declare it on the cloud it belongs to. See docs/architecture.md \
+on provider-local kinds.")
+
 /-- Every GCP branch in this file. There is no live GCP backend yet: the types,
     placement, scheduling, diffing and HCL export all work for GCP, but nothing
     here can talk to it.
@@ -125,24 +140,39 @@ private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
 def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
   list
     | .objectStore => do
-      let ep := s3For provider creds
-      return (← ObjectStore.listBuckets creds ep).map fun n =>
-        { handle := ⟨n⟩, url := ObjectStore.bucketUrl ep n }
+      match provider with
+      -- Cloud Storage's JSON API, not the S3-compatible one: that needs HMAC
+      -- keys, and every GCP credential here is a bearer token. See the module
+      -- note in `Gcp.Storage` — this kind had no GCP branch at all and routed
+      -- to the S3 client, so it was unimplemented without appearing in
+      -- `grep noGcp`.
+      | .gcp =>
+        let project ← Gcp.requireProject creds
+        return (← Gcp.Storage.listBuckets creds project).map fun n =>
+          { handle := ⟨n⟩, url := Gcp.Storage.bucketUrl n }
+      | .aws | .scaleway =>
+        let ep := s3For provider creds
+        return (← ObjectStore.listBuckets creds ep).map fun n =>
+          { handle := ⟨n⟩, url := ObjectStore.bucketUrl ep n }
     | .s3Bucket => do
       let ep := s3For provider creds
       return (← ObjectStore.listBuckets creds ep).map fun n =>
         { handle := ⟨n⟩, arn := s!"arn:aws:s3:::{n}", region := ep.region }
     | .securityGroup => do
       match provider with
-      | .gcp => noGcp
-      | .scaleway => return []            -- AWS-only kind
+      -- AWS-only kind. `[]` is a *successful* listing that found nothing, not
+      -- a skipped one — the same answer Scaleway gives, and the right one:
+      -- `noGcp` would claim the client is merely unwritten, when there is no
+      -- GCP concept for it to talk to.
+      | .gcp | .scaleway => return []
       | .aws =>
         let groups ← Ec2.SecurityGroup.list creds (ec2For creds)
         return groups.map fun g => { handle := ⟨g.1⟩, groupId := g.2.1, vpcId := g.2.2 }
     | .awsInstance => do
       match provider with
-      | .gcp => noGcp
-      | .scaleway => return []            -- AWS-only kind
+      -- AWS-only kind: neither GCP nor Scaleway has a counterpart. `[]` is a
+      -- *successful* listing that found nothing, not a skipped one.
+      | .gcp | .scaleway => return []
       | .aws =>
         let insts ← Ec2.Instance'.list creds (ec2For creds)
         return insts.map fun i =>
@@ -170,7 +200,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return entries.map fun (name, uri) => { handle := ⟨name⟩, repositoryUri := uri }
     | .secrets => do
       let names ← match provider with
-        | .gcp => noGcp
+        | .gcp      => Gcp.SecretManager.list creds (← Gcp.requireProject creds)
         | .aws      => Secrets.Asm.list creds (asmFor creds)
         | .scaleway => Secrets.Scw.list creds
       -- The version is metadata the caller may want; fetching it per secret
@@ -197,37 +227,47 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return entries.map fun (n, host) => { handle := ⟨n⟩, endpoint := host }
     | .scalewayFunctionNamespace => do
       match provider with
-      | .gcp => noGcp
+      -- Scaleway-only kind: neither GCP nor AWS has a counterpart. `[]` is a
+      -- *successful* listing that found nothing, not a skipped one.
+      | .gcp | .aws => return []
       | .scaleway =>
         return (← Compute.Functions.listNamespaces creds).map fun (n, i) =>
           { handle := ⟨n⟩, namespaceId := i }
-      | .aws => return []      -- Scaleway-only kind
     | .scalewayContainerNamespace => do
       match provider with
-      | .gcp => noGcp
+      -- Scaleway-only kind: neither GCP nor AWS has a counterpart. `[]` is a
+      -- *successful* listing that found nothing, not a skipped one.
+      | .gcp | .aws => return []
       | .scaleway =>
         return (← Compute.Containers.listNamespaces creds).map fun (n, i) =>
           { handle := ⟨n⟩, namespaceId := i, registryEndpoint := "" }
-      | .aws => return []      -- Scaleway-only kind
     | .scalewayFunction => do
       match provider with
-      | .gcp => noGcp
+      -- Scaleway-only kind: neither GCP nor AWS has a counterpart. `[]` is a
+      -- *successful* listing that found nothing, not a skipped one.
+      | .gcp | .aws => return []
       | .scaleway =>
         return (← Compute.Functions.list creds).map fun (n, url) => { handle := ⟨n⟩, url }
-      | .aws => return []      -- Scaleway-only kind
     | .scalewayContainer => do
       match provider with
-      | .gcp => noGcp
+      -- Scaleway-only kind: neither GCP nor AWS has a counterpart. `[]` is a
+      -- *successful* listing that found nothing, not a skipped one.
+      | .gcp | .aws => return []
       | .scaleway =>
         return (← Compute.Containers.listFull creds).map fun (n, url) => { handle := ⟨n⟩, url }
-      | .aws => return []      -- Scaleway-only kind
 
   read
     | .objectStore, h => do
-      let ep := s3For provider creds
-      return { name := h.raw
-               versioning := ← ObjectStore.readVersioning creds ep h.raw
-               tags := ← ObjectStore.readTags creds ep h.raw }
+      match provider with
+      | .gcp =>
+        return { name := h.raw
+                 versioning := ← Gcp.Storage.readVersioning creds h.raw
+                 tags := ← Gcp.Storage.readLabels creds h.raw }
+      | .aws | .scaleway =>
+        let ep := s3For provider creds
+        return { name := h.raw
+                 versioning := ← ObjectStore.readVersioning creds ep h.raw
+                 tags := ← ObjectStore.readTags creds ep h.raw }
     | .s3Bucket, h => do
       let ep := s3For provider creds
       return { name := h.raw
@@ -318,7 +358,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { name := h.raw, description := ← Compute.Containers.readNamespace creds h.raw }
     | .scalewayFunction, h => do
       match provider with
-      | .gcp => noGcp
+      | .gcp => notOnGcp "scalewayFunction"
       | .scaleway =>
         let (runtime, bucketName) ← Compute.Functions.read creds h.raw
         -- The reference is reported as the handle the function was told about,
@@ -338,7 +378,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     -- — same limitation as `.secrets`' own `valueFrom`.
     | .scalewayContainer, h => do
       match provider with
-      | .gcp => noGcp
+      | .gcp => notOnGcp "scalewayContainer"
       | .scaleway =>
         let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image) ←
           Compute.Containers.readFull creds h.raw
@@ -352,11 +392,19 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
 
   create
     | .objectStore, spec => do
-      let ep := s3For provider creds
-      ObjectStore.createBucket creds ep spec.name
-      ObjectStore.putVersioning creds ep spec.name spec.versioning
-      ObjectStore.putTags creds ep spec.name spec.tags
-      return { handle := ⟨spec.name⟩, url := ObjectStore.bucketUrl ep spec.name }
+      match provider with
+      -- One call, unlike S3's create-then-configure: the JSON API takes
+      -- versioning and labels in the insert body.
+      | .gcp =>
+        let project ← Gcp.requireProject creds
+        Gcp.Storage.createBucket creds project spec.name spec.versioning spec.tags
+        return { handle := ⟨spec.name⟩, url := Gcp.Storage.bucketUrl spec.name }
+      | .aws | .scaleway =>
+        let ep := s3For provider creds
+        ObjectStore.createBucket creds ep spec.name
+        ObjectStore.putVersioning creds ep spec.name spec.versioning
+        ObjectStore.putTags creds ep spec.name spec.tags
+        return { handle := ⟨spec.name⟩, url := ObjectStore.bucketUrl ep spec.name }
     | .securityGroup, spec => do
       -- `CreateSecurityGroup` does not report the VPC, so that stays blank
       -- until the next `pull` observes it.
@@ -408,7 +456,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .fromEnv v  => Secrets.valueFromEnv v
         | .composed v => pure v
       let version ← match provider with
-        | .gcp => noGcp
+        | .gcp      =>
+          Gcp.SecretManager.create creds (← Gcp.requireProject creds) spec.name value
         | .aws      => Secrets.Asm.create creds (asmFor creds) spec.name value
         | .scaleway => Secrets.Scw.create creds spec.name value
       return { handle := ⟨spec.name⟩, version }
@@ -478,10 +527,15 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
 
   update
     | .objectStore, h, spec => do
-      let ep := s3For provider creds
-      ObjectStore.putVersioning creds ep h.raw spec.versioning
-      ObjectStore.putTags creds ep h.raw spec.tags
-      return { handle := h, url := ObjectStore.bucketUrl ep h.raw }
+      match provider with
+      | .gcp =>
+        Gcp.Storage.patchBucket creds h.raw spec.versioning spec.tags
+        return { handle := h, url := Gcp.Storage.bucketUrl h.raw }
+      | .aws | .scaleway =>
+        let ep := s3For provider creds
+        ObjectStore.putVersioning creds ep h.raw spec.versioning
+        ObjectStore.putTags creds ep h.raw spec.tags
+        return { handle := h, url := ObjectStore.bucketUrl ep h.raw }
     | .securityGroup, h, spec => do
       -- Additive: a rule present in the cloud but absent from the target is
       -- left alone. See `Kinds/Ec2.lean` and `docs/providers.md`.
@@ -531,7 +585,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         | .fromEnv v  => Secrets.valueFromEnv v
         | .composed v => pure v
       let version ← match provider with
-        | .gcp => noGcp
+        | .gcp      =>
+          Gcp.SecretManager.putValue creds (← Gcp.requireProject creds) h.raw value
         | .aws      => Secrets.Asm.putValue creds (asmFor creds) h.raw value
         | .scaleway => Secrets.Scw.putValue creds h.raw value
       return { handle := h, version }
@@ -584,7 +639,10 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := h, url }
 
   delete
-    | .objectStore, h => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
+    | .objectStore, h =>
+      match provider with
+      | .gcp => Gcp.Storage.deleteBucket creds h.raw
+      | .aws | .scaleway => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
     | .s3Bucket, h    => ObjectStore.deleteBucket creds (s3For provider creds) h.raw
     | .securityGroup, h => Ec2.SecurityGroup.delete creds (ec2For creds) h.raw
     | .awsInstance, h => do
@@ -610,7 +668,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .scaleway => ImageRegistry.Scw.delete creds h.raw
     | .secrets, h =>
       match provider with
-      | .gcp => noGcp
+      | .gcp      => do
+        Gcp.SecretManager.delete creds (← Gcp.requireProject creds) h.raw
       | .aws      => Secrets.Asm.delete creds (asmFor creds) h.raw
       | .scaleway => Secrets.Scw.delete creds h.raw
     | .compute, h =>

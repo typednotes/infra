@@ -12,7 +12,7 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| **GCP** | **`queues` live** (Pub/Sub topics: list, create, read, delete); every other kind is types only — declarable, placeable, referenceable, schedulable, diffable and exportable to HCL, with the backend branch raising |
+| **GCP** | **`queues`, `objectStore` and `secrets` live** (Pub/Sub topics, Cloud Storage buckets, Secret Manager secrets — full CRUD); `compute`, `iam`, `imageRegistry` and `postgres` are types only — declarable, placeable, referenceable, schedulable, diffable and exportable to HCL, with the backend branch raising. Provider-local kinds report no counterpart rather than a missing client |
 | Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
@@ -96,6 +96,22 @@ This is the section worth reading before trusting anything. Correctness of
   RS256, exchanged with Google for a live access token, and the credential
   chain picking the file up from `GOOGLE_APPLICATION_CREDENTIALS`. The key was
   created for the test and deleted immediately after.
+- **GCP `objectStore`**, over the Cloud Storage JSON API, and **GCP
+  `secrets`**, over Secret Manager — both full CRUD. Neither is live-tested
+  against a real project yet; only `queues` is. Two things they exposed:
+
+  `objectStore` had *no GCP branch at all* and routed unconditionally to the
+  S3 client, so a declared GCP bucket was signed with SigV4 and sent to
+  `storage.googleapis.com`. GCS's S3-compatible API needs HMAC keys, which are
+  a credential this library never holds, so it could only ever have failed.
+  Same shape as the `queues` defect: unimplemented without appearing in `grep
+  noGcp`.
+
+  And a Secret Manager secret is *two* resources — a container with a
+  replication policy, and a version holding the bytes — so creating one with a
+  value is two calls that cannot be made one. If the second fails the secret
+  exists and is empty, which a retry cannot fix (`ALREADY_EXISTS` while the
+  value is still missing), so that error says exactly what state it left.
 - **GCP `queues`**, over Pub/Sub topics — `list`, `create`, `read`, `delete`,
   exercised by the live CI round trip. The first live GCP client of any kind,
   and the one that motivated three fixes above the backend: Google nests its
