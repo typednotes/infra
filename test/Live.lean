@@ -49,13 +49,52 @@ open Infra.Specs
     CI run of this repository and can be deleted. -/
 def ciPrefix : String := "ci-tests-infra-"
 
+/-! ## The second kind: a secret
+
+  One resource proved the engine works end to end. A second one proves
+  something the first could not: that the **scheduler** works live, and that a
+  fleet is applied and torn down as a set rather than as one lucky resource.
+  Two independent resources means `create` twice in one apply and `delete`
+  twice in one destroy, with the absence check covering both.
+
+  `secrets` is the kind that can be added safely, and the reasoning is the same
+  shape as the one that chose queues:
+
+  - **All three clouds implement it** — Secrets Manager, Scaleway Secret
+    Manager, GCP Secret Manager.
+  - **Names are scoped**, to an account and region or to a project. Not
+    global, so concurrent runs in different accounts do not collide.
+  - **Deletion is immediate.** This one nearly disqualified AWS: Secrets
+    Manager *schedules* deletion with a recovery window of at least seven days
+    by default, and a name under scheduled deletion cannot be reused — which
+    would make this test unrunnable a second time. `Secrets.Asm.delete` passes
+    `ForceDeleteWithoutRecovery`, so it is not scheduled, it is gone.
+  - **It costs approximately nothing** for the minute it exists.
+
+  What is deliberately still *not* here is `objectStore`. Bucket names are
+  globally unique across all of AWS, and a fleet's names are fixed at compile
+  time, so that test would be one name away from being permanently unrunnable
+  by anyone but us. Nothing about having more kinds implemented changes that.
+
+  The value comes from the environment rather than the file, which is what
+  `secretsAreSound` proves below: no plaintext is committed. CI sets it; a
+  developer running this locally must too, and the failure names the variable.
+-/
+
+/-- The environment variable holding the test secret's value. -/
+def secretValueVar : String := "CI_TESTS_INFRA_SECRET"
+
 fleet awsLive in ireland where
   provider aws where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret"
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
 
 fleet scalewayLive in paris where
   provider scaleway where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret"
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
 
 /-! GCP's leg used to be expected to fail: there was no live GCP backend, so
     it raised on the first call, and this comment said the day one landed the
@@ -73,14 +112,30 @@ fleet scalewayLive in paris where
 fleet gcpLive in paris where
   provider gcp where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret"
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
 
--- Every live fleet names exactly one resource, and it carries the prefix.
+-- Two resources per cloud, of two kinds, and every name carries the prefix.
+-- The prefix guards are what make anything this ever leaks identifiable in a
+-- console at a glance, so they cover both kinds rather than just the first.
 #guard awsLive.keys.count .aws .queues = 1
 #guard scalewayLive.keys.count .scaleway .queues = 1
 #guard gcpLive.keys.count .gcp .queues = 1
+#guard awsLive.keys.count .aws .secrets = 1
+#guard scalewayLive.keys.count .scaleway .secrets = 1
+#guard gcpLive.keys.count .gcp .secrets = 1
 #guard awsLive.names.aws.queues.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.queues.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.queues.all (ciPrefix.isPrefixOf ·)
+#guard awsLive.names.aws.secrets.all (ciPrefix.isPrefixOf ·)
+#guard scalewayLive.names.scaleway.secrets.all (ciPrefix.isPrefixOf ·)
+#guard gcpLive.names.gcp.secrets.all (ciPrefix.isPrefixOf ·)
+
+-- No plaintext secret is committed, in any of the three. Decidable, so the
+-- compiler establishes it rather than a reviewer.
+#guard awsLive.plan.secretsAreSound
+#guard scalewayLive.plan.secretsAreSound
+#guard gcpLive.plan.secretsAreSound
 
 -- Each fleet is single-cloud, so a run for one provider never authenticates
 -- another — which is what lets the workflow pass one set of secrets.
@@ -176,8 +231,12 @@ after {settleSeconds}s — look for 'ci-tests-infra-*' in the account")
 def usage : String :=
   "usage: lake test [-- <aws|scaleway|gcp>]\n\n\
   With no argument: the offline checks, no cloud, no credentials, no cost.\n\
-  With a provider:  creates a real queue named 'ci-tests-infra-queue',\n\
-                    checks it converged, and deletes it again."
+  With a provider:  creates a real queue and a real secret, both named\n\
+                    'ci-tests-infra-*', checks the fleet converged, and\n\
+                    deletes both again.\n\n\
+  The secret's value is read from the environment, never from the fleet: a\n\
+  committed literal would not compile, which is what `secretsAreSound`\n\
+  proves. Set " ++ secretValueVar ++ " before running a live leg."
 
 def main (args : List String) : IO UInt32 := do
   match args with

@@ -51,6 +51,14 @@ jobs:
     # the compensating control for the breadth of the policy, and it is the one
     # thing this file cannot enforce for itself.
     environment: production
+    env:
+      # The value the test secret is created with. Not a secret in any real
+      # sense — it exists for about a minute in a resource named
+      # `ci-tests-infra-*` and is then deleted — but it is written here rather
+      # than in the fleet because the fleet is committed and
+      # `secretsAreSound` refuses a literal at compile time. That guard is the
+      # feature, so the test respects it rather than working around it.
+      CI_TESTS_INFRA_SECRET: not-a-real-secret-created-and-destroyed-by-ci
     # A hung provider call must not hold a runner, and must not skip teardown:
     # the step timeout below is shorter, so the job's own cleanup still runs.
     timeout-minutes: 20
@@ -176,6 +184,7 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          CI_TESTS_INFRA_SECRET: ${{ env.CI_TESTS_INFRA_SECRET }}
         run: |
           # An unset GitHub secret arrives as the empty string, not as absent —
           # which is exactly the case `Credentials.normalizeEnv` exists for.
@@ -186,6 +195,9 @@ jobs:
             scaleway) need="SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID" ;;
             gcp)      need="" ;;   # WIF — no static secret exists
           esac
+          # Every provider needs this one: the fleet now declares a secret, and
+          # its value is read from the environment rather than committed.
+          need="$need CI_TESTS_INFRA_SECRET"
           missing=""
           for v in $need; do
             [ -n "${!v}" ] || missing="$missing $v"
