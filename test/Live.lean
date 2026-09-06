@@ -4,14 +4,15 @@ import Infra
   # The test driver: offline by default, live on request
 
   `lake test` runs the offline checks and touches no cloud. `lake test -- aws`
-  (or `scaleway`, or `gcp`) creates a real resource, checks it converged,
-  and deletes it again.
+  (or `scaleway`, or `gcp`) creates eight to ten real resources, checks the
+  fleet converged, and deletes them again.
 
   ## What a leg creates
 
-  Nine of the fourteen kinds, on the clouds that have them — see the note
-  above the fleets for which five are excluded and why each is a real
-  obstacle rather than a to-do.
+  Eleven of the fourteen kinds, on the clouds that have them, in three
+  dependency shapes — see the notes above the fleets and above the guards for
+  which three kinds are excluded, and why each is a real obstacle rather than
+  a to-do.
 
   This began as one queue per cloud, and the reasoning for that choice is
   still the reasoning behind every name here: region-scoped rather than
@@ -53,27 +54,23 @@ def ciPrefix : String := "ci-tests-infra-"
 
 /-! ## What the live fleets cover, and what they cannot
 
-  Nine of the fourteen kinds, on the clouds that have them. Every one is
-  created from nothing, checked, and deleted, so a leg exercises `create`,
-  `list`, `read`, the diff, `delete` and the absence check across most of the
-  library rather than one corner of it.
+  Eleven of the fourteen kinds, on the clouds that have them — eight to ten
+  resources per leg (AWS 9, Scaleway 10, GCP 8). Every one is created from nothing, checked, and deleted,
+  so a leg exercises `create`, `list`, `read`, the diff, `delete` and the
+  absence check across most of the library rather than one corner of it.
 
-  Two resources were already better than one, because a set is applied and
-  torn down as a set — `create` runs more than once in an apply, `delete` more
-  than once in a destroy, and a single-resource test cannot tell a working
-  scheduler from a lucky one. Nine makes that argument properly.
+  One resource could never tell a working scheduler from a lucky one: a set is
+  applied and torn down as a set, so `create` and `delete` each run eight to ten
+  times in a pass. The **shape** matters more than the count, and the three
+  dependency patterns are described above the guards below.
 
-  ## The five that are not here, and why each is a real obstacle
+  ## The three that are not here, and why each is a real obstacle
 
   Not an oversight, and not a list that can be worked through by adding lines.
   Each fails for a reason a test cannot arrange:
 
-  - **`compute`** cannot be created from nothing. Lambda (container image),
-    Cloud Run and Scaleway Containers all require an image that already exists
-    in a registry, so testing it means building and pushing a real one first —
-    a different job from this one.
-  - **`scalewayContainer`** needs an image for the same reason, and
-    **`scalewayFunction`** needs deployable code.
+  - **`scalewayFunction`** needs deployable *code*, not merely an image, and
+    there is no public equivalent to point at the way there is for a container.
   - **`awsInstance`** needs an AMI id, which is region-specific and goes stale.
     Hard-coding one puts a rotting constant in a test whose failure would look
     like a bug in this library. It also bills by the second and takes minutes
@@ -83,8 +80,16 @@ def ciPrefix : String := "ci-tests-infra-"
     would not be a slow test but a failing one, and it costs real money while
     it exists.
 
-  The namespaces the Scaleway ones depend on are covered, because those *can*
-  be created from nothing.
+  ## `compute` was on that list and should not have been
+
+  It was excluded for needing an image that already exists, which was true of
+  Lambda and assumed of the rest. Cloud Run and Serverless Containers both pull
+  **public** images, so Cloud Run runs Google's own sample and the Scaleway
+  container pulls nginx, and nothing has to be built or pushed first.
+
+  Lambda really cannot: a container function must come from an ECR repository
+  in the same account. That is why `compute` is covered on GCP, its
+  provider-local cousin `scalewayContainer` on Scaleway, and neither on AWS.
 
   ## Bucket names are global, which needed solving rather than avoiding
 

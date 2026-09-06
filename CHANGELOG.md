@@ -56,7 +56,7 @@ the way a project is started changed shape.
   decorative.
 
 - **The live round trip now declares eleven of the fourteen kinds** — 22
-  (cloud, kind) pairs, nine or ten resources per leg — each created from
+  (cloud, kind) pairs, eight to ten resources per leg — each created from
   nothing, checked, and deleted.
 
   It also has **shape**, not just size: a chain (a secret composed from

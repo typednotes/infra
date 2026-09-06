@@ -189,7 +189,7 @@ how far this has been exercised must not count code that has never executed.
 |---|---|---|
 | AWS | `queues`, `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`, `securityGroup`, `iam` | 9 |
 | Scaleway | the same minus `s3Bucket`/`securityGroup`, plus both namespaces and `scalewayContainer` | 10 |
-| GCP | the same minus `s3Bucket`/`securityGroup`, plus `compute` | 9 |
+| GCP | the same minus `s3Bucket`/`securityGroup`, plus `compute` | 8 |
 
 **Eleven of the fourteen kinds.** `compute` became testable once a *public*
 image was allowed — Cloud Run pulls Google's own sample, so nothing has to be
