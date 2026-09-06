@@ -11,6 +11,10 @@ import Infra.Core.Backend
 import Infra.Providers.Gcp.PubSub
 import Infra.Providers.Gcp.SecretManager
 import Infra.Providers.Gcp.Storage
+import Infra.Providers.Gcp.CloudSql
+import Infra.Providers.Gcp.CloudRun
+import Infra.Providers.Gcp.ArtifactRegistry
+import Infra.Providers.Gcp.Iam
 
 /-
   The live backend: real calls to real clouds.
@@ -73,40 +77,39 @@ open Infra.Providers.Kinds
 
 /-- The kind is another cloud's local concept, and GCP has no counterpart.
 
-    Deliberately not `noGcp`, which promises a client that has not been
-    written yet. This is not a to-do: there is no GCP security group and no
-    Scaleway container namespace on GCP, so the honest report is that the
-    declaration names something which cannot exist there — not that nobody has
-    got round to it. Conflating the two made `grep noGcp` overstate the work
-    remaining by about a third. -/
+    Not "unimplemented": there is no GCP security group and no Scaleway
+    container namespace on GCP, so the honest report is that the declaration
+    names something which cannot exist there, rather than something nobody has
+    got round to. Conflating the two used to overstate the work remaining by
+    about a third. -/
 private def notOnGcp {α : Type} (kind : String) : IO α :=
   throw (IO.userError s!"{kind} is a provider-local kind and has no GCP \
 counterpart; declare it on the cloud it belongs to. See docs/architecture.md \
 on provider-local kinds.")
 
-/-- Every GCP branch in this file. There is no live GCP backend yet: the types,
-    placement, scheduling, diffing and HCL export all work for GCP, but nothing
-    here can talk to it.
+/-! ## There is no `noGcp` any more
 
-    Raising rather than returning `[]` or `unknown` is deliberate and is the
-    same rule the rest of this file follows: an empty list would say "nothing
-    exists there", which would make the engine propose creating a whole fleet
-    it cannot then create. Saying so at the first call is the honest failure.
+  There was, for every kind GCP could not talk to, and `grep noGcp` was the
+  to-do list. It is empty: all seven portable kinds have a GCP client.
 
-    Kept as one helper so that implementing a GCP product is a matter of
-    replacing its call, and `grep noGcp` is *most* of the to-do list — with
-    one caveat worth stating, because it cost a confusing CI failure.
+  Two things learned from it are worth keeping now that the helper is gone.
 
-    `.queues` never had one of these. It routed straight to the SQS client for
-    every cloud, which was right for AWS and Scaleway and wrong for GCP, so a
-    GCP queue failed deep inside `Scaleway.Sqs.credentialsFor` with a remark
-    about SQS compatibility instead of saying the backend was missing. A kind
-    that reuses another cloud's client can be unimplemented *without*
-    appearing in this list, so the list is a lower bound, not a census. -/
-private def noGcp {α : Type} : IO α :=
-  throw (IO.userError
-    "no live GCP backend yet — the types work, the client does not. \
-See docs/coverage.md for what is implemented")
+  It **overstated** the work, by counting provider-local kinds — an EC2
+  instance reached with `provider = .gcp` was never a missing client, because
+  there is nothing to write. Those report `notOnGcp` instead, which says the
+  declaration names a concept the cloud does not have.
+
+  And it **understated** the work, twice, in the way that actually cost
+  debugging time: `.queues` and `.objectStore` had no such branch at all. They
+  routed straight to the SQS and S3 clients, which was right for AWS and
+  Scaleway and wrong for GCP — so a GCP queue failed deep inside a *Scaleway*
+  module with a remark about SQS compatibility, and a GCP bucket was
+  SigV4-signed at `storage.googleapis.com`. A kind that borrows another cloud's
+  client can be unimplemented without appearing in the list that enumerates
+  what is unimplemented. If a fourth cloud is ever added, that is the trap to
+  look for first.
+-/
+
 
 /-- The SQS endpoint this cloud uses. Scaleway's queues are SQS-compatible, so
     only the host differs — the same reuse as object storage. -/
@@ -145,7 +148,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       -- keys, and every GCP credential here is a bearer token. See the module
       -- note in `Gcp.Storage` — this kind had no GCP branch at all and routed
       -- to the S3 client, so it was unimplemented without appearing in
-      -- `grep noGcp`.
+      -- the to-do list that was supposed to enumerate what was missing.
       | .gcp =>
         let project ← Gcp.requireProject creds
         return (← Gcp.Storage.listBuckets creds project).map fun n =>
@@ -162,7 +165,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       match provider with
       -- AWS-only kind. `[]` is a *successful* listing that found nothing, not
       -- a skipped one — the same answer Scaleway gives, and the right one:
-      -- `noGcp` would claim the client is merely unwritten, when there is no
+      -- Claiming the client is merely unwritten would be wrong: there is no
       -- GCP concept for it to talk to.
       | .gcp | .scaleway => return []
       | .aws =>
@@ -194,7 +197,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
           { handle := ⟨name⟩, url }
     | .imageRegistry => do
       let entries ← match provider with
-        | .gcp => noGcp
+        | .gcp      =>
+          Gcp.ArtifactRegistry.list creds (← Gcp.requireProject creds) creds.region
         | .aws      => ImageRegistry.Ecr.list creds (ecrFor creds)
         | .scaleway => ImageRegistry.Scw.list creds
       return entries.map fun (name, uri) => { handle := ⟨name⟩, repositoryUri := uri }
@@ -208,20 +212,25 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return names.map fun n => { handle := ⟨n⟩, version := "" }
     | .compute => do
       let names ← match provider with
-        | .gcp => noGcp
+        | .gcp      => do
+          let project ← Gcp.requireProject creds
+          let svcs ← Gcp.CloudRun.list creds project creds.region
+          pure (svcs.map (·.1))
         | .aws      => Compute.Lambda.list creds (lambdaFor creds)
         | .scaleway => Compute.Containers.list creds
       return names.map fun n => { handle := ⟨n⟩, status := "" }
     | .iam => do
       match provider with
-      | .gcp => noGcp
+      | .gcp =>
+        return (← Gcp.Iam.list creds (← Gcp.requireProject creds)).map fun (n, email) =>
+          { handle := ⟨n⟩, arn := email }
       | .aws =>
         return (← Iam.Aws'.list creds).map fun (n, arn) => { handle := ⟨n⟩, arn }
       | .scaleway =>
         return (← Iam.Scw.list creds).map fun n => { handle := ⟨n⟩, arn := "" }
     | .postgres => do
       let entries ← match provider with
-        | .gcp => noGcp
+        | .gcp      => Gcp.CloudSql.list creds (← Gcp.requireProject creds)
         | .aws      => Postgres.Rds.list creds (rdsFor creds)
         | .scaleway => Postgres.Rdb.list creds
       return entries.map fun (n, host) => { handle := ⟨n⟩, endpoint := host }
@@ -291,13 +300,22 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     -- is why an unimplemented kind cannot masquerade as already matching.
     | .iam, h => do
       let policies ← match provider with
-        | .gcp => noGcp
+        | .gcp      => Gcp.Iam.readPolicies creds (← Gcp.requireProject creds) h.raw
         | .aws      => Iam.Aws'.readPolicies creds h.raw
         | .scaleway => Iam.Scw.readPolicies
       return { name := h.raw, policies }
     | .compute, h => do
       match provider with
-      | .gcp => noGcp
+      | .gcp =>
+        let (image, memory, timeout, env) ←
+          Gcp.CloudRun.read creds (← Gcp.requireProject creds) creds.region h.raw
+        -- `executionRole` is Lambda's concept and Cloud Run's service account
+        -- is a different one, so it is not reported — alongside the fields
+        -- the other two clouds already leave unknown.
+        return { name := h.raw, runtime := .unknown, image
+                 executionRole := .unknown, namespace' := .unknown
+                 handler := .unknown, memoryMb := memory
+                 timeoutSec := timeout, env }
       | .aws =>
         let (role, memory, timeout, env, image) ← Compute.Lambda.read creds (lambdaFor creds) h.raw
         -- `runtime` and `namespace'` are not reported by either cloud, and are
@@ -334,13 +352,15 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     | .secrets, h          => pure { name := h.raw, valueFrom := .fromEnv "" }
     | .imageRegistry, h => do
       let immutable ← match provider with
-        | .gcp => noGcp
+        | .gcp      =>
+          Gcp.ArtifactRegistry.readImmutable creds (← Gcp.requireProject creds)
+            creds.region h.raw
         | .aws      => ImageRegistry.Ecr.readImmutable creds (ecrFor creds) h.raw
         | .scaleway => ImageRegistry.Scw.readImmutable
       return { name := h.raw, immutableTags := immutable }
     | .postgres, h => do
       let (cls, user, ver, storage) ← match provider with
-        | .gcp => noGcp
+        | .gcp      => Gcp.CloudSql.read creds (← Gcp.requireProject creds) h.raw
         | .aws      => Postgres.Rds.read creds (rdsFor creds) h.raw
         | .scaleway => Postgres.Rdb.read creds h.raw
       -- `masterPasswordSecret` is our bookkeeping, not the database's: it is
@@ -444,7 +464,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         return { handle := ⟨spec.name⟩, url }
     | .imageRegistry, spec => do
       let uri ← match provider with
-        | .gcp => noGcp
+        | .gcp      =>
+          Gcp.ArtifactRegistry.create creds (← Gcp.requireProject creds) creds.region
+            spec.name spec.immutableTags
         | .aws      => ImageRegistry.Ecr.create creds (ecrFor creds) spec.name spec.immutableTags
         | .scaleway => ImageRegistry.Scw.create creds spec.name
       return { handle := ⟨spec.name⟩, repositoryUri := uri }
@@ -463,7 +485,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := ⟨spec.name⟩, version }
     | .compute, spec => do
       match provider with
-      | .gcp => noGcp
+      | .gcp =>
+        Gcp.CloudRun.create creds (← Gcp.requireProject creds) creds.region
+          spec.name spec.image spec.memoryMb spec.timeoutSec spec.env
       | .aws => Compute.Lambda.create creds (lambdaFor creds) spec.name spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
       | .scaleway => Compute.Containers.create creds spec.name spec.image
@@ -471,7 +495,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := ⟨spec.name⟩, status := "creating" }
     | .iam, spec => do
       match provider with
-      | .gcp => noGcp
+      | .gcp =>
+        let email ← Gcp.Iam.create creds (← Gcp.requireProject creds) spec.name spec.policies
+        return { handle := ⟨spec.name⟩, arn := email }
       | .aws =>
         let arn ← Iam.Aws'.create creds spec.name spec.policies
         return { handle := ⟨spec.name⟩, arn }
@@ -487,14 +513,18 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       let host ←
         if spec.instanceClass.isEmpty then
           match provider with
-          | .gcp => noGcp
+          -- Cloud SQL has no serverless tier at all, so this is a refusal
+          -- with a suggestion rather than an unimplemented branch.
+          | .gcp => Gcp.CloudSql.createServerless spec.name
           | .aws => throw (IO.userError
               "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
           | .scaleway => Postgres.ServerlessSql.create creds spec.name spec.masterUsername
                            password spec.version spec.minCapacity spec.maxCapacity
         else
           match provider with
-          | .gcp => noGcp
+          | .gcp =>
+            Gcp.CloudSql.create creds (← Gcp.requireProject creds) creds.region
+              spec.name spec.instanceClass password spec.version spec.storageGb
           | .aws => Postgres.Rds.create creds (rdsFor creds) spec.name spec.instanceClass
                       spec.masterUsername password spec.version spec.storageGb
           | .scaleway => Postgres.Rdb.create creds spec.name spec.instanceClass
@@ -571,7 +601,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
         return { handle := h, url := ← Queues.queueUrl sqsCreds ep h.raw }
     | .imageRegistry, h, spec => do
       match provider with
-      | .gcp => noGcp
+      | .gcp =>
+        Gcp.ArtifactRegistry.setImmutable creds (← Gcp.requireProject creds)
+          creds.region h.raw spec.immutableTags
+        return { handle := h, repositoryUri :=
+          Gcp.ArtifactRegistry.repositoryUri (← Gcp.requireProject creds) creds.region h.raw }
       | .aws =>
         ImageRegistry.Ecr.setImmutable creds (ecrFor creds) h.raw spec.immutableTags
         return { handle := h, repositoryUri := "" }
@@ -592,7 +626,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := h, version }
     | .compute, h, spec => do
       match provider with
-      | .gcp => noGcp
+      | .gcp =>
+        Gcp.CloudRun.update creds (← Gcp.requireProject creds) creds.region
+          h.raw spec.image spec.memoryMb spec.timeoutSec spec.env
       | .aws => Compute.Lambda.update creds (lambdaFor creds) h.raw spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
       | .scaleway => Compute.Containers.update creds h.raw spec.image
@@ -600,7 +636,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := h, status := "updating" }
     | .iam, h, spec => do
       match provider with
-      | .gcp => noGcp
+      | .gcp =>
+        Gcp.Iam.setPolicies (← Gcp.requireProject creds) h.raw spec.policies
+        return { handle := h, arn := Gcp.Iam.emailOf (← Gcp.requireProject creds) h.raw }
       | .aws =>
         Iam.Aws'.setPolicies creds h.raw spec.policies
         return { handle := h, arn := "" }
@@ -611,13 +649,15 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
     | .postgres, h, spec => do
       if spec.instanceClass.isEmpty then
         match provider with
-        | .gcp => noGcp
+        | .gcp => discard <| Gcp.CloudSql.createServerless h.raw
         | .aws => throw (IO.userError
             "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
         | .scaleway => Postgres.ServerlessSql.modify creds h.raw spec.minCapacity spec.maxCapacity
       else
         match provider with
-        | .gcp => noGcp
+        | .gcp =>
+          Gcp.CloudSql.update creds (← Gcp.requireProject creds) h.raw
+            spec.instanceClass spec.storageGb
         | .aws => Postgres.Rds.modify creds (rdsFor creds) h.raw spec.instanceClass spec.storageGb
         | .scaleway => Postgres.Rdb.modify creds h.raw spec.instanceClass
       return { handle := h, endpoint := "" }
@@ -663,7 +703,8 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
           (sqsFor provider creds) h.raw
     | .imageRegistry, h =>
       match provider with
-      | .gcp => noGcp
+      | .gcp      => do
+        Gcp.ArtifactRegistry.delete creds (← Gcp.requireProject creds) creds.region h.raw
       | .aws      => ImageRegistry.Ecr.delete creds (ecrFor creds) h.raw
       | .scaleway => ImageRegistry.Scw.delete creds h.raw
     | .secrets, h =>
@@ -674,17 +715,18 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .scaleway => Secrets.Scw.delete creds h.raw
     | .compute, h =>
       match provider with
-      | .gcp => noGcp
+      | .gcp      => do
+        Gcp.CloudRun.delete creds (← Gcp.requireProject creds) creds.region h.raw
       | .aws      => Compute.Lambda.delete creds (lambdaFor creds) h.raw
       | .scaleway => Compute.Containers.delete creds h.raw
     | .iam, h =>
       match provider with
-      | .gcp => noGcp
+      | .gcp      => do Gcp.Iam.delete creds (← Gcp.requireProject creds) h.raw
       | .aws      => Iam.Aws'.delete creds h.raw
       | .scaleway => Iam.Scw.delete creds h.raw
     | .postgres, h =>
       match provider with
-      | .gcp => noGcp
+      | .gcp      => do Gcp.CloudSql.delete creds (← Gcp.requireProject creds) h.raw
       | .aws      => Postgres.Rds.delete creds (rdsFor creds) h.raw
       | .scaleway => Postgres.Rdb.delete creds h.raw
     | .scalewayFunctionNamespace, h => Compute.Functions.deleteNamespace creds h.raw
@@ -697,10 +739,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
 
 /-- Every cloud, live, using each one's own credentials.
 
-    GCP is included for totality and will raise on first use — see `noGcp`.
     `Infra.Cli.liveFor` is the path real fleets take and it only authenticates
     the clouds a fleet actually declares, so a fleet with no GCP resources
-    never reaches this. -/
+    never asks for GCP credentials. -/
 def live (aws scaleway gcp : Credentials) : Backends where
   backend
     | .aws      => liveBackend .aws aws
