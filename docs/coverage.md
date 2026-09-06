@@ -178,47 +178,31 @@ if the driver dies between create and delete. Everything created is named
 
 #### What it covers, and what it does not
 
-**What has actually run:**
+**What has actually run — all three clouds, full legs, on 2026-09-06:**
 
-- **AWS, the full leg** — 9 resources across 7 kinds, on 2026-09-06:
-  `queues`, three `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`,
-  `securityGroup`, `iam`. Created, converged (`a second apply would do
-  nothing`), deleted, and the state cache verified empty afterwards. The
-  workflow's backstop step was skipped, which is the evidence that the
-  driver's own teardown ran and left nothing behind.
+| Cloud | Resources | Kinds |
+|---|---|---|
+| AWS | 9 | `queues`, three `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`, `securityGroup`, `iam` |
+| Scaleway | 9 | `queues`, three `secrets`, `imageRegistry`, `objectStore`, both namespaces, `scalewayContainer` |
+| GCP | 8 | `queues`, three `secrets`, `imageRegistry`, `objectStore`, `compute`, `iam` |
 
-  This also exercised two of the three dependency patterns for real: the
-  **chain** and the **fan-out**, since `derived-a` and `derived-b` both compose
-  the base secret's value and the base was scheduled before both.
+Each created from nothing, converged (`a second apply would do nothing`),
+deleted, and the state cache verified empty. In every case the workflow's
+backstop step was *skipped*, which is the evidence that the driver's own
+teardown ran and left nothing behind — and the accounts were checked afterwards
+and are clean.
 
-- **GCP, the full leg** — 8 resources across 6 kinds, on 2026-09-06:
-  `queues`, three `secrets`, `imageRegistry`, `objectStore`, `compute`, `iam`.
-  Created, converged, deleted, cache verified empty, backstop skipped. So
-  Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run and IAM
-  service accounts have all now answered a real call — six of the seven
-  portable kinds on GCP, with only Cloud SQL untested because `postgres` is
-  not in the fleet.
+**Eleven of the fourteen kinds; 21 (cloud, kind) pairs.**
 
-  The chain and fan-out patterns are verified here too, and this leg is what
-  found three genuine defects rather than misconfigurations: a federated
-  credentials file read as a service-account key, a Cloud Run service
-  inheriting an Editor identity, and a secret value that could not be read.
+**All three dependency patterns are exercised live.** The chain and the fan-out
+run on every cloud. The **fan-in** was Scaleway-only and is now covered: its
+container depends on its namespace by *key* reference and on the base secret
+through `secretEnv`, two edges of different provenance converging on one
+resource, both of which teardown reverses.
 
-- **Scaleway** — `queues` only, on 2026-09-06. Its multi-kind leg has been the
-  hardest to land, and every round found something: an IAM listing that needed
-  a permission nobody had granted, fourteen listings scoped to the
-  organization rather than the project, and a credential minted once per API
-  call. It now needs its own project and a project-scoped policy —
-  `ci/README.md` has both — and no organization-level rights at all, since
-  `iam` was dropped from the fleet.
-
-The **fan-in** pattern is Scaleway-only (a container depending on its
-namespace by key reference and on a secret through `secretEnv`), so it is the
-one shape still unexercised live.
-
-These two facts are kept apart deliberately: a document whose whole job is to
-say how far this has been exercised must not count code that has never
-executed.
+There is no longer a gap between "what the fleets declare" and "what has run"
+for these kinds. The distinction still matters for everything else in this
+document, and is still drawn.
 
 | Cloud | Kinds the live fleet declares | Resources |
 |---|---|---|
@@ -248,9 +232,9 @@ count: a fleet is applied and torn down as a *set*, so `create` and `delete`
 each run seven times in one pass and the absence check covers all of them — a
 single-resource test cannot tell a working scheduler from a lucky one.
 
-**AWS's and GCP's legs pass.** Scaleway's is the one outstanding. This section
-says which have passed and which have not, rather than counting the fleets as
-coverage.
+**All three legs pass.** This section says which have passed and which have
+not, rather than counting the fleets as coverage — and for the first time
+those are the same set.
 
 **The three that are not covered, each for a reason a test cannot arrange:**
 
@@ -502,10 +486,11 @@ called; all three now create, read and delete on every AWS live run.
   kinds the live fleet cannot include — `compute` needs an ECR image in the
   same account, `postgres` takes longer to create than the workflow's step
   timeout.
-- **Scaleway: everything except queues.** `list` for all fourteen kinds is
-  verified (`example/ScalewayPull.lean`), and `queues` round-trips, but no
-  Scaleway `create` beyond a queue has run. This is now the largest unexercised
-  area in the library, and it is waiting on a re-run rather than on code.
+- **Scaleway: `postgres` and `scalewayFunction`.** Everything else creates,
+  reads and deletes on every Scaleway live run. `iam` is deliberately not in
+  the fleet — Scaleway's IAM applications are organization-scoped, and CI holds
+  no organization-level rights — so its Scaleway client is unexercised by
+  choice rather than by omission.
 - **GCP: Cloud SQL only.** Everything else — Pub/Sub, Cloud Storage, Secret
   Manager, Artifact Registry, Cloud Run, IAM service accounts — creates, reads
   and deletes on every GCP live run. Cloud SQL is untested because `postgres`

@@ -41,10 +41,11 @@ provider-local) · every `(provider, kind)` pair implemented.
 All seven portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
 service accounts and Cloud SQL. Full create-and-destroy round trips pass in
-CI on **AWS** (9 resources, 7 kinds) and **Google Cloud** (8 resources, 6
-kinds), each including a chain and a fan-out of dependencies. Scaleway passes
-for `queues`; its remaining kinds are waiting on a CI re-run rather than on
-code.
+CI on **all three clouds** — AWS 9 resources, Scaleway 9, Google Cloud 8,
+covering eleven of the fourteen kinds and 21 (cloud, kind) pairs. Each leg
+creates from nothing, checks the fleet converged, deletes, and verifies the
+state cache is empty. All three dependency patterns are exercised live: a
+chain, a fan-out, and a fan-in through both key and expression references.
 
 Two GCP limits are stated rather than papered over. A serverless `postgres`
 declaration **raises**, because Cloud SQL has no capacity range that scales to

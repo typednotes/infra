@@ -298,9 +298,8 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.4.11</strong> — all seven portable kinds on all three clouds, and a
-  full live round trip passing on AWS across seven kinds.
-  <a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.5.0</strong> — a full live round trip passing on all three clouds,
+  across eleven of the fourteen resource kinds.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -664,10 +663,11 @@ would CREATE scaleway/secrets/db-url
       <div class="cov-card ok">
         <h4>Verified live</h4>
         <p>Full create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy
-           round trips in CI on <strong>AWS</strong> (9 resources, 7 kinds) and
-           <strong>Google Cloud</strong> (8 resources, 6 kinds) — each with
-           chained and fanned-out dependencies, deleted again and the state
-           cache checked empty. Scaleway passes for <code>queues</code>.</p>
+           round trips in CI on <strong>all three clouds</strong> — 9 resources
+           on AWS, 9 on Scaleway, 8 on Google Cloud, across eleven of the
+           fourteen kinds. Each leg creates from nothing, checks the fleet
+           converged, deletes, and verifies the state cache is empty. All three
+           dependency shapes are covered: a chain, a fan-out, and a fan-in.</p>
       </div>
       <div class="cov-card warn">
         <h4>Verified offline</h4>

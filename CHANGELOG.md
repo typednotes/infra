@@ -8,6 +8,68 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.5.0] — 2026-09-06
+
+**All three clouds pass a full live round trip.** That is what the minor bump
+marks, and it is the first time the set of kinds that *run* equals the set the
+fleets *declare*.
+
+| Cloud | Resources | Kinds |
+|---|---|---|
+| AWS | 9 | queues, 3 secrets, imageRegistry, objectStore, s3Bucket, securityGroup, iam |
+| Scaleway | 9 | queues, 3 secrets, imageRegistry, objectStore, both namespaces, scalewayContainer |
+| GCP | 8 | queues, 3 secrets, imageRegistry, objectStore, compute, iam |
+
+Eleven of fourteen kinds, 21 (cloud, kind) pairs. Each leg creates from
+nothing, converges, deletes, and verifies the state cache is empty; the
+workflow's backstop was skipped on every one, which is the evidence teardown
+ran. All three dependency shapes are exercised live — a chain, a fan-out, and
+a fan-in through both key and expression references.
+
+### What getting here found
+
+Eleven defects that no offline check could have reached, which is the argument
+for having done it. In rough order of severity rather than discovery:
+
+- A **perpetual replace**: a Scaleway container's `namespace` was compared as a
+  required field while `read` returned a blank, so a fleet containing one never
+  converged. The symptom was a hang, not an error. `scalewayFunction` had it
+  too, and both carried a comment asserting the field was excluded from the
+  divergence table — it was not.
+- **Scaleway listings were organization-wide**, so a fleet could adopt and
+  destroy a *different project's* resources. Measured, not theorised.
+- **A Cloud Run service silently ran as project Editor**, because
+  `executionRole` was unmapped and Cloud Run's default is the compute service
+  account.
+- **Every AWS secret create was broken** for want of a `ClientRequestToken`
+  that the API reference calls optional and every SDK supplies.
+- **A Scaleway run minted an SQS credential per API call**, in a delete-and-mint
+  loop, because the only cache was a keychain a CI runner does not have.
+- **A GCP secret's value could not be read**, so composed secrets failed on a
+  kind whose own CRUD was complete.
+- **A federated credentials file was read as a service-account key**, so GCP
+  auth failed with a valid token in the environment.
+- **The live test's settle window counted iterations, not seconds**, and hit the
+  step timeout looking like a hang.
+- **A Scaleway registry namespace name is region-global** — a leftover blocked
+  every later run in any project.
+- **An EC2 security group description cannot contain an apostrophe.**
+- **A scaffolded project could not link on Linux**, from a drifted copy of the
+  link-flag block.
+
+Six checks were added so that most of these classes cannot recur:
+`check-lakefile-sync.sh`, `check-site-assets-sync.sh`, `check-aws-policy.py`,
+`check-scaleway-scoping.py`, a Secrets Manager token check, and a check that
+the SQS credential memo short-circuits.
+
+### Still not covered
+
+`update`, on all three clouds — the live test creates and deletes, so it never
+diffs a *changed* target against an existing resource. `postgres`,
+`awsInstance` and `scalewayFunction`, each for a reason in
+`docs/coverage.md`. And `scalewayContainer.timeoutSec` is never compared,
+because Scaleway reports a duration string.
+
 ## [0.4.11] — 2026-09-06
 
 ### Fixed
