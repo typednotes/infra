@@ -191,10 +191,23 @@ if the driver dies between create and delete. Everything created is named
   **chain** and the **fan-out**, since `derived-a` and `derived-b` both compose
   the base secret's value and the base was scheduled before both.
 
-- **Scaleway and GCP** — `queues` only, on 2026-09-06. Their multi-kind legs
-  are blocked on grants rather than on code: Scaleway's permission sets are
-  ungranted, and GCP needs both `roles/run.admin` and its APIs *enabled*,
-  which is a separate act. `ci/README.md` has both.
+- **GCP, the full leg** — 8 resources across 6 kinds, on 2026-09-06:
+  `queues`, three `secrets`, `imageRegistry`, `objectStore`, `compute`, `iam`.
+  Created, converged, deleted, cache verified empty, backstop skipped. So
+  Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run and IAM
+  service accounts have all now answered a real call — six of the seven
+  portable kinds on GCP, with only Cloud SQL untested because `postgres` is
+  not in the fleet.
+
+  The chain and fan-out patterns are verified here too, and this leg is what
+  found three genuine defects rather than misconfigurations: a federated
+  credentials file read as a service-account key, a Cloud Run service
+  inheriting an Editor identity, and a secret value that could not be read.
+
+- **Scaleway** — `queues` only, on 2026-09-06. Its multi-kind leg is blocked on
+  permission sets; the policy exists now (`infra-ci-live-tests` on the 'Github
+  CI' application, all seven sets, `IAMManager` scoped to the organization),
+  so what remains is a re-run rather than a grant.
 
 The **fan-in** pattern is Scaleway-only (a container depending on its
 namespace by key reference and on a secret through `secretEnv`), so it is the
@@ -222,9 +235,9 @@ count: a fleet is applied and torn down as a *set*, so `create` and `delete`
 each run seven times in one pass and the absence check covers all of them — a
 single-resource test cannot tell a working scheduler from a lucky one.
 
-**AWS's leg passes.** Scaleway's and GCP's are blocked on grants, not on code —
-see the list above. This section says which have passed and which have not,
-rather than counting the fleets as coverage.
+**AWS's and GCP's legs pass.** Scaleway's is the one outstanding. This section
+says which have passed and which have not, rather than counting the fleets as
+coverage.
 
 **The three that are not covered, each for a reason a test cannot arrange:**
 
@@ -445,11 +458,12 @@ called; all three now create, read and delete on every AWS live run.
   timeout.
 - **Scaleway: everything except queues.** `list` for all fourteen kinds is
   verified (`example/ScalewayPull.lean`), and `queues` round-trips, but no
-  Scaleway `create` beyond a queue has run. Its leg is blocked on permission
-  sets, not on code.
-- **GCP: everything except Pub/Sub.** Cloud Storage, Secret Manager, Artifact
-  Registry, Cloud Run, IAM service accounts and Cloud SQL are written and
-  unexercised.
+  Scaleway `create` beyond a queue has run. This is now the largest unexercised
+  area in the library, and it is waiting on a re-run rather than on code.
+- **GCP: Cloud SQL only.** Everything else — Pub/Sub, Cloud Storage, Secret
+  Manager, Artifact Registry, Cloud Run, IAM service accounts — creates, reads
+  and deletes on every GCP live run. Cloud SQL is untested because `postgres`
+  cannot be in the fleet.
 - **Every `update` path, on all three clouds.** This is the significant
   remaining hole, and the live test cannot close it by design: it creates and
   deletes, so it never diffs a *changed* target against an existing resource.

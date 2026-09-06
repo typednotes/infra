@@ -8,6 +8,29 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.5] — 2026-09-06
+
+### Verified
+
+- **GCP's full live leg passes** — 8 resources across 6 kinds: `queues`,
+  three `secrets`, `imageRegistry`, `objectStore`, `compute`, `iam`. Created,
+  converged, deleted, state cache checked empty, backstop skipped.
+
+  So Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run and
+  IAM service accounts have each answered a real call — six of the seven
+  portable kinds on GCP. Only Cloud SQL is untested, because `postgres` cannot
+  be in the live fleet.
+
+  `docs/coverage.md`'s ledger for GCP shrinks from "everything except Pub/Sub"
+  to "Cloud SQL only". Two of three clouds now pass a full leg; Scaleway is the
+  one outstanding, and is waiting on a re-run rather than on a grant.
+
+  Worth recording what the GCP leg cost, because it is the argument for doing
+  this at all: three genuine defects, none of which any offline check could
+  have found — a federated credentials file read as a service-account key, a
+  Cloud Run service silently inheriting an Editor identity, and a secret value
+  that could not be read at all.
+
 ## [0.4.4] — 2026-09-06
 
 ### Fixed
