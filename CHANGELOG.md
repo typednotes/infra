@@ -8,6 +8,23 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.9] — 2026-09-06
+
+### Fixed
+
+- **A Scaleway registry namespace name is global, and the live test treated it
+  as local.** The name *is* the hostname path —
+  `rg.fr-par.scw.cloud/<name>` — so it is unique per region across every
+  project, which nothing about the kind advertises. A leftover from a failed
+  run therefore blocked every later run, in any project, with
+  `400 Namespace already exist`: the same permanent-deadlock shape as the SQS
+  credential name.
+
+  It carries the uniqueness suffix now, like the buckets, with a guard pinning
+  it. AWS's ECR repositories are account-scoped and GCP's Artifact Registry
+  repositories are project-scoped, so neither needs it — but "is this name
+  global?" is now a question `docs/coverage.md` says to ask of every kind.
+
 ## [0.4.8] — 2026-09-06
 
 ### Fixed

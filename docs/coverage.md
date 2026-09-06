@@ -281,12 +281,27 @@ negative ones, so a scheduler regression is a compile error rather than
 something found against an account. The negative guards matter: without them
 the positive ones would pass if everything were trivially "before" everything.
 
-**Buckets needed a decision.** Object storage names are unique across an
-entire cloud, not per account, and a fleet's names are compile-time constants —
-which is why buckets were excluded until now. A fixed random suffix
-(`bucketSuffix`) resolves it: unique in practice, still constant. The honest
-cost is that a **fork will collide with this repository's buckets** unless it
-changes the suffix, and `test/Live.lean` says so where someone will read it.
+**Two kinds have globally-scoped names, and only one of them is obvious.**
+Object storage names are unique across an entire cloud rather than per account,
+and a fleet's names are compile-time constants — which is why buckets were
+excluded from the live test until a fixed random suffix (`bucketSuffix`)
+resolved it.
+
+Scaleway's **registry namespaces** are the same shape, and nothing about the
+kind advertises it: the namespace name *is* the hostname path,
+`rg.fr-par.scw.cloud/<name>`, so it is unique per region across every project.
+A leftover from a failed run blocks every later run in any project with
+`400 Namespace already exist` — the same permanent-deadlock shape as the SQS
+credential name, and found the same way. It carries the suffix now too.
+
+AWS's ECR repositories are account-scoped and GCP's Artifact Registry
+repositories are project-scoped, so neither needs it. If a fourth cloud is
+added, "is this name global?" is worth asking of every kind rather than only of
+buckets.
+
+The honest cost of the suffix is that a **fork will collide with this
+repository's names** unless it changes `bucketSuffix`, and `test/Live.lean` says
+so where someone will read it.
 
 **Permissions are the current gate.** Nine kinds need more than the identities
 hold — AWS's role was scoped to SQS alone, GCP's service account holds only

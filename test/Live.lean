@@ -91,11 +91,18 @@ def ciPrefix : String := "ci-tests-infra-"
   in the same account. That is why `compute` is covered on GCP, its
   provider-local cousin `scalewayContainer` on Scaleway, and neither on AWS.
 
-  ## Bucket names are global, which needed solving rather than avoiding
+  ## Two kinds have names that are global, which needed solving rather than avoiding
 
   Object storage names are unique across an entire cloud, not per account, and
   a fleet's names are fixed at compile time. That is why buckets were kept out
   of this test until now, and the reasoning was sound.
+
+  **Scaleway's registry namespaces are the same shape and it is far less
+  obvious**, because nothing about the kind suggests it: the name *is* the
+  hostname path, `rg.fr-par.scw.cloud/<name>`, so it is unique per region
+  across every project. A leftover from a failed run blocks every later run in
+  any project with `400 Namespace already exist`. Found the hard way, and the
+  same suffix fixes it.
 
   What makes them includable is a fixed random suffix: unique in practice, so
   nobody else holds the name, and still a compile-time constant. The cost is
@@ -161,7 +168,17 @@ fleet scalewayLive in paris where
       { valueFrom := composed expr!"a:{secretValueOf scwBase}" }
     resource secrets "ci-tests-infra-derived-b"
       { valueFrom := composed expr!"b:{secretValueOf scwBase}" }
-    resource imageRegistry "ci-tests-infra-images" {}
+    -- The suffix is here for the same reason it is on the buckets, and the
+    -- reason is not obvious until you look at the endpoint: a Scaleway
+    -- registry namespace's name *is* its hostname path —
+    -- `rg.fr-par.scw.cloud/<name>` — so names are unique per region across
+    -- every project, not per project.
+    --
+    -- Two consequences, both met in practice. A leftover namespace from a
+    -- failed run blocks every future run, in any project, with
+    -- `400 Namespace already exist` — the same permanent-deadlock shape as the
+    -- SQS credential name. And a fork would collide with this repository.
+    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
     resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
     -- No `iam` here, unlike the AWS and GCP fleets. Scaleway's IAM
     -- applications live in the **organization**, not in a project, so testing
@@ -312,6 +329,11 @@ private def ec2DescriptionOk (d : String) : Bool :=
 #guard awsLive.names.aws.objectStore.all (·.endsWith bucketSuffix)
 #guard awsLive.names.aws.s3Bucket.all (·.endsWith bucketSuffix)
 #guard scalewayLive.names.scaleway.objectStore.all (·.endsWith bucketSuffix)
+-- Scaleway's registry namespace name is its hostname path, so it is unique per
+-- region across projects — global in the same way a bucket name is, and it
+-- needs the same suffix. AWS's ECR repositories are account-scoped and GCP's
+-- Artifact Registry repositories are project-scoped, so neither does.
+#guard scalewayLive.names.scaleway.imageRegistry.all (·.endsWith bucketSuffix)
 #guard gcpLive.names.gcp.objectStore.all (·.endsWith bucketSuffix)
 
 -- No plaintext secret is committed, in any of the three, including the two
