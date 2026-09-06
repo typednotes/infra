@@ -204,10 +204,13 @@ if the driver dies between create and delete. Everything created is named
   credentials file read as a service-account key, a Cloud Run service
   inheriting an Editor identity, and a secret value that could not be read.
 
-- **Scaleway** — `queues` only, on 2026-09-06. Its multi-kind leg is blocked on
-  permission sets; the policy exists now (`infra-ci-live-tests` on the 'Github
-  CI' application, all seven sets, `IAMManager` scoped to the organization),
-  so what remains is a re-run rather than a grant.
+- **Scaleway** — `queues` only, on 2026-09-06. Its multi-kind leg has been the
+  hardest to land, and every round found something: an IAM listing that needed
+  a permission nobody had granted, fourteen listings scoped to the
+  organization rather than the project, and a credential minted once per API
+  call. It now needs its own project and a project-scoped policy —
+  `ci/README.md` has both — and no organization-level rights at all, since
+  `iam` was dropped from the fleet.
 
 The **fan-in** pattern is Scaleway-only (a container depending on its
 namespace by key reference and on a secret through `secretEnv`), so it is the
@@ -220,11 +223,21 @@ executed.
 | Cloud | Kinds the live fleet declares | Resources |
 |---|---|---|
 | AWS | `queues`, `secrets`, `imageRegistry`, `objectStore`, `s3Bucket`, `securityGroup`, `iam` | 9 |
-| Scaleway | the same minus `s3Bucket`/`securityGroup`, plus both namespaces and `scalewayContainer` | 10 |
+| Scaleway | the same minus `s3Bucket`/`securityGroup`/`iam`, plus both namespaces and `scalewayContainer` | 9 |
 | GCP | the same minus `s3Bucket`/`securityGroup`, plus `compute` | 8 |
 
-**Eleven of the fourteen kinds.** `compute` became testable once a *public*
-image was allowed — Cloud Run pulls Google's own sample, so nothing has to be
+**Eleven of the fourteen kinds**, and 21 (cloud, kind) pairs.
+
+`iam` is deliberately absent from the Scaleway fleet, which is the one place a
+kind was dropped rather than never added. Scaleway's IAM applications live in
+the **organization**, not in a project, so covering the kind there would need
+CI to hold organization-level IAM rights — and those cannot be confined to the
+isolated project the rest of the Scaleway fleet lives in. Giving up one
+(cloud, kind) pair is cheaper than giving a CI credential org-wide IAM. The
+kind is still covered on AWS and GCP, where the identity is account- or
+project-scoped.
+
+`compute` became testable once a *public* image was allowed — Cloud Run pulls Google's own sample, so nothing has to be
 built — and `scalewayContainer` for the same reason, since Serverless
 Containers can pull from an external registry. Lambda still cannot: a container
 function must come from an ECR repository in the same account.

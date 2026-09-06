@@ -4,7 +4,7 @@ import Infra
   # The test driver: offline by default, live on request
 
   `lake test` runs the offline checks and touches no cloud. `lake test -- aws`
-  (or `scaleway`, or `gcp`) creates eight to ten real resources, checks the
+  (or `scaleway`, or `gcp`) creates eight or nine real resources, checks the
   fleet converged, and deletes them again.
 
   ## What a leg creates
@@ -54,13 +54,13 @@ def ciPrefix : String := "ci-tests-infra-"
 
 /-! ## What the live fleets cover, and what they cannot
 
-  Eleven of the fourteen kinds, on the clouds that have them — eight to ten
-  resources per leg (AWS 9, Scaleway 10, GCP 8). Every one is created from nothing, checked, and deleted,
+  Eleven of the fourteen kinds, on the clouds that have them — eight or nine
+  resources per leg (AWS 9, Scaleway 9, GCP 8). Every one is created from nothing, checked, and deleted,
   so a leg exercises `create`, `list`, `read`, the diff, `delete` and the
   absence check across most of the library rather than one corner of it.
 
   One resource could never tell a working scheduler from a lucky one: a set is
-  applied and torn down as a set, so `create` and `delete` each run eight to ten
+  applied and torn down as a set, so `create` and `delete` each run eight or nine
   times in a pass. The **shape** matters more than the count, and the three
   dependency patterns are described above the guards below.
 
@@ -163,7 +163,13 @@ fleet scalewayLive in paris where
       { valueFrom := composed expr!"b:{secretValueOf scwBase}" }
     resource imageRegistry "ci-tests-infra-images" {}
     resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
-    resource iam "ci-tests-infra-app" {}
+    -- No `iam` here, unlike the AWS and GCP fleets. Scaleway's IAM
+    -- applications live in the **organization**, not in a project, so testing
+    -- the kind would need CI to hold organization-level IAM rights — and
+    -- those cannot be confined to the isolated CI project the rest of this
+    -- fleet lives in. One kind of live coverage is the cheaper thing to give
+    -- up. `iam` is still covered on the other two clouds, where the identity
+    -- is project- or account-scoped.
     resource scalewayFunctionNamespace "ci-tests-infra-fns"
       { description := "created and destroyed by the infra live test" }
     resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrs
@@ -251,10 +257,12 @@ fleet gcpLive in paris where
 #guard scalewayLive.keys.count .scaleway .secrets = 3
 #guard scalewayLive.keys.count .scaleway .imageRegistry = 1
 #guard scalewayLive.keys.count .scaleway .objectStore = 1
-#guard scalewayLive.keys.count .scaleway .iam = 1
 #guard scalewayLive.keys.count .scaleway .scalewayFunctionNamespace = 1
 #guard scalewayLive.keys.count .scaleway .scalewayContainerNamespace = 1
 #guard scalewayLive.keys.count .scaleway .scalewayContainer = 1
+-- And deliberately none: adding one would silently require organization-level
+-- IAM rights that the isolated CI project cannot contain. See the fleet.
+#guard scalewayLive.keys.count .scaleway .iam = 0
 
 #guard gcpLive.keys.count .gcp .queues = 1
 #guard gcpLive.keys.count .gcp .secrets = 3
@@ -277,7 +285,6 @@ fleet gcpLive in paris where
 #guard scalewayLive.names.scaleway.secrets.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.imageRegistry.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.objectStore.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.iam.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.scalewayFunctionNamespace.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.scalewayContainerNamespace.all (ciPrefix.isPrefixOf ·)
 #guard scalewayLive.names.scaleway.scalewayContainer.all (ciPrefix.isPrefixOf ·)

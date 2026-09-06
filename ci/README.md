@@ -303,20 +303,22 @@ scw iam policy create \
 `project-ids` rather than `organization-id` is the point: with the former, a
 credential that goes wrong cannot reach anything outside the CI project.
 
-**What a project cannot isolate.** Scaleway's IAM applications live in the
-*organization*, not in a project, so the `iam` kind is org-scoped whatever
-project CI uses — the policy above deliberately omits it. Two options:
+**The policy above needs no organization-level rights, and that is deliberate.**
+Scaleway's IAM applications live in the *organization*, not in a project, so
+covering the `iam` kind would have meant granting CI org-wide IAM — which the
+isolated project cannot contain, and which is the one grant that could reach
+production identities.
 
-- Drop `resource iam` from `scalewayLive` in `test/Live.lean`. CI then needs no
-  organization-level rights at all, which is the tightest posture available and
-  costs one kind of live coverage.
-- Add `IAMApplicationManager` (organization scope). Narrower than `IAMManager`,
-  which also carries ProjectManager, but still lets CI create and delete
-  applications org-wide.
+So `resource iam` was **dropped from `scalewayLive`**. CI's Scaleway credential
+now holds project-scoped product permissions and nothing else. A `#guard` in
+`test/Live.lean` pins the absence, because adding the resource back would
+silently re-introduce the requirement.
 
-The first is the better default. Only a separate *organization* would isolate
-the `iam` kind properly, and that means separate credentials and separate
-billing for one kind of test.
+The kind is still covered live on AWS and GCP, where an identity is account- or
+project-scoped and can be confined. If you ever want it on Scaleway too,
+`IAMApplicationManager` at organization scope is the narrowest grant that
+works — narrower than `IAMManager`, which also carries ProjectManager — but a
+separate organization is the only thing that really isolates it.
 
 #### The permission sets, and one trap
 
