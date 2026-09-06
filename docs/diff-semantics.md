@@ -211,6 +211,38 @@ Dry run is the default, and performs **no** backend IO — it returns before
 reaching one. `actions` derives deletions from the target, so a mistaken key
 type would otherwise destroy live resources on a first run.
 
+## A required field the backend cannot report is a perpetual replace
+
+The sharpest trap in this design, and it has now been hit twice.
+
+`divergesReq` compares a **required** field directly — there is no `Partial`,
+so no `unknown` escape. That is correct for a field the cloud always reports.
+It is a trap for one it does not: the target says `ci-tests-infra-ctrs`, the
+observed state says `""`, they differ on every pull, and if the field is
+`.forcesReplace` the plan proposes a replace for ever. The fleet never
+converges, `apply` never settles, and the symptom is not an error but a live
+test that runs until its timeout — which reads as a hang.
+
+Both instances were Scaleway's `namespace'`, on `scalewayContainer` and
+`scalewayFunction`. Both were reported as a blank handle, and the code
+carried a comment saying `Divergent` excluded the field — which it did not.
+A false belief, written down, outliving whatever made it true.
+
+The fix in both cases was to report the field truthfully (resolve the
+namespace id back to its name) rather than to stop comparing it, because a
+container genuinely cannot move namespace and a *changed* declaration really
+does need a replace. Excluding the field would have hidden a real case to
+avoid a false one.
+
+**The rule for a new kind.** For every field in a `Divergent` instance, ask
+what `read` reports when the cloud does not say. If the answer is a sentinel —
+`""`, `0`, a blank handle — the field must either be `Partial` and `unknown`,
+or be reported truthfully. `divergesReq` on a sentinel is a permanent
+divergence, and `.forcesReplace` on top of that is a permanent replace.
+
+`S3BucketSpec.region` was the first version of this and was removed for it.
+These two were the second and third.
+
 ## Ledger: what is a compile error, and what is not
 
 **Structurally impossible** — no check, no proof, simply not representable:

@@ -383,17 +383,21 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       match provider with
       | .gcp => notOnGcp "scalewayFunction"
       | .scaleway =>
-        let (runtime, bucketName) ← Compute.Functions.read creds h.raw
+        let (runtime, bucketName, ns) ← Compute.Functions.read creds h.raw
         -- The reference is reported as the handle the function was told about,
         -- which is what `settleRef` produced when it was created.
         let bucket : Partial (Option (Handle .s3Bucket)) := match bucketName with
           | .known (some n) => .known (some ⟨n⟩)
           | .known none     => .known none
           | .unknown        => .unknown
-        -- `namespace'` is placement, not configuration: the API does not
-        -- report which namespace a function is in, so it cannot diverge and
-        -- `Divergent` excludes it. A blank handle is the honest "not reported".
-        return { name := h.raw, runtime, namespace' := ⟨""⟩, sourceBucket := bucket }
+        -- The namespace is reported. The comment that used to sit here said
+        -- `Divergent` excluded it and a blank handle was "the honest not
+        -- reported" — both false: `Divergent .scalewayFunction` compares it
+        -- with `divergesReq … .forcesReplace`, which has no `unknown` escape,
+        -- so a blank made every pull propose a replace. The container had the
+        -- identical bug and it cost a twelve-minute CI timeout to find, since
+        -- a fleet that never converges looks exactly like a hang.
+        return { name := h.raw, runtime, namespace' := ⟨ns⟩, sourceBucket := bucket }
       | .aws => return { name := h.raw, runtime := "", namespace' := ⟨""⟩
                          sourceBucket := .unknown }
     -- `secretEnv` is read once at apply and handed straight to the API, so
@@ -403,9 +407,12 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       match provider with
       | .gcp => notOnGcp "scalewayContainer"
       | .scaleway =>
-        let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image) ←
+        let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image, ns) ←
           Compute.Containers.readFull creds h.raw
-        return { name := h.raw, namespace' := ⟨""⟩, image
+        -- The namespace is reported, not blanked. Blanking it made `namespace`
+        -- — which `forcesReplace` — diverge on every pull, so the fleet never
+        -- converged and proposed `REPLACE` for ever.
+        return { name := h.raw, namespace' := ⟨ns⟩, image
                  port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env
                  secretEnv := .unknown }
       | .aws => return { name := h.raw, namespace' := ⟨""⟩, image := ""

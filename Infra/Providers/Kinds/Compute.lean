@@ -231,11 +231,20 @@ def listFull (creds : Credentials) : IO (List (String × String)) := do
     | some n => some (n, (stringField c "domain_name").getD "")
     | none   => none
 
+/-- Every namespace, as `(name, id)`. -/
+def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
+  return (arrayField reply "namespaces").filterMap fun n =>
+    match stringField n "name", stringField n "id" with
+    | some nm, some i => some (nm, i)
+    | _,       _      => none
+
 /-- Every field `.scalewayContainer` can report, beyond what `read` above needs for the
     portable `.compute` kind. -/
 def readFull (creds : Credentials) (name : String) :
     IO (Partial Nat × Partial Nat × Partial Nat × Partial Nat × Partial Nat × Partial Nat ×
-        Partial (List (String × String)) × String) := do
+        Partial (List (String × String)) × String × String) := do
   let id ← requireId creds name
   let c ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{id}")
   let optNat (field : String) : Partial Nat :=
@@ -245,8 +254,30 @@ def readFull (creds : Credentials) (name : String) :
   let env := match field c "environment_variables" with
     | some e => Partial.known (envOf e)
     | none   => .unknown
+  -- The namespace, resolved from its id back to the name a fleet keys on.
+  --
+  -- This used to be reported as `""` by the caller, and the consequence was
+  -- not a missing field but a **perpetual replace**: `Divergent
+  -- .scalewayContainer` compares `namespace` with `divergesReq … .forcesReplace`,
+  -- which has no `unknown` escape, so a declared namespace against an empty
+  -- one diverged on every single pull. The live test never converged and
+  -- reported `REPLACE … ci-tests-infra-ctr` for as long as it was allowed to
+  -- poll. Same trap as `S3BucketSpec.region` before it.
+  --
+  -- Reporting it truthfully is the fix rather than excluding it from the
+  -- table: a container genuinely cannot move namespace, so a *changed*
+  -- declaration really does need a replace, and that is worth detecting.
+  let nsName ← match stringField c "namespace_id" with
+    | none    => pure ""
+    | some id => do
+      match (← listNamespaces creds).find? (·.2 == id) with
+      | some (n, _) => pure n
+      -- A namespace the credential cannot list is not the same as no
+      -- namespace, but there is nothing truer to say from here.
+      | none        => pure ""
   return (optNat "port", optNat "min_scale", optNat "max_scale", optNat "memory_limit",
-          optNat "cpu_limit", optNat "timeout", env, (stringField c "registry_image").getD "")
+          optNat "cpu_limit", optNat "timeout", env,
+          (stringField c "registry_image").getD "", nsName)
 
 def createFull (creds : Credentials) (name image ns : String)
     (port minScale maxScale memoryMb cpuLimit timeoutSec : Nat)
@@ -289,15 +320,6 @@ def updateFull (creds : Credentials) (name image : String)
   Functions and Containers each have their own namespace product at their own
   prefix, so these are written once per product rather than shared. What
   differs is only the prefix and what the response carries. -/
-
-/-- Every namespace, as `(name, id)`. -/
-def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
-      (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "namespaces").filterMap fun n =>
-    match stringField n "name", stringField n "id" with
-    | some nm, some i => some (nm, i)
-    | _,       _      => none
 
 /-- One namespace's description, by name. -/
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
@@ -383,7 +405,17 @@ private def namespaceIdOf (creds : Credentials) (name : String) : IO String := d
 def namespaceIdOfName (creds : Credentials) (name : String) : IO String :=
   namespaceIdOf creds name
 
-def read (creds : Credentials) (name : String) : IO (String × Partial (Option String)) := do
+/-- Every namespace, as `(name, id)`. -/
+def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
+  return (arrayField reply "namespaces").filterMap fun n =>
+    match stringField n "name", stringField n "id" with
+    | some nm, some i => some (nm, i)
+    | _,       _      => none
+
+def read (creds : Credentials) (name : String) :
+    IO (String × Partial (Option String) × String) := do
   let id ← requireId creds name
   let f ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/functions/{id}")
   let runtime := (stringField f "runtime").getD ""
@@ -391,7 +423,19 @@ def read (creds : Credentials) (name : String) : IO (String × Partial (Option S
   let bucket := match field f "environment_variables" with
     | some e => Partial.known (stringField e "SOURCE_BUCKET")
     | none   => .unknown
-  return (runtime, bucket)
+  -- The namespace, resolved from its id. Reported for the same reason
+  -- `Containers.readFull` reports it: `Divergent .scalewayFunction` compares
+  -- `namespace` with `forcesReplace`, which has no `unknown` escape, so
+  -- blanking it makes every pull propose a replace and the fleet never
+  -- converges. The container had exactly that bug and it cost a
+  -- twelve-minute CI timeout to see.
+  let nsName ← match stringField f "namespace_id" with
+    | none    => pure ""
+    | some nsId => do
+      match (← listNamespaces creds).find? (·.2 == nsId) with
+      | some (n, _) => pure n
+      | none        => pure ""
+  return (runtime, bucket, nsName)
 
 /-- The referenced bucket is passed as an environment variable, which is what
     makes the cross-cloud dependency edge do real work. -/
@@ -449,15 +493,6 @@ def delete (creds : Credentials) (name : String) : IO Unit := do
   Functions and Containers each have their own namespace product at their own
   prefix, so these are written once per product rather than shared. What
   differs is only the prefix and what the response carries. -/
-
-/-- Every namespace, as `(name, id)`. -/
-def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
-      (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "namespaces").filterMap fun n =>
-    match stringField n "name", stringField n "id" with
-    | some nm, some i => some (nm, i)
-    | _,       _      => none
 
 /-- One namespace's description, by name. -/
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do

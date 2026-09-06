@@ -8,6 +8,28 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.11] — 2026-09-06
+
+### Fixed
+
+- **A Scaleway container and function proposed `REPLACE` for ever, so a fleet
+  containing one never converged.** `Divergent` compares their `namespace`
+  with `divergesReq … .forcesReplace` — required, so no `unknown` escape —
+  while `read` reported it as a blank handle. Target and observed differed on
+  every pull, the plan proposed a replace every time, and the live test polled
+  until the workflow's step timeout. The symptom was a hang, not an error.
+
+  Both now resolve the namespace id back to the name a fleet keys on. Fixing
+  `read` rather than excluding the field is deliberate: a container genuinely
+  cannot move namespace, so a *changed* declaration really does need a
+  replace, and excluding it would hide a real case to avoid a false one.
+
+  The code carried a comment asserting that `Divergent` excluded the field. It
+  did not. `docs/diff-semantics.md` now states the general rule — a required
+  field the backend reports as a sentinel is a permanent divergence, and
+  `.forcesReplace` on top of that is a permanent replace — and records that
+  `S3BucketSpec.region` was the first instance of exactly this.
+
 ## [0.4.10] — 2026-09-06
 
 ### Fixed
