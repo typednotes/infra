@@ -231,39 +231,117 @@ end Rdb
 -- Scaleway Serverless SQL Database
 -- ══════════════════════════════════════════════════════════════
 
-/- Routed to when a `PostgresSpec`'s `instanceClass` is unset (see `PostgresSpec.serverless` and
+/- Scaleway Serverless SQL Database, which is what a `PostgresSpec` with no
+   `instanceClass` means on this cloud (see `PostgresSpec.serverless` and
    `Infra.Providers.Live`'s `.postgres` branch).
 
-   **Genuinely unimplemented.** Scaleway Serverless SQL Database's real endpoint paths, payload
-   field names, and capacity units are not verified against any account — see
-   `docs/providers.md`. `list`/`read` report honestly (nothing known, matching `unknown`'s
-   meaning throughout this codebase); mutations raise a named "not yet implemented" error rather
-   than guess at a shape that only looks like it works, because a create that silently does
-   nothing would make the engine believe a database exists when it does not.
+   ## Why this is a separate product and not a mode of `rdb`
 
-   AWS's serverless counterpart, Aurora Serverless v2, has no analogous namespace here at all:
-   `Live.lean` raises directly rather than routing through a stub, since there is no partial
-   RDS-based path to reuse the way there is for `list`/`read` on Scaleway's classic RDB. -/
+   Managed Database sizes an instance by `node_type` and bills for it whether
+   it is busy or not. Serverless SQL has no node type at all: it scales between
+   `cpu_min` and `cpu_max` vCPU and bills for what it uses. Different endpoint,
+   different object, different identity — hence a second namespace rather than
+   a flag.
+
+   ## What the portable spec cannot say here
+
+   `masterUsername` and `masterPasswordSecret` have **no counterpart**. A
+   Serverless SQL Database has no root user to set a password for: access is
+   through IAM credentials, minted separately. So the create call below ignores
+   both, and `read` reports no username rather than inventing one — which
+   keeps them out of the divergence table instead of proposing a change on
+   every apply.
+
+   Worth knowing: `Live.lean` fetches the master password *before* it branches
+   on `instanceClass`, so a serverless declaration still reads the secret it
+   names. Harmless, and cheaper to leave than to restructure the branch, but it
+   means the secret must exist even though nothing consumes it.
+
+   `storageGb` has no counterpart either — storage grows on its own — and
+   neither does a version: the product does not report one.
+
+   ## Verified
+
+   The endpoint family was confirmed against the live API rather than recalled:
+   `/serverless-sqldb/v1alpha1/regions/fr-par/databases` answers `401`
+   unauthenticated, where `serverless_sqldb`, `v1beta1` and a bogus route all
+   answer `404` — the same discriminator used for the Queues paths. Field names
+   (`name`, `cpu_min`, `cpu_max`, `project_id`, `database_id`) come from
+   Scaleway's own CLI reference for `scw sdb sql`. Checked 2026-09-06.
+
+   Not yet run against an account: no live test covers it, and `docs/coverage.md`
+   says so. -/
 namespace ServerlessSql
 
-def list (_creds : Credentials) : IO (List (String × String)) := pure []
+private def prefix' (region : String) : String :=
+  Scaleway.regionalPrefix "serverless-sqldb" "v1alpha1" region
 
-def read (_creds : Credentials) (_name : String) :
-    IO (String × String × Partial String × Partial Nat) :=
-  pure ("", "", .unknown, .unknown)
+/-- Databases in the project, as `(name, id, endpoint)`.
 
-private def unimplemented {α : Type} (op : String) : IO α :=
-  throw (IO.userError s!"scaleway serverless sql database: {op} is not yet implemented")
+    Scoped to the project explicitly: unlike `rdb`, the list is not implicitly
+    narrowed, and a fleet must not manage another project's databases. -/
+private def listRaw (creds : Credentials) : IO (List (String × String × String)) := do
+  let project ← creds.requireProject
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/databases")
+    (query := [("project_id", project)])
+  return (arrayField reply "databases").filterMap fun d =>
+    match stringField d "name", stringField d "id" with
+    | some n, some id => some (n, id, (stringField d "endpoint").getD "")
+    | _, _ => none
 
-def create (_creds : Credentials) (_name _masterUsername _password _engineVersion : String)
-    (_minCapacity _maxCapacity : Nat) : IO String :=
-  unimplemented "create"
+def list (creds : Credentials) : IO (List (String × String)) := do
+  return (← listRaw creds).map fun (n, _, e) => (n, e)
 
-def modify (_creds : Credentials) (_name : String) (_minCapacity _maxCapacity : Nat) : IO Unit :=
-  unimplemented "modify"
+/-- The id behind a name. Identity is by id here, as it is for `rdb`, while a
+    fleet keys on the name. -/
+private def requireId (creds : Credentials) (name : String) : IO String := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | some (_, id, _) => return id
+  | none            => throw (IO.userError
+      s!"scaleway serverless sql: no database named '{name}' in this project")
 
-def delete (_creds : Credentials) (_name : String) : IO Unit :=
-  unimplemented "delete"
+/-- Prove it exists, and report the little there is to report.
+
+    Every field the portable spec carries is absent from this product — no
+    node type, no root user, no version, no fixed storage — so all four come
+    back empty or `unknown`. That is not a stub: `unknown` means "not
+    observed", it diverges from nothing, and the `GET` is what establishes the
+    database is actually there. -/
+def read (creds : Credentials) (name : String) :
+    IO (String × String × Partial String × Partial Nat) := do
+  let id ← requireId creds name
+  discard <| Scaleway.call creds "GET" (prefix' creds.region ++ s!"/databases/{id}")
+  return ("", "", .unknown, .unknown)
+
+/-- Create a database. Returns its endpoint.
+
+    `masterUsername` and `password` are accepted and unused — see the module
+    note. They are still in the signature because `Live.lean` calls this and
+    the classic path side by side, and dropping them would make the two
+    branches look like they differ in more than they do. -/
+def create (creds : Credentials) (name _masterUsername _password _engineVersion : String)
+    (minCapacity maxCapacity : Nat) : IO String := do
+  let project ← creds.requireProject
+  let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/databases")
+    (payload := some (.object
+      [ ("name", .string name)
+      , ("project_id", .string project)
+      , ("cpu_min", .number (Float.ofNat minCapacity))
+      , ("cpu_max", .number (Float.ofNat maxCapacity)) ]))
+  return (stringField reply "endpoint").getD ""
+
+/-- Change the capacity range. -/
+def modify (creds : Credentials) (name : String) (minCapacity maxCapacity : Nat) : IO Unit := do
+  let id ← requireId creds name
+  discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/databases/{id}")
+    (payload := some (.object
+      [ ("cpu_min", .number (Float.ofNat minCapacity))
+      , ("cpu_max", .number (Float.ofNat maxCapacity)) ]))
+
+/-- Delete the database. -/
+def delete (creds : Credentials) (name : String) : IO Unit := do
+  let id ← requireId creds name
+  discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/databases/{id}")
 
 end ServerlessSql
 

@@ -12,7 +12,7 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| **GCP** | **`queues`, `objectStore` and `secrets` live** (Pub/Sub topics, Cloud Storage buckets, Secret Manager secrets — full CRUD); `compute`, `iam`, `imageRegistry` and `postgres` are types only — declarable, placeable, referenceable, schedulable, diffable and exportable to HCL, with the backend branch raising. Provider-local kinds report no counterpart rather than a missing client |
+| **GCP** | **all seven portable kinds have live clients** — Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL. Two stated limits: a serverless `postgres` declaration raises (Cloud SQL has no such tier), and `iam` reads policies but refuses to write them. Provider-local kinds report no counterpart rather than a missing client |
 | Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
@@ -181,18 +181,32 @@ if the driver dies between create and delete. Everything created is named
 **One kind, on three clouds.** Each fleet declares exactly one `queues`
 resource — SQS on AWS, Scaleway Queues, a Pub/Sub topic on GCP.
 
-| Cloud | Kind | Backend | Status |
+| Cloud | Kinds | Backends | Status |
 |---|---|---|---|
-| AWS | `queues` | SQS | passing |
-| Scaleway | `queues` | Queues (SQS-compatible, via a minted credential) | passing |
-| GCP | `queues` | Pub/Sub topics | passing |
+| AWS | `queues`, `secrets` | SQS, Secrets Manager | passing |
+| Scaleway | `queues`, `secrets` | Queues (SQS-compatible, via a minted credential), Secret Manager | passing |
+| GCP | `queues`, `secrets` | Pub/Sub topics, Secret Manager | passing |
 
-So of 14 kinds × 3 clouds, the live path covers **3 pairs**. It is not a
+Two resources per leg, not one, and that difference is the point: a fleet is
+applied and torn down as a *set*, so `create` runs twice in one apply,
+`delete` twice in one destroy, and the absence check covers both. A
+single-resource test cannot tell a working scheduler from a lucky one.
+
+So of 14 kinds × 3 clouds, the live path covers **6 pairs**. It is not a
 coverage matrix; it is a proof that the whole engine — credential chain,
 region resolution, list, create, diff, delete, settle, persistence — works
 end to end against three different real APIs. Everything it does *not* cover
 is covered offline or not at all, and the two sections around this one say
 which.
+
+`secrets` was chosen as the second kind on the same grounds as the first, plus
+one that nearly disqualified AWS: Secrets Manager *schedules* deletion with a
+recovery window of at least seven days by default, and a name under scheduled
+deletion cannot be reused — so this test would have been unrunnable a second
+time. It works only because `Secrets.Asm.delete` passes
+`ForceDeleteWithoutRecovery`. Its value comes from the environment, never the
+file, which is what `secretsAreSound` proves at compile time for all three
+live fleets.
 
 Queues were chosen for a reason worth keeping. Their names are region-scoped,
 so two accounts running this concurrently do not collide; they cost
@@ -223,6 +237,27 @@ equivalent; and DAG scheduling over a sixteen-resource graph with a diamond,
 fan-in, a redundant edge, a four-deep chain and cross-cloud edges, checked in
 both directions by a checker that recomputes the edges independently.
 
+### Implemented, never exercised
+
+- **Scaleway Serverless SQL Database** — the `postgres` kind's serverless
+  shape on Scaleway. It was a stub that raised; it is a client now. The
+  endpoint family was confirmed against the live API rather than recalled
+  (`/serverless-sqldb/v1alpha1/regions/fr-par/databases` answers `401`
+  unauthenticated where `serverless_sqldb`, `v1beta1` and a bogus route all
+  answer `404`), and the field names come from Scaleway's own CLI reference for
+  `scw sdb sql`. No account has run it.
+
+  Note what the portable spec cannot say here: a Serverless SQL Database has no
+  root user, so `masterUsername` and `masterPasswordSecret` have no
+  counterpart and are ignored, and there is no node type, version or fixed
+  storage to report. All four read as absent, which diverges from nothing.
+
+  **AWS's serverless shape is still not implemented** — Aurora Serverless v2
+  raises a named error — and **GCP's cannot be**: Cloud SQL has no capacity
+  range that scales to a floor, so it raises with the tier to set instead. So
+  a serverless `postgres` declaration works on exactly one of the three
+  clouds.
+
 ### Never run against any account
 
 - **Most of AWS** — Lambda, RDS, ECR, Secrets Manager and IAM have never been
@@ -252,7 +287,6 @@ both directions by a checker that recomputes the edges independently.
   an environment variable. Implemented against the plaintext-at-set-time
   assumption; if the real mechanism is a native reference, the backend
   simplifies and the types do not change.
-- **Scaleway Serverless SQL Database** — honestly stubbed rather than guessed.
 
 ## Interoperability with Terraform and OpenTofu
 

@@ -8,6 +8,127 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.0] — 2026-09-06
+
+A minor bump rather than a patch: GCP stopped being a type-level cloud, and
+the way a project is started changed shape.
+
+### Added
+
+- **All seven portable kinds now work on all three clouds.** GCP gained
+  `objectStore` (Cloud Storage), `secrets` (Secret Manager), `queues`
+  (Pub/Sub topics), `imageRegistry` (Artifact Registry), `compute` (Cloud
+  Run), `iam` (service accounts) and `postgres` (Cloud SQL). `grep noGcp` was
+  the to-do list; it is empty and the helper is deleted.
+
+  Three of those APIs do not finish the work in the call that starts it, which
+  is new here, so `Gcp.Rest` gained two operation pollers — Google has two
+  shapes, `longrunning.Operation` with a `done` boolean and Cloud SQL's own
+  with a `status` string. Both bounded by fuel rather than `partial`.
+
+  Two limits stated rather than hidden. A serverless `postgres` declaration
+  **raises** on GCP: Cloud SQL has no capacity range that scales to a floor,
+  and choosing a tier from `minCapacity` would invent a bill nobody wrote
+  down. And `iam` **reads** the roles bound to a service account but refuses
+  to write them, because granting a role on GCP is a read-modify-write of the
+  whole project's IAM policy and getting it wrong removes other identities'
+  access — so a declared policy shows in `plan` and is refused at apply with
+  the `gcloud` command that would bind it, rather than being silently dropped.
+
+- **`infra init`** turns the directory you are already in into a declaration
+  project, so the ordinary flow works: `lake init`, add the dependency,
+  `lake exe infra init`. It **converts `lakefile.toml` to `lakefile.lean`**,
+  preserving the package name, version, libraries, executables and requires,
+  and keeping the original as `lakefile.toml.replaced-by-infra` — the
+  conversion is not cosmetic, because the native link flags are computed by
+  running `pkg-config` on the build machine and TOML cannot express that.
+  A TOML file it does not fully recognise is refused rather than rewritten on
+  a guess. `infra new` remains the shortcut that does the `lake init` too.
+
+- **`Catalogue.lean`** in every scaffolded project: all fourteen kinds across
+  all three clouds, **compiled and never applied**. Commented-out examples
+  rot; these are type-checked by the user's own build against the version of
+  `infra` they depend on.
+
+- **CI for five systems** in a scaffolded project — GitHub Actions, GitLab CI,
+  CircleCI, Azure Pipelines and Jenkins — each using the approval mechanism
+  its host actually gates on, because an approval that does not gate is
+  decorative.
+
+- **The live round trip creates two resources per cloud**, a queue and a
+  secret, so the scheduler is exercised live and not only the single-resource
+  path. All three legs pass.
+
+- **Scaleway Serverless SQL Database** is implemented, where it used to be a
+  stub that raised. `postgres` with capacity bounds and no instance class now
+  works on Scaleway — endpoint family confirmed against the live API, field
+  names from Scaleway's own CLI reference. A Serverless SQL Database has no
+  root user, so `masterUsername` and `masterPasswordSecret` have no
+  counterpart and are ignored rather than sent.
+
+- **Discovery metadata**: repository topics, canonical URL, Open Graph, a
+  Twitter card, JSON-LD, and a real 1200x630 social card rendered from the
+  project's own mark.
+
+- **The vendors' real AWS, Google Cloud and Scaleway marks** on the page,
+  installed unmodified, with provenance and trademark status recorded in
+  `assets/providers/SOURCES.md`.
+
+### Fixed
+
+- **A scaffolded project could not link on Linux.** `Infra/Cli/New.lean`
+  embeds a copy of this repo's native link-flag block, and it had drifted: it
+  had lost `pkgAbsoluteLibs` and gained OpenSSL flags, which are the two
+  things the canonical block's comments exist to prevent. Every project the
+  scaffolder ever produced failed to link on the platform its own generated CI
+  runs on. Now a verbatim copy between markers, with
+  `ci/check-lakefile-sync.sh` failing the build on any divergence and a CI step
+  that scaffolds a project and builds it.
+
+- **`objectStore` on GCP was signed with SigV4** and sent to
+  `storage.googleapis.com`. It had no GCP branch at all and borrowed the S3
+  client; GCS's S3-compatible API needs HMAC keys, which this library never
+  holds, so it could only ever have returned 403. The same defect `queues` had.
+
+- **Google's errors rendered with an empty message.** Its error body nests one
+  level deeper than either other cloud (`{"error":{"message":…}}`), so every
+  GCP failure read as `HTTP 404 :` with the only useful part dropped.
+
+- **A federated credentials file was read as a service-account key.**
+  `google-github-actions/auth` points `GOOGLE_APPLICATION_CREDENTIALS` at the
+  `external_account` file that Workload Identity Federation writes, so the key
+  path fired, threw on the type, and never reached the access token sitting in
+  the environment. Such a file now declines rather than failing.
+
+- **Scaleway queues could deadlock permanently.** The SQS credential's secret
+  is shown once and the mint call rejects a duplicate name, so one uncaptured
+  mint took the name and every later attempt failed with `409` forever. The
+  name is now reclaimed. Also: caching that credential no longer fails the
+  operation it optimises, and an already-activated project answers activation
+  with `409`, not `200`.
+
+- **Page legibility.** A contrast audit in both colour schemes reported 20
+  failures in light and 27 in dark; all are fixed. Blue-as-text and
+  blue-as-fill were one token doing two jobs and are now two.
+
+- **The published site's assets could drift from their source**, and did — a
+  `<picture>` source pointed at a file present only on the source side, and a
+  matching `<source>` that 404s does not fall back to its `<img>`, so dark mode
+  would have shown broken images with every local check passing.
+  `ci/check-site-assets-sync.sh` now resolves every reference against the
+  published tree.
+
+- **The scaffold CI step was macOS-broken**, using GNU `sed -i`, and rebuilt
+  the whole of `linen` a second time — killed by the OOM killer locally.
+
+### Changed
+
+- **The cloud strip shows supported clouds only.** Planned ones were listed
+  greyed, which made a landing page carry a roadmap, and a roadmap reads as a
+  promise.
+- **Provider marks are no longer boxed.** Dark mode sets the row on one light
+  band rather than recolouring artwork, which their guidelines forbid.
+
 ## [0.3.5] — 2026-09-06
 
 ### Fixed

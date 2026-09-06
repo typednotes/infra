@@ -38,15 +38,19 @@ the portability rules.
 **3 clouds** (AWS, Scaleway, GCP) · **14 resource kinds** (7 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
 
-GCP is **partly live**. `queues` (Pub/Sub topics), `objectStore` (Cloud
-Storage) and `secrets` (Secret Manager) have full clients; `queues` is
-additionally exercised by a real create-and-destroy round trip in CI. Four
-kinds remain types only — `compute`, `iam`, `imageRegistry` and `postgres` —
-and for those an apply raises rather than quietly doing nothing. Everything
-above the backend already works for all of them: declaring, placing,
-referencing, scheduling, diffing and exporting to HCL. Authentication is done
-in all three forms (a service-account key, `gcloud`, or Workload Identity
-Federation).
+All seven portable kinds have live clients on **all three clouds** — on GCP:
+Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
+service accounts and Cloud SQL. A create-and-destroy round trip passes on each
+cloud in CI, covering two kinds per leg.
+
+Two GCP limits are stated rather than papered over. A serverless `postgres`
+declaration **raises**, because Cloud SQL has no capacity range that scales to
+a floor and picking a tier from `minCapacity` would invent a bill you did not
+write down. And `iam` reads the roles bound to a service account but refuses to
+write them: granting a role on GCP is a read-modify-write of the whole
+project's IAM policy, and getting that wrong removes other identities' access,
+so a declared policy shows up in `plan` and is refused at apply with the
+`gcloud` command that would bind it.
 
 Verification varies by kind, and it is worth knowing which before you rely on
 any one of them:

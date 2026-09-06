@@ -47,7 +47,7 @@ file to compile.
 | `secrets` | Secrets Manager | Secret Manager | no |
 | `compute` | Lambda (image) | Serverless Containers | no |
 | `iam` | IAM users | IAM applications | no |
-| `postgres` | RDS | Managed Database | no — and routed on shape: a set `instanceClass` means a classic instance, capacity bounds mean serverless (AWS raises a named error; Scaleway's Serverless SQL Database is stubbed) |
+| `postgres` | RDS | Managed Database | no — and routed on shape: a set `instanceClass` means a classic instance, capacity bounds mean serverless. Scaleway's Serverless SQL Database is implemented (`serverless-sqldb/v1alpha1`, capacity as `cpu_min`/`cpu_max`); AWS's Aurora Serverless v2 raises a named error, and GCP's Cloud SQL has no serverless tier at all, so it raises with the tier to set instead |
 | `s3Bucket` | S3 | — | AWS-only kind |
 | `securityGroup` | EC2 security groups | — | AWS-only kind |
 | `awsInstance` | EC2 instances | — | AWS-only kind; the portable `compute` kind is serverless-shaped and cannot carry a required network reference |

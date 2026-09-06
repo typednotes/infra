@@ -251,6 +251,7 @@
   .cloud picture { display: block; line-height: 0; }
   .livehead { font-size: 21px; letter-spacing: -.01em; margin: 40px 0 8px; }
   td.gap { color: var(--ink-2); }
+  .tiny { font-size: 12px; color: var(--ink-2); }
   /* Optical sizing: the AWS mark stacks its wordmark over the smile, so at a
      common height it reads much smaller than the two single-line marks. */
   .cloud img.mark-aws      { height: 34px; }
@@ -301,8 +302,8 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.3.1</strong> — three clouds, placement per resource, and Terraform
-  conversion in both directions.
+  <strong>0.4.0</strong> — all seven portable kinds on all three clouds, and a
+  live round trip that passes on each.
   <a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
@@ -449,7 +450,7 @@
        Alphabetical, so the order carries no ranking. -->
   <div class="clouds">
     <div class="cloud is-on has-mark"><img class="mark mark-aws" src="providers/aws.svg" alt="AWS" width="57" height="34"></div>
-    <div class="cloud is-partial has-mark"><img class="mark mark-gcp" src="providers/gcp.svg" alt="Google Cloud" width="129" height="20"><span>3 of 7 kinds live</span></div>
+    <div class="cloud is-partial has-mark"><img class="mark mark-gcp" src="providers/gcp.svg" alt="Google Cloud" width="129" height="20"><span>7 of 7 kinds live</span></div>
     <div class="cloud is-on has-mark"><img class="mark mark-scaleway" src="providers/scaleway.svg" alt="Scaleway" width="103" height="20"></div>
   </div>
 </div>
@@ -719,28 +720,49 @@ would CREATE scaleway/secrets/db-url
     <div class="scroller">
       <table>
         <caption class="sub" style="text-align:left;margin:28px 0 0;caption-side:top">
-          Seven portable kinds — one spec value, any cloud. Where a cell says
-          &ldquo;not yet&rdquo; the kind still declares, places, diffs and
-          exports to HCL; only the client is missing, and an apply says so
-          rather than quietly doing nothing.
+          Seven portable kinds — one spec value, any cloud, and every cell now
+          has a live client behind it.
         </caption>
         <thead><tr><th>Kind</th><th>AWS</th><th>Scaleway</th><th>Google Cloud</th></tr></thead>
         <tbody>
           <tr><td><code>objectStore</code></td><td>S3</td><td>Object Storage</td><td>Cloud Storage</td></tr>
           <tr><td><code>queues</code></td><td>SQS</td><td>Queues</td><td>Pub/Sub</td></tr>
           <tr><td><code>secrets</code></td><td>Secrets Manager</td><td>Secret Manager</td><td>Secret Manager</td></tr>
-          <tr><td><code>imageRegistry</code></td><td>ECR</td><td>Container Registry</td><td class="gap">not yet</td></tr>
-          <tr><td><code>compute</code></td><td>Lambda (image)</td><td>Serverless Containers</td><td class="gap">not yet</td></tr>
-          <tr><td><code>iam</code></td><td>IAM users</td><td>IAM applications</td><td class="gap">not yet</td></tr>
-          <tr><td><code>postgres</code></td><td>RDS</td><td>Managed Database</td><td class="gap">not yet</td></tr>
+          <tr><td><code>imageRegistry</code></td><td>ECR</td><td>Container Registry</td><td>Artifact Registry</td></tr>
+          <tr><td><code>compute</code></td><td>Lambda (image)</td><td>Serverless Containers</td><td>Cloud Run</td></tr>
+          <tr><td><code>iam</code></td><td>IAM users</td><td>IAM applications</td><td>Service accounts</td></tr>
+          <tr><td><code>postgres</code></td><td>RDS</td><td>Managed Database<br><span class="tiny">Serverless SQL when no instance class is set</span></td><td>Cloud SQL</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="sub" style="margin-top:22px">
-      Plus seven provider-local kinds — S3 buckets with Object Lock, EC2 security
-      groups and instances, and Scaleway's Functions and Containers with their
-      namespaces — where reaching for a cloud-specific concept makes the loss of
-      portability visible in the type.
+    <p class="sub" style="margin:26px 0 12px">
+      And seven provider-local kinds. A dash is not a gap here — it is the
+      point: these name a concept one cloud has and the others do not, so
+      reaching for one makes the loss of portability visible in the
+      <em>type</em> rather than in a comment. Declaring one on the wrong cloud
+      is reported as having no counterpart, not as a missing client.
+    </p>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Kind</th><th>AWS</th><th>Scaleway</th><th>Google Cloud</th></tr></thead>
+        <tbody>
+          <tr><td><code>s3Bucket</code></td><td>S3, with Object Lock</td><td class="gap">—</td><td class="gap">—</td></tr>
+          <tr><td><code>securityGroup</code></td><td>EC2 security groups</td><td class="gap">—</td><td class="gap">—</td></tr>
+          <tr><td><code>awsInstance</code></td><td>EC2 instances</td><td class="gap">—</td><td class="gap">—</td></tr>
+          <tr><td><code>scalewayFunctionNamespace</code></td><td class="gap">—</td><td>Functions namespaces</td><td class="gap">—</td></tr>
+          <tr><td><code>scalewayFunction</code></td><td class="gap">—</td><td>Serverless Functions</td><td class="gap">—</td></tr>
+          <tr><td><code>scalewayContainerNamespace</code></td><td class="gap">—</td><td>Containers namespaces</td><td class="gap">—</td></tr>
+          <tr><td><code>scalewayContainer</code></td><td class="gap">—</td><td>Serverless Containers</td><td class="gap">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:18px">
+      Fourteen kinds, three clouds. Every cell that is not a dash has a live
+      client behind it — with two limits worth stating rather than discovering:
+      a serverless <code>postgres</code> raises on Google Cloud, because Cloud
+      SQL has no capacity range that scales to a floor, and <code>iam</code>
+      there reads the roles bound to a service account but refuses to write
+      them, since granting a role on GCP rewrites the whole project's policy.
     </p>
   </div>
 </section>
