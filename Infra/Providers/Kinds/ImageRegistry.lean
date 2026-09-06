@@ -106,6 +106,7 @@ private def prefix' (region : String) : String :=
 /-- Every namespace, as `(name, id, endpoint)`. -/
 def listRaw (creds : Credentials) : IO (List (String × String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "namespaces").filterMap fun n =>
     match stringField n "name", stringField n "id" with
     | some nm, some id => some (nm, id, (stringField n "endpoint").getD "")

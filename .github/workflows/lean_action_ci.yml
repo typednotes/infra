@@ -73,6 +73,13 @@ jobs:
       # cheap to check offline, so it is checked.
       - name: Check the AWS CI policy document is well-formed
         run: ./ci/check-aws-policy.py
+      # An unscoped Scaleway listing is evaluated against the whole
+      # organization, so it both breaks a project-scoped credential and returns
+      # other projects' resources — which `pullEntries` will match to a fleet
+      # key by name, and `destroy` will then delete. Fourteen listings were
+      # unscoped when this check was written.
+      - name: Check Scaleway listings are scoped to a project
+        run: ./ci/check-scaleway-scoping.py
       - name: Check the scaffolder's lakefile copy has not drifted
         run: ./ci/check-lakefile-sync.sh
       # `pages.yml` publishes `site/` alone, so the page carries its own copy

@@ -64,6 +64,7 @@ def fetchMasterPassword (provider : ProviderId) (creds : Credentials) (secretNam
     -- Scaleway returns the value base64-encoded from a versioned endpoint.
     let pfx := Scaleway.regionalPrefix "secret-manager" "v1beta1" creds.region
     let listing ← Scaleway.call creds "GET" (pfx ++ "/secrets")
+      (query := [("project_id", ← creds.requireProject)])
     match (arrayField listing "secrets").find? (fun s => stringField s "name" == some secretName) with
     | none => throw (IO.userError s!"scaleway secrets: no secret named '{secretName}'")
     | some s =>
@@ -166,6 +167,7 @@ private def prefix' (region : String) : String :=
 
 private def listRaw (creds : Credentials) : IO (List (String × String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/instances")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "instances").filterMap fun i =>
     match stringField i "name", stringField i "id" with
     | some n, some id =>

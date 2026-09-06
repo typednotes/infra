@@ -69,6 +69,33 @@ token. Pub/Sub is not SQS in any sense. So both kinds have a second
 implementation for GCP (`Gcp.Storage`, `Gcp.PubSub`), and `objectStore` in
 particular was silently routed to the S3 client until that was noticed.
 
+## Scaleway listings are scoped to a project, and must be
+
+A Scaleway collection endpoint with no `project_id` is evaluated against the
+whole **organization**. Fourteen of them were unscoped, which caused two
+problems of very different severity.
+
+The visible one: a project-scoped credential is refused with
+`403 permissions_denied`, and nothing in the message suggests that the *scope*
+rather than the permission is at fault. That is how it was found — a CI
+credential holding `AllProductsFullAccess` on one project could not list
+secrets.
+
+The dangerous one: an unscoped listing returns **other projects' resources**,
+and `Infra.Core.pullEntries` matches a listed resource to a fleet key *by
+name*. So a fleet in one project could adopt a same-named resource belonging to
+another, diff it, and destroy it. This was measured rather than theorised: the
+organization used for testing had two container-registry namespaces, both in a
+different project from the fleet's, and an unscoped listing saw both.
+
+`ci/check-scaleway-scoping.py` enforces it, with two deliberate exceptions —
+`/runtimes` is a catalogue rather than a resource collection, and IAM
+`/applications` is organization-scoped by nature.
+
+Note this is a Scaleway-shaped hazard specifically. AWS scopes by the
+credential's account and region implicitly; GCP puts the project in the path,
+so an unscoped call is not expressible.
+
 ## Regions reach a backend through the credentials
 
 Every endpoint builder in `Aws/Protocols.lean` and `Scaleway/Rest.lean` takes a

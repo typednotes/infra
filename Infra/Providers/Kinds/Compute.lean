@@ -127,6 +127,7 @@ private def prefix' (region : String) : String :=
 
 private def listRaw (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "containers").filterMap fun c =>
     match stringField c "name", stringField c "id" with
     | some n, some i => some (n, i)
@@ -146,6 +147,7 @@ private def namespaceId (creds : Credentials) (name : String) : IO String := do
     throw (IO.userError
       "compute on scaleway needs a namespace: Serverless Containers groups containers into one")
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
   match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
   | some n =>
     match stringField n "id" with
@@ -223,6 +225,7 @@ private def secretEnvArray (secretEnv : List (String × String)) : Value :=
 /-- The domain alongside the name, which `list` above does not need. -/
 def listFull (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "containers").filterMap fun c =>
     match stringField c "name" with
     | some n => some (n, (stringField c "domain_name").getD "")
@@ -290,6 +293,7 @@ def updateFull (creds : Credentials) (name image : String)
 /-- Every namespace, as `(name, id)`. -/
 def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "namespaces").filterMap fun n =>
     match stringField n "name", stringField n "id" with
     | some nm, some i => some (nm, i)
@@ -298,6 +302,7 @@ def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
 /-- One namespace's description, by name. -/
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
   match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
   | none   => return .unknown
   | some n => return match stringField n "description" with
@@ -342,6 +347,7 @@ private def prefix' (region : String) : String :=
 
 private def listRaw (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/functions")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "functions").filterMap fun f =>
     match stringField f "name", stringField f "id" with
     | some n, some i => some (n, i)
@@ -349,6 +355,7 @@ private def listRaw (creds : Credentials) : IO (List (String × String)) := do
 
 def list (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/functions")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "functions").filterMap fun f =>
     match stringField f "name" with
     | some n => some (n, (stringField f "domain_name").getD "")
@@ -364,6 +371,7 @@ private def namespaceIdOf (creds : Credentials) (name : String) : IO String := d
   if name.isEmpty then
     throw (IO.userError "scalewayFunction needs a namespace")
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
   match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
   | some n =>
     match stringField n "id" with
@@ -445,6 +453,7 @@ def delete (creds : Credentials) (name : String) : IO Unit := do
 /-- Every namespace, as `(name, id)`. -/
 def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "namespaces").filterMap fun n =>
     match stringField n "name", stringField n "id" with
     | some nm, some i => some (nm, i)
@@ -453,6 +462,7 @@ def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
 /-- One namespace's description, by name. -/
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
   match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
   | none   => return .unknown
   | some n => return match stringField n "description" with

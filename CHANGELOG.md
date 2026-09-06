@@ -8,6 +8,30 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.6] — 2026-09-06
+
+### Fixed
+
+- **Fourteen Scaleway listings were not scoped to a project**, which a
+  project-scoped CI credential surfaced as `403 permissions_denied` on
+  `GET /secret-manager/…/secrets`. A Scaleway collection endpoint without
+  `project_id` is evaluated against the whole **organization**.
+
+  The 403 is the mild consequence. The serious one is that an unscoped listing
+  returns **other projects' resources**, and `pullEntries` matches a listed
+  resource to a fleet key *by name* — so a fleet in one project could adopt a
+  same-named resource belonging to another, diff it, and `destroy` it. Measured,
+  not theorised: the test organization had two container-registry namespaces in
+  a different project, and an unscoped listing saw both.
+
+  `ci/check-scaleway-scoping.py` enforces it now, with two deliberate
+  exceptions: `/runtimes` is a catalogue rather than a collection, and IAM
+  `/applications` is organization-scoped by nature.
+
+  This is Scaleway-shaped specifically. AWS scopes by the credential's account
+  and region implicitly; GCP puts the project in the path, so an unscoped call
+  is not even expressible.
+
 ## [0.4.5] — 2026-09-06
 
 ### Verified
