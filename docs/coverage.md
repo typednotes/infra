@@ -298,6 +298,32 @@ equivalent; and DAG scheduling over a sixteen-resource graph with a diamond,
 fan-in, a redundant edge, a four-deep chain and cross-cloud edges, checked in
 both directions by a checker that recomputes the edges independently.
 
+### What the first multi-kind live runs found
+
+Three legs, three different failures, and only one was a permissions gap of
+the kind expected.
+
+- **AWS: a real library bug.** `CreateSecret` was rejected with
+  `You must provide a ClientRequestToken value`. The API reference calls that
+  field optional, and it is — *through an SDK*, which generates one when the
+  caller omits it. This library does not use an SDK, so it was never optional
+  here. Nothing offline distinguishes a field an SDK fills in from one the
+  service defaults, which is exactly why `docs/coverage.md` listed Secrets
+  Manager under "never run" and exactly what a first live call is for. Fixed,
+  with an offline check on the token's shape and freshness.
+
+- **GCP: a permission missing because a table went stale.**
+  `Permission 'run.services.list' denied` — `roles/run.admin` was never added
+  to `ci/README.md` when `compute` joined the GCP fleet a commit earlier. The
+  table is derived from `test/Live.lean` and now says so.
+
+- **Scaleway: a permissions gap, reported uselessly.**
+  `HTTP 403 permissions_denied: insufficient permissions`, with no product, no
+  operation and no resource — across a ten-resource fleet. AWS names the
+  action and Google names the exact permission *and* resource; Scaleway's
+  bodies are the terse ones. Its calls now prefix failures with the method and
+  path, which identifies the product and operation.
+
 ### Implemented, never exercised
 
 - **Scaleway Serverless SQL Database** — the `postgres` kind's serverless

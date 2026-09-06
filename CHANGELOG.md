@@ -107,6 +107,20 @@ the way a project is started changed shape.
 
 ### Fixed
 
+- **AWS Secrets Manager rejected every `create`.** `CreateSecret` and
+  `PutSecretValue` require a `ClientRequestToken`; the API reference calls it
+  optional, which it is through an SDK, because every SDK generates one when
+  the caller omits it. This library does not use an SDK. Found by the first
+  live AWS secret — nothing offline distinguishes a field an SDK supplies from
+  one the service defaults — and now covered by an offline check on the
+  token's shape and freshness.
+
+- **Scaleway failures did not say which call failed.** Its error bodies are
+  the terse ones of the three clouds: a refused request reports
+  `403 permissions_denied: insufficient permissions` and nothing else, no
+  product, operation or resource, which across a ten-resource fleet is a
+  needle in a haystack. Its calls now name the method and path.
+
 - **A scaffolded project could not link on Linux.** `Infra/Cli/New.lean`
   embeds a copy of this repo's native link-flag block, and it had drifted: it
   had lost `pkgAbsoluteLibs` and gained OpenSSL flags, which are the two

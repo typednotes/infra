@@ -63,8 +63,20 @@ def call (creds : Credentials) (method path : String)
   let headers :=
     ("X-Auth-Token", creds.secretKey)
     :: (if body.isEmpty then [] else [("Content-Type", "application/json")])
-  let resp ← Http.sendChecked (Http.request method host path query headers
-    (if body.isEmpty then none else some body))
+  -- Name the call in every failure. Scaleway's error bodies are the terse ones
+  -- of the three clouds: a refused request says
+  --
+  --     HTTP 403 permissions_denied: insufficient permissions
+  --
+  -- and nothing else — not the product, not the operation, not the resource.
+  -- AWS names the action and Google names the exact permission and resource,
+  -- so only this cloud left the reader guessing which of a ten-resource
+  -- fleet's calls had been refused. The method and path are enough to identify
+  -- the product and operation, and cost nothing when the call succeeds.
+  let resp ← match ← (Http.sendChecked (Http.request method host path query headers
+      (if body.isEmpty then none else some body))).toBaseIO with
+    | .ok r => pure r
+    | .error e => throw (IO.userError s!"scaleway {method} {path}: {e}")
   let text := (Http.bodyText resp).trimAscii.toString
   if text.isEmpty then return .null
   match Data.Json.Decode.decode text with

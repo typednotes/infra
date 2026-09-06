@@ -20,8 +20,9 @@
       "Action": [
         "secretsmanager:CreateSecret",
         "secretsmanager:DeleteSecret",
-        "secretsmanager:PutSecretValue",
         "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
         "secretsmanager:TagResource"
       ],
       "Resource": "arn:aws:secretsmanager:eu-west-1:616568506952:secret:ci-tests-infra-*"

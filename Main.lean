@@ -429,8 +429,32 @@ def checkGcpAssertion : IO Unit := do
     IO.println "gcp auth: ok (service-account assertion signs and verifies)"
   | _ => throw (IO.userError s!"gcp: assertion is not a three-part JWT")
 
+/-- Secrets Manager's idempotency token, whose shape is checkable offline.
+
+    Worth a check because the bug it fixes was not: `CreateSecret` rejects a
+    request with no `ClientRequestToken`, the API reference calls the field
+    optional — it is, through an SDK, which fills it in — and nothing offline
+    distinguishes a field an SDK supplies from one the service defaults. It
+    took the first live AWS secret to find. What *can* be established here is
+    that the token this now sends is well-formed and fresh. -/
+def checkSecretsRequestToken : IO Unit := do
+  let mut seen : List String := []
+  for _ in [0:200] do
+    let t ← Infra.Providers.Kinds.Secrets.Asm.requestTokenForCheck
+    unless t.length == 32 do
+      throw (IO.userError s!"secrets token: length {t.length}, expected 32 — {t}")
+    unless t.all (fun c => c.isDigit || (c ≥ 'a' && c ≤ 'f')) do
+      throw (IO.userError s!"secrets token: not lowercase hex — {t}")
+    -- Fresh per call: the token is an idempotency key, so a repeat with
+    -- different contents is itself an error.
+    if seen.contains t then
+      throw (IO.userError s!"secrets token: repeated within 200 calls — {t}")
+    seen := t :: seen
+  IO.println "secrets: request tokens are 32 hex characters and never repeat"
+
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
+
 def selfCheck : IO Unit := do
   IO.println "infra: refinement core loaded"
   checkPersistenceRoundTrip
@@ -442,6 +466,7 @@ def selfCheck : IO Unit := do
   checkSecretComposition
   checkGcpAssertion
   checkVanishingResource
+  checkSecretsRequestToken
 
 /-- `infra gcp-check <key.json>` — does this service-account key actually work?
 

@@ -2,6 +2,7 @@ import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Infra.Core.Stage
 import Linen.Data.Base64
+import Linen.Data.Time.Clock
 
 /-
   Secret storage.
@@ -107,14 +108,45 @@ def describeVersion (creds : Credentials) (ep : Endpoint) (name : String) : IO S
   | some (.object ((v, _) :: _)) => return v
   | _                            => return ""
 
+/-- A fresh idempotency token for Secrets Manager.
+
+    `CreateSecret` and `PutSecretValue` both take a `ClientRequestToken`, and
+    the API reference calls it optional — which it is *through an SDK*, because
+    every SDK generates one when the caller omits it. Calling the API directly
+    without one is rejected outright:
+
+        HTTP 400 InvalidRequestException: You must provide a
+        ClientRequestToken value. We recommend a UUID-type value.
+
+    So it is not optional here, and this is the kind of gap that only a real
+    account finds: nothing offline distinguishes a field an SDK fills in from
+    one the service defaults.
+
+    32 hex characters, which satisfies the documented 32–64 length. Time gives
+    monotonicity and `IO.rand` guards against two calls inside the same
+    nanosecond tick. It must be *fresh per call* rather than derived from the
+    secret's contents: the token is an idempotency key, so reusing one with
+    different contents is itself an error, and a fleet that writes two versions
+    of a secret in one apply would collide with itself. -/
+private def requestToken : IO String := do
+  let now ← Data.Time.getCurrentTime
+  let hi ← IO.rand 0 (2 ^ 32 - 1)
+  let hex (n : Nat) (width : Nat) : String :=
+    let digits := String.ofList (Nat.toDigits 16 n)
+    -- Left-pad, so the token is a fixed width whatever the value.
+    (String.ofList (List.replicate (width - min width digits.length) '0')) ++ digits
+  return hex now.nanosSinceEpoch 24 ++ hex hi 8
+
 def create (creds : Credentials) (ep : Endpoint) (name value : String) : IO String := do
   let reply ← Json.call creds ep (target "CreateSecret")
-    (.object [("Name", .string name), ("SecretString", .string value)])
+    (.object [ ("Name", .string name), ("SecretString", .string value)
+             , ("ClientRequestToken", .string (← requestToken)) ])
   return (stringField reply "VersionId").getD ""
 
 def putValue (creds : Credentials) (ep : Endpoint) (name value : String) : IO String := do
   let reply ← Json.call creds ep (target "PutSecretValue")
-    (.object [("SecretId", .string name), ("SecretString", .string value)])
+    (.object [ ("SecretId", .string name), ("SecretString", .string value)
+             , ("ClientRequestToken", .string (← requestToken)) ])
   return (stringField reply "VersionId").getD ""
 
 /-- Delete immediately rather than entering the recovery window.
@@ -125,6 +157,13 @@ def putValue (creds : Credentials) (ep : Endpoint) (name value : String) : IO St
 def delete (creds : Credentials) (ep : Endpoint) (name : String) : IO Unit := do
   discard <| Json.call creds ep (target "DeleteSecret")
     (.object [("SecretId", .string name), ("ForceDeleteWithoutRecovery", .bool true)])
+
+
+/-- Exposed only so the self-check suite can verify the token's shape without
+    an AWS account: length, alphabet and freshness are checkable offline, and
+    the bug this fixes was invisible offline precisely because nothing checked
+    them. -/
+def requestTokenForCheck : IO String := requestToken
 
 end Asm
 

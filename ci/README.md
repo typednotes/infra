@@ -135,7 +135,8 @@ for ROLE in \
   roles/secretmanager.admin \
   roles/artifactregistry.admin \
   roles/storage.admin \
-  roles/iam.serviceAccountAdmin
+  roles/iam.serviceAccountAdmin \
+  roles/run.admin
 do
   gcloud projects add-iam-policy-binding "$PROJECT" \
     --member="serviceAccount:$SA" --role="$ROLE" --condition=None
@@ -146,11 +147,34 @@ What each is for:
 
 | Role | Kind |
 |---|---|
-| `roles/pubsub.editor` | `queues` — already granted |
-| `roles/secretmanager.admin` | `secrets` |
+| `roles/pubsub.editor` | `queues` |
+| `roles/secretmanager.admin` | `secrets` — including *reading* a value, which the composed secrets do |
 | `roles/artifactregistry.admin` | `imageRegistry` |
 | `roles/storage.admin` | `objectStore` |
 | `roles/iam.serviceAccountAdmin` | `iam` |
+| `roles/run.admin` | `compute` |
+
+**This table is derived from `test/Live.lean`, and it went stale once already**
+— `roles/run.admin` was missing after `compute` joined the GCP fleet, and the
+first live run said so:
+
+    HTTP 403 PERMISSION_DENIED: Permission 'run.services.list' denied on
+    resource 'projects/typednotes/locations/europe-west9/services'
+
+Adding a kind to a live fleet means adding its permission here. The kinds each
+fleet declares, as of 0.4.0:
+
+| Cloud | Kinds in the live fleet |
+|---|---|
+| AWS | `iam`, `imageRegistry`, `objectStore`, `queues`, `s3Bucket`, `secrets`, `securityGroup` |
+| Scaleway | the same minus `s3Bucket`/`securityGroup`, plus `scalewayContainer`, `scalewayContainerNamespace`, `scalewayFunctionNamespace` |
+| GCP | `compute`, `iam`, `imageRegistry`, `objectStore`, `queues`, `secrets` |
+
+One permission is easy to miss because no resource names it: the fleets contain
+two **composed** secrets, whose values are built from a base secret's value at
+settle time. That is a *read* of a secret, so every cloud needs read as well as
+write — on AWS it is `secretsmanager:GetSecretValue`, which was missing from
+the policy for the same reason.
 
 Two not on that list, deliberately. `roles/cloudsql.admin` is not granted
 because `postgres` is not in the live fleet — it takes longer to create than
