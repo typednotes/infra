@@ -99,8 +99,8 @@ observer would read it as endorsement.
 
 ## The cloud marks are names, not logos
 
-`assets/providers/*.svg` are **wordmarks set in this project's own type**, in
-`currentColor` so they invert with the theme. They are not AWS's or Scaleway's
+`assets/providers/*.svg` are **wordmarks set in this project's own type**,
+supplied as a light/dark pair per provider (see the socket below). They are not AWS's or Scaleway's
 logos, and that is deliberate: the same caution that applies to Lean and
 OpenTofu applies here, and AWS's guidelines in particular are strict about
 their marks.
@@ -116,6 +116,40 @@ The strip is ordered **alphabetically**. It was grouped by status first, which
 reads as arbitrary unless you already know the statuses — and each tile carries
 its status as a tag anyway, so the grouping conveyed nothing the reader could
 not already see.
+
+### The light/dark socket
+
+Each provider is now a **pair** of files, and the page selects between them:
+
+    assets/providers/<name>.svg        light background
+    assets/providers/<name>-dark.svg   dark background
+
+selected with `<picture><source media="(prefers-color-scheme: dark)">`, which
+needs no script and degrades to the light file in anything that does not
+understand it.
+
+Both files in each pair are still this project's own wordmarks — one with a
+dark ink, one with a light one. Note what changed and what did not: they used
+to be a single file relying on `currentColor` to invert, which worked and
+could not accept a vendor's artwork, because a vendor's logo has its own fixed
+colours and comes as two separate files. The pair *is* the socket.
+
+**To install a vendor's real logos:** drop their own light file at
+`<name>.svg` and their own dark file at `<name>-dark.svg`, then change only the
+`width` and `height` in `site/index.html` to the new intrinsic size. Nothing
+else in the markup or CSS needs touching.
+
+Two rules that survive the change, and they are the whole reason this is a
+socket rather than a fait accompli:
+
+- **Use each vendor's own two files.** Do not recolour one file to produce the
+  other — that is a modified mark, and it is usually the precise thing their
+  guidelines prohibit. A vendor that publishes only one variant has, in
+  effect, told you it should not be inverted.
+- **Do not let an agent fetch them.** Logo aggregators host outdated and
+  unofficial variants, and shipping one is worse than shipping no logo. Each
+  file has to come from the vendor's own brand page, under its terms, fetched
+  by a person who accepted them.
 
 ### If you want the official logos instead
 

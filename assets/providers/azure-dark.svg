@@ -11,7 +11,7 @@
        see docs/branding.md for why the same caution applies here as to Lean
        and OpenTofu. Nominative use of a name is a different thing from
        reproducing a mark. -->
-  <text x="0" y="44" fill="#1a1d23"
+  <text x="0" y="44" fill="#f2f4f8"
         font-family="'DM Sans','Inter','Helvetica Neue',Helvetica,Arial,sans-serif"
         font-size="42" font-weight="700" letter-spacing="-1.4">Azure</text>
 </svg>

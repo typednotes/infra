@@ -170,6 +170,7 @@
   /* Declarable but not yet reachable: the types work, the client does not. */
   .cloud.is-partial { opacity: .8; color: var(--ink); border-style: dashed; }
   .cloud img { height: 24px; width: auto; display: block; }
+  .cloud picture { display: block; line-height: 0; }
   .cloud span { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
                 border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
 
@@ -348,11 +349,11 @@
        status anyway, so the grouping was carrying no information the reader
        could not already see. -->
   <div class="clouds">
-    <div class="cloud is-on"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></div>
-    <div class="cloud"><img src="providers/azure.svg" alt="Azure" width="190" height="60"><span>planned</span></div>
-    <div class="cloud is-partial"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"><span>types only</span></div>
-    <div class="cloud"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"><span>planned</span></div>
-    <div class="cloud is-on"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></div>
+    <div class="cloud is-on"><picture><source srcset="providers/aws-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/aws.svg" alt="AWS" width="150" height="60"></picture></div>
+    <div class="cloud"><picture><source srcset="providers/azure-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/azure.svg" alt="Azure" width="190" height="60"></picture><span>planned</span></div>
+    <div class="cloud is-partial"><picture><source srcset="providers/gcp-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/gcp.svg" alt="Google Cloud" width="330" height="60"></picture><span>queues live</span></div>
+    <div class="cloud"><picture><source srcset="providers/ovh-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/ovh.svg" alt="OVHcloud" width="280" height="60"></picture><span>planned</span></div>
+    <div class="cloud is-on"><picture><source srcset="providers/scaleway-dark.svg" media="(prefers-color-scheme: dark)"><img src="providers/scaleway.svg" alt="Scaleway" width="290" height="60"></picture></div>
   </div>
   <p class="cloudband-note">
     <strong>&ldquo;Types only&rdquo;</strong> means GCP resources can be declared,

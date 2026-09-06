@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 60" width="190" height="60"
-     role="img" aria-label="Azure">
-  <title>Azure</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 60" width="330" height="60"
+     role="img" aria-label="Google Cloud">
+  <title>Google Cloud</title>
   <!-- Theme variant. The pair (name.svg, name-dark.svg) is the drop-in socket
        for a vendor's OWN two files: replace both and change only the width and
        height in site/index.html. Do not recolour a vendor's single file to make
@@ -11,7 +11,7 @@
        see docs/branding.md for why the same caution applies here as to Lean
        and OpenTofu. Nominative use of a name is a different thing from
        reproducing a mark. -->
-  <text x="0" y="44" fill="#1a1d23"
+  <text x="0" y="44" fill="#f2f4f8"
         font-family="'DM Sans','Inter','Helvetica Neue',Helvetica,Arial,sans-serif"
-        font-size="42" font-weight="700" letter-spacing="-1.4">Azure</text>
+        font-size="42" font-weight="700" letter-spacing="-1.4">Google Cloud</text>
 </svg>
