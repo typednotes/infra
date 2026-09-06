@@ -63,6 +63,12 @@
     color-scheme: light dark;
     --blue: #386EE0;
     --blue-hover: #2A57B8;
+    /* Blue as *text*, which is a different constraint from blue as a fill.
+       #386EE0 on white clears 4.5:1, but on the banner's tinted surface it
+       falls to 4.29, and on the dark surface to 3.41 — both measured in the
+       browser, not estimated. So text gets its own token per theme and the
+       fill keeps the brand value. */
+    --blue-text: #2A57B8;
     --slate-top: #7C93B4;
     --slate-side: #3F5372;
 
@@ -91,6 +97,7 @@
       --ok: #56C98A;
       --warn: #E0A44A;
       --bad: #F0868F;
+      --blue-text: #8FB2F5;
     }
   }
   * { box-sizing: border-box; }
@@ -110,7 +117,7 @@
           padding: 10px 16px; z-index: 10; border-radius: 0 0 6px 0; }
   .skip:focus { left: 0; }
   .wrap { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
-  a { color: var(--blue); }
+  a { color: var(--blue-text); }
   :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 3px; }
   code, pre { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; }
 
@@ -167,7 +174,7 @@
         color: var(--code-ink); }
   .k { color: #7FA9F5; }      /* keyword */
   .s { color: #9BD8A0; }      /* string  */
-  .c { color: #6B7A90; font-style: italic; }  /* comment */
+  .c { color: #8296AE; font-style: italic; }  /* comment; 4.5:1 on both code grounds */
   .n { color: #E0B080; }      /* literal */
   .t { color: #C8A9F0; }      /* type / kind */
   .err { color: #F0868F; }
@@ -230,13 +237,13 @@
                      color: var(--ink-2); margin: 0 0 14px; }
   .cloudband-note { font-size: 15px; color: var(--ink-2); max-width: 68ch; margin: 16px 0 0; }
   .cloudband-note strong { color: var(--ink); }
-  .clouds { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 0; }
-  .cloud { display: flex; align-items: center; gap: 10px; padding: 14px 20px;
-           border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
-           color: var(--ink-2); opacity: .5; }
-  .cloud.is-on { opacity: 1; color: var(--ink); border-color: var(--ink-2); }
-  /* Declarable but not yet reachable: the types work, the client does not. */
-  .cloud.is-partial { opacity: .8; color: var(--ink); border-style: dashed; }
+  .clouds { display: flex; flex-wrap: wrap; align-items: center; gap: 34px; margin: 8px 0 0; }
+  /* No tile. The marks sit on the page: a bordered card around someone else's
+     logo reads as a UI control and competes with the logo it contains. The
+     status tag alone carries what the border used to. */
+  .cloud { display: flex; align-items: center; gap: 10px; padding: 6px 0;
+           color: var(--ink-2); }
+  .cloud.is-on, .cloud.is-partial { color: var(--ink); }
   .cloud img { height: 24px; width: auto; display: block; }
   /* No `<picture>` on the page today: the three vendor marks are single
      unmodified files. Kept for the documented socket — an official reversed
@@ -244,18 +251,23 @@
   .cloud picture { display: block; line-height: 0; }
   .livehead { font-size: 21px; letter-spacing: -.01em; margin: 40px 0 8px; }
   td.gap { color: var(--ink-2); }
-  /* Vendors' own marks, unmodified. Each is dark-on-light artwork, so on a
-     dark page it is set on a light plate rather than recoloured — recolouring
-     a mark is what their guidelines forbid, and a plate is the sanctioned way
-     to keep contrast. Only these three tiles get it; the neighbouring
-     wordmarks are ours and invert cleanly. */
-  .cloud.has-mark { background: transparent; }
-  .mark-aws      { height: 34px; }
-  .mark-gcp      { height: 20px; }
-  .mark-scaleway { height: 20px; }
+  /* Optical sizing: the AWS mark stacks its wordmark over the smile, so at a
+     common height it reads much smaller than the two single-line marks. */
+  .cloud img.mark-aws      { height: 34px; }
+  .cloud img.mark-gcp      { height: 22px; }
+  .cloud img.mark-scaleway { height: 22px; }
+  /* All three marks are dark-on-light artwork — #252F3E for AWS, #5f6368 for
+     Google Cloud's wordmark, #521094 for Scaleway — so on a dark page they
+     are unreadable, and AWS's is invisible. Recolouring them is what their
+     guidelines forbid.
+     So dark mode gives the row *one* light band rather than a plate per
+     logo. Three plates are three boxes, which is the thing being removed; one
+     band reads as the section's own surface and leaves every mark untouched.
+     Measured in the browser in both schemes, not assumed. */
   @media (prefers-color-scheme: dark) {
-    .cloud.has-mark { background: #ffffff; border-color: #ffffff; }
-    .cloud.has-mark span { color: #3f5372; }
+    .clouds { background: #FFFFFF; border-radius: 12px; padding: 20px 30px; gap: 40px; }
+    .cloud, .cloud.is-on, .cloud.is-partial { color: #3F5372; }
+    .cloud span { color: #4B5B70; border-color: #C3D0E2; }
   }
   .cloud span { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
                 border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
@@ -266,6 +278,7 @@
   .cov-card { background: var(--surface); border: 1px solid var(--border);
               border-radius: 10px; padding: 20px 22px; }
   .cov-card h4 { margin: 0 0 4px; font-size: 15px; letter-spacing: .3px; text-transform: uppercase; }
+  .cov-card h4.hl { color: var(--blue-text); }
   .cov-card.ok h4 { color: var(--ok); }
   .cov-card.warn h4 { color: var(--warn); }
   .cov-card.bad h4 { color: var(--bad); }
@@ -543,7 +556,7 @@ would CREATE scaleway/secrets/db-url
 
     <div class="cov" style="grid-template-columns:repeat(2,minmax(0,1fr))">
       <div class="cov-card">
-        <h4 style="color:var(--blue)">Errors move to compile time</h4>
+        <h4 class="hl">Errors move to compile time</h4>
         <p>
           A dangling reference, a reference of the wrong kind or the wrong
           cloud, a missing required field, a region a cloud is not in, an
@@ -554,7 +567,7 @@ would CREATE scaleway/secrets/db-url
         </p>
       </div>
       <div class="cov-card">
-        <h4 style="color:var(--blue)">Ordering is derived, not declared</h4>
+        <h4 class="hl">Ordering is derived, not declared</h4>
         <p>
           There is no <code>depends_on</code>. A reference <em>is</em> the
           dependency, so the graph cannot disagree with the code — and both
@@ -563,7 +576,7 @@ would CREATE scaleway/secrets/db-url
         </p>
       </div>
       <div class="cov-card">
-        <h4 style="color:var(--blue)">One apply, not two</h4>
+        <h4 class="hl">One apply, not two</h4>
         <p>
           A value that needs state which does not exist yet — a connection
           string wanting both a generated password and an endpoint the cloud
@@ -573,7 +586,7 @@ would CREATE scaleway/secrets/db-url
         </p>
       </div>
       <div class="cov-card">
-        <h4 style="color:var(--blue)">Secrets cannot be in the file</h4>
+        <h4 class="hl">Secrets cannot be in the file</h4>
         <p>
           A secret names an environment variable or a composition — never a
           value. That a committed fleet holds no plaintext is itself decidable
@@ -582,7 +595,7 @@ would CREATE scaleway/secrets/db-url
         </p>
       </div>
       <div class="cov-card">
-        <h4 style="color:var(--blue)">One spec, either cloud</h4>
+        <h4 class="hl">One spec, either cloud</h4>
         <p>
           Portable kinds are indexed by kind alone, never by provider, so the
           same value applies to any cloud; the provider enters only at apply.
@@ -591,7 +604,7 @@ would CREATE scaleway/secrets/db-url
         </p>
       </div>
       <div class="cov-card">
-        <h4 style="color:var(--blue)">It is Lean, not a DSL</h4>
+        <h4 class="hl">It is Lean, not a DSL</h4>
         <p>
           Loops, functions, abstraction and testing are the host language's,
           already there and already documented. Your fleet is a value you can
