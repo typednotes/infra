@@ -67,11 +67,35 @@ def signedRequest (creds : Credentials) (ep : Endpoint)
   signedRequestAt creds ep (← Data.Time.getCurrentTime) method path query headers body
     doubleEncodePath
 
-/-- Sign, send, and require a 2xx. -/
+/-- Sign, send, and require a 2xx.
+
+    Every signed request in this library funnels through here — S3, EC2, SQS,
+    ECR, Secrets Manager, IAM, RDS, Lambda, and Scaleway's S3-compatible
+    endpoints too — so it is the one place worth naming the call in a failure.
+
+    Without it, an S3 refusal reads:
+
+        HTTP 403 AccessDenied: Access Denied (request txgc394f…)
+
+    and says nothing about which operation, which host or which bucket. That
+    is a needle in a haystack for a fleet with nine resources, and it was
+    exactly the shape of the Scaleway REST errors that this repository already
+    fixed the same way. The method, host and path identify the operation; the
+    query is included because for the query-protocol services it carries the
+    `Action`, and nothing secret travels there — SigV4 signs in a header.
+
+    `sendChecked` still does the deciding; this only re-labels its error. -/
 def call (creds : Credentials) (ep : Endpoint)
     (method path : String) (query : Query := [])
     (headers : List (String × String) := []) (body : ByteArray := ByteArray.empty)
     (doubleEncodePath : Bool := false) : IO Response := do
-  Http.sendChecked (← signedRequest creds ep method path query headers body doubleEncodePath)
+  let req ← signedRequest creds ep method path query headers body doubleEncodePath
+  match ← (Http.sendChecked req).toBaseIO with
+  | .ok r    => pure r
+  | .error e =>
+    let shownPath := if path.isEmpty then "/" else path
+    let shownQuery := if req.queryString.isEmpty then "" else req.queryString
+    throw (IO.userError
+      s!"{ep.service} {method} {ep.host}{shownPath}{shownQuery}: {e}")
 
 end Infra.Providers.Aws

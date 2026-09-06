@@ -8,6 +8,24 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.4.8] — 2026-09-06
+
+### Fixed
+
+- **Signed requests did not name themselves in a failure.** Scaleway's
+  S3-compatible endpoint refuses with `403 AccessDenied: Access Denied
+  (request txgc…)` — no operation, no host, no bucket — which for a
+  nine-resource fleet says only that *something* was refused. `Aws.call` is the
+  single chokepoint for every signed request in the library, so it now prefixes
+  errors with service, method, host, path and query. That covers S3, EC2, SQS,
+  ECR, Secrets Manager, IAM, RDS and Lambda, and Scaleway's S3-compatible
+  endpoints, which is where the gap was found.
+
+  The REST transports were given the same treatment earlier. `docs/providers.md`
+  now records why: the three clouds differ sharply in how much an error says,
+  and the difference decides how much diagnostic work each client has to do
+  itself.
+
 ## [0.4.7] — 2026-09-06
 
 ### Fixed

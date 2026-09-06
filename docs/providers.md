@@ -69,6 +69,33 @@ token. Pub/Sub is not SQS in any sense. So both kinds have a second
 implementation for GCP (`Gcp.Storage`, `Gcp.PubSub`), and `objectStore` in
 particular was silently routed to the S3 client until that was noticed.
 
+## Every call names itself in a failure
+
+Three clouds, three levels of helpfulness in an error, and the gap had to be
+closed in this library rather than waited out.
+
+Google is the good case: it names the API, the project, the resource, the
+console page to enable it, and the propagation delay. AWS names an action code
+and sometimes a regex. Scaleway's REST errors name neither product nor
+operation (`403 permissions_denied: insufficient permissions`), and its
+S3-compatible endpoint is worse still — `403 AccessDenied: Access Denied
+(request txgc…)`, with no indication of which of a fleet's calls was refused.
+
+So both transports prefix their failures with the call:
+
+- `Scaleway.call` — `scaleway GET /iam/v1alpha1/applications: …`
+- `Aws.call` — `s3 PUT s3.fr-par.scw.cloud/bucket-name: …`
+
+`Aws.call` is the single chokepoint for every signed request in the library, so
+one change covers S3, EC2, SQS, ECR, Secrets Manager, IAM, RDS and Lambda —
+and Scaleway's S3-compatible endpoints, which is where it was actually needed.
+The query string is included because the query-protocol services carry their
+`Action` there; nothing secret does, since SigV4 signs in a header.
+
+This is not cosmetic. Every Scaleway debugging round in this project so far has
+turned on knowing *which call* was refused, and the first one that did not name
+it cost the most.
+
 ## Scaleway listings are scoped to a project, and must be
 
 A Scaleway collection endpoint with no `project_id` is evaluated against the
