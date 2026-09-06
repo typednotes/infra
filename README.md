@@ -110,12 +110,21 @@ lake exe my_infra apply    # make it so
 is nothing to install and nothing to keep on your `PATH`.
 
 **What `infra init` does to the project.** It adds `Fleet.lean` (the
-declaration, with commented examples), rewrites Lake's stub `Main.lean` to run
-the fleet, adds a `.gitignore` that excludes the state cache, and adds CI for
-**GitHub and GitLab** with the plan/apply split wired — plan on every push,
-apply only when a person presses the button. It writes only what is absent and
-names what it kept, so it is safe to re-run and safe on a project with work in
-it. Your own libraries and executables are preserved.
+declaration you edit), `Catalogue.lean` (every resource kind, declared once,
+to copy from), rewrites Lake's stub `Main.lean` to run the fleet, adds a
+`.gitignore` that excludes the state cache, and adds CI for **GitHub Actions,
+GitLab CI, CircleCI, Azure Pipelines and Jenkins** — each with the same
+plan/apply split, so a plan runs on every push and an apply waits for a person
+to press the button. Delete the ones you do not use. It writes only what is
+absent and names what it kept, so it is safe to re-run and safe on a project
+with work in it. Your own libraries and executables are preserved.
+
+`Catalogue.lean` is **compiled and never applied**: `Main.lean` runs
+`Fleet.plan` and nothing else, so nothing in it is created or billed. Compiling
+it is the point — commented-out examples drift from the API and nothing
+notices, whereas these are type-checked by your own `lake build` against the
+version of `infra` you actually depend on. Delete the file when it stops being
+useful; nothing imports it.
 
 It also **converts `lakefile.toml` to `lakefile.lean`**, keeping the original
 as `lakefile.toml.replaced-by-infra`. That conversion is not cosmetic: the

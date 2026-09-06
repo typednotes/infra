@@ -658,9 +658,11 @@ lake exe my_infra apply    <span class="c"># make it so</span></pre>
     <p class="sub" style="margin:26px 0 12px">
       You get <code>Fleet.lean</code> (the whole declaration),
       <code>Main.lean</code> (five lines), a <code>.gitignore</code> that
-      excludes the state cache, and workflows that plan on every push and apply
-      only when a person presses the button. Fill in the account ids, add your
-      secrets, commit.
+      excludes the state cache, <code>Catalogue.lean</code> with every resource
+      kind declared once to copy from, and pipelines for <strong>GitHub
+      Actions, GitLab CI, CircleCI, Azure Pipelines and Jenkins</strong> — each
+      planning on every push and applying only when a person presses the
+      button. Fill in the account ids, add your secrets, commit.
     </p>
 
     <h2 style="margin-top:56px">Or read this one</h2>

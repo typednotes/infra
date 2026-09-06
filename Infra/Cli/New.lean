@@ -492,6 +492,250 @@ apply:
     - lake exe " ++ name ++ " plan   # must be empty: a clean apply converges
 "
 
+/-- CircleCI. -/
+private def circleCi (name : String) : String :=
+"# CircleCI: plan on every push, apply only when a person approves it.
+#
+# Set SCW_ACCESS_KEY, SCW_SECRET_KEY, SCW_DEFAULT_PROJECT_ID and DB_PASSWORD
+# in a context (Organization Settings -> Contexts) rather than as plain project
+# variables, so the apply job can require the context and the plan job need not
+# have it.
+
+version: 2.1
+
+commands:
+  setup:
+    steps:
+      - checkout
+      - run:
+          name: Install Lean and native dependencies
+          command: |
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libpq-dev libssl-dev libsecret-1-dev pkg-config
+            curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz
+            ./elan-init -y --default-toolchain none
+            echo 'export PATH=\"$HOME/.elan/bin:$PATH\"' >> \"$BASH_ENV\"
+            # Lean's toolchain bundles a static OpenSSL whose compile-time
+            # trust-store path does not exist here: without this every live
+            # call fails with `certificate verify failed`.
+            echo 'export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt' >> \"$BASH_ENV\"
+            echo 'export SSL_CERT_DIR=/etc/ssl/certs' >> \"$BASH_ENV\"
+      - run: lake build
+
+jobs:
+  # Compiles the fleet and runs every `#guard`, including that no plaintext
+  # secret is committed. Needs no credentials.
+  check:
+    machine: { image: ubuntu-2404:current }
+    steps:
+      - setup
+      - run: lake exe " ++ name ++ " check
+
+  plan:
+    machine: { image: ubuntu-2404:current }
+    steps:
+      - setup
+      - run: lake exe " ++ name ++ " plan
+
+  apply:
+    machine: { image: ubuntu-2404:current }
+    steps:
+      - setup
+      - run: lake exe " ++ name ++ " plan
+      - run: lake exe " ++ name ++ " apply
+      # Must be empty: a clean apply converges.
+      - run: lake exe " ++ name ++ " plan
+
+workflows:
+  infra:
+    jobs:
+      - check
+      - plan:
+          requires: [check]
+      # `type: approval` is the button. The apply reads the context; the plan
+      # above deliberately does not.
+      - hold:
+          type: approval
+          requires: [plan]
+          filters: { branches: { only: [main] } }
+      - apply:
+          requires: [hold]
+          context: [infra-apply]
+          filters: { branches: { only: [main] } }
+"
+
+/-- Azure Pipelines. -/
+private def azurePipelines (name : String) : String :=
+"# Azure Pipelines: plan on every push, apply behind a manual approval.
+#
+# Put SCW_ACCESS_KEY, SCW_SECRET_KEY, SCW_DEFAULT_PROJECT_ID and DB_PASSWORD in
+# a variable group named `infra-secrets` (Pipelines -> Library), marked secret.
+# The apply stage targets an *environment*, which is where approvals live —
+# create one called `production` and add yourself as an approver, or the apply
+# runs unattended.
+
+trigger:
+  branches: { include: [main] }
+
+pool:
+  vmImage: ubuntu-24.04
+
+variables:
+  - group: infra-secrets
+  # Lean's toolchain bundles a static OpenSSL whose compile-time trust-store
+  # path does not exist on the hosted image.
+  - name: SSL_CERT_FILE
+    value: /etc/ssl/certs/ca-certificates.crt
+  - name: SSL_CERT_DIR
+    value: /etc/ssl/certs
+
+stages:
+  - stage: check
+    jobs:
+      - job: check
+        steps:
+          - template: .azure/setup.yml
+          # Compiles the fleet and runs every `#guard`. No credentials needed.
+          - script: lake exe " ++ name ++ " check
+            displayName: Offline checks
+
+  - stage: plan
+    dependsOn: check
+    jobs:
+      - job: plan
+        steps:
+          - template: .azure/setup.yml
+          - script: lake exe " ++ name ++ " plan
+            displayName: Plan
+
+  - stage: apply
+    dependsOn: plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      # A deployment job, not a plain job: that is what makes the environment's
+      # approval apply to it.
+      - deployment: apply
+        environment: production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: .azure/setup.yml
+                - script: lake exe " ++ name ++ " plan
+                  displayName: Plan
+                - script: lake exe " ++ name ++ " apply
+                  displayName: Apply
+                - script: lake exe " ++ name ++ " plan
+                  displayName: Re-plan (must be empty)
+"
+
+/-- The setup steps Azure's stages share. -/
+private def azureSetup : String :=
+"# Shared by every stage in azure-pipelines.yml. Kept separate because Azure
+# re-clones and re-provisions per stage, so this runs three times and should
+# only be written once.
+steps:
+  - script: |
+      set -e
+      sudo apt-get update -qq
+      sudo apt-get install -y -qq libpq-dev libssl-dev libsecret-1-dev pkg-config
+      curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz
+      ./elan-init -y --default-toolchain none
+      echo \"##vso[task.prependpath]$HOME/.elan/bin\"
+    displayName: Install Lean and native dependencies
+  - task: Cache@2
+    inputs:
+      key: 'lake | \"$(Agent.OS)\" | lake-manifest.json'
+      path: .lake
+    displayName: Cache .lake
+  - script: lake build
+    displayName: Build
+"
+
+/-- Jenkins, declarative pipeline. -/
+private def jenkinsfile (name : String) : String :=
+"// Jenkins declarative pipeline: plan on every build, apply behind an input
+// step that a person has to answer.
+//
+// Credentials come from the Jenkins credential store by id — add four secret
+// texts named scw-access-key, scw-secret-key, scw-project-id and db-password.
+// Nothing secret belongs in this file.
+
+pipeline {
+  agent { label 'linux' }
+
+  environment {
+    // Lean's toolchain bundles a static OpenSSL whose compile-time trust-store
+    // path does not exist on most agents: without this every live call fails
+    // with `certificate verify failed`.
+    SSL_CERT_FILE = '/etc/ssl/certs/ca-certificates.crt'
+    SSL_CERT_DIR  = '/etc/ssl/certs'
+    PATH          = \"$HOME/.elan/bin:$PATH\"
+  }
+
+  options {
+    // Never two applies at once against the same account.
+    disableConcurrentBuilds()
+    timeout(time: 30, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Install') {
+      steps {
+        sh 'command -v lake >/dev/null || (curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz && ./elan-init -y --default-toolchain none)'
+      }
+    }
+
+    stage('Build') { steps { sh 'lake build' } }
+
+    // Compiles the fleet and runs every `#guard`, including that no plaintext
+    // secret is committed. Needs no credentials.
+    stage('Check') { steps { sh 'lake exe " ++ name ++ " check' } }
+
+    stage('Plan') {
+      steps {
+        withCredentials([
+          string(credentialsId: 'scw-access-key', variable: 'SCW_ACCESS_KEY'),
+          string(credentialsId: 'scw-secret-key', variable: 'SCW_SECRET_KEY'),
+          string(credentialsId: 'scw-project-id', variable: 'SCW_DEFAULT_PROJECT_ID'),
+          string(credentialsId: 'db-password',    variable: 'DB_PASSWORD')
+        ]) {
+          sh 'lake exe " ++ name ++ " plan'
+        }
+      }
+    }
+
+    stage('Approve') {
+      when { branch 'main' }
+      steps {
+        // The button. Times out rather than holding an executor for ever.
+        timeout(time: 60, unit: 'MINUTES') {
+          input message: 'Apply this plan to production?', ok: 'Apply'
+        }
+      }
+    }
+
+    stage('Apply') {
+      when { branch 'main' }
+      steps {
+        withCredentials([
+          string(credentialsId: 'scw-access-key', variable: 'SCW_ACCESS_KEY'),
+          string(credentialsId: 'scw-secret-key', variable: 'SCW_SECRET_KEY'),
+          string(credentialsId: 'scw-project-id', variable: 'SCW_DEFAULT_PROJECT_ID'),
+          string(credentialsId: 'db-password',    variable: 'DB_PASSWORD')
+        ]) {
+          sh 'lake exe " ++ name ++ " plan'
+          sh 'lake exe " ++ name ++ " apply'
+          // Must be empty: a clean apply converges.
+          sh 'lake exe " ++ name ++ " plan'
+        }
+      }
+    }
+  }
+}
+"
+
 private def readme (name : String) : String :=
 "# " ++ name ++ "
 
@@ -585,9 +829,179 @@ require infra from git \"https://github.com/typednotes/infra\" @ \"main\"
 @[default_target]
 lean_lib Fleet
 
+-- Compiled, never applied: it is the reference catalogue, and compiling it is
+-- what keeps its examples from rotting. Delete the file and this line together.
+@[default_target]
+lean_lib Catalogue
+
 @[default_target]
 lean_exe «" ++ name ++ "» where
   root := `Main
+"
+
+/-- The reference catalogue: every resource kind, declared. -/
+private def catalogueLean (name : String) : String :=
+"import Infra
+
+/-!
+  # Catalogue: every kind, declared once
+
+  A reference to copy from. This file is **compiled and never applied** —
+  `Main.lean` runs `Fleet.plan` and nothing else, so nothing here is ever
+  created, read or billed.
+
+  Compiled, though, and that is the point. Commented-out examples rot: they
+  drift from the API and nobody notices, because nothing checks them. These are
+  type-checked by your own `lake build`, against the version of `infra` you
+  actually depend on. If an example here stops compiling after an upgrade, that
+  is real information, and it is the same information the release notes would
+  have had to tell you.
+
+  Delete this file whenever it stops being useful. Nothing imports it.
+
+  Fields you do not mention are not defaulted-and-enforced — they are not
+  spoken about, and whatever the cloud has stays. So the shortest declaration
+  that names a resource is a valid one.
+-/
+
+open Infra.Core
+open Infra.Specs
+
+-- One place for three clouds: AWS reads `eu-west-3`, Scaleway `fr-par`, GCP
+-- `europe-west9`. Naming a place a cloud is not in does not compile.
+fleet catalogue in paris where
+
+  -- ── Portable kinds: the same declaration on any cloud ──
+  provider aws where
+
+    -- Object storage. `objectStore` is the portable spelling; `s3Bucket`
+    -- below is the AWS-local one with Object Lock.
+    resource objectStore \"" ++ name ++ "-portable-bucket\"
+      { versioning := true
+      , tags       := [(\"owner\", \"platform\"), (\"env\", \"prod\")] }
+
+    -- An IAM role, by name, with policies attached by ARN.
+    resource iam \"" ++ name ++ "-task-role\"
+      { policies := [\"arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess\"] }
+
+    -- A container image repository.
+    resource imageRegistry \"" ++ name ++ "-images\"
+      { immutableTags := true }
+
+    -- A queue. On AWS and Scaleway this is SQS; on GCP it is a Pub/Sub topic,
+    -- where `visibilityTimeoutSec` belongs to a subscription and is therefore
+    -- not reported — see the GCP block below.
+    resource queues \"" ++ name ++ "-jobs\"
+      { visibilityTimeoutSec := 60 }
+
+    -- A secret names *where its value comes from*. It never holds one, and
+    -- `secretsAreSound` proves that at compile time.
+    resource secrets \"" ++ name ++ "-api-key\" as apiKey
+      { valueFrom := fromEnv \"API_KEY\" }
+
+    -- Serverless compute. `image` is required; the rest differ by cloud, and
+    -- a field the cloud has no concept of is simply left unsaid.
+    resource compute \"" ++ name ++ "-worker\"
+      { image         := \"" ++ name ++ "-images:latest\"
+      , memoryMb      := 512
+      , timeoutSec    := 30
+      , env           := [(\"QUEUE\", \"" ++ name ++ "-jobs\")] }
+
+    -- Postgres. Every capacity argument is required: an autoscaling range you
+    -- did not choose is a bill you did not choose.
+    resource secrets \"" ++ name ++ "-db-password\" as dbPassword
+      { valueFrom := fromEnv \"DB_PASSWORD\" }
+    resource postgres \"" ++ name ++ "-db\" as db
+      { masterUsername       := \"dbadmin\"
+      , masterPasswordSecret := \"" ++ name ++ "-db-password\"
+      , minCapacity          := 1
+      , maxCapacity          := 4
+      , storageGb            := 20 }
+
+    -- A value that cannot exist until the database does. `composed` holds the
+    -- *function*, so one apply creates password, database and URL in order —
+    -- no second run, nobody pasting a connection string in between.
+    resource secrets \"" ++ name ++ "-db-url\"
+      { valueFrom := composed
+          expr!\"postgres://dbadmin:{secretValueOf dbPassword}@{endpointOf db}/main\" }
+
+    -- ── AWS-local kinds ──
+
+    -- `s3Bucket` over `objectStore` when you need Object Lock, which is
+    -- creation-time only and so shows up as a `replace` if you change it.
+    resource s3Bucket \"" ++ name ++ "-archive\"
+      { versioning := true
+      , objectLock := true }
+
+    -- A security group, and an instance that requires one. The reference is
+    -- typed: delete the group and the instance stops compiling.
+    resource securityGroup \"" ++ name ++ "-web\" as web
+      { description := \"http from anywhere\"
+      -- The annotation is needed, and it is not ceremony: a bare `80` has no
+      -- determined type until something fixes it, and the coercion into the
+      -- field cannot fire while it is still open. Without it the error names
+      -- a metavariable rather than this line.
+      , ingress     := ([(80, \"0.0.0.0/0\"), (443, \"0.0.0.0/0\")] : List (Nat × String)) }
+
+    -- `InstanceType.of` is a checked pair: `.of .t3 .nano` compiles,
+    -- `.of .t3 .metal` does not, because there is no `t3.metal`.
+    resource awsInstance \"" ++ name ++ "-api\"
+      { imageId       := \"ami-0abcdef1234567890\"
+      , instanceType  := InstanceType.of .t3 .small
+      , securityGroup := web
+      , keyName       := \"my-keypair\" }
+
+  provider scaleway where
+
+    resource objectStore \"" ++ name ++ "-scw-assets\" { versioning := true }
+    resource queues \"" ++ name ++ "-scw-jobs\" { visibilityTimeoutSec := 30 }
+    resource secrets \"" ++ name ++ "-scw-token\" as scwToken
+      { valueFrom := fromEnv \"SCW_TOKEN\" }
+
+    -- ── Scaleway-local kinds ──
+
+    -- Functions and containers live in a namespace, and the namespace is a
+    -- resource. The reference is typed, so the namespace is created first.
+    resource scalewayFunctionNamespace \"" ++ name ++ "-fns\" as fns
+      { description := \"functions for " ++ name ++ "\" }
+    resource scalewayFunction \"" ++ name ++ "-resize\"
+      { runtime    := \"node22\"
+      , namespace' := fns }
+
+    resource scalewayContainerNamespace \"" ++ name ++ "-ctrs\" as ctrs
+      { description := \"containers for " ++ name ++ "\" }
+    resource scalewayContainer \"" ++ name ++ "-api\"
+      { namespace' := ctrs
+      , image      := \"rg.fr-par.scw.cloud/" ++ name ++ "/api:latest\"
+      , port       := 8080
+      , minScale   := 0
+      , maxScale   := 3
+      , memoryMb   := 512
+      , timeoutSec := 60
+      , env        := [(\"LOG_LEVEL\", \"info\")]
+      -- Secrets are passed by *reference*, not by value: the plaintext is
+      -- never in this file and never in the plan.
+      , secretEnv  := [(\"TOKEN\", scwToken)] }
+
+  provider gcp where
+
+    -- `queues` on GCP is a Pub/Sub topic and is live. The other kinds here
+    -- declare, place, diff and export to HCL, but an apply raises — see
+    -- `docs/coverage.md` in the infra repository for what is implemented.
+    -- An empty block is legal and means \"manage this, say nothing about it\":
+    -- every field is then left as the cloud has it.
+    resource queues \"" ++ name ++ "-gcp-jobs\" {}
+
+    resource objectStore \"" ++ name ++ "-gcp-assets\" { versioning := true }
+
+-- ── Checks the compiler runs on all of it ──
+
+-- No plaintext secret anywhere in the catalogue. Decidable, so this is proved
+-- rather than reviewed.
+#guard catalogue.plan.secretsAreSound
+
+-- All three clouds appear.
+#guard catalogue.keys.providers = [.aws, .scaleway, .gcp]
 "
 
 /-! ## Converting `lakefile.toml`
@@ -641,7 +1055,7 @@ private def tomlSections (contents : String) : List TomlSection :=
 private def tomlStr (v : String) : Option String :=
   let t := v.trimAscii.copy
   if t.length ≥ 2 && t.startsWith "\"" && t.endsWith "\"" then
-    some ((t.drop 1).dropRight 1).copy
+    some ((t.drop 1).dropEnd 1).copy
   else none
 
 /-- What a converted lakefile needs to reproduce. -/
@@ -718,7 +1132,7 @@ private def lakefileFromToml (p : Ported) : String :=
   let requires :=
     if hasInfra then p.requires
     else p.requires ++ ["require infra from git \"https://github.com/typednotes/infra\" @ \"main\""]
-  let libs := (p.libs ++ ["Fleet"]).eraseDups
+  let libs := (p.libs ++ ["Fleet", "Catalogue"]).eraseDups
   let exes := if p.exes.isEmpty then [(p.name, "Main")] else p.exes
   "import Lake\nopen System Lake DSL\n\n" ++
 "/-\n  Build configuration for an `infra` declaration repository.\n\n\
@@ -793,7 +1207,8 @@ lake exe infra init {dir}"
   if inPlace then
     for f in [ "lakefile.lean", "Fleet.lean", "Main.lean", ".gitignore", "README.md"
              , ".github/workflows/plan.yml", ".github/workflows/apply.yml"
-             , ".gitlab-ci.yml" ] do
+             , ".gitlab-ci.yml", ".circleci/config.yml", "azure-pipelines.yml"
+             , ".azure/setup.yml", "Jenkinsfile", "Catalogue.lean" ] do
       if ← (root / f).pathExists then preexisting := f :: preexisting
 
   -- `lake new` writes `lakefile.toml`, and with both present Lake announces
@@ -850,6 +1265,7 @@ lake exe infra init {dir}"
         pure false
     else put root "lakefile.lean" (lakefile ident) (keep "lakefile.lean")
   discard <| put root "Fleet.lean"                 (fleetLean exeName) (keep "Fleet.lean")
+  discard <| put root "Catalogue.lean"             (catalogueLean exeName) (keep "Catalogue.lean")
   -- Transforming a project means replacing its entry point, and Lake's stub
   -- prints a greeting and nothing else — recognisable, and no loss to
   -- overwrite. Anything else is someone's code and is kept.
@@ -865,6 +1281,12 @@ lake exe infra init {dir}"
   discard <| put root ".github/workflows/apply.yml" (githubApply exeName)
     (keep ".github/workflows/apply.yml")
   discard <| put root ".gitlab-ci.yml"             (gitlabCi exeName) (keep ".gitlab-ci.yml")
+  discard <| put root ".circleci/config.yml"       (circleCi exeName)
+    (keep ".circleci/config.yml")
+  discard <| put root "azure-pipelines.yml"        (azurePipelines exeName)
+    (keep "azure-pipelines.yml")
+  discard <| put root ".azure/setup.yml"           azureSetup (keep ".azure/setup.yml")
+  discard <| put root "Jenkinsfile"                (jenkinsfile exeName) (keep "Jenkinsfile")
 
   -- Written line by line rather than as one escaped literal: the indentation
   -- is part of the message, and a string gap would eat it.
