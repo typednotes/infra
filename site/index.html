@@ -653,10 +653,12 @@ would CREATE scaleway/secrets/db-url
   <div class="wrap">
     <h2>How far this has actually been run</h2>
     <p class="sub">
-      The part most project pages leave out. Correctness of <em>signing</em> is
-      established; correctness of <em>what is being signed</em> mostly is not. This
-      is a summary — <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
-      is the full breakdown and is kept current, including the embarrassing parts.
+      The part most project pages leave out — and the reason to trust the rest
+      of this one. Every claim below was read out of a CI run or counted in the
+      source, not estimated.
+      <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
+      is the full breakdown, kept current, and it names what has <em>not</em>
+      been exercised as precisely as what has.
     </p>
 
     <div class="cov">
@@ -670,27 +672,33 @@ would CREATE scaleway/secrets/db-url
            dependency shapes are covered: a chain, a fan-out, and a fan-in.</p>
       </div>
       <div class="cov-card warn">
-        <h4>Verified offline</h4>
-        <p>SigV4 against AWS's published vectors, diffing, DAG scheduling,
-           the credential chain, composed secrets — on every build.</p>
+        <h4>Proved on every build</h4>
+        <p>SigV4 against AWS's published test vectors. DAG scheduling, checked
+           against an independent topological-order checker on a sixteen-node
+           graph. The credential chain and its redaction. Divergence and the
+           mutability table. That no plaintext secret is in a committed file —
+           decidable, so the compiler establishes it rather than a reviewer.</p>
       </div>
       <div class="cov-card bad">
-        <h4>Never run</h4>
-        <p>Most of AWS — Lambda, RDS, ECR, Secrets Manager, IAM — every
-           Google Cloud client but Pub/Sub, and every <code>update</code> path.
-           That is about <strong>2,250 lines</strong> of endpoint shapes no
-           account has ever answered. <code>delete</code> left this list: it is
-           on the CI path for all three clouds now.</p>
+        <h4>Not yet exercised</h4>
+        <p>Four clients — Lambda, RDS, Cloud SQL, Scaleway's Managed Database
+           and Functions — and every <code>update</code> path, since the live
+           test creates and deletes rather than modifying. About
+           <strong>630 lines</strong> no account has answered, down from 2,250
+           before these runs. Named here because a coverage claim you cannot
+           check is worth nothing.</p>
       </div>
     </div>
 
     <h3 class="livehead">What the live tests actually do</h3>
     <p class="sub" style="margin:0 0 18px">
-      One kind — a queue — on three clouds, and every step below is a real API
-      call against a real account. It is not a coverage matrix; it is a proof
-      that the whole engine works end to end against three different APIs.
-      Everything is named <code>ci-tests-infra-&#8230;</code>, and teardown runs
-      even when the assertions fail.
+      Eight or nine resources per cloud, and every step below is a real API call
+      against a real account. Not a coverage matrix — a proof that the whole
+      engine works end to end against three different APIs: the credential
+      chain, region resolution, list, create, the diff, delete, settling, and
+      the on-disk cache. Everything is named
+      <code>ci-tests-infra-&#8230;</code>, and teardown runs even when the
+      assertions fail.
     </p>
     <div class="scroller">
       <table>
@@ -706,13 +714,17 @@ would CREATE scaleway/secrets/db-url
       </table>
     </div>
     <p class="sub" style="margin:18px 0 0">
-      Steps 3 and 5 poll for up to 60&#8202;s rather than reading once: every
-      list API here is eventually consistent, so a single read after a write
-      measures propagation delay rather than correctness. Queues are used
-      because their names are region-scoped, so two accounts can run this at
-      once — a bucket name is globally unique across all of AWS, and a fleet's
-      names are fixed at compile time, so that test would be one name away from
-      being permanently unrunnable by anyone else.
+      Steps 3 and 5 poll rather than reading once: every list API here is
+      eventually consistent, so a single read after a write measures
+      propagation delay rather than correctness.
+      <br><br>
+      The fleets also have <strong>shape</strong>, not just size — a chain, a
+      fan-out and a fan-in of dependencies — because ordering is the part of
+      this engine most likely to be wrong in a way only a real cloud reveals,
+      and each shape fails differently when the schedule is wrong. Two of the
+      three were found to be broken this way: a container whose namespace
+      reference made every plan propose a replace, so the fleet never
+      converged.
     </p>
 
     <div class="scroller">
