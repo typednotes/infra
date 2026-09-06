@@ -140,15 +140,70 @@ This is the section worth reading before trusting anything. Correctness of
 ### Exercised by CI
 
 `lake test` runs the offline driver on every push, and every example with it.
-`lake test -- <provider>` is the live round trip — create one queue, check the
-fleet converged, delete it — and runs only from a manual workflow trigger, one
-cloud at a time. Everything it creates is named `ci-tests-infra-…`, teardown is
-guaranteed even when the assertions fail, and there is a backstop teardown if
-the driver dies between the two.
+`lake test -- <provider>` is the live round trip, run from a manual workflow
+trigger, one cloud at a time. **All three legs pass as of 2026-09-06.**
+
+#### What one live leg does
+
+Six steps, in order, against a real account. Each is a real API call, not a
+mock:
+
+| # | Step | What it proves |
+|---|---|---|
+| 1 | `pull` | `list` works, and the account is reachable with the credentials the chain found |
+| 2 | `push … apply` | `create` works |
+| 3 | poll `pull` until the plan is empty (≤ 60 s) | `list` and `read` report the resource, **and the diff of observed-against-declared is empty** — i.e. a second apply would do nothing |
+| 4 | `push (Plan.absent) apply` | `delete` works |
+| 5 | poll until the listing shows nothing (≤ 60 s) | the delete really took, rather than being issued while the resource was still invisible |
+| 6 | `Persistence.load` is empty | the state cache agrees with the account |
+
+Steps 3 and 5 poll rather than read once, because every list API here is
+eventually consistent to some degree and a single read after a write measures
+propagation delay rather than correctness. Step 6 exists because it is exactly
+what a past defect needed: `save` left the file of an emptied
+`(provider, kind)` pair on disk, so the cache went on listing what had just
+been deleted.
+
+Teardown runs from a `finally`, and its failure is reported *alongside* the
+original rather than replacing it. There is a backstop teardown in the workflow
+if the driver dies between create and delete. Everything created is named
+`ci-tests-infra-…`, so anything ever leaked is identifiable at a glance.
+
+#### What it covers, and what it does not
+
+**One kind, on three clouds.** Each fleet declares exactly one `queues`
+resource — SQS on AWS, Scaleway Queues, a Pub/Sub topic on GCP.
+
+| Cloud | Kind | Backend | Status |
+|---|---|---|---|
+| AWS | `queues` | SQS | passing |
+| Scaleway | `queues` | Queues (SQS-compatible, via a minted credential) | passing |
+| GCP | `queues` | Pub/Sub topics | passing |
+
+So of 14 kinds × 3 clouds, the live path covers **3 pairs**. It is not a
+coverage matrix; it is a proof that the whole engine — credential chain,
+region resolution, list, create, diff, delete, settle, persistence — works
+end to end against three different real APIs. Everything it does *not* cover
+is covered offline or not at all, and the two sections around this one say
+which.
+
+Queues were chosen for a reason worth keeping. Their names are region-scoped,
+so two accounts running this concurrently do not collide; they cost
+approximately nothing; and they create and delete in seconds. A bucket is the
+obvious alternative and the wrong one — bucket names are globally unique across
+all of AWS, and a fleet's resource names are fixed at compile time, so the
+test would be one name away from being permanently unrunnable by anyone else.
+Widening live coverage to `objectStore` means solving that first.
+
+One asymmetry to know: a Pub/Sub topic has no visibility timeout — that
+belongs to a subscription — so the GCP leg declares `visibilityTimeoutSec := 30`
+and the backend reports it `unknown`. The convergence check in step 3 is still
+meaningful, because an unknown field is not a divergence, but it does not mean
+that 30 was stored anywhere.
 
 That closes the gap this document named a version ago: `destroy` was "the least
 exercised code in the library relative to how much it can cost to get wrong",
-and it is now on the CI path for AWS and Scaleway.
+and it is now on the CI path for all three clouds.
 
 ### Verified offline, on every build
 

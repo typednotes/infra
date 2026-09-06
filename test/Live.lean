@@ -57,10 +57,18 @@ fleet scalewayLive in paris where
   provider scaleway where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
 
-/-! GCP's fleet exists and is typed, and applying it *will* fail: there is no
-    live GCP backend yet, so the run raises `noGcp` on the first call. That is
-    the correct outcome today, and the test reports it rather than skipping —
-    the day a GCP backend lands, this leg starts passing on its own. -/
+/-! GCP's leg used to be expected to fail: there was no live GCP backend, so
+    it raised on the first call, and this comment said the day one landed the
+    leg would start passing on its own. It has, and it does. `queues` on GCP is
+    a Pub/Sub topic — see `Infra.Providers.Gcp.PubSub`.
+
+    Note what is *not* asserted as a result. A Pub/Sub topic has no visibility
+    timeout — that belongs to a subscription — so `visibilityTimeoutSec := 30`
+    below is declared, carried through the plan, and then reported `unknown` by
+    the backend. The convergence check still means something, because an
+    unknown field is not a divergence; it just does not mean that 30 was
+    stored anywhere. It is kept identical to the other two fleets so the three
+    legs differ only in the cloud they name. -/
 
 fleet gcpLive in paris where
   provider gcp where

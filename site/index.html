@@ -171,6 +171,8 @@
   .cloud.is-partial { opacity: .8; color: var(--ink); border-style: dashed; }
   .cloud img { height: 24px; width: auto; display: block; }
   .cloud picture { display: block; line-height: 0; }
+  .livehead { font-size: 21px; letter-spacing: -.01em; margin: 40px 0 8px; }
+  td.gap { color: var(--ink-2); }
   /* Vendors' own marks, unmodified. Each is dark-on-light artwork, so on a
      dark page it is set on a light plate rather than recoloured — recolouring
      a mark is what their guidelines forbid, and a plate is the sanctioned way
@@ -591,9 +593,10 @@ would CREATE scaleway/secrets/db-url
     <div class="cov">
       <div class="cov-card ok">
         <h4>Verified live</h4>
-        <p>Scaleway <code>list</code> for every kind, and queues end to end.
-           On AWS: S3 and EC2 <code>create</code> — real buckets, a security
-           group and two running instances.</p>
+        <p>A create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy round
+           trip on <strong>all three clouds</strong>, in CI. Plus Scaleway
+           <code>list</code> for every kind, and on AWS real S3 buckets, a
+           security group and two running instances.</p>
       </div>
       <div class="cov-card warn">
         <h4>Verified offline</h4>
@@ -603,26 +606,60 @@ would CREATE scaleway/secrets/db-url
       <div class="cov-card bad">
         <h4>Never run</h4>
         <p>Most of AWS — Lambda, RDS, ECR, Secrets Manager, IAM — and every
-           <code>update</code> and <code>delete</code> path. Roughly 1,200
-           lines of endpoint shapes are still best guesses.</p>
+           <code>update</code> path. Roughly 1,200 lines of endpoint shapes are
+           still best guesses. <code>delete</code> left this list: it is on the
+           CI path for all three clouds now.</p>
       </div>
     </div>
+
+    <h3 class="livehead">What the live tests actually do</h3>
+    <p class="sub" style="margin:0 0 18px">
+      One kind — a queue — on three clouds, and every step below is a real API
+      call against a real account. It is not a coverage matrix; it is a proof
+      that the whole engine works end to end against three different APIs.
+      Everything is named <code>ci-tests-infra-&#8230;</code>, and teardown runs
+      even when the assertions fail.
+    </p>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Step</th><th>What runs</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>pull</code></td><td><code>list</code> works, and the credential chain reached the right account</td></tr>
+          <tr><td>2</td><td><code>apply</code></td><td><code>create</code> works</td></tr>
+          <tr><td>3</td><td>poll until the plan is empty</td><td><code>read</code> reports it <em>and</em> the diff is empty — a second apply would do nothing</td></tr>
+          <tr><td>4</td><td><code>destroy</code></td><td><code>delete</code> works</td></tr>
+          <tr><td>5</td><td>poll until the listing is empty</td><td>the delete really took, rather than being issued while the resource was invisible</td></tr>
+          <tr><td>6</td><td>read the state cache</td><td>the cache agrees with the account — a past defect left deleted resources listed in it</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin:18px 0 0">
+      Steps 3 and 5 poll for up to 60&#8202;s rather than reading once: every
+      list API here is eventually consistent, so a single read after a write
+      measures propagation delay rather than correctness. Queues are used
+      because their names are region-scoped, so two accounts can run this at
+      once — a bucket name is globally unique across all of AWS, and a fleet's
+      names are fixed at compile time, so that test would be one name away from
+      being permanently unrunnable by anyone else.
+    </p>
 
     <div class="scroller">
       <table>
         <caption class="sub" style="text-align:left;margin:28px 0 0;caption-side:top">
-          Seven portable kinds — one spec value, either cloud. Two of them need no
-          per-cloud code at all.
+          Seven portable kinds — one spec value, any cloud. Where a cell says
+          &ldquo;not yet&rdquo; the kind still declares, places, diffs and
+          exports to HCL; only the client is missing, and an apply says so
+          rather than quietly doing nothing.
         </caption>
-        <thead><tr><th>Kind</th><th>AWS</th><th>Scaleway</th><th>Shared client</th></tr></thead>
+        <thead><tr><th>Kind</th><th>AWS</th><th>Scaleway</th><th>Google Cloud</th></tr></thead>
         <tbody>
-          <tr><td><code>objectStore</code></td><td>S3</td><td>Object Storage</td><td>yes</td></tr>
-          <tr><td><code>queues</code></td><td>SQS</td><td>Messaging &amp; Queuing</td><td>yes</td></tr>
-          <tr><td><code>secrets</code></td><td>Secrets Manager</td><td>Secret Manager</td><td>no</td></tr>
-          <tr><td><code>imageRegistry</code></td><td>ECR</td><td>Container Registry</td><td>no</td></tr>
-          <tr><td><code>compute</code></td><td>Lambda (image)</td><td>Serverless Containers</td><td>no</td></tr>
-          <tr><td><code>iam</code></td><td>IAM users</td><td>IAM applications</td><td>no</td></tr>
-          <tr><td><code>postgres</code></td><td>RDS</td><td>Managed Database</td><td>no</td></tr>
+          <tr><td><code>objectStore</code></td><td>S3</td><td>Object Storage</td><td>Cloud Storage</td></tr>
+          <tr><td><code>queues</code></td><td>SQS</td><td>Queues</td><td>Pub/Sub</td></tr>
+          <tr><td><code>secrets</code></td><td>Secrets Manager</td><td>Secret Manager</td><td>Secret Manager</td></tr>
+          <tr><td><code>imageRegistry</code></td><td>ECR</td><td>Container Registry</td><td class="gap">not yet</td></tr>
+          <tr><td><code>compute</code></td><td>Lambda (image)</td><td>Serverless Containers</td><td class="gap">not yet</td></tr>
+          <tr><td><code>iam</code></td><td>IAM users</td><td>IAM applications</td><td class="gap">not yet</td></tr>
+          <tr><td><code>postgres</code></td><td>RDS</td><td>Managed Database</td><td class="gap">not yet</td></tr>
         </tbody>
       </table>
     </div>
