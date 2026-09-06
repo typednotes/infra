@@ -225,8 +225,15 @@ jobs:
         run: lake test -- ${{ inputs.provider }}
 
       # If the driver died between create and delete — a killed runner, a
-      # cancelled job — this is the backstop. `destroy` against the same fleet
-      # is idempotent: with nothing there, it is a no-op.
+      # cancelled job, a failed assertion — this is the backstop.
+      #
+      # It calls the driver's `destroy` mode, which tears down and nothing
+      # else. It used to re-run `lake test -- <provider>`, on the reasoning
+      # that destroy is idempotent — but that command is a create *and* a
+      # destroy, so a failed run was followed by a second create that failed
+      # the same way, and could leave more behind than it cleaned up. The first
+      # extended AWS run did exactly that: the same security-group error twice,
+      # once from the test and once from its own backstop.
       - name: Backstop teardown
         if: failure() || cancelled()
         timeout-minutes: 6
@@ -235,6 +242,6 @@ jobs:
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
         run: |
-          echo "::warning::live run did not finish cleanly; retrying teardown"
-          lake test -- ${{ inputs.provider }} || true
+          echo "::warning::live run did not finish cleanly; tearing down"
+          lake test -- ${{ inputs.provider }} destroy || true
           echo "If this still fails, look for resources named 'ci-tests-infra-*'"

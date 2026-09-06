@@ -115,6 +115,18 @@ the way a project is started changed shape.
   one the service defaults — and now covered by an offline check on the
   token's shape and freshness.
 
+- **An EC2 security group description could not contain an apostrophe**, and
+  saying so was left to raw XML. EC2 allows only
+  `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*`, so "created and destroyed by infra's live
+  test" was refused — a compile-time constant, so it would have failed every
+  apply. The client validates the set and names the offending characters.
+
+- **The live workflow's backstop re-created what it was meant to remove.**
+  `lake test -- <provider>` is a create *and* a destroy, so cleaning up after a
+  failed leg by re-running it created again and failed again. The driver now
+  takes a `destroy` argument that tears down and nothing else, sharing one code
+  path with the round trip's teardown.
+
 - **Scaleway failures did not say which call failed.** Its error bodies are
   the terse ones of the three clouds: a refused request reports
   `403 permissions_denied: insufficient permissions` and nothing else, no

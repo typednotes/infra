@@ -114,12 +114,47 @@ private def authorize (creds : Credentials) (ep : Endpoint) (groupId : String)
     , ("IpPermissions.1.ToPort", toString port)
     , ("IpPermissions.1.IpRanges.1.CidrIp", cidr) ]
 
+/-- EC2 constrains a security group's description to a specific character set,
+    and an apostrophe is not in it:
+
+        a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+
+    A description outside it is refused with `InvalidParameterValue` and a
+    message quoting that set — as raw XML, which is what the caller would
+    otherwise see. Since a fleet's descriptions are written by hand and fixed
+    at compile time, an invalid one fails every apply, so it is worth naming
+    the offending characters rather than passing the service's XML through.
+
+    Found by the first live run that got this far: "created and destroyed by
+    infra's live test" is a perfectly ordinary English description and the
+    apostrophe made it invalid. -/
+private def allowedPunctuation : String := " ._-:/()#,@[]+=&;{}!$*"
+
+private def checkDescription (description : String) : IO Unit := do
+  let allowed (c : Char) : Bool :=
+    c.isAlphanum || allowedPunctuation.any (· == c)
+  let bad : List Char := description.toList.filter (fun c => !allowed c)
+  unless bad.isEmpty do
+    -- The allowed set is a plain literal, not interpolated: it contains `{}`,
+    -- and inside an `s!` string that reads as an empty-collection expression
+    -- rather than as two characters.
+    throw (IO.userError <|
+      "ec2 security group: the description contains character(s) EC2 does not "
+      ++ s!"accept: {String.ofList bad.eraseDups}\n  Allowed: letters, digits, and  "
+      ++ allowedPunctuation
+      ++ s!"\n  Note that an apostrophe is not, which is the usual culprit.\n  \
+Description was: {description}")
+  unless description.length < 256 do
+    throw (IO.userError s!"ec2 security group: the description is \
+{description.length} characters; EC2 allows fewer than 256")
+
 /-- Create the group, then authorize its rules. Two calls, because
     `CreateSecurityGroup` takes no rules. Returns the new group's id; the VPC
     is not reported by this call, and the caller says so rather than having a
     blank threaded back through here. -/
 def create (creds : Credentials) (ep : Endpoint)
     (name description : String) (ingress : List (Nat × String)) : IO String := do
+  checkDescription description
   let root ← Query.call creds ep "CreateSecurityGroup" version
     [("GroupName", name), ("GroupDescription", description)]
   let groupId := (root.childText "groupId").getD ""

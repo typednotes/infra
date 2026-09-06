@@ -141,7 +141,7 @@ fleet awsLive in ireland where
     resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
       { versioning := true, objectLock := true }
     resource securityGroup "ci-tests-infra-sg"
-      { description := "created and destroyed by infra's live test" }
+      { description := "created and destroyed by the infra live test" }
     resource iam "ci-tests-infra-user" {}
 
 fleet scalewayLive in paris where
@@ -157,9 +157,9 @@ fleet scalewayLive in paris where
     resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
     resource iam "ci-tests-infra-app" {}
     resource scalewayFunctionNamespace "ci-tests-infra-fns"
-      { description := "created and destroyed by infra's live test" }
+      { description := "created and destroyed by the infra live test" }
     resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrs
-      { description := "created and destroyed by infra's live test" }
+      { description := "created and destroyed by the infra live test" }
     -- Fan-in: this depends on the namespace above (a *key* reference, via
     -- `depsKey`) and on the base secret (via `depsKeys s.secretEnv`), so two
     -- edges of two different provenances converge on one resource. It is the
@@ -273,6 +273,18 @@ fleet gcpLive in paris where
 #guard gcpLive.names.gcp.iam.all (ciPrefix.isPrefixOf ·)
 #guard gcpLive.names.gcp.compute.all (ciPrefix.isPrefixOf ·)
 
+-- EC2 constrains a security group's description to
+--     a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+-- and an apostrophe is not in it, which "created and destroyed by infra's
+-- live test" fell foul of on the first live run that reached this resource.
+-- The description is a compile-time constant, so an invalid one fails every
+-- apply — which makes it exactly the sort of thing to check here.
+private def ec2DescriptionOk (d : String) : Bool :=
+  d.length < 256 && d.all (fun c => c.isAlphanum || " ._-:/()#,@[]+=&;{}!$*".any (· == c))
+
+#guard ec2DescriptionOk "created and destroyed by the infra live test"
+#guard ec2DescriptionOk "created and destroyed by infra's live test" = false
+
 -- The bucket names carry the uniqueness suffix, which is the whole reason
 -- buckets could be included at all.
 #guard awsLive.names.aws.objectStore.all (·.endsWith bucketSuffix)
@@ -377,6 +389,35 @@ def waitFor {κ : Keys} (root : System.FilePath) (bs : Backends)
     | n + 1 => IO.sleep 1000; go n
   go settleSeconds
 
+/-- Delete everything the fleet declares, and prove it is gone.
+
+    Factored out of `liveRoundTrip` so the workflow's backstop can call it
+    without creating anything first — see `main`'s `destroy` argument. The two
+    callers must not drift: a backstop that tore down differently from the
+    round trip would be a second, less-tested code path on the one operation
+    where being wrong costs money. -/
+def liveTeardown {κ : Keys} (name : String) (target : Plan κ) (regions : Regions) :
+    IO Unit := do
+  let cacheRoot : System.FilePath := ".infra" / s!"live-{name}"
+  let (bs, _) ← Infra.Cli.liveFor κ regions
+  IO.println s!"[{name}] destroying…"
+  let w ← pull (κ := κ) cacheRoot bs
+  discard <| push bs (Plan.absent κ) w { apply := true } (edges := target)
+  -- Waiting for it to *appear* is not possible in general, so what this
+  -- asserts is that after the delete settles a fresh listing shows nothing —
+  -- and it polls to get there, because a destroy issued while a resource was
+  -- still invisible would find nothing to do and report success.
+  let leftover ← waitFor cacheRoot bs (fun w => (actions (Plan.absent κ) w).isEmpty)
+    (fun w => (actions (Plan.absent κ) w).map Action.render)
+  unless leftover.isEmpty do
+    throw (IO.userError s!"[{name}] {leftover.length} resource(s) survived destroy \
+after {settleSeconds}s — look for 'ci-tests-infra-*' in the account")
+  let cached ← Persistence.load (κ := κ) cacheRoot
+  unless cached.isEmpty do
+    throw (IO.userError
+      s!"[{name}] destroyed, but the cache still lists {cached.length} resource(s)")
+  IO.println s!"[{name}] destroyed, and the cache is empty"
+
 /-- Create, check, and delete — with the delete guaranteed.
 
     `apply` twice would be the stronger convergence check, but the second run
@@ -391,31 +432,9 @@ def liveRoundTrip {κ : Keys} (name : String) (target : Plan κ) (regions : Regi
   let world ← pull (κ := κ) cacheRoot bs
   discard <| push bs target world { apply := true } (edges := target)
 
-  -- Teardown runs whether or not the checks below pass.
-  let teardown : IO Unit := do
-    IO.println s!"[{name}] destroying…"
-    let w ← pull (κ := κ) cacheRoot bs
-    discard <| push bs (Plan.absent κ) w { apply := true } (edges := target)
-    -- Same again on the way down, and it matters more here: a `destroy` that
-    -- ran while the resource was still invisible would find nothing to do and
-    -- report success, leaving it behind. Waiting for it to *appear* is not
-    -- possible in general, so what this asserts is that after the delete
-    -- settles, a fresh listing shows nothing — and it polls to get there.
-    let leftover ← waitFor cacheRoot bs (fun w => (actions (Plan.absent κ) w).isEmpty)
-      (fun w => (actions (Plan.absent κ) w).map Action.render)
-    unless leftover.isEmpty do
-      throw (IO.userError s!"[{name}] {leftover.length} resource(s) survived destroy \
-after {settleSeconds}s — look for 'ci-tests-infra-*' in the account")
-    -- And the cache must agree. `save` used to leave the file of an emptied
-    -- `(provider, kind)` pair on disk untouched, so the cache went on listing
-    -- what had just been deleted. Checking it here is what would have caught
-    -- that against a real account rather than by reading the files by hand.
-    let cached ← Persistence.load (κ := κ) cacheRoot
-    unless cached.isEmpty do
-      throw (IO.userError
-        s!"[{name}] destroyed, but the cache still lists {cached.length} resource(s)")
-    IO.println s!"[{name}] destroyed, and the cache is empty"
-
+  -- Teardown runs whether or not the checks below pass, and is the same code
+  -- the backstop runs.
+  let teardown : IO Unit := liveTeardown name target regions
   let checks : IO Unit := do
     -- Poll rather than read once. A cloud's list API is eventually consistent
     -- — SQS's `ListQueues` explicitly so — and a resource created a moment ago
@@ -439,11 +458,15 @@ after {settleSeconds}s — look for 'ci-tests-infra-*' in the account")
     | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
 
 def usage : String :=
-  "usage: lake test [-- <aws|scaleway|gcp>]\n\n\
-  With no argument: the offline checks, no cloud, no credentials, no cost.\n\
-  With a provider:  creates a real queue and a real secret, both named\n\
-                    'ci-tests-infra-*', checks the fleet converged, and\n\
-                    deletes both again.\n\n\
+  "usage: lake test [-- <aws|scaleway|gcp> [destroy]]\n\n\
+  With no argument:     the offline checks. No cloud, no credentials, no cost.\n\
+  With a provider:      creates eight to ten real resources, all named\n\
+                        'ci-tests-infra-*', checks the fleet converged, and\n\
+                        deletes them again.\n\
+  …plus 'destroy':      tears down and creates nothing. This is what CI's\n\
+                        backstop runs after a failed leg — the full command is\n\
+                        a create *and* a destroy, so re-running it to clean up\n\
+                        would create again.\n\n\
   The secret's value is read from the environment, never from the fleet: a\n\
   committed literal would not compile, which is what `secretsAreSound`\n\
   proves. Set " ++ secretValueVar ++ " before running a live leg."
@@ -463,5 +486,20 @@ def main (args : List String) : IO UInt32 := do
       | other      => throw (IO.userError s!"unknown provider '{other}'\n\n{usage}")
     match ← run.toBaseIO with
     | .ok _    => IO.println s!"[{p}] ok"; return 0
+    | .error e => IO.eprintln s!"error: {e}"; return 1
+  -- Teardown without the round trip. The workflow's backstop used to re-run
+  -- the whole test, on the reasoning that destroy is idempotent — but `lake
+  -- test -- aws` is not a destroy, it is a create *and* a destroy. So a failed
+  -- run was followed by a second create, which failed the same way and could
+  -- leave more behind than it cleaned up. That is what the first extended AWS
+  -- run actually did.
+  | [p, "destroy"] =>
+    let run : IO Unit ← match p with
+      | "aws"      => pure (liveTeardown "aws" awsLive.plan awsLive.regions)
+      | "scaleway" => pure (liveTeardown "scaleway" scalewayLive.plan scalewayLive.regions)
+      | "gcp"      => pure (liveTeardown "gcp" gcpLive.plan gcpLive.regions)
+      | other      => throw (IO.userError s!"unknown provider '{other}'\n\n{usage}")
+    match ← run.toBaseIO with
+    | .ok _    => IO.println s!"[{p}] torn down"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | _ => IO.eprintln usage; return 2

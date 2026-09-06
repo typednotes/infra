@@ -300,8 +300,34 @@ both directions by a checker that recomputes the edges independently.
 
 ### What the first multi-kind live runs found
 
-Three legs, three different failures, and only one was a permissions gap of
-the kind expected.
+Two rounds so far, and every failure was a different kind of thing.
+
+**Round two** — the `ClientRequestToken` fix worked, and AWS got as far as the
+security group before failing on this:
+
+    InvalidParameterValue: Invalid security group description. Valid
+    descriptions are strings less than 256 characters from the following
+    set:  a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+
+The description was "created and destroyed by infra's live test". An
+**apostrophe** is not in that set. A perfectly ordinary English description,
+invalid for a reason no reader would guess, and — since descriptions are
+compile-time constants — one that would have failed every apply forever. The
+client now validates the character set and names the offending characters, and
+the fleet's descriptions are pinned by a `#guard`.
+
+That run also exposed something worse than the bug it was reporting: the
+workflow's **backstop re-ran the whole test**. `lake test -- aws` is a create
+*and* a destroy, not a destroy, so a failed leg was followed by a second create
+that failed identically — the log shows the same security-group error twice,
+once from the test and once from its own cleanup, and a backstop that creates
+can leave more behind than it removes. The driver now has a `destroy` mode that
+tears down and nothing else, sharing one code path with the round trip's own
+teardown so the two cannot drift.
+
+**Round one** — three legs, three different failures:
+
+Only one was a permissions gap of the kind expected.
 
 - **AWS: a real library bug.** `CreateSecret` was rejected with
   `You must provide a ClientRequestToken value`. The API reference calls that
