@@ -1,5 +1,6 @@
 import Infra.Core.Backend
 import Infra.Core.Persistence
+import Infra.Core.Ledger
 import Infra.Core.Ansi
 
 /-
@@ -13,51 +14,64 @@ namespace Infra.Core
 -- Pull
 -- ══════════════════════════════════════════════════════════════
 
-/-- Whether a provider's error says the resource is not there.
+/-- Where the two records live, and how to place a slot.
 
-    Matched on the rendered message because `Http.sendChecked` flattens its
-    structured `ApiError` into an `IO.userError`, and `Infra.Core` sits below
-    `Infra.Providers` so the structure is not reachable from here anyway.
-    Substring matching on a curated list of codes is the honest version of
-    that: narrow, and wrong only by omission — an unrecognised not-found code
-    surfaces as a hard error, which is the safe direction.
+    `cacheRoot` holds observations (`Persistence`), `ledgerRoot` holds
+    membership (`Ledger`). Both are optional so that the offline suite can
+    push against no storage at all; the CLI always supplies them.
 
-    It must stay narrow. Treating a *permission* error as "absent" would make
-    the engine propose creating a resource that already exists, which on a
-    second apply means a duplicate rather than a failure. -/
-private def readsAsAbsent (msg : String) : Bool :=
-  let codes :=
-    [ "NoSuchBucket", "NoSuchKey", "NoSuchEntity", "QueueDoesNotExist"
-    , "ResourceNotFoundException", "ResourceNotFound", "NotFoundException"
-    , "InvalidAMIID.NotFound", "InvalidGroup.NotFound", "InvalidInstanceID.NotFound"
-    , "DBInstanceNotFound", "RepositoryNotFoundException"
-    , "HTTP 404" ]
-  codes.any fun c => (msg.splitOn c).length > 1
+    `regionOf` is how a ledger row learns where its resource is. It has to be
+    recorded at apply time, because after the declaration that placed the
+    resource is deleted there is nothing left to derive it from, and
+    `Backends.backendFor` needs it to route the delete. -/
+structure Store (κ : Keys) where
+  /-- One root for both records. They are distinguished by filename
+      (`Ledger.path` vs `Persistence.statePath`), never by directory, so two
+      roots could only ever disagree. -/
+  root       : Option System.FilePath := none
+  /-- What the ledger already records. Membership, and the only source of it. -/
+  rows       : List Ledger.Row := []
+  /-- Names being released rather than destroyed. -/
+  forgets    : List (Released κ) := []
+  regionOf   : ProviderId → Kind → String → String := fun _ _ _ => ""
 
 /-- Ask every backend to list every kind, and match what comes back to fleet
     keys by `Keys.name`.
 
-    Listed resources that no fleet key claims are dropped, which is what makes
-    a real `list` safe: the fleet's key types decide what this target manages,
-    so an account full of unmanaged buckets cannot become a pile of proposed
-    deletions. -/
+    **Existence comes from `list`, configuration from `read`, and the split is
+    not incidental.** A per-resource "does this exist" probe was tried and
+    removed: it has to be answered by the provider layer, and several
+    `(provider, kind)` pairs there cannot answer it — `liveRead`'s `.secrets`
+    clause makes no cloud call at all, and every not-yet-live pair reports
+    `unknown` fields *successfully*. Reading that as "it exists" meant a
+    declared secret was never created. `list` can be wrong only by omission,
+    which is the safe direction, and it is the call this repo has actually
+    exercised against real accounts for all fourteen kinds.
+
+    What listing no longer decides is *membership*. It used to: a listed
+    resource no fleet key claimed was dropped, which is what made deleting a
+    line abandon the resource. That question is now the ledger's
+    (`Infra.Core.Ledger`), and this function answers only "what is out there
+    right now". -/
 def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
   let mut acc : List (Entry κ) := []
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
+      -- Bound once: `Finite.elems` on a built key family allocates a fresh
+      -- list on each evaluation.
+      let keys := Finite.elems (α := κ.Key p k)
       -- A pair with no keys cannot be claimed by this fleet, so listing it
       -- could only produce rows that are immediately dropped. Skipping it is
       -- not just an optimisation: it is what lets an all-Scaleway fleet run
       -- without ever calling AWS, and so without AWS credentials.
-      if (Finite.elems (α := κ.Key p k)).isEmpty then
+      if keys.isEmpty then
         continue
-      -- One listing per region this bucket's resources live in — for a fleet
-      -- in one region per cloud that is exactly one, as it always was. Each
-      -- listing is matched only against the slots placed in *that* region:
-      -- see `Backends.listers` for why the pairing is not optional.
+      -- One listing per region this bucket's resources live in. Each is
+      -- matched only against the slots placed in *that* region: see
+      -- `Backends.listers` for why the pairing is not optional.
       for (b, here) in bs.listers p k do
         let observed ← b.list k
-        for key in Finite.elems (α := κ.Key p k) do
+        for key in keys do
           let nm := κ.name p k key
           if here nm then
             match observed.find? (fun o => (observedHandle k o).raw == nm) with
@@ -69,9 +83,8 @@ def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
               -- and it is not an exotic case: every cloud's list API is
               -- eventually consistent, so a `refresh` moments after a delete
               -- sees the deleted thing in the listing and then fails to read
-              -- it. Someone deleting a resource by hand mid-refresh does the
-              -- same. Treating that as "absent" is the truthful reading —
-              -- it *is* absent — and the alternative was an aborted pull.
+              -- it. Treating that as "absent" is the truthful reading — it
+              -- *is* absent — and the alternative was an aborted pull.
               match ← (b.read k (observedHandle k o)).toBaseIO with
               | .ok reported => acc := ⟨p, k, key, { observed := o, reported }⟩ :: acc
               | .error e =>
@@ -79,41 +92,55 @@ def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
             | none   => pure ()
   return acc
 
-/-- Observe the world and cache it. -/
-def pull {κ : Keys} (root : System.FilePath) (bs : Backends) : IO (World κ) := do
+/-- Observe the world and cache it, keeping the entries.
+
+    Separate from `pull` because `push` needs the entries and not just the
+    `World` built from them: a `World` is a function, so it cannot be
+    enumerated back into the list `runAction` threads forward. Without this
+    the CLI pulled once for the plan and `push` pulled again for the apply,
+    reading every declared resource twice per invocation. -/
+def observe {κ : Keys} (root : System.FilePath) (bs : Backends) :
+    IO (List (Entry κ)) := do
   let es ← pullEntries (κ := κ) bs
   Persistence.save root (es.map Entry.cached)
-  return worldOf es
+  return es
+
+/-- Observe the world and cache it. -/
+def pull {κ : Keys} (root : System.FilePath) (bs : Backends) : IO (World κ) :=
+  worldOf <$> observe root bs
 
 /-- What would have to change for the world to realise the target. Pure: it
     decides, it does not act. -/
-def plan {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) := actions T W
+def plan {κ : Keys} (T : Plan κ) (W : World κ)
+    (ledger : List Ledger.Row := []) (forgets : List (Released κ) := []) :
+    List (Action κ) := actions T W ledger forgets
 
 -- ══════════════════════════════════════════════════════════════
 -- Ordering
 -- ══════════════════════════════════════════════════════════════
-
-/-- A stable identifier for a resource slot. A string, so steps of different
-    kinds can share one list — the dependent key cannot. -/
-def slotId (p : ProviderId) (k : Kind) (name : String) : String :=
-  s!"{p.name}/{k.name}/{name}"
 
 def Action.verb {κ : Keys} : Action κ → String
   | .create ..  => "CREATE"
   | .update ..  => "UPDATE"
   | .replace .. => "REPLACE"
   | .delete ..  => "DELETE"
+  | .deleteOrphan .. => "DELETE"
+  | .forget ..  => "FORGET"
 
 /-- Whether this action removes a resource. Deletions are ordered against the
     transpose of the creation graph. -/
 def Action.isDestructive {κ : Keys} : Action κ → Bool
-  | .delete .. => true
-  | _          => false
+  | .delete ..       => true
+  | .deleteOrphan .. => true
+  -- `forget` touches the ledger and never the cloud, so it is not destructive
+  -- and must not be ordered against the teardown graph.
+  | _                => false
 
-/-- The slot an action points at. -/
-def Action.slot {κ : Keys} : Action κ → String
-  | .create p k key | .update p k key | .replace p k key | .delete p k key =>
-    slotId p k (κ.name p k key)
+/-- The slot an action points at. Identical for an orphan and for a declared
+    resource, so a plan reads the same whether something was dropped from the
+    declaration or told to be absent within it. -/
+def Action.slot {κ : Keys} (a : Action κ) : String :=
+  let (p, k, nm) := a.address; Ledger.slotId p k nm
 
 /-- A human-readable line for a plan. -/
 def Action.render {κ : Keys} (a : Action κ) : String := s!"{a.verb} {a.slot}"
@@ -127,6 +154,9 @@ def Action.colour {κ : Keys} : Action κ → String
   | .update ..  => Ansi.yellow
   | .replace .. => Ansi.magenta
   | .delete ..  => Ansi.red
+  | .deleteOrphan .. => Ansi.red
+  -- Blue: it changes what is managed, not what exists.
+  | .forget ..  => Ansi.blue
 
 /-- `render`, with the verb coloured. Identical to `render` when `colour` is
     off, which is what keeps a rendered plan matchable as plain text. -/
@@ -141,7 +171,7 @@ private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
     -- The `Need` tag is ignored here: a handle and a value are the same edge
     -- as far as ordering goes.
     ((hasDepsOf k).deps authored).map fun d =>
-      slotId d.provider d.kind (κ.name d.provider d.kind d.key)
+      Ledger.slotId d.provider d.kind (κ.name d.provider d.kind d.key)
   | _ => []
 
 /-- One scheduling step. -/
@@ -158,6 +188,20 @@ private def stepOf {κ : Keys} (T : Plan κ) : Action κ → Step κ
   | a@(.update p k key)  => { action := a, id := a.slot, after := dependsOn T p k key }
   | a@(.replace p k key) => { action := a, id := a.slot, after := dependsOn T p k key }
   | a@(.delete p k key)  => { action := a, id := a.slot, after := dependsOn T p k key }
+  -- No edges, and there cannot be any. A resource whose declaration is gone
+  -- has no spec, so nothing states what it referenced. It is deleted in the
+  -- teardown half of `orderActions`, which is the transpose of the build
+  -- graph, so an orphan with no edges is unconstrained relative to the rest
+  -- and simply runs among them.
+  --
+  -- The consequence is worth naming: if an orphaned instance still references
+  -- an orphaned security group, nothing here knows, and AWS will refuse the
+  -- group's delete with `DependencyViolation` until the instance is gone. The
+  -- ledger records names and regions, not references. Recording edges too
+  -- would make it a second copy of the declaration.
+  | a@(.deleteOrphan ..) => { action := a, id := a.slot, after := [] }
+  -- Touches the ledger, never a provider, so it depends on nothing.
+  | a@(.forget ..)       => { action := a, id := a.slot, after := [] }
 
 /-- Kahn's algorithm, bounded by the number of steps.
 
@@ -221,6 +265,17 @@ def orderActions {κ : Keys} (T : Plan κ) (as : List (Action κ))
     resources on a first run. -/
 structure PushOptions where
   apply : Bool := false
+  /-- Allow a plan that destroys most of what is managed.
+
+      Off by default, and the reason is a documented accident rather than
+      caution for its own sake: HashiCorp deprecated `terraform refresh`
+      because misconfigured credentials could make it read every managed
+      object as deleted and then destroy them all without asking. Membership
+      here comes from the ledger and existence from a per-name `read`, which
+      is the same shape, so it needs the same brake. A plan that removes most
+      of the ledger is either a real teardown, in which case `destroy` says so
+      explicitly, or something is wrong with the credentials. -/
+  force : Bool := false
   /-- Colour the rendered lines. **Off by default**, deliberately: every
       existing caller — including `infra check`, which matches rendered lines
       as plain text — keeps getting plain strings, and only a caller that knows
@@ -256,8 +311,8 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
       let nm := κ.name d.provider d.kind d.key
       unless (world.sighting d.provider d.kind d.key).isSome do
         throw (IO.userError
-          s!"{slotId p k (κ.name p k key)}: needs the value of \
-{slotId d.provider d.kind nm}, which does not exist yet")
+          s!"{Ledger.slotId p k (κ.name p k key)}: needs the value of \
+{Ledger.slotId d.provider d.kind nm}, which does not exist yet")
       -- Deduplicated: a spec naming one secret twice would otherwise pay for
       -- two plaintext reads, which is the most expensive call to repeat.
       unless values.any (fun v => v.1 == d.provider && v.2.1 == nm) do
@@ -269,8 +324,8 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
     match settleSpec k env authored with
     | some spec => return spec
     | none => throw (IO.userError
-        s!"{slotId p k (κ.name p k key)}: a referenced resource does not exist yet")
-  | _ => throw (IO.userError s!"{slotId p k (κ.name p k key)}: nothing to apply")
+        s!"{Ledger.slotId p k (κ.name p k key)}: a referenced resource does not exist yet")
+  | _ => throw (IO.userError s!"{Ledger.slotId p k (κ.name p k key)}: nothing to apply")
 
 /-- Record what a mutation produced, so later steps can reference it. -/
 private def remember {κ : Keys} (bs : Backends) (entries : List (Entry κ))
@@ -308,28 +363,64 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     (entries : List (Entry κ)) : Action κ → IO (List (Entry κ))
   -- Every mutation goes to the slot's *own* backend, which for a fleet in one
   -- region per cloud is the cloud's only one.
-  | .create p k key => inContext s!"CREATE {slotId p k (κ.name p k key)}" do
+  | .create p k key => inContext s!"CREATE {Ledger.slotId p k (κ.name p k key)}" do
     let o ← (bs.backendFor p k (κ.name p k key)).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
-  | .update p k key => inContext s!"UPDATE {slotId p k (κ.name p k key)}" do
+  | .update p k key => inContext s!"UPDATE {Ledger.slotId p k (κ.name p k key)}" do
     match (worldOf entries).sighting p k key with
     | some seen =>
       let o ← (bs.backendFor p k (κ.name p k key)).update k (observedHandle k seen.observed)
         (← settleFor T bs entries p k key)
       remember bs entries p k key o
-    | none => throw (IO.userError s!"{slotId p k (κ.name p k key)}: vanished before update")
-  | .replace p k key => inContext s!"REPLACE {slotId p k (κ.name p k key)}" do
+    | none => throw (IO.userError s!"{Ledger.slotId p k (κ.name p k key)}: vanished before update")
+  | .replace p k key => inContext s!"REPLACE {Ledger.slotId p k (κ.name p k key)}" do
     -- Destroy then create: the key survives, the handle does not.
     match (worldOf entries).sighting p k key with
     | some seen => (bs.backendFor p k (κ.name p k key)).delete k (observedHandle k seen.observed)
     | none      => pure ()
     let o ← (bs.backendFor p k (κ.name p k key)).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
-  | .delete p k key => inContext s!"DELETE {slotId p k (κ.name p k key)}" do
-    match (worldOf entries).sighting p k key with
-    | some seen => (bs.backendFor p k (κ.name p k key)).delete k (observedHandle k seen.observed)
-    | none      => pure ()
+  -- Deleting addresses the resource by *name*, not by the handle the world
+  -- happens to be holding. That is not a shortcut: `Handle` is the name for
+  -- every kind in this library, and going through the name is what makes this
+  -- case and `deleteOrphan` below the same operation. Two spellings of one
+  -- delete is exactly the shape that let `S3BucketSpec.region` disagree with
+  -- the placement, so there is one.
+  | .delete p k key => inContext s!"DELETE {Ledger.slotId p k (κ.name p k key)}" do
+    let nm := κ.name p k key
+    (bs.backendFor p k nm).delete k ⟨nm⟩
     return entries
+  -- The same call, for a resource whose declaration is gone, so `destroy` and
+  -- "deleted every line, then applied" end in the same place. Routed on the
+  -- region the *ledger* recorded: `backendFor` resolves a region by looking
+  -- the name up in the placement table, and an orphan is precisely a name that
+  -- table no longer contains, so it would fall back to the wrong endpoint for
+  -- anything placed outside the credentials' own region.
+  | .deleteOrphan p k nm region => inContext s!"DELETE {Ledger.slotId p k nm}" do
+    (bs.backendAt p region).delete k ⟨nm⟩
+    return entries
+  -- Nothing is called. The row is dropped from the ledger by `push`, which is
+  -- the only thing a forget does.
+  | .forget .. => return entries
+
+/-- The ledger after one action has succeeded.
+
+    Membership changes on exactly four events: something was created (it is
+    mine now), something was destroyed (it is not), something was forgotten
+    (it is not, and it still exists), and an update or replace of something
+    already recorded (no change, but recording it is what repairs a ledger
+    that lost a row). -/
+private def rowsAfter {κ : Keys} (store : Store κ) (rows : List Ledger.Row)
+    (a : Action κ) : List Ledger.Row :=
+  let (p, k, nm) := a.address (κ := κ)
+  let without := rows.filter fun r => !Ledger.Row.isAt r p k nm
+  match a with
+  -- Recorded, and re-recorded rather than left alone, so that an `update`
+  -- repairs a row whose region went stale.
+  | .create .. | .update .. | .replace .. =>
+    { cloud := p, kind := k, name := nm, region := store.regionOf p k nm } :: without
+  -- Destroyed, or released. Either way it is no longer ours.
+  | .delete .. | .deleteOrphan .. | .forget .. => without
 
 /-- Reconcile the world to the target.
 
@@ -337,8 +428,9 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     have been. A dry run performs no backend IO at all: it does not skip the
     writes, it never reaches them. -/
 def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
-    (opts : PushOptions := {}) (edges : Plan κ := T) : IO (List String) := do
-  let work ← match orderActions T (plan T W) edges with
+    (opts : PushOptions := {}) (edges : Plan κ := T) (store : Store κ := {})
+    (seen : Option (List (Entry κ)) := none) : IO (List String) := do
+  let work ← match orderActions T (plan T W store.rows store.forgets) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
   if work.isEmpty then
@@ -347,10 +439,40 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     return (work.map fun a =>
         Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
       [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
-  let mut entries ← pullEntries (κ := κ) bs
+  -- The brake. Counted against the ledger rather than against the work-list,
+  -- because the question is "how much of what I manage is about to go", and
+  -- a plan that also creates things would otherwise dilute the ratio.
+  let doomed := work.countP (·.isDestructive)
+  if !opts.force && store.rows.length > 1 && doomed * 2 > store.rows.length then
+    throw (IO.userError s!"this would destroy {doomed} of {store.rows.length} managed \
+      resources. If that is a teardown, `destroy` says so explicitly; if it is not, check \
+      the credentials are for the right account before overriding with --force")
+  -- Reuse what the caller already observed. Re-reading would double the API
+  -- calls on every apply, and the two pulls are microseconds apart, so they
+  -- cannot usefully disagree.
+  let mut entries ← match seen with
+    | some es => pure es
+    | none    => pullEntries (κ := κ) bs
+  let mut rows := store.rows
   let mut log : List String := []
   for a in work do
+    let rowsBefore := rows
+    let entriesBefore := entries.length
     entries ← runAction bs T entries a
+    -- Written after *every* action, not once at the end. An apply that fails
+    -- halfway has still created things, and a created resource missing from
+    -- the ledger is an orphan nothing can name.
+    rows := rowsAfter store rows a
+    -- But only when something changed. `runAction` returns `entries`
+    -- untouched for every deletion, and `rowsAfter` returns `rows` untouched
+    -- when it re-records something already recorded, so a teardown of N
+    -- resources would otherwise rewrite both records N times with identical
+    -- bytes — and `Persistence.save` is a whole-world writer that visits all
+    -- 42 `(provider, kind)` pairs on each call.
+    if let some root := store.root then
+      unless rows == rowsBefore do Ledger.save root rows
+      unless entries.length == entriesBefore do
+        Persistence.save root (entries.map Entry.cached)
     log := s!"{a.renderStyled opts.colour} {Ansi.style opts.colour Ansi.green "... ok"}" :: log
   return log.reverse
 

@@ -8,6 +8,27 @@ namespace Infra.Core
 
 open Infra.Specs (SpecOf)
 
+/-- Whether a provider's error says the resource is not there.
+
+    Matched on the rendered message because `Http.sendChecked` flattens its
+    structured `ApiError` into an `IO.userError`, and `Infra.Core` sits below
+    `Infra.Providers` so the structure is not reachable from here anyway.
+    Substring matching on a curated list of codes is the honest version of
+    that: narrow, and wrong only by omission — an unrecognised not-found code
+    surfaces as a hard error, which is the safe direction.
+
+    It must stay narrow. Treating a *permission* error as "absent" would make
+    the engine propose creating a resource that already exists, which on a
+    second apply means a duplicate rather than a failure. -/
+def readsAsAbsent (msg : String) : Bool :=
+  let codes :=
+    [ "NoSuchBucket", "NoSuchKey", "NoSuchEntity", "QueueDoesNotExist"
+    , "ResourceNotFoundException", "ResourceNotFound", "NotFoundException"
+    , "InvalidAMIID.NotFound", "InvalidGroup.NotFound", "InvalidInstanceID.NotFound"
+    , "DBInstanceNotFound", "RepositoryNotFoundException"
+    , "HTTP 404" ]
+  codes.any fun c => (msg.splitOn c).length > 1
+
 /-- One cloud's CRUD surface, defunctionalised as a record rather than a class so that
     `Backends` can be a total function over `ProviderId` without sigma gymnastics. -/
 structure Backend where
@@ -64,6 +85,17 @@ structure Backends where
       placed in another, and the engine would believe it already existed. -/
   listers : ProviderId → Kind → List (Backend × (String → Bool)) :=
     fun p _ => [(backend p, fun _ => true)]
+  /-- The backend for a *region named directly*, for the one caller that has a
+      region and no slot to look it up from: destroying a resource whose
+      declaration is gone.
+
+      `backendFor` cannot serve that case. It resolves the region by looking
+      the slot name up in the fleet's placement table, and the whole premise of
+      an orphan is that the declaration no longer names it — so the lookup
+      misses and falls back to the credentials' region, which is the wrong
+      endpoint for anything placed anywhere else. The region comes from the
+      ledger row instead, which is why the row records one. -/
+  backendAt : ProviderId → String → Backend := fun p _ => backend p
 
 /-- One observed resource, tied back to the fleet key it realises.
 
@@ -83,11 +115,19 @@ abbrev CachedEntry (κ : Keys) := (p : ProviderId) × (k : Kind) × κ.Key p k �
 def Entry.cached {κ : Keys} (e : Entry κ) : CachedEntry κ :=
   ⟨e.1, e.2.1, e.2.2.1, e.2.2.2.observed⟩
 
-/-- Assemble a `World` from entries. The one place a dependent cast is needed: an entry carries
-    its own `(p, k)`, and answering a query at some other `(p, k)` requires knowing they
-    coincide. -/
-def worldOf {κ : Keys} (es : List (Entry κ)) : World κ where
-  sighting p k key := es.findSome? fun e =>
+/-- Look one `(p, k, key)` up in a list of entries that each carry their own
+    indices.
+
+    The one dependent cast in the library, and it is here rather than written
+    out per caller: an entry carries its own `(p, k)`, and answering a query at
+    some other `(p, k)` requires knowing they coincide. Generalised over the
+    payload `β` so that `Entry` (payload `Sighting`) and `CachedEntry` (payload
+    `ObservedOf`) share it — `worldOf` and `Engine.pullEntries` are the two
+    callers, and writing the cast twice is how the two would drift. -/
+def lookupAt {κ : Keys} {β : Kind → Type}
+    (es : List ((p : ProviderId) × (k : Kind) × κ.Key p k × β k))
+    (p : ProviderId) (k : Kind) (key : κ.Key p k) : Option (β k) :=
+  es.findSome? fun e =>
     match e with
     | ⟨p', k', key', o⟩ =>
       if hp : p' = p then
@@ -96,5 +136,9 @@ def worldOf {κ : Keys} (es : List (Entry κ)) : World κ where
           exact (if key' = key then some o else none)
         else none
       else none
+
+/-- Assemble a `World` from entries. -/
+def worldOf {κ : Keys} (es : List (Entry κ)) : World κ where
+  sighting := lookupAt es
 
 end Infra.Core

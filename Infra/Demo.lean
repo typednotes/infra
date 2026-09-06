@@ -130,12 +130,10 @@ def demoPlan : Plan demoKeys where
         .present { name := "demo", description := "the demo fleet's functions" }
     | .scaleway, .scalewayFunction, _ => .present ingestSpec
     | _,         _,                 _ => .unmanaged
-  outside := .unmanaged
 
 /-- Every key `unmanaged`: ⊥ of the `Status` order, so satisfied by anything. -/
 def idlePlan : Plan demoKeys where
   assign _ _ _ := .unmanaged
-  outside := .unmanaged
 
 /-! ## A second fleet: a composed secret, in one apply
 
@@ -206,7 +204,6 @@ def composedPlan : Plan composedKeys where
     | .scaleway, .secrets,  key => composedSecretsAssign key
     | .scaleway, .postgres, key => composedPostgresAssign key
     | _,         _,         _   => .unmanaged
-  outside := .unmanaged
 
 def composedEmptyWorld : World composedKeys := worldOf []
 
@@ -565,8 +562,12 @@ private def dagDeps (T : Plan dagFleet.keys) : Action dagFleet.keys → List Str
   | .create p k key | .update p k key | .replace p k key | .delete p k key =>
     match T.assign p k key with
     | .present spec => ((hasDepsOf k).deps spec).map fun d =>
-        slotId d.provider d.kind (dagFleet.keys.name d.provider d.kind d.key)
+        Ledger.slotId d.provider d.kind (dagFleet.keys.name d.provider d.kind d.key)
     | _ => []
+  -- Neither carries a key, so neither has a spec to read edges from. This
+  -- checker is about the declared graph; the ledger records names and
+  -- regions, not references. See `Engine.stepOf`.
+  | .deleteOrphan .. | .forget .. => []
 
 /-- Every dependency that is itself scheduled appears strictly earlier.
 
@@ -655,5 +656,138 @@ private def killAt (slot : String) : Nat := (dagTeardown.map Action.slot).idxOf 
 #guard dagTeardown.map Action.slot = (dagBuild.map Action.slot).reverse
 
 end DagGuards
+
+/-! ## Membership: what the ledger says, not what the declaration says
+
+  The declaration below keeps one resource and releases another. What matters
+  is a third name, in the ledger and in neither list: that is a resource whose
+  line was deleted, and destroying it is the whole point of the ledger. -/
+
+fleet ledgerFleet in paris where
+  resource scaleway queues "keep" { visibilityTimeoutSec := 30 }
+  -- Released: still in the ledger, must not be destroyed.
+  forget scaleway queues "released"
+
+section LedgerGuards
+
+private def row (k : Kind) (nm : String) : Ledger.Row :=
+  { cloud := .scaleway, kind := k, name := nm, region := "fr-par" }
+
+/-- Three rows: one still declared, one released, one simply dropped. -/
+private def ledgerRows : List Ledger.Row :=
+  [row .queues "keep", row .queues "released", row .queues "dropped"]
+
+/- The `forget` declaration reached the fleet, as a `Released` carrying this
+   fleet's own key family — which is what stops it being handed to another. -/
+#guard ledgerFleet.forgets.map (fun r => (r.cloud, r.kind, r.name))
+     = [(ProviderId.scaleway, Kind.queues, "released")]
+#guard ledgerFleet.forgets.length = 1
+
+/- `keep` is still claimed by a key, so it is not the orphan pass's business. -/
+#guard Infra.Core.claimedByKey ledgerFleet.keys .scaleway .queues "keep" = true
+#guard Infra.Core.claimedByKey ledgerFleet.keys .scaleway .queues "dropped" = false
+
+/- The three rows produce exactly two actions, and each is the right one:
+   nothing for the declared resource, a release for the forgotten one, and a
+   delete for the one whose line was deleted. This is the behaviour the whole
+   change exists for. -/
+#guard (actionsOrphaned ledgerFleet.keys ledgerRows ledgerFleet.forgets).map Action.slot
+     = ["scaleway/queues/released", "scaleway/queues/dropped"]
+#guard (actionsOrphaned ledgerFleet.keys ledgerRows ledgerFleet.forgets).map Action.verb
+     = ["FORGET", "DELETE"]
+
+/- A release is not destructive, so it is never ordered against the teardown
+   graph: it changes what is managed, not what exists. -/
+#guard (actionsOrphaned ledgerFleet.keys ledgerRows ledgerFleet.forgets).map
+         Action.isDestructive = [false, true]
+
+/- With no ledger, nothing is an orphan — which is what keeps every `#guard`
+   in `example/` asking about a declaration alone, and what makes a first run
+   against an empty ledger propose no deletions at all. -/
+#guard actionsOrphaned ledgerFleet.keys [] ledgerFleet.forgets = []
+
+/- The same row, against a declaration that does not mention it, is destroyed.
+   That is the whole mechanism in one line: membership is the ledger, and
+   whether a managed resource survives depends on whether the declaration still
+   claims it. `dagFleet` declares plenty, but no `scaleway/queues/keep`. -/
+#guard (actionsOrphaned dagFleet.keys [row .queues "keep"] []).map Action.verb = ["DELETE"]
+#guard (actionsOrphaned dagFleet.keys [row .queues "keep"] []).map Action.slot
+     = ["scaleway/queues/keep"]
+
+/- So `destroy` is not a second teardown mechanism. It reconciles against
+   `Plan.absent`, which deletes every declared resource; deleting every line
+   and applying orphans the same resources and deletes those. Both end at the
+   same `Backend.delete`, addressed by name — see `Engine.runAction`, where the
+   two cases share one body. -/
+#guard (actions (Plan.absent ledgerFleet.keys)
+          (worldOf [⟨.scaleway, .queues, ⟨0, by decide⟩,
+                    { observed := { handle := ⟨"keep"⟩, url := "" }
+                      reported := { name := "keep", visibilityTimeoutSec := .unknown } }⟩])).map
+         Action.verb = ["DELETE"]
+
+/-! ### Negative checks
+
+  Recorded as prose because a `#guard` can only witness what elaborates.
+
+    * **Forgetting something you also declare.** `forget` carries
+      `Assert (!claimedByKey …)`, discharged by `decide`, so the two
+      statements cannot both be in force:
+
+          forget scaleway queues "keep"
+
+          could not synthesize default value for parameter '_h' using tactics
+          Tactic `decide` proved that the proposition
+            Assert (!claimedByKey ledgerFleet.keys ProviderId.scaleway Kind.queues "keep")
+          is false
+
+    * **A `forget` naming only a kind**, outside a `provider` block, is
+      rejected by the elaborator with the same message shape `resource` uses.
+
+    * **One fleet's releases handed to another.** `Released` is indexed by the
+      key family, so the two are different types:
+
+          example : List (Released dagFleet.keys) := ledgerFleet.forgets
+
+          Type mismatch
+            ledgerFleet.forgets
+          has type
+            List (Released ledgerFleet.keys)
+          but is expected to have type
+            List (Released dagFleet.keys)
+
+      This is what the index buys. It used to be a bare
+      `ProviderId × Kind × String`, so the `Assert` held at the one call site
+      the macro generated and nowhere after it.
+
+    * **Building a release by hand**, skipping the check entirely:
+
+          example : Released ledgerFleet.keys :=
+            { cloud := .scaleway, kind := .queues, name := "keep" }
+
+          invalid {...} notation, constructor for `Released` is marked as
+          private
+
+      `releasing` is the only way to make one, which is what turns "the check
+      is present" into "the check cannot be avoided".
+
+    * **Omitting the releases at the call site.** `Cli.run`'s `forgets` has no
+      default, so a fleet that declares a `forget` and forgets to pass it does
+      not compile:
+
+          Infra.Cli.run "ledger" ledgerFleet.plan (args := args)
+
+          Type mismatch
+            fun forgets => Infra.Cli.run "ledger" ledgerFleet.plan … forgets args
+          has type
+            List (Released ledgerFleet.keys) → IO UInt32
+          but is expected to have type
+            IO UInt32
+
+      The same shape a missing required field takes everywhere else here: what
+      you are left holding is a function still waiting for the argument. Before
+      the default was removed, that combination compiled and then destroyed the
+      resource. -/
+
+end LedgerGuards
 
 end Infra.Demo

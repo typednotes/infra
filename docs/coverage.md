@@ -1,7 +1,7 @@
-# Coverage in 0.3.0
+# Coverage in 0.6.0
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-05.
+been exercised. Everything below is the state on 2026-09-07.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
@@ -147,27 +147,35 @@ This is the section worth reading before trusting anything. Correctness of
 ### Exercised by CI
 
 `lake test` runs the offline driver on every push, and every example with it.
-`lake test -- <provider>` is the live round trip, run from a manual workflow
-trigger, one cloud at a time. **All three legs pass as of 2026-09-06.**
+`lake test -- <provider>` is the live sequence, run from a manual workflow
+trigger, one cloud at a time. **All three legs passed as of 2026-09-06, in the
+single-declaration shape they had then; the sequence below is newer and has not
+been run.**
 
 #### What one live leg does
 
-Six steps, in order, against a real account. Each is a real API call, not a
-mock:
+Three declarations, applied in order against one ledger. Each stage is a real
+apply against a real account, and after each one the account must hold
+*exactly* what that stage declares:
 
-| # | Step | What it proves |
+| Stage | Declares | What it proves |
 |---|---|---|
-| 1 | `pull` | `list` works, and the account is reachable with the credentials the chain found |
-| 2 | `push … apply` | `create` works |
-| 3 | poll `pull` until the plan is empty (≤ 60 s) | `list` and `read` report the resource, **and the diff of observed-against-declared is empty** — i.e. a second apply would do nothing |
-| 4 | `push (Plan.absent) apply` | `delete` works |
-| 5 | poll until the listing shows nothing (≤ 60 s) | the delete really took, rather than being issued while the resource was still invisible |
-| 6 | `Persistence.load` is empty | the state cache agrees with the account |
+| 1 `full` | eleven resources on AWS and Scaleway, ten on GCP | `create` works, and the dependency order works: five secrets forming a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply |
+| 2 `trimmed` | two resources dropped, one field changed, one added | `deleteOrphan` for the dropped — their lines are *gone*, so only the ledger knows they exist — plus `update` for the changed field and `create` for the new one |
+| 3 `empty` | nothing at all | `deleteOrphan` for everything left. This is `apply` against an empty declaration, which is the same operation `destroy` performs, and the half that had never run |
 
-Steps 3 and 5 poll rather than read once, because every list API here is
-eventually consistent to some degree and a single read after a write measures
-propagation delay rather than correctness. Step 6 exists because it is exactly
-what a past defect needed: `save` left the file of an emptied
+Stage 2 is the one that earns the sequence. If membership still came from the
+declaration, its two dropped resources would be silently abandoned, stage 3
+would find nothing to clean up, and both stages would pass while leaking two
+billable resources per cloud. The assertion that catches that compares the
+ledger against the stage's own declared slots, derived from the key family
+rather than written out.
+
+Each stage polls for convergence rather than reading once, because every list
+API here is eventually consistent to some degree and a single read after a
+write measures propagation delay rather than correctness. The sequence ends by
+asserting the ledger is empty, which is the descendant of a check that existed
+because of a past defect: `save` left the file of an emptied
 `(provider, kind)` pair on disk, so the cache went on listing what had just
 been deleted.
 
@@ -563,15 +571,80 @@ credential named `infra` ever exists.
 The consequence to know: **do not create a Scaleway SQS credential named
 `infra` by hand.** `infra` will delete it.
 
+## Membership, and what of it has been run
+
+The ledger (`Infra.Core.Ledger`), `forget`, and orphan deletion are new, and
+this is how far they have actually been exercised.
+
+**Verified offline, every build.** The ledger round-trips through JSON with
+every field intact — the region especially, since nothing else records it once
+a resource's line is gone. Rows come back sorted, because the file is
+committed and its diff is read. An emptied ledger stays a *file*, so "manages
+nothing" is distinguishable from "someone deleted the ledger". A file without a
+version is refused rather than read as empty, because reading it as empty would
+orphan everything it recorded. And `actionsOrphaned` is guarded on the three
+cases that matter: a row still declared produces nothing, a row named in
+`forget` produces a non-destructive `FORGET`, and a row the declaration has
+dropped produces a `DELETE`.
+
+**Verified by the compiler.** Four things, each recorded with the message it
+actually produces in `Infra/Demo.lean`'s negative checks:
+
+- `forget`ting a resource the same fleet still declares does not elaborate, via
+  `Assert (!claimedByKey …)` discharged by `decide`.
+- One fleet's releases cannot be handed to another: `Released` is indexed by the
+  key family.
+- A release cannot be built by hand — `Released.mk` is private, so `releasing`
+  and its check are the only way to obtain one.
+- A fleet that declares a `forget` and does not pass it to `Cli.run` does not
+  compile, because `forgets` has no default. That combination used to compile
+  and then destroy the resource.
+
+**Never run against an account.** The wiring in `Infra.Cli` that loads the
+ledger, hands it to `push`, and writes it back after each action — though the
+live legs are now *shaped* to exercise it: each cloud runs three declarations
+in sequence and the middle one drops two resources, so an orphan delete is the
+only way the stage can pass. That has been written and compiled, not run. The
+`#guard`s cover the decision (what a set of rows plus a declaration should
+do); they do not cover the plumbing, because a bare invocation runs the
+offline self-check and never reads a ledger. Specifically unexercised: that a
+`DELETE` derived from a ledger row reaches the right region's endpoint, that
+the ledger is correctly rewritten when an apply fails halfway, and the
+more-than-half brake.
+
+**A `Backend.probe` field was added and then removed**, and the reason is worth
+keeping because it is a fact about this provider layer rather than about the
+design. Making membership the ledger's business invited answering *existence*
+per resource, by name, the way Terraform does. Terraform can, because its
+providers implement a per-resource read that returns not-found. This one cannot:
+`liveRead`'s `.secrets` clause makes no cloud call at all, and every
+`(provider, kind)` pair that is not live yet reports `unknown` fields
+*successfully*. Reading that as "it exists" meant a declared secret was never
+created.
+
+So existence comes from `list` again, which can be wrong only by omission — the
+safe direction — and which is the call this repo has exercised against real
+accounts for all fourteen kinds. Membership stays the ledger's. The two
+questions were conflated before this change; separating them was right, and
+answering the second one per resource was not.
+
 ## Known defects
 
 Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger. The one
 most likely to matter:
 
-- **`Plan.outside` is declared and not consumed.** Scoping works through the
-  key family instead, which is the mechanism to rely on.
+- **An orphan's references are not recorded.** The ledger holds names and
+  regions, not dependency edges, so deleting two lines at once where one
+  referenced the other can have the provider refuse the second delete until
+  the first is done. See `docs/diff-semantics.md`.
 
 Not a surprise waiting to be discovered; it is written down.
+
+`Plan.outside` used to head this list — declared, never consumed, and the
+reason deleting a resource from a declaration left it running in the cloud. It
+is gone, not softened: membership is now `Infra.Core.Ledger`, a committed
+record that survives the declaration it came from, and `forget` is how a
+resource leaves it without being destroyed.
 
 `S3BucketSpec.region` used to head this list — a field that did not place the
 bucket and was only compared, so a bucket declared without it proposed a

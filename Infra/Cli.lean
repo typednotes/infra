@@ -99,7 +99,14 @@ def liveFor (κ : Keys) (regions : Regions := {}) :
             -- region it declares nothing in.
             listers    := fun p k =>
               (regions.used κ p k (fallback p)).map fun code =>
-                (backendIn p code, fun nm => resolve p k nm == code) }, lookup)
+                (backendIn p code, fun nm => resolve p k nm == code)
+            -- For an orphan, whose region comes from its ledger row rather
+            -- than from `resolve` — a placement table cannot answer for a slot
+            -- the declaration no longer names. An empty code means the row was
+            -- written by a fleet that never said where it was, which is the
+            -- same case `backend` covers.
+            backendAt  := fun p code =>
+              backendIn p (if code.isEmpty then fallback p else code) }, lookup)
 
 /-- Which accounts a fleet is for.
 
@@ -196,14 +203,20 @@ def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Un
     "For the real thing: `plan` (reads), then `apply` (changes).")
 
 def usage (exe : String) : String := String.intercalate "\n"
-  [ s!"usage: {exe} [check | refresh | plan [--destroy] | apply | destroy]"
+  [ s!"usage: {exe} [check | refresh | plan [--destroy] | apply [--force] | destroy]"
   , ""
   , "  check            run the offline self-checks (default)"
   , "  refresh          observe the declared clouds and cache what is there"
   , "  plan             show what would change, without changing anything"
   , "  plan --destroy   show what tearing the fleet down would delete"
   , "  apply            actually reconcile"
+  , "  apply --force    reconcile even if that destroys most of the fleet"
   , "  destroy          delete everything this fleet declares"
+  , ""
+  , "  Deleting a resource from the declaration destroys it, because the"
+  , "  ledger and not the declaration records what is managed. To stop"
+  , "  managing something without destroying it, say `forget` in the"
+  , "  declaration. `destroy` is `apply` against an empty declaration."
   ]
 
 /-- The whole front end for one fleet.
@@ -225,12 +238,32 @@ def usage (exe : String) : String := String.intercalate "\n"
     `cacheRoot` defaults to `.infra/<exe>`, not `.infra`: two fleets have
     different key families and their caches must never be read as if they were
     the same shape. Making that structural means a second fleet cannot forget
-    to override it. -/
+    to override it.
+
+    The ledger lives under `cacheRoot` too, and is **not** committed. It was,
+    briefly, on the reasoning that what a fleet manages is intent; that was
+    wrong, and CI is where it showed. `Infra.Core.Ownership` records the
+    reasoning and sketches the marker-and-boundary model meant to replace it,
+    which is not yet wired to anything.
+
+    `forgets` is the `forget` declarations, which the `fleet` command generates
+    as `myFleet.forgets`. Each one releases a resource from the ledger without
+    deleting it.
+
+    **Deliberately has no default.** It had one, and that was a silent
+    catastrophe waiting: a fleet could write `forget scaleway queues "x"`,
+    compile, discharge the `Assert`, and then destroy the queue, because the
+    releases never reached the engine. `forget` exists precisely to prevent
+    that. With no default the compiler asks every fleet, and `Released κ`'s
+    index means it cannot be answered with another fleet's list. Same reasoning
+    as `cacheRoot` above: making it structural is what stops a second fleet
+    forgetting. -/
 def run {κ : Keys} (exe : String) (target : Plan κ)
     (selfCheck : IO Unit := offlinePlan target)
     (accounts : Accounts := {})
     (regions : Regions := {})
-    (cacheRoot : System.FilePath := defaultCacheRoot / exe) (args : List String) :
+    (cacheRoot : System.FilePath := defaultCacheRoot / exe)
+    (forgets : List (Released κ)) (args : List String) :
     IO UInt32 := do
   -- Resolved once, at the edge: whether stdout is a terminal is a property of
   -- this invocation, not of a plan, so the engine is told rather than asking.
@@ -257,24 +290,49 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
   -- character while differing completely in consequence. Terraform's own
   -- `state pull`/`state push` mean something else again: moving a state file
   -- to and from a remote backend.
+  -- `refresh` deliberately does not write the ledger. It observes, and
+  -- observing is not a decision about what is managed. Only `apply` and
+  -- `destroy` change membership.
   | ["refresh"] =>
     reporting <| withLive fun bs => do
       let world ← pull (κ := κ) cacheRoot bs
-      IO.println s!"refreshed; {(plan target world).length} action(s) outstanding"
+      let rows ← Ledger.load cacheRoot
+      let outstanding := (plan target world rows forgets).length
+      IO.println s!"refreshed; {rows.length} managed; {outstanding} action(s) outstanding"
   -- Four commands, one body. They vary in two independent ways — *which*
   -- declaration to reconcile against, and whether to actually do it — so
   -- writing them out separately would be four copies of the same three lines.
   -- `Plan.absent` is the "empty declaration": same keys, every one `.absent`.
-  | ["plan"] | ["apply"] | ["plan", "--destroy"] | ["destroy"] =>
-    let tearDown := args == ["destroy"] || args == ["plan", "--destroy"]
-    let doIt     := args == ["apply"] || args == ["destroy"]
+  | ["plan"] | ["apply"] | ["apply", "--force"]
+  | ["plan", "--destroy"] | ["destroy"] | ["destroy", "--force"] =>
+    let tearDown := args.head? == some "destroy" || args == ["plan", "--destroy"]
+    let doIt     := args.head? == some "apply" || args.head? == some "destroy"
+    let forced   := args.contains "--force"
     reporting <| withLive fun bs => do
-      let world ← pull (κ := κ) cacheRoot bs
+      let entries ← observe (κ := κ) cacheRoot bs
+      let world := worldOf entries
+      let rows ← Ledger.load cacheRoot
+      -- `Plan.absent` is the empty declaration: the same keys, every one
+      -- `.absent`. So `destroy` is not a second teardown mechanism, it is
+      -- this one with an empty target, and the guard below checks that.
       let wanted := if tearDown then Plan.absent κ else target
+      -- A teardown means all of it, so the "most of the fleet" brake would
+      -- fire on every destroy and would teach people to pass `--force`
+      -- habitually. Saying `destroy` is the explicit statement the brake
+      -- exists to ask for.
+      let store : Store κ :=
+        { root     := some cacheRoot
+        , rows, forgets
+        -- The same resolution `backendFor` routes on, so a row records the
+        -- region the resource was actually created in rather than a second,
+        -- differently-defaulted answer.
+        , regionOf := fun p k nm => (regions.codeFor p k nm).getD "" }
+      let opts : PushOptions := { apply := doIt, colour, force := forced || tearDown }
       -- `edges := target` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
       -- order deletions by. See `orderActions`.
-      for line in ← push bs wanted world { apply := doIt, colour } (edges := target) do
+      for line in ← push bs wanted world opts (edges := target) (store := store)
+                        (seen := some entries) do
         IO.println line
   | _ =>
     IO.eprintln (usage exe)

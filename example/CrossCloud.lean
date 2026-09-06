@@ -227,6 +227,7 @@ fleet crossCloud in paris where
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "cross-cloud" crossCloud.plan
+    (forgets := crossCloud.forgets)
     (selfCheck := Infra.Cli.offlinePlan crossCloud.plan
       "cross-cloud: a plan spanning AWS and Scaleway")
     (accounts := ← Infra.Cli.Accounts.fromEnv)

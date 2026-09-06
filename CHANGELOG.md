@@ -8,6 +8,119 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.6.0] — 2026-09-07
+
+**Deleting a resource from a declaration now destroys it.** It used to leave it
+running, and that was a defect rather than a design: `Plan.outside` was
+declared and never consumed, so a resource whose line you removed had no key
+for anything to mention and was silently abandoned, still billing. The minor
+bump marks the fix and the API break that comes with it.
+
+### The mechanism
+
+What a fleet manages is recorded in `Infra.Core.Ledger` — a local file of
+`(cloud, kind, name, region)` rows, under `.infra/`, deliberately *not* indexed
+by the key family. That last part is the whole trick: `CachedEntry κ` is
+indexed by `κ.Key`, so it structurally cannot hold a row for a resource the
+current declaration no longer mentions, which is exactly the row that has to
+survive for "deleted from the file" to mean "destroy".
+
+`Action` gains `deleteOrphan`, addressed by name and region because there is no
+key left to ask, and routed on the region the ledger recorded rather than
+through a placement table that by definition no longer names the slot.
+
+`destroy` is now demonstrably the same operation as applying an empty
+declaration. `.delete` addresses the resource by name rather than by whatever
+handle the world was holding, so it and `deleteOrphan` share one body and end
+at one `Backend.delete` call. Two spellings of one delete is the shape that let
+`S3BucketSpec.region` disagree with the placement.
+
+### `forget`
+
+To stop managing something without destroying it:
+
+```lean
+forget scaleway queues "old-queue"
+```
+
+The counterpart of Terraform's `removed { … lifecycle { destroy = false } }`,
+and a declaration rather than a command for the reason HashiCorp gives for
+preferring theirs over `terraform state rm`: it shows up in a plan before it
+happens, and in a diff when it is reviewed.
+
+Four things about it are the type system's job rather than a convention, each
+recorded in `Infra/Demo.lean` with the message the compiler actually produces:
+
+- Forgetting something the same fleet still declares does not elaborate
+  (`Assert (!claimedByKey …)`, discharged by `decide`).
+- One fleet's releases cannot be handed to another: `Released` is indexed by
+  the key family.
+- A release cannot be built by hand — `Released.mk` is private, so `releasing`
+  and its check are the only way to obtain one.
+- A fleet that declares a `forget` and does not pass it to `Cli.run` does not
+  compile, because `forgets` has no default.
+
+That last one was a real hole and not a hypothetical: `forgets` shipped as a
+defaulted parameter that nothing passed, so `forget` compiled, discharged its
+check, and then destroyed the resource anyway.
+
+### Breaking
+
+- **`Infra.Cli.run` requires `forgets`.** Pass `myFleet.forgets`; the
+  scaffolder's template does. A fleet with no releases passes `[]`.
+- **`Plan.outside` is gone.** A single fleet-wide verdict could not close the
+  world: closing it requires knowing *which* resources were once managed, and
+  a fleet-wide `absent` would have proposed deleting every resource in the
+  account.
+- `Backends.backendAt` is new; `Store` is indexed by the key family.
+
+### Live tests are a sequence now
+
+Each cloud runs three declarations against one ledger — the whole fleet, a
+trimmed version, then one that declares nothing — and after each stage the
+account must hold *exactly* what that stage declares. The middle stage is the
+one that earns it: it drops two resources, so their lines are gone entirely and
+only the ledger knows they exist. If membership still came from the
+declaration, they would be silently abandoned and every assertion would still
+pass, leaking two billable resources per cloud.
+
+The dependency graph is the same on all three clouds and is no longer just a
+fan-out: five secrets forming a fan-out of two, a fan-in of three including a
+redundant edge, and a four-deep chain — the shape `Infra/Demo.lean`'s
+`dagFleet` already checks offline. The last stage is `apply` against an empty
+declaration, which is the half that had never run live.
+
+### A probe that was added and removed
+
+Making membership the ledger's business invited answering *existence* per
+resource, by name, the way Terraform does. Terraform can, because its providers
+implement a per-resource read that returns not-found. This provider layer
+cannot: `liveRead`'s `.secrets` clause makes no cloud call at all, and every
+`(provider, kind)` pair that is not live yet reports `unknown` fields
+*successfully*. Reading that as "it exists" meant a declared secret was never
+created.
+
+So existence comes from `list` again — wrong only by omission, which is the
+safe direction, and the call this repo has exercised against real accounts for
+all fourteen kinds. Membership stays the ledger's. Separating the two questions
+was right; answering the second per resource was not.
+
+### Also
+
+- `Infra.Core.Ownership` sketches a marker-and-boundary model meant to replace
+  the ledger as the authority on membership, so that nothing has to be written
+  back from CI. Nothing writes the marker and nothing reads the boundary yet:
+  it decides nothing today, and says so.
+- `apply` refuses a plan that would destroy more than half the ledger without
+  `--force`. HashiCorp deprecated `terraform refresh` because misconfigured
+  credentials could make it read every object as deleted and destroy them all
+  with no prompt; the same hazard exists wherever an observation can mean
+  "gone".
+- `docs/persistence.md`'s claim that the cache is gitignored because it can
+  hold secret values was false and is corrected: `SecretsObserved` is a handle
+  and a version, no `ObservedOf` has a value field, and `Backend.read` for
+  `.secrets` never fetches one.
+
 ## [0.5.0] — 2026-09-06
 
 **All three clouds pass a full live round trip.** That is what the minor bump

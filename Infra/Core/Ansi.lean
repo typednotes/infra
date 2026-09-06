@@ -30,6 +30,9 @@ def red     : String := "31"
 def green   : String := "32"
 def yellow  : String := "33"
 def magenta : String := "35"
+/-- For `FORGET`, the one verb that changes what is managed rather than what
+    exists. Distinct from the four that call a provider. -/
+def blue    : String := "34"
 def dim     : String := "2"
 def bold    : String := "1"
 

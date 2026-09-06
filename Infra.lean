@@ -23,6 +23,8 @@ import Infra.Core.Diverge
 import Infra.Core.Settle
 import Infra.Core.Credentials
 import Infra.Core.Persistence
+import Infra.Core.Ledger
+import Infra.Core.Ownership
 import Infra.Core.Engine
 
 -- Authentication is orthogonal to the resource theory above.

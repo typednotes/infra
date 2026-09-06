@@ -104,6 +104,13 @@ syntax fleetField := ident " := " term
     the provider is another, and may be omitted inside a `provider` block. -/
 syntax fleetResource := "resource " ident (ident)? str (" as " ident)? "{" fleetField,* "}"
 
+/-- One resource this fleet used to declare and is releasing.
+
+    Same shape as `fleetResource` minus everything a resource needs and a
+    released one does not: no fields, because nothing is being configured, and
+    no `as`, because nothing can reference it. -/
+syntax fleetForget := "forget " ident (ident)? str
+
 /-- One placement: a bare identifier is a `Locality`, an identifier followed by
     a string is a cloud and its own region code. -/
 syntax fleetPlace := ident (str)?
@@ -120,6 +127,10 @@ declare_syntax_cat fleetItem
 
 /-- A bare resource. -/
 syntax fleetResource : fleetItem
+
+/-- A release. Legal anywhere a resource is, including inside blocks, so that
+    `forget` sits next to the `resource` line it replaces. -/
+syntax fleetForget : fleetItem
 
 /-- A `provider` block: the cloud, written once, for everything under it.
 
@@ -152,6 +163,14 @@ private def mkNamedArg (fieldId : Ident) (val : Term) : Syntax :=
   mkNode ``Lean.Parser.Term.namedArgument
     #[mkAtom "(", fieldId, mkAtom " := ", val, mkAtom ")"]
 
+/-- One release with its enclosing `provider` context resolved. No place,
+    because nothing is called and so nothing has to be routed here: the region
+    a forgotten resource sits in is already in the ledger row being dropped. -/
+private structure Rel where
+  cloud : Ident
+  kind  : Ident
+  name  : TSyntax `str
+
 /-- One resource with its enclosing context already resolved.
 
     Flattening the block structure into this before generating anything is
@@ -178,34 +197,44 @@ private structure Res where
     same sort. -/
 private partial def flatten (ctxProvider : Option Ident)
     (ctxPlace : Option (Ident × Option (TSyntax `str))) (item : Syntax) :
-    CommandElabM (Array Res) := do
+    CommandElabM (Array Res × Array Rel) := do
   match item with
-  | `(fleetItem| provider $p:ident where $is*) =>
-    let mut acc := #[]
-    for i in is do acc := acc ++ (← flatten (some p) ctxPlace i)
-    return acc
+  | `(fleetItem| provider $p:ident where $is*) => flattenAll (some p) ctxPlace is
   | `(fleetItem| in $pl:fleetPlace where $is*) =>
     let some (a, c) := parsePlace pl | throwErrorAt pl "malformed placement"
     -- `in aws "eu-west-1"` names a cloud as well as a region, so it supplies
     -- the provider context too — the code could not mean anything otherwise.
     let inner := match c with | some _ => some a | none => ctxProvider
-    let mut acc := #[]
-    for i in is do acc := acc ++ (← flatten inner (some (a, c)) i)
-    return acc
+    flattenAll inner (some (a, c)) is
+  | `(fleetItem| $f:fleetForget) =>
+    match f with
+    | `(fleetForget| forget $a:ident $[$b:ident]? $nm:str) =>
+      match b, ctxProvider with
+      | some k, _      => return (#[], #[⟨a, k, nm⟩])
+      | none,   some p => return (#[], #[⟨p, a, nm⟩])
+      | none,   none   => throwErrorAt f s!"this `forget` names only a kind, so it needs \
+a provider: write `forget <provider> {a.getId} …`, or put it inside a `provider … where` block"
+    | _ => throwErrorAt f "malformed forget declaration"
   | `(fleetItem| $r:fleetResource) =>
     match r with
     | `(fleetResource| resource $a:ident $[$b:ident]? $nm:str $[as $al:ident]? { $fs,* }) =>
       match b, ctxProvider with
       -- `resource scaleway secrets "x"` — the cloud is on the line.
-      | some k, _      => return #[⟨a, k, nm, al, fs.getElems, ctxPlace⟩]
+      | some k, _      => return (#[⟨a, k, nm, al, fs.getElems, ctxPlace⟩], #[])
       -- `resource secrets "x"` — the cloud comes from an enclosing block.
-      | none,   some p => return #[⟨p, a, nm, al, fs.getElems, ctxPlace⟩]
+      | none,   some p => return (#[⟨p, a, nm, al, fs.getElems, ctxPlace⟩], #[])
       | none,   none   => throwErrorAt r s!"this resource names only a kind, so it needs \
 a provider: write `resource <provider> {a.getId} …`, or put it inside a `provider … where` \
 or `in <provider> \"<region>\" … where` block"
     | _ => throwErrorAt r "malformed resource declaration"
   | _ => throwErrorAt item "malformed fleet item"
 where
+  /-- Both block arms and the top level do the same thing to a list of items,
+      and each used to spell out its own two-accumulator loop. -/
+  flattenAll (ctxP : Option Ident) (ctxPl : Option (Ident × Option (TSyntax `str)))
+      (is : Array Syntax) : CommandElabM (Array Res × Array Rel) := do
+    let parts ← is.mapM (flatten ctxP ctxPl)
+    return (parts.flatMap (·.1), parts.flatMap (·.2))
   /-- `paris` or `aws "eu-west-3"`. -/
   parsePlace (pl : Syntax) : Option (Ident × Option (TSyntax `str)) :=
     match pl with
@@ -216,8 +245,9 @@ elab_rules : command
   | `(command| fleet $fleetName:ident $[$placement:fleetIn]? where $items*) => do
     -- Blocks are resolved first, so everything below sees a flat list of
     -- resources that each know their own cloud and their own place.
-    let mut flat : Array Res := #[]
-    for i in items do flat := flat ++ (← flatten none none i)
+    let parts ← items.mapM (flatten none none)
+    let flat := parts.flatMap (·.1)
+    let released := parts.flatMap (·.2)
 
     -- Group resources by `(provider, kind)`, preserving declaration order —
     -- which is also the key order within a bucket.
@@ -357,8 +387,23 @@ around it names a `{a.getId}` region; a region code belongs to one cloud"
       | _, _ => fun _ => Infra.Core.Status.unmanaged)))
     cmds := cmds.push (← `(
       def $planId : Infra.Core.Plan $keysId where
-        assign := fun p k => match p, k with $assignAlts:matchAlt*
-        outside := Infra.Core.Status.unmanaged))
+        assign := fun p k => match p, k with $assignAlts:matchAlt*))
+
+    -- `forget` declarations, as the triples `Infra.Cli.run` and
+    -- `Action.actionsOrphaned` consume.
+    --
+    -- Each carries a decidable side-condition that the name is *not* one this
+    -- fleet still declares, discharged here by `by decide`. So `forget`ting
+    -- something you also declare does not elaborate, and the two statements
+    -- can never both be in force. Without it the plan would say "manage this"
+    -- and "stop managing this" at once, and which won would depend on the
+    -- order of two passes.
+    let forgetsId := mkIdentFrom fleetName (fleetName.getId ++ `forgets)
+    let forgetTerms : Array Term ← released.mapM fun r =>
+      `((Infra.Core.releasing $keysId .$(r.cloud):ident .$(r.kind):ident $(r.name)))
+    cmds := cmds.push (← `(
+      def $forgetsId : List (Infra.Core.Released $keysId) :=
+        [$forgetTerms,*]))
 
     for c in cmds do
       elabCommand c

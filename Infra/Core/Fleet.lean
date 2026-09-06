@@ -56,12 +56,18 @@ def Keys.providers (κ : Keys) : List ProviderId :=
                  Shape outside the modality, contents inside — a fleet may have three unknown
                  handles, never an unknown number of instances.
 
-    `outside` is the disposition of keys not in this fleet's key types: `absent` = closed world
-    (garbage-collect), `unmanaged` = open world. -/
+    There is deliberately no field for "everything else". There used to be one,
+    `outside : Status Unit`, meant to choose between a closed world
+    (garbage-collect anything undeclared) and an open one. Nothing ever read
+    it, and it could not have worked as a single verdict: closing the world
+    requires knowing *which* resources were once managed, and a fleet-wide
+    `absent` would have proposed deleting every resource in the account. That
+    question is now answered per-resource by the ledger
+    (`Infra.Core.Ledger`), which records exactly what this fleet manages and
+    survives a resource's line being deleted. -/
 structure Plan (κ : Keys) where
   assign  : (p : ProviderId) → (k : Kind) → (key : κ.Key p k) →
               Status (SpecOf.{1} k κ.Key Partial (Expr κ.Key))
-  outside : Status Unit
 
 /-- What a backend saw at one key: the provider-computed state, and the
     configuration actually in force.
@@ -96,18 +102,18 @@ def satisfiesAt {κ : Keys} (T : Plan κ) (W : World κ)
 
 /-- The empty declaration: everything this fleet knows about must not exist.
 
-    This is how a fleet is torn down, and it is worth being precise about why
-    it is not the same as deleting the resources from the source file.
-    `assign` is total over `κ.Key`, so a resource *removed* from a declaration
-    no longer has a key for anything to mention — it becomes unmanaged, and
-    whatever exists in the cloud is left alone. Keeping the keys and saying
-    `.absent` is what turns "I no longer want this" into a DELETE.
+    This is what `destroy` reconciles against, and it is the *same* statement
+    as deleting every `resource` line and applying. Both destroy everything
+    the fleet manages; they differ only in which constructor carries it
+    (`Action.delete` here, `Action.deleteOrphan` there), and both end at the
+    same `Backend.delete` call addressed by name. `destroy` exists because
+    saying it is easier and more reviewable than emptying a file, not because
+    it does anything a declaration cannot.
 
-    `outside` stays `unmanaged`: this says nothing about resources the fleet
-    never claimed, only that the ones it did claim should go. -/
+    Resources this fleet never claimed are untouched either way: they have no
+    ledger row, so nothing here can name them. -/
 def Plan.absent (κ : Keys) : Plan κ where
   assign _ _ _ := .absent
-  outside := .unmanaged
 
 /-- Whether every secret this plan declares is honest about where its value
     comes from — no plaintext written into the committed target.
@@ -124,6 +130,56 @@ def Plan.secretsAreSound {κ : Keys} (T : Plan κ) : Bool :=
       match T.assign p .secrets key with
       | .present s => s.sourceIsSound
       | _          => true
+
+/-- The key carrying this name, if this fleet has one.
+
+    Decidable because every key type is `Finite`. Both the membership test
+    below and `Persistence.load` need it, and it was written out at both. -/
+def Keys.keyOfName? (κ : Keys) (p : ProviderId) (k : Kind) (name : String) :
+    Option (κ.Key p k) :=
+  (Finite.elems (α := κ.Key p k)).find? fun key => κ.name p k key == name
+
+/-- Whether any key in this fleet carries that name, for that `(provider, kind)`.
+
+    Decidable because every key type is `Finite`. This is the test that turns a
+    ledger row into either "still declared" or "an orphan". -/
+def claimedByKey (κ : Keys) (p : ProviderId) (k : Kind) (name : String) : Bool :=
+  (κ.keyOfName? p k name).isSome
+
+/-- A resource released from *this* fleet's management: not declared by it, and
+    not to be destroyed with it.
+
+    Indexed by `κ`, and the constructor is private, so the only way to obtain
+    one is `releasing` below — which cannot elaborate for a name the fleet
+    still declares. The index and the privacy together are what carry that
+    guarantee to every consumer: a bare `ProviderId × Kind × String` (which is
+    what this used to be) put the check at the single macro-generated call
+    site and nowhere else, so a release list could be handed to a different
+    fleet, or assembled by hand, with nothing to object. -/
+structure Released (κ : Keys) where
+  private mk ::
+  cloud : ProviderId
+  kind  : Kind
+  name  : String
+  deriving DecidableEq, BEq
+
+/-- Whether a release names this resource. -/
+def Released.isAt {κ : Keys} (r : Released κ) (p : ProviderId) (k : Kind)
+    (name : String) : Bool :=
+  r.cloud == p && r.kind == k && r.name == name
+
+/-- One `forget` declaration, checked.
+
+    The auto-param is the point, exactly as in `InstanceType.of`: `forget`ting
+    a name this fleet still declares does not elaborate, so a declaration
+    cannot say "manage this" and "stop managing this" at the same time. The
+    error names the fleet and the resource.
+
+    This is the only constructor of `Released κ`, which is what makes the
+    check impossible to route around rather than merely present. -/
+def releasing (κ : Keys) (p : ProviderId) (k : Kind) (name : String)
+    (_h : Assert (!claimedByKey κ p k name) := by decide) : Released κ :=
+  .mk p k name
 
 /-- Whether the world realises the target everywhere. Decidable, because every key type is
     `Finite`: fold over the enumerations. -/

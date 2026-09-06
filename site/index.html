@@ -298,8 +298,8 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.5.0</strong> — a full live round trip passing on all three clouds,
-  across eleven of the fourteen resource kinds.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.6.0</strong> — deleting a resource from a declaration destroys it,
+  and <code>forget</code> is how one leaves without being destroyed.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -792,7 +792,8 @@ would CREATE scaleway/secrets/db-url
       what is absent, so it is safe to re-run and safe on a project with work
       in it. Your declaration is a Lean program, so
       <code>lake exe my_infra</code> <em>is</em> the CLI: nothing to keep in
-      step with your code, and no state file to lose.
+      step with your code. What it manages is a committed ledger of names; what it
+      last saw is a disposable cache. Neither holds a secret.
     </p>
     <div class="card" style="max-width:760px">
       <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>

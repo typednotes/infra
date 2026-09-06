@@ -45,6 +45,59 @@ def checkPersistenceRoundTrip : IO Unit := do
   finally
     IO.FS.removeDirAll tmp
 
+/-- The ledger round-trips, keeps rows the declaration has dropped, and
+    refuses to read a file it did not write.
+
+    The middle property is the one that matters and the one the cache cannot
+    have: `Persistence.load` drops any name the current key family does not
+    claim, which is exactly why membership could not live there. A ledger that
+    silently dropped an undeclared row would abandon the resource instead of
+    destroying it, which is the bug this whole mechanism exists to fix. -/
+def checkLedger : IO Unit := do
+  let tmp ← IO.FS.createTempDir
+  try
+    let rows : List Ledger.Row :=
+      [ { cloud := .aws,      kind := .objectStore, name := "assets", region := "eu-west-3" }
+      , { cloud := .scaleway, kind := .queues,      name := "jobs",   region := "fr-par" } ]
+    Ledger.save tmp rows
+    let loaded ← Ledger.load tmp
+    unless loaded.length == rows.length do
+      throw (IO.userError s!"ledger round-trip: saved {rows.length}, loaded {loaded.length}")
+    -- Every field survives. The region especially: without it a row is
+    -- undeletable in a multi-region fleet, and nothing else records it once
+    -- the declaration that placed the resource is gone.
+    unless loaded.any (fun r => r.cloud == .aws && r.name == "assets"
+                                && r.region == "eu-west-3") do
+      throw (IO.userError "ledger round-trip lost a row's cloud, name or region")
+
+    -- `save` sorts and `load` deliberately does not, so this checks what was
+    -- written rather than what was read. Comparing against `Ledger.sorted`
+    -- rather than re-spelling its comparator: a copy would have to be edited
+    -- alongside it and would keep passing either way.
+    unless loaded == Ledger.sorted loaded do
+      throw (IO.userError "ledger rows were not written in sorted order")
+
+    -- An empty ledger is a *file* saying "nothing is managed", not a missing
+    -- one. Distinguishing the two is the point: a missing file cannot be told
+    -- apart from a deleted file, and the difference decides whether anything
+    -- gets destroyed.
+    Ledger.save tmp []
+    unless (← (Ledger.path tmp).pathExists) do
+      throw (IO.userError "an emptied ledger deleted its own file")
+    unless (← Ledger.load tmp).isEmpty do
+      throw (IO.userError "an emptied ledger still reported rows")
+
+    -- A file this tool did not write must stop the run rather than read as
+    -- empty. Reading it as empty would orphan everything it recorded.
+    IO.FS.writeFile (Ledger.path tmp) "{\"rows\": []}"
+    match ← (Ledger.load tmp).toBaseIO with
+    | .error _ => pure ()
+    | .ok _    => throw (IO.userError "a ledger with no version was accepted")
+
+    IO.println "ledger: ok (round-trip, sorted, empty is a file, unversioned is refused)"
+  finally
+    IO.FS.removeDirAll tmp
+
 /-- Pulls from both placeholder backends, caches the result, and reports what the target would
     still ask for. Nothing behind `list` is live yet, so the world comes back empty and every
     declared resource needs creating. -/
@@ -373,6 +426,8 @@ def checkTeardown : IO Unit := do
 def checkVanishingResource : IO Unit := do
   let listsOneRefusingToRead (err : String) : Backend :=
     { Infra.Providers.placeholderBackend "test" with
+      -- Lists one bucket, then refuses to read it. Both halves matter: the
+      -- listing is what makes the engine try the read at all.
       list := fun k => match k with
         | .objectStore => pure [{ handle := ⟨"assets"⟩, url := "https://x.invalid" }]
         | _            => pure []
@@ -475,6 +530,7 @@ a live run would mint one per call")
 def selfCheck : IO Unit := do
   IO.println "infra: refinement core loaded"
   checkPersistenceRoundTrip
+  checkLedger
   checkPullAndPlan
   checkCredentials
   checkSigning
@@ -546,4 +602,6 @@ def main (args : List String) : IO UInt32 :=
   | ["gcp-check"] =>
     IO.eprintln "usage: lake exe infra gcp-check <service-account-key.json>" *> pure 2
   | ["gcp-check", path] => gcpCheck path
-  | _ => Infra.Cli.run "infra" demoPlan selfCheck (args := args)
+  -- `demoPlan` is hand-written rather than declared by the `fleet` command, so
+  -- it has no `forget` declarations to pass.
+  | _ => Infra.Cli.run "infra" demoPlan selfCheck (forgets := []) (args := args)

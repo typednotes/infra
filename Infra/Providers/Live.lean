@@ -135,6 +135,174 @@ private def ec2For (creds : Credentials) : Endpoint := Query.ec2Endpoint creds.r
 private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
   S3.endpoint provider creds.region
 
+/-- What one resource's configuration actually is, addressed by name.
+
+    Extracted from `liveBackend` so that `probe` can reuse it: a field of a
+    structure literal cannot refer to a sibling field, and `probe` for most
+    kinds is exactly "this, with a not-found read as absence".
+
+    **This answers "what does it look like", never "does it exist".** Several
+    clauses fabricate a reply rather than calling anything — `.secrets` most
+    conspicuously — because they are asked only after a create, where
+    existence is not in question. `liveProbe` is where existence is decided,
+    and it does not trust these clauses. -/
+def liveRead (provider : ProviderId) (creds : Credentials) :
+    (k : Kind) → Handle k → IO (Reported k)
+  | .objectStore, h => do
+    match provider with
+    | .gcp =>
+      return { name := h.raw
+               versioning := ← Gcp.Storage.readVersioning creds h.raw
+               tags := ← Gcp.Storage.readLabels creds h.raw }
+    | .aws | .scaleway =>
+      let ep := s3For provider creds
+      return { name := h.raw
+               versioning := ← ObjectStore.readVersioning creds ep h.raw
+               tags := ← ObjectStore.readTags creds ep h.raw }
+  | .s3Bucket, h => do
+    let ep := s3For provider creds
+    return { name := h.raw
+             versioning := ← ObjectStore.readVersioning creds ep h.raw
+             objectLock := ← ObjectStore.readObjectLock creds ep h.raw }
+  | .securityGroup, h => do
+    let (_, description, ingress) ← Ec2.SecurityGroup.read creds (ec2For creds) h.raw
+    return { name := h.raw, description, ingress }
+  | .awsInstance, h => do
+    let (imageId, instanceType, group, keyName, subnetId) ←
+      Ec2.Instance'.read creds (ec2For creds) h.raw
+    -- The security group comes back as a *name*, which is exactly what the
+    -- settled spec holds, so the two are directly comparable. The instance
+    -- type comes back as a string and is wrapped rather than parsed:
+    -- `InstanceType` is a string underneath precisely so that reading one
+    -- cannot fail, even for a family this library's table does not name.
+    return { name := h.raw, imageId
+             instanceType := InstanceType.raw instanceType
+             securityGroup := ⟨group⟩, keyName, subnetId }
+  -- Nothing was read, so nothing is claimed. `unknown` is exactly that, and
+  -- is why an unimplemented kind cannot masquerade as already matching.
+  | .iam, h => do
+    let policies ← match provider with
+      | .gcp      => Gcp.Iam.readPolicies creds (← Gcp.requireProject creds) h.raw
+      | .aws      => Iam.Aws'.readPolicies creds h.raw
+      | .scaleway => Iam.Scw.readPolicies
+    return { name := h.raw, policies }
+  | .compute, h => do
+    match provider with
+    | .gcp =>
+      let (image, memory, timeout, env, serviceAccount) ←
+        Gcp.CloudRun.read creds (← Gcp.requireProject creds) creds.region h.raw
+      -- `executionRole` *is* reported: it is the service's runtime
+      -- identity, and a Cloud Run service with none runs as the default
+      -- compute service account, which Google grants `roles/editor`. See
+      -- the module note in `Gcp.CloudRun` — leaving it unmapped meant a
+      -- declaration could say nothing about identity and silently get an
+      -- Editor on the project.
+      return { name := h.raw, runtime := .unknown, image
+               executionRole := serviceAccount, namespace' := .unknown
+               handler := .unknown, memoryMb := memory
+               timeoutSec := timeout, env }
+    | .aws =>
+      let (role, memory, timeout, env, image) ← Compute.Lambda.read creds (lambdaFor creds) h.raw
+      -- `runtime` and `namespace'` are not reported by either cloud, and are
+      -- excluded from the divergence table for exactly that reason.
+      return { name := h.raw, runtime := .unknown, image
+               executionRole := role, namespace' := .unknown
+               handler := .unknown, memoryMb := memory
+               timeoutSec := timeout, env }
+    | .scaleway =>
+      let (memory, timeout, env, image) ← Compute.Containers.read creds h.raw
+      return { name := h.raw, runtime := .unknown, image
+               executionRole := .unknown, namespace' := .unknown
+               handler := .unknown, memoryMb := memory
+               timeoutSec := timeout, env }
+  | .queues, h => do
+    match provider with
+    -- The read is what proves the topic is there; nothing is extracted from
+    -- it. `visibilityTimeoutSec` is a *subscription's* ack deadline on
+    -- Pub/Sub and there is no subscription here, so it is unknown rather
+    -- than invented — which is also what stops a declared timeout being
+    -- read as a change to apply on every run. See the module note.
+    | .gcp =>
+      let project ← Gcp.requireProject creds
+      discard <| Gcp.PubSub.readTopic creds project h.raw
+      return { name := h.raw, visibilityTimeoutSec := .unknown }
+    | .aws | .scaleway =>
+      let ep := sqsFor provider creds
+      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+      return { name := h.raw
+               visibilityTimeoutSec := ← Queues.readVisibilityTimeout sqsCreds ep h.raw }
+  -- `valueFrom` names an environment variable the cloud has never heard of,
+  -- so it cannot be reported and is excluded from the divergence table. The
+  -- value itself is never fetched: see the module note in `Kinds.Secrets`.
+  | .secrets, h          => pure { name := h.raw, valueFrom := .fromEnv "" }
+  | .imageRegistry, h => do
+    let immutable ← match provider with
+      | .gcp      =>
+        Gcp.ArtifactRegistry.readImmutable creds (← Gcp.requireProject creds)
+          creds.region h.raw
+      | .aws      => ImageRegistry.Ecr.readImmutable creds (ecrFor creds) h.raw
+      | .scaleway => ImageRegistry.Scw.readImmutable
+    return { name := h.raw, immutableTags := immutable }
+  | .postgres, h => do
+    let (cls, user, ver, storage) ← match provider with
+      | .gcp      => Gcp.CloudSql.read creds (← Gcp.requireProject creds) h.raw
+      | .aws      => Postgres.Rds.read creds (rdsFor creds) h.raw
+      | .scaleway => Postgres.Rdb.read creds h.raw
+    -- `masterPasswordSecret` is our bookkeeping, not the database's: it is
+    -- never reported and never compared. `cls` is `""` both for "not found"
+    -- and for a genuinely classless (serverless) instance — neither Rds.read
+    -- nor Rdb.read distinguish them, so both read as `unknown` here, same as
+    -- every other field this backend cannot see.
+    let instanceClass : Partial String := if cls.isEmpty then .unknown else .known cls
+    return { name := h.raw, instanceClass, masterUsername := user
+             masterPasswordSecret := "", version := ver, storageGb := storage
+             minCapacity := .unknown, maxCapacity := .unknown }
+  | .scalewayFunctionNamespace, h => do
+    return { name := h.raw, description := ← Compute.Functions.readNamespace creds h.raw }
+  | .scalewayContainerNamespace, h => do
+    return { name := h.raw, description := ← Compute.Containers.readNamespace creds h.raw }
+  | .scalewayFunction, h => do
+    match provider with
+    | .gcp => notOnGcp "scalewayFunction"
+    | .scaleway =>
+      let (runtime, bucketName, ns) ← Compute.Functions.read creds h.raw
+      -- The reference is reported as the handle the function was told about,
+      -- which is what `settleRef` produced when it was created.
+      let bucket : Partial (Option (Handle .s3Bucket)) := match bucketName with
+        | .known (some n) => .known (some ⟨n⟩)
+        | .known none     => .known none
+        | .unknown        => .unknown
+      -- The namespace is reported. The comment that used to sit here said
+      -- `Divergent` excluded it and a blank handle was "the honest not
+      -- reported" — both false: `Divergent .scalewayFunction` compares it
+      -- with `divergesReq … .forcesReplace`, which has no `unknown` escape,
+      -- so a blank made every pull propose a replace. The container had the
+      -- identical bug and it cost a twelve-minute CI timeout to find, since
+      -- a fleet that never converges looks exactly like a hang.
+      return { name := h.raw, runtime, namespace' := ⟨ns⟩, sourceBucket := bucket }
+    | .aws => return { name := h.raw, runtime := "", namespace' := ⟨""⟩
+                       sourceBucket := .unknown }
+  -- `secretEnv` is read once at apply and handed straight to the API, so
+  -- it cannot be reported back and is excluded from the divergence table
+  -- — same limitation as `.secrets`' own `valueFrom`.
+  | .scalewayContainer, h => do
+    match provider with
+    | .gcp => notOnGcp "scalewayContainer"
+    | .scaleway =>
+      let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image, ns) ←
+        Compute.Containers.readFull creds h.raw
+      -- The namespace is reported, not blanked. Blanking it made `namespace`
+      -- — which `forcesReplace` — diverge on every pull, so the fleet never
+      -- converged and proposed `REPLACE` for ever.
+      return { name := h.raw, namespace' := ⟨ns⟩, image
+               port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env
+               secretEnv := .unknown }
+    | .aws => return { name := h.raw, namespace' := ⟨""⟩, image := ""
+                       port := .unknown, minScale := .unknown, maxScale := .unknown
+                       memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
+                       env := .unknown, secretEnv := .unknown }
+
+
 /-- One cloud's live CRUD surface.
 
     Every field pattern-matches on the kind directly rather than wrapping a
@@ -265,161 +433,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       | .scaleway =>
         return (← Compute.Containers.listFull creds).map fun (n, url) => { handle := ⟨n⟩, url }
 
-  read
-    | .objectStore, h => do
-      match provider with
-      | .gcp =>
-        return { name := h.raw
-                 versioning := ← Gcp.Storage.readVersioning creds h.raw
-                 tags := ← Gcp.Storage.readLabels creds h.raw }
-      | .aws | .scaleway =>
-        let ep := s3For provider creds
-        return { name := h.raw
-                 versioning := ← ObjectStore.readVersioning creds ep h.raw
-                 tags := ← ObjectStore.readTags creds ep h.raw }
-    | .s3Bucket, h => do
-      let ep := s3For provider creds
-      return { name := h.raw
-               versioning := ← ObjectStore.readVersioning creds ep h.raw
-               objectLock := ← ObjectStore.readObjectLock creds ep h.raw }
-    | .securityGroup, h => do
-      let (_, description, ingress) ← Ec2.SecurityGroup.read creds (ec2For creds) h.raw
-      return { name := h.raw, description, ingress }
-    | .awsInstance, h => do
-      let (imageId, instanceType, group, keyName, subnetId) ←
-        Ec2.Instance'.read creds (ec2For creds) h.raw
-      -- The security group comes back as a *name*, which is exactly what the
-      -- settled spec holds, so the two are directly comparable. The instance
-      -- type comes back as a string and is wrapped rather than parsed:
-      -- `InstanceType` is a string underneath precisely so that reading one
-      -- cannot fail, even for a family this library's table does not name.
-      return { name := h.raw, imageId
-               instanceType := InstanceType.raw instanceType
-               securityGroup := ⟨group⟩, keyName, subnetId }
-    -- Nothing was read, so nothing is claimed. `unknown` is exactly that, and
-    -- is why an unimplemented kind cannot masquerade as already matching.
-    | .iam, h => do
-      let policies ← match provider with
-        | .gcp      => Gcp.Iam.readPolicies creds (← Gcp.requireProject creds) h.raw
-        | .aws      => Iam.Aws'.readPolicies creds h.raw
-        | .scaleway => Iam.Scw.readPolicies
-      return { name := h.raw, policies }
-    | .compute, h => do
-      match provider with
-      | .gcp =>
-        let (image, memory, timeout, env, serviceAccount) ←
-          Gcp.CloudRun.read creds (← Gcp.requireProject creds) creds.region h.raw
-        -- `executionRole` *is* reported: it is the service's runtime
-        -- identity, and a Cloud Run service with none runs as the default
-        -- compute service account, which Google grants `roles/editor`. See
-        -- the module note in `Gcp.CloudRun` — leaving it unmapped meant a
-        -- declaration could say nothing about identity and silently get an
-        -- Editor on the project.
-        return { name := h.raw, runtime := .unknown, image
-                 executionRole := serviceAccount, namespace' := .unknown
-                 handler := .unknown, memoryMb := memory
-                 timeoutSec := timeout, env }
-      | .aws =>
-        let (role, memory, timeout, env, image) ← Compute.Lambda.read creds (lambdaFor creds) h.raw
-        -- `runtime` and `namespace'` are not reported by either cloud, and are
-        -- excluded from the divergence table for exactly that reason.
-        return { name := h.raw, runtime := .unknown, image
-                 executionRole := role, namespace' := .unknown
-                 handler := .unknown, memoryMb := memory
-                 timeoutSec := timeout, env }
-      | .scaleway =>
-        let (memory, timeout, env, image) ← Compute.Containers.read creds h.raw
-        return { name := h.raw, runtime := .unknown, image
-                 executionRole := .unknown, namespace' := .unknown
-                 handler := .unknown, memoryMb := memory
-                 timeoutSec := timeout, env }
-    | .queues, h => do
-      match provider with
-      -- The read is what proves the topic is there; nothing is extracted from
-      -- it. `visibilityTimeoutSec` is a *subscription's* ack deadline on
-      -- Pub/Sub and there is no subscription here, so it is unknown rather
-      -- than invented — which is also what stops a declared timeout being
-      -- read as a change to apply on every run. See the module note.
-      | .gcp =>
-        let project ← Gcp.requireProject creds
-        discard <| Gcp.PubSub.readTopic creds project h.raw
-        return { name := h.raw, visibilityTimeoutSec := .unknown }
-      | .aws | .scaleway =>
-        let ep := sqsFor provider creds
-        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
-        return { name := h.raw
-                 visibilityTimeoutSec := ← Queues.readVisibilityTimeout sqsCreds ep h.raw }
-    -- `valueFrom` names an environment variable the cloud has never heard of,
-    -- so it cannot be reported and is excluded from the divergence table. The
-    -- value itself is never fetched: see the module note in `Kinds.Secrets`.
-    | .secrets, h          => pure { name := h.raw, valueFrom := .fromEnv "" }
-    | .imageRegistry, h => do
-      let immutable ← match provider with
-        | .gcp      =>
-          Gcp.ArtifactRegistry.readImmutable creds (← Gcp.requireProject creds)
-            creds.region h.raw
-        | .aws      => ImageRegistry.Ecr.readImmutable creds (ecrFor creds) h.raw
-        | .scaleway => ImageRegistry.Scw.readImmutable
-      return { name := h.raw, immutableTags := immutable }
-    | .postgres, h => do
-      let (cls, user, ver, storage) ← match provider with
-        | .gcp      => Gcp.CloudSql.read creds (← Gcp.requireProject creds) h.raw
-        | .aws      => Postgres.Rds.read creds (rdsFor creds) h.raw
-        | .scaleway => Postgres.Rdb.read creds h.raw
-      -- `masterPasswordSecret` is our bookkeeping, not the database's: it is
-      -- never reported and never compared. `cls` is `""` both for "not found"
-      -- and for a genuinely classless (serverless) instance — neither Rds.read
-      -- nor Rdb.read distinguish them, so both read as `unknown` here, same as
-      -- every other field this backend cannot see.
-      let instanceClass : Partial String := if cls.isEmpty then .unknown else .known cls
-      return { name := h.raw, instanceClass, masterUsername := user
-               masterPasswordSecret := "", version := ver, storageGb := storage
-               minCapacity := .unknown, maxCapacity := .unknown }
-    | .scalewayFunctionNamespace, h => do
-      return { name := h.raw, description := ← Compute.Functions.readNamespace creds h.raw }
-    | .scalewayContainerNamespace, h => do
-      return { name := h.raw, description := ← Compute.Containers.readNamespace creds h.raw }
-    | .scalewayFunction, h => do
-      match provider with
-      | .gcp => notOnGcp "scalewayFunction"
-      | .scaleway =>
-        let (runtime, bucketName, ns) ← Compute.Functions.read creds h.raw
-        -- The reference is reported as the handle the function was told about,
-        -- which is what `settleRef` produced when it was created.
-        let bucket : Partial (Option (Handle .s3Bucket)) := match bucketName with
-          | .known (some n) => .known (some ⟨n⟩)
-          | .known none     => .known none
-          | .unknown        => .unknown
-        -- The namespace is reported. The comment that used to sit here said
-        -- `Divergent` excluded it and a blank handle was "the honest not
-        -- reported" — both false: `Divergent .scalewayFunction` compares it
-        -- with `divergesReq … .forcesReplace`, which has no `unknown` escape,
-        -- so a blank made every pull propose a replace. The container had the
-        -- identical bug and it cost a twelve-minute CI timeout to find, since
-        -- a fleet that never converges looks exactly like a hang.
-        return { name := h.raw, runtime, namespace' := ⟨ns⟩, sourceBucket := bucket }
-      | .aws => return { name := h.raw, runtime := "", namespace' := ⟨""⟩
-                         sourceBucket := .unknown }
-    -- `secretEnv` is read once at apply and handed straight to the API, so
-    -- it cannot be reported back and is excluded from the divergence table
-    -- — same limitation as `.secrets`' own `valueFrom`.
-    | .scalewayContainer, h => do
-      match provider with
-      | .gcp => notOnGcp "scalewayContainer"
-      | .scaleway =>
-        let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image, ns) ←
-          Compute.Containers.readFull creds h.raw
-        -- The namespace is reported, not blanked. Blanking it made `namespace`
-        -- — which `forcesReplace` — diverge on every pull, so the fleet never
-        -- converged and proposed `REPLACE` for ever.
-        return { name := h.raw, namespace' := ⟨ns⟩, image
-                 port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env
-                 secretEnv := .unknown }
-      | .aws => return { name := h.raw, namespace' := ⟨""⟩, image := ""
-                         port := .unknown, minScale := .unknown, maxScale := .unknown
-                         memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
-                         env := .unknown, secretEnv := .unknown }
-
+  read := liveRead provider creds
   create
     | .objectStore, spec => do
       match provider with

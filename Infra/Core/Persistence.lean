@@ -5,8 +5,10 @@ import Lean.Data.Json
   Caching the observed world on local disk.
 
   One JSON file per `(provider, kind)`: an object mapping each fleet key's `Keys.name` to that
-  resource's serialised `ObservedOf`. Lives under a gitignored root because it can hold values
-  pulled through the `secrets` kind — see `docs/persistence.md`.
+  resource's serialised `ObservedOf`. Gitignored because it is provider-computed noise that
+  changes on every pull, *not* because it holds secrets — it cannot. `SecretsObserved` is a
+  handle and a version, no `ObservedOf` has a value field, and `Backend.read` for `.secrets`
+  never fetches one. See `docs/persistence.md`.
 
   Only the *observed* half of a `Sighting` is cached, not the reported
   configuration. The cache is a record of what was last seen; the configuration
@@ -45,11 +47,15 @@ private def rowsAt {κ : Keys} (es : List (CachedEntry κ)) (p : ProviderId) (k 
     `destroy`, the cache still listed every resource that had just been deleted, and went on
     doing so indefinitely, because nothing ever wrote that path again.
 
-    Nothing *reads* the cache today (`load` has no callers; the engine plans from a fresh
-    `pull`), so no plan was ever wrong because of this. What it wrecked was the cache's value as
-    a record: it is the thing a human or an external tool looks at to see what a fleet last
-    observed, and it was reporting resources that no longer existed. It fooled the author of this
-    comment into asserting that two terminated EC2 instances were still running.
+    When this was written nothing read the cache, so no plan could be wrong
+    because of it. That is no longer true, and the stakes went up accordingly:
+    `Engine.pullEntries` now loads the cache on every pull and takes the
+    `ObservedOf` half of each resource from it, so a cache that reports a
+    deleted resource as present is a cache that can hand a stale handle to an
+    update. What the bug originally wrecked was only the cache's value as a
+    record — the thing a human reads to see what a fleet last observed. It
+    fooled the author of this comment into asserting that two terminated EC2
+    instances were still running.
 
     Deleting is guarded by `pathExists` rather than caught, so a genuine permission error still
     surfaces instead of being swallowed. -/
@@ -67,8 +73,12 @@ def save {κ : Keys} (root : System.FilePath) (es : List (CachedEntry κ)) : IO 
         IO.FS.writeFile path (Json.mkObj rows).compress
 
 /-- A missing file means "nothing cached yet" rather than an error — that is exactly the state
-    before the first pull. A cached name the current fleet no longer declares is skipped: the
-    key type is the source of truth about what the fleet contains, not the cache. -/
+    before the first pull.
+
+    A cached name the current fleet no longer declares is skipped, because a `CachedEntry` is
+    indexed by `κ.Key` and so has nowhere to put one. That is a property of this type, not a
+    statement about membership: what a fleet *manages* is `Infra.Core.Ledger`'s business, and it
+    is precisely the row this function cannot represent. -/
 def load {κ : Keys} (root : System.FilePath) : IO (List (CachedEntry κ)) := do
   let mut acc : List (CachedEntry κ) := []
   for p in Finite.elems (α := ProviderId) do
@@ -79,7 +89,7 @@ def load {κ : Keys} (root : System.FilePath) : IO (List (CachedEntry κ)) := do
         let json ← orThrow path (Json.parse contents)
         let obj ← orThrow path json.getObj?
         for (nm, v) in obj.toList do
-          match (Finite.elems (α := κ.Key p k)).find? (fun key => κ.name p k key == nm) with
+          match κ.keyOfName? p k nm with
           | some key =>
             let o ← orThrow path (fromJson? (α := ObservedOf k) v)
             acc := ⟨p, k, key, o⟩ :: acc

@@ -1,5 +1,6 @@
 import Infra.Core.Settle
 import Infra.Core.Fleet
+import Infra.Core.Ledger
 
 /-
   What reconciling a `Plan` against a `World` asks the providers to do, and in what order.
@@ -16,6 +17,37 @@ inductive Action (κ : Keys) where
   | update  (p : ProviderId) (k : Kind) : κ.Key p k → Action κ
   | replace (p : ProviderId) (k : Kind) : κ.Key p k → Action κ   -- immutable field changed
   | delete  (p : ProviderId) (k : Kind) : κ.Key p k → Action κ
+  /-- Destroy a resource this fleet *used* to declare.
+
+      Addressed by name and region rather than by a key, because there is no
+      key: its line was deleted from the declaration, so `κ.Key p k` has no
+      inhabitant for it any more. That is the whole reason this constructor
+      exists and the reason the ledger stores strings — see
+      `Infra.Core.Ledger.Row`.
+
+      Everything needed to carry it out is here: `Backend.delete` takes a
+      `Handle k`, which wraps the name, and `region` is what routes the call. -/
+  | deleteOrphan (p : ProviderId) (k : Kind) (name : String) (region : String) : Action κ
+  /-- Stop managing a resource without destroying it: drop its ledger row and
+      leave the cloud alone.
+
+      The counterpart of Terraform's `removed { … lifecycle { destroy = false }
+      }`. It is an action rather than a silent ledger edit so that it appears
+      in a plan before it happens, which is the reason HashiCorp gives for
+      preferring `removed` over `terraform state rm`.
+
+      No region, because nothing is called. -/
+  | forget (p : ProviderId) (k : Kind) (name : String) : Action κ
+
+/-- The resource an action points at, outside the key family.
+
+    Every total match over `Action` wants this, and before it existed the
+    `(cloud, kind, name)` triple was rebuilt inline at four sites, each with
+    its own hand-written three-clause equality. -/
+def Action.address {κ : Keys} : Action κ → ProviderId × Kind × String
+  | .create p k key | .update p k key | .replace p k key | .delete p k key =>
+    (p, k, κ.name p k key)
+  | .deleteOrphan p k nm _ | .forget p k nm => (p, k, nm)
 
 /-- The environment a plan's expressions resolve against: whatever already
     exists in the world.
@@ -38,7 +70,7 @@ def envOfWorld {κ : Keys} (W : World κ) : Env κ.Key where
     exist yet) is reported as an update rather than skipped: the reference will
     resolve once its dependency is created, and silently dropping the action
     would leave the resource unreconciled. -/
-def actions {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) :=
+def actionsDeclared {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) :=
   let env := envOfWorld W
   (Finite.elems (α := ProviderId)).flatMap fun p =>
     (Finite.elems (α := Kind)).flatMap fun k =>
@@ -61,6 +93,38 @@ def actions {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) :=
             | none                 => none                      -- already right
             | some .mutable        => some (.update p k key)
             | some .forcesReplace  => some (.replace p k key)
+
+/-- What to do about resources the ledger records and the declaration no longer
+    names.
+
+    A row still claimed by a key is not an orphan and is handled by
+    `actionsDeclared`. A row named in `forgets` is released rather than
+    destroyed. Everything else the declaration has dropped gets destroyed,
+    which is what makes deleting a line mean what it reads like.
+
+    `forgets` cannot overlap the declared names: the `forget` declaration
+    discharges `Assert (!claimedByKey …)` at compile time, so a `forget` for
+    something still declared does not elaborate. -/
+def actionsOrphaned (κ : Keys) (ledger : List Ledger.Row)
+    (forgets : List (Released κ)) : List (Action κ) :=
+  ledger.filterMap fun r =>
+    if claimedByKey κ r.cloud r.kind r.name then
+      none
+    else if forgets.any (·.isAt r.cloud r.kind r.name) then
+      some (.forget r.cloud r.kind r.name)
+    else
+      some (.deleteOrphan r.cloud r.kind r.name r.region)
+
+/-- Everything reconciling this target asks for: the declared resources, then
+    the ones the declaration has dropped.
+
+    `ledger` and `forgets` default to empty so that a pure question about a
+    declaration alone — which is what every `#guard` in `example/` asks — needs
+    neither. The engine passes the real ones. -/
+def actions {κ : Keys} (T : Plan κ) (W : World κ)
+    (ledger : List Ledger.Row := []) (forgets : List (Released κ) := []) :
+    List (Action κ) :=
+  actionsDeclared T W ++ actionsOrphaned κ ledger forgets
 
 /-- The dependency edges of the creation graph.
 

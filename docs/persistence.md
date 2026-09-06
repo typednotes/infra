@@ -63,12 +63,24 @@ in front of the Lean source, rather than replacing it as the source of truth.
 These were previously open questions; each is now settled and implemented in
 `Infra.Core.Persistence`.
 
-- **Location: a gitignored local directory, not the git working tree.** The cache lives
-  under `.infra/` (`.gitignore`d), not alongside target-state Lean source. Unlike target
-  state, the current-state cache can hold values pulled through the `secrets` kind — committing
-  it would leak secrets into git history. This matches Terraform's own guidance against
-  committing `terraform.tfstate`. Drift is therefore not visible via `git diff`; surfacing it is
-  the engine's job (`Infra.Core.actions`), not source control's.
+- **Location: a gitignored local directory, not the git working tree.** Both
+  the observation cache and the membership ledger live under `.infra/`, and
+  neither is committed. Drift is therefore not visible via `git diff`;
+  surfacing it is the engine's job (`Infra.Core.actions`), not source
+  control's.
+
+  A committed ledger was tried and reverted; see "Membership is not a committed
+  ledger" below for why, because the reasoning generalises.
+
+  *This bullet used to say the cache is gitignored because it "can hold values
+  pulled through the `secrets` kind". That was never true, and it mattered,
+  because it was the stated reason for the layout.* `SecretsObserved` is
+  `{ handle, version }`, no `ObservedOf` has a value field, `Backend.read` for
+  `.secrets` deliberately never fetches one, and `Backend.secretValue`'s result
+  is handed to one create/update call and "never stored, cached, or returned
+  outward". The cache cannot leak a secret because it never holds one. It stays
+  gitignored for a different and weaker reason: it is provider-computed noise
+  that changes on every pull, and nothing is lost by regenerating it.
 - **Layout: one JSON file per `(provider, kind)`, object-keyed by the fleet key's name.**
   `Persistence.statePath root p k` resolves to `<root>/<provider>/<kind>.json`, e.g.
   `.infra/aws/object-store.json`. One file per object would fragment into many trivially small
@@ -89,10 +101,12 @@ These were previously open questions; each is now settled and implemented in
 - **What is cached is `ObservedOf`, never a target.** Observed state is provider-computed and so
   never `Partial`; targets live in Lean source under version control. `Partial` does have a JSON
   encoding (`unknown` ↦ `null`) for when a partially-known target does need serialising.
-- **The cache is not the source of truth about fleet membership.** `load` skips a cached name
-  the current fleet no longer declares, and `pullEntries` keeps only resources some fleet key
-  claims. The key types decide what a target manages — which is what stops a real `list` against
-  a populated account from turning into a pile of proposed deletions.
+- **Membership is a committed ledger, and it *is* the source of truth.**
+  Superseded decision: this bullet used to say the opposite, that the key types
+  alone decide what a target manages and `load` skips any cached name the
+  current fleet no longer declares. That is what made deleting a line from a
+  declaration leave the resource running, which is not what a declarative tool
+  should do. See "Membership is a committed ledger" below for the replacement.
 - **Backend: plain files, no DB, for now.** There's no concrete scale or concurrent-access
   requirement yet (single operator, not a team or CI fleet sharing state). Plain files satisfy
   today's need; the DB option from the section above remains available as a second
@@ -121,3 +135,100 @@ believed.
 
 `Main.lean` checks it — saving nothing must load back nothing — and the live
 test asserts the same after a real `destroy`.
+
+## Membership is not a committed ledger
+
+Two questions were conflated, and separating them is the whole of this section:
+
+: *What does this fleet manage?*
+
+    Intent. It changes only when a human edits something. Answered by the
+    **ledger**.
+
+: *What did the cloud last look like?*
+
+    Observation. It changes on every pull, and is provider-computed. Answered
+    by the **cache**.
+
+Terraform keeps both in one `.tfstate`. Splitting them made it *look* as
+though the membership half could be committed, because it holds nothing but
+names and demonstrably no secrets. That was the wrong conclusion, and the
+reason is worth stating plainly because it is easy to talk yourself into:
+
+**Membership is not intent.** Intent is what you wrote in the declaration. A
+ledger row appears because a resource *was created*, which is an event at apply
+time on whatever machine ran the apply. Committing it therefore requires a run
+to write back to the branch it was applied from: push permissions for CI, races
+with concurrent merges, and a loop unless carefully guarded. Terraform keeps
+state remote rather than committed for exactly this reason.
+
+So the ledger is local and disposable, and membership is *derived* instead,
+from three things a human authors and no run has to write back: the realm, an
+inclusion marker on each created resource, and an exclusion snapshot. See
+`Infra.Core.Ownership`, which also records which way each of those fails.
+
+| | Ledger | Cache |
+|---|---|---|
+| Holds | `(provider, kind, name, region)` | `ObservedOf` per resource |
+| Path | `.infra/<exe>/infra.ledger.json` | `.infra/<exe>/<provider>/<kind>.json` |
+| Committed | no | no |
+| Written by | `apply` and `destroy`, never `refresh` | every `refresh` |
+| If lost | a `discover` rebuilds it from the marker | nothing. One re-read restores it |
+
+Three consequences worth stating outright.
+
+**A row is keyed by name, not by a fleet key.** `CachedEntry κ` is indexed by
+`κ.Key p k`, so it structurally cannot hold a row for a resource the current
+declaration does not mention — which is exactly the row that matters here.
+`Ledger.Row` is therefore a plain record of strings and enums, deliberately
+outside the key family. This is the one place in the library where *not* using
+a dependent index is the point: the ledger has to be able to name something the
+types no longer can.
+
+**The region is part of the row, and has to be.** Placement comes from the
+declaration (`myFleet.regions`). Once the line is deleted there is nothing left
+to say where the resource was, and `Backends.backendFor` needs that to route
+the delete. A ledger row without a region is undeletable in a multi-region
+fleet.
+
+**Deleting an orphan needs no observation at all.** `Backend.delete` takes a
+`Handle k`, and `Handle` is a wrapper over `String`. So `(provider, kind, name,
+region)` is sufficient for the entire destroy path, which is why the ledger can
+be this small and why losing the cache is survivable.
+
+### Leaving the ledger without being destroyed
+
+`forget` in a declaration drops a row from the ledger and does not touch the
+cloud. It is the counterpart of Terraform's `removed { … lifecycle { destroy =
+false } }`, and it is spelled as a declaration rather than a command for the
+reason HashiCorp gives for preferring `removed` over `terraform state rm`: it
+shows up in a plan before it happens, and in a diff when it is reviewed.
+
+### Concurrency, stated rather than solved
+
+Nothing here locks. Two applies at once against one account can interleave, and
+the local ledger of each will disagree with the other. What keeps that from
+being silent is that neither is authoritative: the marker on the resource is,
+and a `discover` reconciles both. This is inside the scope this document
+already assumes (single operator, not a team or CI fleet sharing state). Remote
+state with a lock remains available behind the same `load`/`save` interface as
+the DB option above, and is the answer if that scope grows.
+
+### The safety gate
+
+An authoritative ledger has a known failure shape, and it is not hypothetical:
+HashiCorp deprecated `terraform refresh` because misconfigured credentials could
+make it read every managed object as deleted, then destroy them all with no
+confirmation. The same hazard exists here the moment the ledger decides
+membership and an observation can mean "gone".
+
+Two defences, both required:
+
+1. `Engine.readsAsAbsent` stays as narrow as it is: a curated list of
+   not-found codes, matched by substring, wrong only by omission. A permission
+   error must never read as absent. An unrecognised code surfaces as a hard
+   error, which is the safe direction.
+2. `apply` refuses a plan that would delete more than half the ledger unless
+   the operator passes a flag. A plan that deletes everything is either a real
+   teardown, in which case `destroy` is the verb for it, or a credentials
+   problem.

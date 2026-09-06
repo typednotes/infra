@@ -135,20 +135,73 @@ def secretValueVar : String := "CI_TESTS_INFRA_SECRET"
     change it in a fork. -/
 def bucketSuffix : String := "7c1f9a2e"
 
-fleet awsLive in ireland where
+/-! ## Three stages per cloud, and the same shape on all three
+
+  The live legs used to be one declaration each: create it, check it converged,
+  destroy it. That exercises `create` and `delete` and nothing in between —
+  and, more importantly, nothing about *membership*. A resource is only ever
+  destroyed by asking for an empty target, which is a different code path from
+  the one an operator actually uses, which is editing a file.
+
+  So each cloud now runs a **sequence of declarations**, applied in order
+  against one ledger:
+
+  | Stage | What it declares | What that has to make happen |
+  |---|---|---|
+  | 1 `full` | the whole fleet | `create`, and a dependency order that works |
+  | 2 `trimmed` | two resources dropped, one field changed, one added | `deleteOrphan` for the dropped, `update` for the changed, `create` for the added |
+  | 3 `empty` | nothing at all | `deleteOrphan` for everything left |
+
+  Stage 2 is the one worth having, and it is the one nothing tested before. Its
+  dropped resources have no key in stage 2's key family at all — their lines
+  are *gone*, exactly as if a person had deleted them — so the only thing that
+  knows they exist is the ledger. If membership were still derived from the
+  declaration, stage 2 would silently abandon them and stage 3 would have
+  nothing to clean up, and both stages would pass while leaking two billable
+  resources per cloud. The assertion that catches that is in `liveSequence`:
+  after each stage the account must contain *exactly* what the stage declares.
+
+  Stage 3 is `apply` against a declaration with no resources in it, not the
+  `destroy` verb. Those are the same operation — see `Plan.absent` — and this
+  is the half that had never run.
+
+  ### The dependency graph, identical on all three clouds
+
+  Five secrets, shaped to be more than a chain:
+
+      base ──┬──▶ a ──┐
+             ├──▶ b ──┼──▶ sink ──▶ tail
+             └────────┘
+
+  A fan-out of two from `base`, a fan-in of three on `sink` (including a
+  redundant direct edge from `base`, which the two paths through `a` and `b`
+  already imply), and a four-deep chain `base → a → sink → tail`. It is the
+  same shape `Infra/Demo.lean`'s `dagFleet` checks offline against a
+  recomputed topological order, so the offline and live tests agree on what a
+  hard graph looks like. Every edge comes from `HasDeps SecretsSpec`, so all
+  five are created in one apply and deleted in the reverse of that order.
+
+  Names are prefixed `ci-tests-infra-` and, where a cloud's namespace is wider
+  than the project, suffixed — see the notes on `bucketSuffix` and on
+  Scaleway's registry namespaces below. -/
+
+/-! ### Stage 1: the whole fleet -/
+
+fleet awsFull in ireland where
   provider aws where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
     resource secrets "ci-tests-infra-secret" as awsBase
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    -- Two secrets composed from the same one: a chain (base → derived) and a
-    -- fan-out (one node with two dependents). Both edges come from
-    -- `HasDeps SecretsSpec`'s `depsReq s.valueFrom`, and both force the base
-    -- to be created first and deleted last — in one apply, with no operator
-    -- pasting a value in between.
-    resource secrets "ci-tests-infra-derived-a"
+    resource secrets "ci-tests-infra-a" as awsA
       { valueFrom := composed expr!"a:{secretValueOf awsBase}" }
-    resource secrets "ci-tests-infra-derived-b"
+    resource secrets "ci-tests-infra-b" as awsB
       { valueFrom := composed expr!"b:{secretValueOf awsBase}" }
+    -- Fan-in of three, one edge of which is redundant.
+    resource secrets "ci-tests-infra-sink" as awsSink
+      { valueFrom := composed
+          expr!"{secretValueOf awsA}|{secretValueOf awsB}|{secretValueOf awsBase}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf awsSink}" }
     resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
     resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
     -- Both bucket kinds: they differ in Object Lock, which is creation-time
@@ -159,15 +212,47 @@ fleet awsLive in ireland where
       { description := "created and destroyed by the infra live test" }
     resource iam "ci-tests-infra-user" {}
 
-fleet scalewayLive in paris where
+/-! ### Stage 2: two resources dropped, one changed, one added
+
+  `ci-tests-infra-b` and `ci-tests-infra-sg` are simply absent below, which
+  also shortens the graph: with `b` gone, `sink` fans in on two instead of
+  three. `queues`' visibility timeout goes from 30 to 60, which is a mutable
+  field and so an `update` rather than a replace. And `ci-tests-infra-late`
+  is new. -/
+
+fleet awsTrimmed in ireland where
+  provider aws where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 60 }
+    resource secrets "ci-tests-infra-secret" as awsBase'
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as awsA'
+      { valueFrom := composed expr!"a:{secretValueOf awsBase'}" }
+    resource secrets "ci-tests-infra-sink" as awsSink'
+      { valueFrom := composed expr!"{secretValueOf awsA'}|{secretValueOf awsBase'}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf awsSink'}" }
+    resource secrets "ci-tests-infra-late"
+      { valueFrom := composed expr!"late:{secretValueOf awsBase'}" }
+    resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
+    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
+    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
+      { versioning := true, objectLock := true }
+    resource iam "ci-tests-infra-user" {}
+
+fleet scalewayFull in paris where
   provider scaleway where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
     resource secrets "ci-tests-infra-secret" as scwBase
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    resource secrets "ci-tests-infra-derived-a"
+    resource secrets "ci-tests-infra-a" as scwA
       { valueFrom := composed expr!"a:{secretValueOf scwBase}" }
-    resource secrets "ci-tests-infra-derived-b"
+    resource secrets "ci-tests-infra-b" as scwB
       { valueFrom := composed expr!"b:{secretValueOf scwBase}" }
+    resource secrets "ci-tests-infra-sink" as scwSink
+      { valueFrom := composed
+          expr!"{secretValueOf scwA}|{secretValueOf scwB}|{secretValueOf scwBase}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf scwSink}" }
     -- The suffix is here for the same reason it is on the buckets, and the
     -- reason is not obvious until you look at the endpoint: a Scaleway
     -- registry namespace's name *is* its hostname path —
@@ -191,11 +276,12 @@ fleet scalewayLive in paris where
       { description := "created and destroyed by the infra live test" }
     resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrs
       { description := "created and destroyed by the infra live test" }
-    -- Fan-in: this depends on the namespace above (a *key* reference, via
-    -- `depsKey`) and on the base secret (via `depsKeys s.secretEnv`), so two
-    -- edges of two different provenances converge on one resource. It is the
-    -- only place the live test exercises `depsKey`/`depsKeys` rather than an
-    -- expression reference, and teardown has to reverse both.
+    -- Fan-in of a *different* provenance from the secrets graph: this depends
+    -- on the namespace above (a key reference, via `depsKey`) and on the base
+    -- secret (via `depsKeys s.secretEnv`), so two edges of two different kinds
+    -- converge on one resource. It is the only place the live test exercises
+    -- `depsKey`/`depsKeys` rather than an expression reference, and teardown
+    -- has to reverse both.
     --
     -- A public image, which is what makes this includable at all: Serverless
     -- Containers can pull from an external registry, so nothing has to be
@@ -210,6 +296,29 @@ fleet scalewayLive in paris where
       , timeoutSec := 60
       , secretEnv  := [("BASE", scwBase)] }
 
+/-! Stage 2 drops `b` and the container — the latter deliberately, because it
+  is the resource with the two key-typed edges, so dropping it makes an orphan
+  whose deletion has to precede a namespace that is *still declared*. That is
+  the ordering case a single-stage test cannot produce. -/
+fleet scalewayTrimmed in paris where
+  provider scaleway where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 60 }
+    resource secrets "ci-tests-infra-secret" as scwBase'
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as scwA'
+      { valueFrom := composed expr!"a:{secretValueOf scwBase'}" }
+    resource secrets "ci-tests-infra-sink" as scwSink'
+      { valueFrom := composed expr!"{secretValueOf scwA'}|{secretValueOf scwBase'}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf scwSink'}" }
+    resource secrets "ci-tests-infra-late"
+      { valueFrom := composed expr!"late:{secretValueOf scwBase'}" }
+    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
+    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
+    resource scalewayFunctionNamespace "ci-tests-infra-fns"
+      { description := "created and destroyed by the infra live test" }
+    resource scalewayContainerNamespace "ci-tests-infra-ctrs"
+      { description := "created and destroyed by the infra live test" }
 
 /-! GCP's leg used to be expected to fail: there was no live GCP backend, so
     it raised on the first call, and this comment said the day one landed the
@@ -217,22 +326,28 @@ fleet scalewayLive in paris where
     a Pub/Sub topic — see `Infra.Providers.Gcp.PubSub`.
 
     Note what is *not* asserted as a result. A Pub/Sub topic has no visibility
-    timeout — that belongs to a subscription — so `visibilityTimeoutSec := 30`
-    below is declared, carried through the plan, and then reported `unknown` by
-    the backend. The convergence check still means something, because an
-    unknown field is not a divergence; it just does not mean that 30 was
-    stored anywhere. It is kept identical to the other two fleets so the three
-    legs differ only in the cloud they name. -/
+    timeout — that belongs to a subscription — so `visibilityTimeoutSec` below
+    is declared, carried through the plan, and then reported `unknown` by the
+    backend. The convergence check still means something, because an unknown
+    field is not a divergence; it just does not mean the number was stored
+    anywhere. In particular stage 2's change from 30 to 60 is a real `update`
+    on AWS and Scaleway and a no-op here, which is why the stage assertions
+    are about *which resources exist* rather than about action counts. -/
 
-fleet gcpLive in paris where
+fleet gcpFull in paris where
   provider gcp where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
     resource secrets "ci-tests-infra-secret" as gcpBase
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    resource secrets "ci-tests-infra-derived-a"
+    resource secrets "ci-tests-infra-a" as gcpA
       { valueFrom := composed expr!"a:{secretValueOf gcpBase}" }
-    resource secrets "ci-tests-infra-derived-b"
+    resource secrets "ci-tests-infra-b" as gcpB
       { valueFrom := composed expr!"b:{secretValueOf gcpBase}" }
+    resource secrets "ci-tests-infra-sink" as gcpSink
+      { valueFrom := composed
+          expr!"{secretValueOf gcpA}|{secretValueOf gcpB}|{secretValueOf gcpBase}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf gcpSink}" }
     resource imageRegistry "ci-tests-infra-images" {}
     resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
     -- `compute` becomes testable here and nowhere else, because Cloud Run will
@@ -259,116 +374,34 @@ fleet gcpLive in paris where
     -- one fails every apply rather than one of them.
     resource iam "ci-tests-infra-sa" {}
 
--- One guard per (fleet, kind): the count is what would silently drift if a
--- resource were added to a fleet and forgotten here. It has already caught two
--- scripted edits that added resources to some fleets and not others.
-#guard awsLive.keys.count .aws .queues = 1
-#guard awsLive.keys.count .aws .secrets = 3
-#guard awsLive.keys.count .aws .imageRegistry = 1
-#guard awsLive.keys.count .aws .objectStore = 1
-#guard awsLive.keys.count .aws .s3Bucket = 1
-#guard awsLive.keys.count .aws .securityGroup = 1
-#guard awsLive.keys.count .aws .iam = 1
+/-! Stage 2 drops `b` and Cloud Run. Dropping `compute` is the expensive-orphan
+  case: it is the only kind here that costs by the second, so a stage that
+  failed to delete it would show up on a bill rather than in a listing. -/
+fleet gcpTrimmed in paris where
+  provider gcp where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 60 }
+    resource secrets "ci-tests-infra-secret" as gcpBase'
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as gcpA'
+      { valueFrom := composed expr!"a:{secretValueOf gcpBase'}" }
+    resource secrets "ci-tests-infra-sink" as gcpSink'
+      { valueFrom := composed expr!"{secretValueOf gcpA'}|{secretValueOf gcpBase'}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf gcpSink'}" }
+    resource secrets "ci-tests-infra-late"
+      { valueFrom := composed expr!"late:{secretValueOf gcpBase'}" }
+    resource imageRegistry "ci-tests-infra-images" {}
+    resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
+    resource iam "ci-tests-infra-sa" {}
 
-#guard scalewayLive.keys.count .scaleway .queues = 1
-#guard scalewayLive.keys.count .scaleway .secrets = 3
-#guard scalewayLive.keys.count .scaleway .imageRegistry = 1
-#guard scalewayLive.keys.count .scaleway .objectStore = 1
-#guard scalewayLive.keys.count .scaleway .scalewayFunctionNamespace = 1
-#guard scalewayLive.keys.count .scaleway .scalewayContainerNamespace = 1
-#guard scalewayLive.keys.count .scaleway .scalewayContainer = 1
--- And deliberately none: adding one would silently require organization-level
--- IAM rights that the isolated CI project cannot contain. See the fleet.
-#guard scalewayLive.keys.count .scaleway .iam = 0
+/-! ### Stage 3: nothing at all
 
-#guard gcpLive.keys.count .gcp .queues = 1
-#guard gcpLive.keys.count .gcp .secrets = 3
-#guard gcpLive.keys.count .gcp .imageRegistry = 1
-#guard gcpLive.keys.count .gcp .objectStore = 1
-#guard gcpLive.keys.count .gcp .iam = 1
-#guard gcpLive.keys.count .gcp .compute = 1
+  One declaration, shared by all three clouds, that declares no resources. Its
+  key family is empty, so it cannot name anything — which is the point:
+  everything the ledger records becomes an orphan, and orphans are what get
+  destroyed. This is `apply` reaching the same place `destroy` does. -/
 
--- Every name carries the prefix, on every kind. Checked per kind rather than
--- in aggregate, because a name that escaped the convention would otherwise be
--- invisible until it leaked into an account.
-#guard awsLive.names.aws.queues.all (ciPrefix.isPrefixOf ·)
-#guard awsLive.names.aws.secrets.all (ciPrefix.isPrefixOf ·)
-#guard awsLive.names.aws.imageRegistry.all (ciPrefix.isPrefixOf ·)
-#guard awsLive.names.aws.objectStore.all (ciPrefix.isPrefixOf ·)
-#guard awsLive.names.aws.s3Bucket.all (ciPrefix.isPrefixOf ·)
-#guard awsLive.names.aws.securityGroup.all (ciPrefix.isPrefixOf ·)
-#guard awsLive.names.aws.iam.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.queues.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.secrets.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.imageRegistry.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.objectStore.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.scalewayFunctionNamespace.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.scalewayContainerNamespace.all (ciPrefix.isPrefixOf ·)
-#guard scalewayLive.names.scaleway.scalewayContainer.all (ciPrefix.isPrefixOf ·)
-#guard gcpLive.names.gcp.queues.all (ciPrefix.isPrefixOf ·)
-#guard gcpLive.names.gcp.secrets.all (ciPrefix.isPrefixOf ·)
-#guard gcpLive.names.gcp.imageRegistry.all (ciPrefix.isPrefixOf ·)
-#guard gcpLive.names.gcp.objectStore.all (ciPrefix.isPrefixOf ·)
-#guard gcpLive.names.gcp.iam.all (ciPrefix.isPrefixOf ·)
-#guard gcpLive.names.gcp.compute.all (ciPrefix.isPrefixOf ·)
-
--- EC2 constrains a security group's description to
---     a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
--- and an apostrophe is not in it, which "created and destroyed by infra's
--- live test" fell foul of on the first live run that reached this resource.
--- The description is a compile-time constant, so an invalid one fails every
--- apply — which makes it exactly the sort of thing to check here.
-private def ec2DescriptionOk (d : String) : Bool :=
-  d.length < 256 && d.all (fun c => c.isAlphanum || " ._-:/()#,@[]+=&;{}!$*".any (· == c))
-
-#guard ec2DescriptionOk "created and destroyed by the infra live test"
-#guard ec2DescriptionOk "created and destroyed by infra's live test" = false
-
--- The bucket names carry the uniqueness suffix, which is the whole reason
--- buckets could be included at all.
-#guard awsLive.names.aws.objectStore.all (·.endsWith bucketSuffix)
-#guard awsLive.names.aws.s3Bucket.all (·.endsWith bucketSuffix)
-#guard scalewayLive.names.scaleway.objectStore.all (·.endsWith bucketSuffix)
--- Scaleway's registry namespace name is its hostname path, so it is unique per
--- region across projects — global in the same way a bucket name is, and it
--- needs the same suffix. AWS's ECR repositories are account-scoped and GCP's
--- Artifact Registry repositories are project-scoped, so neither does.
-#guard scalewayLive.names.scaleway.imageRegistry.all (·.endsWith bucketSuffix)
-#guard gcpLive.names.gcp.objectStore.all (·.endsWith bucketSuffix)
-
--- No plaintext secret is committed, in any of the three, including the two
--- composed ones. Decidable, so the compiler establishes it rather than a
--- reviewer.
-#guard awsLive.plan.secretsAreSound
-#guard scalewayLive.plan.secretsAreSound
-#guard gcpLive.plan.secretsAreSound
-
--- Each fleet is single-cloud, so a run for one provider never authenticates
--- another — which is what lets the workflow pass one set of secrets.
-#guard awsLive.keys.providers = [.aws]
-#guard scalewayLive.keys.providers = [.scaleway]
-#guard gcpLive.keys.providers = [.gcp]
-
-/-! ## The dependency patterns, pinned offline before they are run live
-
-  Three shapes, and the point of testing them against a real account is that
-  each fails differently when ordering is wrong:
-
-  - **A chain.** `derived-a` composes the base secret's *value*, so the base
-    must exist and be readable before the derived one is written. Get this
-    backwards live and the create fails on a secret that is not there.
-  - **A fan-out.** `derived-a` and `derived-b` both depend on the same base, so
-    one node has two dependents — and on teardown, both must go before it.
-  - **A fan-in.** Scaleway's container depends on its namespace *and* on the
-    base secret, by two different mechanisms: `depsKey` for the namespace and
-    `depsKeys` for `secretEnv`. It is the only place here that exercises key
-    references rather than expression references.
-
-  The guards below pin the ordering in the plan, so a regression in the
-  scheduler is a compile error rather than something discovered against a
-  cloud. `liveRoundTrip` then checks the same fleets converge and tear down
-  for real.
--/
+fleet nothingAtAll where
 
 /-- Where a slot first appears in the create order, or `none`. -/
 private def createIndexOf {κ : Keys} (T : Plan κ) (slot : String) : Option Nat :=
@@ -383,22 +416,76 @@ private def before {κ : Keys} (T : Plan κ) (a b : String) : Bool :=
   | some i, some j => i < j
   | _,      _      => false
 
--- The chain, and the fan-out's two arms, on every cloud.
-#guard before awsLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-a"
-#guard before awsLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-b"
-#guard before scalewayLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-a"
-#guard before scalewayLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-b"
-#guard before gcpLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-a"
-#guard before gcpLive.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-derived-b"
+/-! ### Coverage, and the naming rule that makes debris identifiable -/
 
--- The fan-in: both of the container's dependencies are scheduled before it.
-#guard before scalewayLive.plan "container-namespace/ci-tests-infra-ctrs" "container/ci-tests-infra-ctr"
-#guard before scalewayLive.plan "secrets/ci-tests-infra-secret" "container/ci-tests-infra-ctr"
+/- Which kinds each cloud's stage 1 reaches, pinned per kind rather than as a
+   total so that dropping one is a failure and not just a smaller number. Five
+   secrets on every cloud: that is the DAG. -/
+#guard awsFull.keys.count .aws .queues = 1
+#guard awsFull.keys.count .aws .secrets = 5
+#guard awsFull.keys.count .aws .imageRegistry = 1
+#guard awsFull.keys.count .aws .objectStore = 1
+#guard awsFull.keys.count .aws .s3Bucket = 1
+#guard awsFull.keys.count .aws .securityGroup = 1
+#guard awsFull.keys.count .aws .iam = 1
+
+#guard scalewayFull.keys.count .scaleway .queues = 1
+#guard scalewayFull.keys.count .scaleway .secrets = 5
+#guard scalewayFull.keys.count .scaleway .imageRegistry = 1
+#guard scalewayFull.keys.count .scaleway .objectStore = 1
+#guard scalewayFull.keys.count .scaleway .scalewayFunctionNamespace = 1
+#guard scalewayFull.keys.count .scaleway .scalewayContainerNamespace = 1
+#guard scalewayFull.keys.count .scaleway .scalewayContainer = 1
+-- Zero on purpose, and the zero is the assertion: see the note where the
+-- fleet is declared for why Scaleway's IAM cannot be confined to a project.
+#guard scalewayFull.keys.count .scaleway .iam = 0
+
+#guard gcpFull.keys.count .gcp .queues = 1
+#guard gcpFull.keys.count .gcp .secrets = 5
+#guard gcpFull.keys.count .gcp .imageRegistry = 1
+#guard gcpFull.keys.count .gcp .objectStore = 1
+#guard gcpFull.keys.count .gcp .compute = 1
+#guard gcpFull.keys.count .gcp .iam = 1
+
+/- The symmetric core — same kinds, same names, same graph — is what makes the
+   three legs comparable. Each cloud then adds what only it can test. -/
+#guard awsFull.keys.count .aws .compute = 0        -- Lambda needs an ECR image
+#guard gcpFull.keys.count .gcp .s3Bucket = 0       -- an S3-only concept
+#guard awsFull.keys.count .aws .scalewayContainer = 0
+
+-- The fan-out's two arms, on every cloud.
+#guard before awsFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-a"
+#guard before awsFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-b"
+#guard before scalewayFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-a"
+#guard before scalewayFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-b"
+#guard before gcpFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-a"
+#guard before gcpFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-b"
+
+-- The fan-in of three on `sink`, including the redundant direct edge from
+-- `base` that the paths through `a` and `b` already imply.
+#guard before awsFull.plan "secrets/ci-tests-infra-a" "secrets/ci-tests-infra-sink"
+#guard before awsFull.plan "secrets/ci-tests-infra-b" "secrets/ci-tests-infra-sink"
+#guard before awsFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-sink"
+#guard before scalewayFull.plan "secrets/ci-tests-infra-b" "secrets/ci-tests-infra-sink"
+#guard before gcpFull.plan "secrets/ci-tests-infra-b" "secrets/ci-tests-infra-sink"
+
+-- And the four-deep chain: base → a → sink → tail. The last hop is what a
+-- fan-out-only graph would not have caught.
+#guard before awsFull.plan "secrets/ci-tests-infra-sink" "secrets/ci-tests-infra-tail"
+#guard before scalewayFull.plan "secrets/ci-tests-infra-sink" "secrets/ci-tests-infra-tail"
+#guard before gcpFull.plan "secrets/ci-tests-infra-sink" "secrets/ci-tests-infra-tail"
+#guard before awsFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-tail"
+
+-- The other fan-in, of a different provenance: the container's two edges are
+-- a key reference and a secret-value reference, not two expressions.
+#guard before scalewayFull.plan "container-namespace/ci-tests-infra-ctrs" "container/ci-tests-infra-ctr"
+#guard before scalewayFull.plan "secrets/ci-tests-infra-secret" "container/ci-tests-infra-ctr"
 
 -- And the negative direction, so the guards above are not passing for the
 -- trivial reason that everything is "before" everything.
-#guard before awsLive.plan "secrets/ci-tests-infra-derived-a" "secrets/ci-tests-infra-secret" = false
-#guard before scalewayLive.plan "container/ci-tests-infra-ctr" "container-namespace/ci-tests-infra-ctrs" = false
+#guard before awsFull.plan "secrets/ci-tests-infra-a" "secrets/ci-tests-infra-secret" = false
+#guard before awsFull.plan "secrets/ci-tests-infra-tail" "secrets/ci-tests-infra-sink" = false
+#guard before scalewayFull.plan "container/ci-tests-infra-ctr" "container-namespace/ci-tests-infra-ctrs" = false
 
 /-- Print a progress line and flush it.
 
@@ -487,119 +574,291 @@ def waitFor {κ : Keys} (label : String) (root : System.FilePath) (bs : Backends
         go n lastBeat
   go settleSeconds 0
 
-/-- Delete everything the fleet declares, and prove it is gone.
+/-- One declaration in a sequence, packed so a list can hold stages whose key
+    families differ.
 
-    Factored out of `liveRoundTrip` so the workflow's backstop can call it
-    without creating anything first — see `main`'s `destroy` argument. The two
-    callers must not drift: a backstop that tore down differently from the
-    round trip would be a second, less-tested code path on the one operation
-    where being wrong costs money. -/
-def liveTeardown {κ : Keys} (name : String) (target : Plan κ) (regions : Regions) :
+    They must differ: a stage that *drops* a resource has fewer keys than the
+    one before it, so `Plan κ` is a different type at each step. Bundling the
+    key family with everything derived from it is what lets the driver below
+    iterate over them, and it is the same trick the ledger plays — the record
+    of what is managed cannot be indexed by a key family that changes
+    underneath it. -/
+structure Stage where
+  label   : String
+  κ       : Keys
+  plan    : Plan κ
+  regions : Regions
+  forgets : List (Released κ)
+  /-- Every slot this stage declares, as `Engine.slotId` strings.
+
+      Derived from the key family rather than written out, so it cannot
+      disagree with the declaration: this is the list the account is checked
+      against after the stage settles. -/
+  declared : List String
+
+/-- Pack a declaration, deriving `declared` from its own keys. -/
+def stage {κ : Keys} (label : String) (plan : Plan κ) (regions : Regions)
+    (forgets : List (Released κ)) : Stage where
+  κ := κ
+  label := label
+  plan := plan
+  regions := regions
+  forgets := forgets
+  declared :=
+    (Finite.elems (α := ProviderId)).flatMap fun p =>
+      (Finite.elems (α := Kind)).flatMap fun k =>
+        (Finite.elems (α := κ.Key p k)).filterMap fun key =>
+          match plan.assign p k key with
+          | .present _ => some (Ledger.slotId p k (κ.name p k key))
+          | _          => none
+
+/-- Everything the ledger says is managed, as slot strings. -/
+def ledgerSlots (rows : List Ledger.Row) : List String :=
+  (Ledger.sorted rows).map Ledger.Row.slot
+
+/-- Apply one stage, wait for it to settle, and check the account holds exactly
+    what the stage declares — no more.
+
+    "No more" is the whole point of the sequence. A stage that drops a resource
+    must *destroy* it, and the only thing that knows the resource exists is the
+    ledger, because its line is gone from the declaration. If membership were
+    still read off the declaration, a dropped resource would be silently
+    abandoned: this stage would pass, the next would find nothing to clean up,
+    and the leak would show up on a bill. Comparing the ledger against
+    `declared` after every stage is what catches that. -/
+def runStage (name : String) (root : System.FilePath) (st : Stage) : IO Unit := do
+  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions
+  let rows ← Ledger.load root
+  progress s!"[{name}/{st.label}] applying ({st.declared.length} declared, \
+{rows.length} managed)…"
+  let entries ← observe (κ := st.κ) root bs
+  let store : Store st.κ :=
+    { root := some root, rows, forgets := st.forgets
+      regionOf := fun p k nm => (st.regions.codeFor p k nm).getD "" }
+  discard <| push bs st.plan (worldOf entries) { apply := true }
+    (edges := st.plan) (store := store) (seen := some entries)
+
+  -- Converged: a second apply would do nothing. Polled, because every cloud's
+  -- list API is eventually consistent and a resource created a moment ago may
+  -- simply not be visible yet — checking once tests the propagation delay
+  -- rather than this library, which is what the first live run of this test
+  -- actually did.
+  let after ← Ledger.load root
+  let outstanding ← waitFor s!"{name}/{st.label} converge" root bs
+    (fun w => (plan st.plan w after st.forgets).isEmpty)
+    (fun w => (plan st.plan w after st.forgets).map Action.render)
+  unless outstanding.isEmpty do
+    throw (IO.userError s!"[{name}/{st.label}] did not converge after \
+{settleSeconds}s: {String.intercalate ", " outstanding}")
+
+  -- And the ledger records exactly the declaration, which is what says the
+  -- dropped resources were destroyed rather than forgotten about.
+  let managed := ledgerSlots after
+  let expected := (st.declared.mergeSort fun a b => compare a b != .gt)
+  unless managed == expected do
+    let extra := managed.filter (!expected.contains ·)
+    let missing := expected.filter (!managed.contains ·)
+    throw (IO.userError s!"[{name}/{st.label}] the ledger and the declaration \
+disagree.\n  still managed but not declared: {String.intercalate ", " extra}\
+\n  declared but not managed: {String.intercalate ", " missing}")
+  progress s!"[{name}/{st.label}] converged; {managed.length} managed"
+
+/-- The stages for one cloud, ending in a declaration that names nothing.
+
+    That last stage is `apply` against an empty declaration, which is the same
+    operation `destroy` performs — see `Plan.absent` — and is the half that had
+    never run live. Everything the ledger holds becomes an orphan, and orphans
+    are what get destroyed. -/
+def stagesFor : String → Option (List Stage)
+  | "aws" => some
+    [ stage "full"    awsFull.plan      awsFull.regions      awsFull.forgets
+    , stage "trimmed" awsTrimmed.plan   awsTrimmed.regions   awsTrimmed.forgets
+    , stage "empty"   nothingAtAll.plan awsFull.regions      nothingAtAll.forgets ]
+  | "scaleway" => some
+    [ stage "full"    scalewayFull.plan    scalewayFull.regions    scalewayFull.forgets
+    , stage "trimmed" scalewayTrimmed.plan scalewayTrimmed.regions scalewayTrimmed.forgets
+    , stage "empty"   nothingAtAll.plan    scalewayFull.regions    nothingAtAll.forgets ]
+  | "gcp" => some
+    [ stage "full"    gcpFull.plan      gcpFull.regions      gcpFull.forgets
+    , stage "trimmed" gcpTrimmed.plan   gcpTrimmed.regions   gcpTrimmed.forgets
+    , stage "empty"   nothingAtAll.plan gcpFull.regions      nothingAtAll.forgets ]
+  | _ => none
+
+/-! ### The stages really are different declarations
+
+  Checked offline, because the live legs cost money and a sequence whose stages
+  happened to declare the same thing would pass every assertion while testing
+  nothing. Each cloud must drop something, keep something, and add something —
+  those are the three cases `runStage` distinguishes. -/
+
+private def slotsOf (st : Stage) : List String := st.declared
+
+private def dropped (a b : Stage) : List String :=
+  (slotsOf a).filter (!(slotsOf b).contains ·)
+
+private def added (a b : Stage) : List String :=
+  (slotsOf b).filter (!(slotsOf a).contains ·)
+
+/-- A stage by position, with an empty declaration as the fallback so a wrong
+    index fails a guard rather than failing to compile. -/
+private def at! (sts : List Stage) (i : Nat) : Stage :=
+  (sts.drop i).headD (stage "missing" nothingAtAll.plan {} nothingAtAll.forgets)
+
+private def awsStages := stagesFor "aws" |>.getD []
+private def scwStages := stagesFor "scaleway" |>.getD []
+private def gcpStages := stagesFor "gcp" |>.getD []
+
+/- Three stages per cloud, and the last one declares nothing at all — which is
+   what makes it `apply`-empty rather than a fourth mechanism. -/
+#guard awsStages.length = 3
+#guard scwStages.length = 3
+#guard gcpStages.length = 3
+#guard (at! awsStages 2).declared = []
+#guard (at! scwStages 2).declared = []
+#guard (at! gcpStages 2).declared = []
+
+/- Stage 2 drops exactly what its comment says, on each cloud. These are the
+   orphans: no key in stage 2 names them, so only the ledger can. -/
+#guard dropped (at! awsStages 0) (at! awsStages 1)
+     = ["aws/secrets/ci-tests-infra-b", "aws/security-group/ci-tests-infra-sg"]
+#guard dropped (at! scwStages 0) (at! scwStages 1)
+     = ["scaleway/secrets/ci-tests-infra-b", "scaleway/scaleway-container/ci-tests-infra-ctr"]
+#guard dropped (at! gcpStages 0) (at! gcpStages 1)
+     = ["gcp/compute/ci-tests-infra-run", "gcp/secrets/ci-tests-infra-b"]
+
+/- And adds one, so the stage is not purely subtractive: a sequence that only
+   ever removed things would never exercise a create after a delete. -/
+#guard added (at! awsStages 0) (at! awsStages 1) = ["aws/secrets/ci-tests-infra-late"]
+#guard added (at! scwStages 0) (at! scwStages 1) = ["scaleway/secrets/ci-tests-infra-late"]
+#guard added (at! gcpStages 0) (at! gcpStages 1) = ["gcp/secrets/ci-tests-infra-late"]
+
+/- Stage 3 drops everything stage 2 still held. -/
+#guard dropped (at! awsStages 1) (at! awsStages 2) = (at! awsStages 1).declared
+#guard added (at! awsStages 1) (at! awsStages 2) = []
+
+/- The symmetric core is the same on all three clouds: same kinds, same names,
+   same graph. Anything beyond it is a cloud that has something the others do
+   not, and those are commented where they are declared. -/
+private def coreSlots (cloud : String) : List String :=
+  [ s!"{cloud}/queues/ci-tests-infra-queue"
+  , s!"{cloud}/secrets/ci-tests-infra-secret", s!"{cloud}/secrets/ci-tests-infra-a"
+  , s!"{cloud}/secrets/ci-tests-infra-b", s!"{cloud}/secrets/ci-tests-infra-sink"
+  , s!"{cloud}/secrets/ci-tests-infra-tail" ]
+#guard (coreSlots "aws").all (at! awsStages 0).declared.contains
+#guard (coreSlots "scaleway").all (at! scwStages 0).declared.contains
+#guard (coreSlots "gcp").all (at! gcpStages 0).declared.contains
+
+/- Every resource any stage declares is named `ci-tests-infra-*`. This is a
+   safety property, not a style rule: it is what lets a human find debris from
+   a failed run, and what `ciPrefix` documents. A stage that declared something
+   unprefixed could leave a resource nobody would recognise as a test's. -/
+#guard (awsStages ++ scwStages ++ gcpStages).all fun st =>
+  st.declared.all fun slot => (slot.splitOn ciPrefix).length > 1
+
+/- The counts, read off the declarations rather than remembered. Eleven, eleven
+   and ten resources, spanning seven kinds on AWS, eight on Scaleway and six on
+   GCP. -/
+#guard (at! awsStages 0).declared.length = 11
+#guard (at! scwStages 0).declared.length = 11
+#guard (at! gcpStages 0).declared.length = 10
+
+/-- The teardown, on its own, for the workflow's backstop.
+
+    It is the last stage of the sequence and nothing else, which is what makes
+    it safe to re-run: the backstop used to re-run the *whole* command, on the
+    reasoning that destroy is idempotent — but a full run is a create *and* a
+    destroy, so a failed run was followed by a second create that failed the
+    same way and could leave more behind than it cleaned up. That is what the
+    first extended AWS run actually did.
+
+    Because the empty stage destroys whatever the *ledger* holds rather than
+    whatever some declaration names, it also cleans up after a run that failed
+    partway through a different stage. -/
+def liveTeardown (name : String) (regions : Regions) : IO Unit := do
+  let root : System.FilePath := ".infra" / s!"live-{name}"
+  runStage name root (stage "empty" nothingAtAll.plan regions nothingAtAll.forgets)
+  let rows ← Ledger.load root
+  unless rows.isEmpty do
+    throw (IO.userError s!"[{name}] torn down, but the ledger still lists \
+{rows.length} resource(s)")
+  progress s!"[{name}] torn down, and the ledger is empty"
+
+/-- Every stage in order, with the teardown guaranteed.
+
+    The final stage *is* the teardown, so a clean run ends with nothing left.
+    If any earlier stage fails, the teardown still runs, and both errors are
+    reported: a teardown failure that swallowed the real error is how a CI job
+    becomes a mystery and a bill. -/
+def liveSequence (name : String) (stages : List Stage) (regions : Regions) :
     IO Unit := do
-  let cacheRoot : System.FilePath := ".infra" / s!"live-{name}"
-  let (bs, _) ← Infra.Cli.liveFor κ regions
-  progress s!"[{name}] destroying…"
-  let w ← pull (κ := κ) cacheRoot bs
-  discard <| push bs (Plan.absent κ) w { apply := true } (edges := target)
-  -- Waiting for it to *appear* is not possible in general, so what this
-  -- asserts is that after the delete settles a fresh listing shows nothing —
-  -- and it polls to get there, because a destroy issued while a resource was
-  -- still invisible would find nothing to do and report success.
-  let leftover ← waitFor s!"{name} destroy" cacheRoot bs
-    (fun w => (actions (Plan.absent κ) w).isEmpty)
-    (fun w => (actions (Plan.absent κ) w).map Action.render)
-  unless leftover.isEmpty do
-    throw (IO.userError s!"[{name}] {leftover.length} resource(s) survived destroy \
-after {settleSeconds}s — look for 'ci-tests-infra-*' in the account")
-  let cached ← Persistence.load (κ := κ) cacheRoot
-  unless cached.isEmpty do
-    throw (IO.userError
-      s!"[{name}] destroyed, but the cache still lists {cached.length} resource(s)")
-  progress s!"[{name}] destroyed, and the cache is empty"
-
-/-- Create, check, and delete — with the delete guaranteed.
-
-    `apply` twice would be the stronger convergence check, but the second run
-    is what this asserts instead: after one apply, the plan must be empty.
-    That is the same property `example/MultiRegion.lean` guards offline, here
-    against a real account. -/
-def liveRoundTrip {κ : Keys} (name : String) (target : Plan κ) (regions : Regions) :
-    IO Unit := do
-  let cacheRoot : System.FilePath := ".infra" / s!"live-{name}"
-  let (bs, _) ← Infra.Cli.liveFor κ regions
-  progress s!"[{name}] creating…"
-  let world ← pull (κ := κ) cacheRoot bs
-  discard <| push bs target world { apply := true } (edges := target)
-
-  -- Teardown runs whether or not the checks below pass, and is the same code
-  -- the backstop runs.
-  let teardown : IO Unit := liveTeardown name target regions
-  let checks : IO Unit := do
-    -- Poll rather than read once. A cloud's list API is eventually consistent
-    -- — SQS's `ListQueues` explicitly so — and a resource created a moment ago
-    -- may simply not be visible yet. Checking immediately tests the API's
-    -- propagation delay rather than this library, which is what the first live
-    -- run of this test actually did.
-    let outstanding ← waitFor s!"{name} converge" cacheRoot bs
-      (fun w => (plan target w).isEmpty)
-      (fun w => (plan target w).map Action.render)
-    unless outstanding.isEmpty do
-      throw (IO.userError s!"[{name}] did not converge after {settleSeconds}s: \
-{String.intercalate ", " outstanding}")
-    progress s!"[{name}] converged: a second apply would do nothing"
-
-  match ← checks.toBaseIO with
-  | .ok _ => teardown
+  let root : System.FilePath := ".infra" / s!"live-{name}"
+  let body : IO Unit := stages.forM (runStage name root)
+  match ← body.toBaseIO with
+  | .ok _ =>
+    -- The last stage already emptied it; this asserts that rather than
+    -- assuming it.
+    let rows ← Ledger.load root
+    unless rows.isEmpty do
+      throw (IO.userError s!"[{name}] the sequence finished with \
+{rows.length} resource(s) still managed")
   | .error e =>
-    -- Report both. A teardown failure that swallowed the real error is how a
-    -- CI job becomes a mystery and a bill.
-    match ← teardown.toBaseIO with
+    match ← (liveTeardown name regions).toBaseIO with
     | .ok _     => throw e
     | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
 
 def usage : String :=
   "usage: lake test [-- <aws|scaleway|gcp> [destroy]]\n\n\
   With no argument:     the offline checks. No cloud, no credentials, no cost.\n\
-  With a provider:      creates eight to ten real resources, all named\n\
-                        'ci-tests-infra-*', checks the fleet converged, and\n\
-                        deletes them again.\n\
-  …plus 'destroy':      tears down and creates nothing. This is what CI's\n\
-                        backstop runs after a failed leg — the full command is\n\
-                        a create *and* a destroy, so re-running it to clean up\n\
-                        would create again.\n\n\
+  With a provider:      runs three declarations in sequence against one\n\
+                        ledger — the whole fleet, then a trimmed version, then\n\
+                        one that declares nothing — and checks after each that\n\
+                        the account holds exactly what that stage declares.\n\
+                        Ten or eleven real resources, all named\n\
+                        'ci-tests-infra-*'. The last stage destroys them.\n\
+  …plus 'destroy':      runs only the last stage. Safe to re-run: it destroys\n\
+                        whatever the *ledger* holds rather than whatever some\n\
+                        declaration names, so it also cleans up after a run\n\
+                        that died partway through. This is what CI's backstop\n\
+                        runs after a failed leg — the full command is a create\n\
+                        *and* a destroy, so re-running that to clean up would\n\
+                        create again.\n\n\
+  The middle stage is the one that earns the sequence: it drops two resources,\n\
+  so their lines are gone from the declaration entirely, and only the ledger\n\
+  knows they exist. If membership came from the declaration they would be\n\
+  silently abandoned and every assertion would still pass.\n\n\
   The secret's value is read from the environment, never from the fleet: a\n\
   committed literal would not compile, which is what `secretsAreSound`\n\
   proves. Set " ++ secretValueVar ++ " before running a live leg."
 
+/-- The placement to tear down with, per cloud. `liveTeardown` declares nothing,
+    so it has no `in` clause of its own to take one from. -/
+def regionsFor : String → Option Regions
+  | "aws"      => some awsFull.regions
+  | "scaleway" => some scalewayFull.regions
+  | "gcp"      => some gcpFull.regions
+  | _          => none
+
 def main (args : List String) : IO UInt32 := do
   match args with
   | [] =>
-    -- The safe default, and what `lake test` runs in ordinary CI.
-    Infra.Cli.offlinePlan awsLive.plan "offline checks — no cloud contacted"
-    IO.println "\nFor a live round trip: lake test -- <aws|scaleway|gcp>"
+    -- The safe default, and what `lake test` runs in ordinary CI. The stage
+    -- guards above have already run by now: they are `#guard`s, so they ran
+    -- while this file elaborated.
+    Infra.Cli.offlinePlan awsFull.plan "offline checks — no cloud contacted"
+    IO.println "\nFor a live sequence: lake test -- <aws|scaleway|gcp>"
     return 0
   | [p] =>
-    let run : IO Unit ← match p with
-      | "aws"      => pure (liveRoundTrip "aws" awsLive.plan awsLive.regions)
-      | "scaleway" => pure (liveRoundTrip "scaleway" scalewayLive.plan scalewayLive.regions)
-      | "gcp"      => pure (liveRoundTrip "gcp" gcpLive.plan gcpLive.regions)
-      | other      => throw (IO.userError s!"unknown provider '{other}'\n\n{usage}")
-    match ← run.toBaseIO with
-    | .ok _    => progress s!"[{p}] ok"; return 0
+    let some stages := stagesFor p
+      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+    let some regions := regionsFor p
+      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+    match ← (liveSequence p stages regions).toBaseIO with
+    | .ok _    => progress s!"[{p}] ok — all {stages.length} stages"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
-  -- Teardown without the round trip. The workflow's backstop used to re-run
-  -- the whole test, on the reasoning that destroy is idempotent — but `lake
-  -- test -- aws` is not a destroy, it is a create *and* a destroy. So a failed
-  -- run was followed by a second create, which failed the same way and could
-  -- leave more behind than it cleaned up. That is what the first extended AWS
-  -- run actually did.
   | [p, "destroy"] =>
-    let run : IO Unit ← match p with
-      | "aws"      => pure (liveTeardown "aws" awsLive.plan awsLive.regions)
-      | "scaleway" => pure (liveTeardown "scaleway" scalewayLive.plan scalewayLive.regions)
-      | "gcp"      => pure (liveTeardown "gcp" gcpLive.plan gcpLive.regions)
-      | other      => throw (IO.userError s!"unknown provider '{other}'\n\n{usage}")
-    match ← run.toBaseIO with
+    let some regions := regionsFor p
+      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+    match ← (liveTeardown p regions).toBaseIO with
     | .ok _    => progress s!"[{p}] torn down"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | _ => IO.eprintln usage; return 2

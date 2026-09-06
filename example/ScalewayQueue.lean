@@ -58,5 +58,6 @@ fleet exampleQueue in paris where
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "scaleway-queue" exampleQueue.plan
+    (forgets := exampleQueue.forgets)
     (accounts := ← Infra.Cli.Accounts.fromEnv)
     (regions := exampleQueue.regions) (args := args)

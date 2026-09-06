@@ -53,7 +53,7 @@ import Infra.Core.Ergonomics
   lists exactly the regions it names and a single-region fleet lists once.
 
   The block syntax that writes all this is in `Infra.Core.Declare`, and the
-  routing that acts on it is `Backends.backendFor`/`listers`. See
+  routing that acts on it is `Backends.backendFor`/`listers`/`backendAt`. See
   `docs/architecture.md`.
 -/
 

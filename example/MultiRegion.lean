@@ -193,6 +193,7 @@ private def applied : World spread.keys :=
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "multi-region" spread.plan
+    (forgets := spread.forgets)
     (selfCheck := Infra.Cli.offlinePlan spread.plan
       "multi-region: six buckets across Paris, Amsterdam, N. Virginia and Oregon")
     (accounts := ← Infra.Cli.Accounts.fromEnv)

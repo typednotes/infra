@@ -381,12 +381,20 @@ against.
 
 ## Declaring a fleet, continued
 
-**This table is the scoping mechanism** the project's `AGENTS.md` calls for ("the ability to
-scope what's managed vs. left alone"): a `(provider, kind)` pair left `.unused`, or a resource
-name simply not listed under a pair that is used, has no key for `Plan.assign` to mention it
-by — so whatever exists there in the cloud is left alone unconditionally, independent of
-`Plan.outside` (see that field's status in `docs/diff-semantics.md`'s known soft spots). There
-is no separate "unmanaged within a kind" flag, and none is needed.
+**This table decides what a declaration can name**, which is half of the scoping the project's
+`AGENTS.md` calls for ("the ability to scope what's managed vs. left alone"): a
+`(provider, kind)` pair left `.unused`, or a resource name simply not listed under a pair that
+is used, has no key for `Plan.assign` to mention it by. There is no separate "unmanaged within
+a kind" flag, and none is needed.
+
+The other half is *membership*, and it deliberately does not live here. What a fleet manages is
+recorded in `Infra.Core.Ledger` — a committed file of `(cloud, kind, name, region)` rows — for
+one reason: the key family changes when the declaration changes, so it cannot answer a question
+about a resource whose line has just been deleted. That resource has no key, and if the key
+family were the only record it would be indistinguishable from a resource nobody ever declared.
+The ledger is what makes "deleted from the file" mean "destroy" while resources this tool never
+touched stay out of reach. `Plan.outside`, a single fleet-wide verdict meant to do this job, is
+gone; see `docs/persistence.md`.
 
 ## Ordering
 

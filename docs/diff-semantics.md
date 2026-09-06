@@ -104,7 +104,6 @@ and, in `Infra/Core/Fleet.lean`, `Plan.assign` is a **total function** over a `F
 ```lean
 structure Plan (κ : Keys) where
   assign  : (p : ProviderId) → (k : Kind) → (key : κ.Key p k) → Status (SpecOf k …)
-  outside : Status Unit
 ```
 
 Totality is the single decision doing most of the work:
@@ -117,8 +116,12 @@ Totality is the single decision doing most of the work:
   `unknown`. Shape outside the modality, contents inside: a fleet may have three unknown
   handles, never an unknown number of instances.
 
-`outside` is the disposition of keys outside the fleet's key types: `absent` for a closed world
-that garbage-collects, `unmanaged` for an open one.
+There is no field for "everything else". There was one, `outside : Status
+Unit`, and it is gone: a single verdict cannot close the world, because closing
+it requires knowing *which* resources were once managed, and a fleet-wide
+`absent` would have proposed deleting every resource in the account. Membership
+is now recorded per-resource by `Infra.Core.Ledger` and answered there. See
+`docs/persistence.md`.
 
 Because `unmanaged` is ⊥, a plan whose every key is `unmanaged` is satisfied by *any* world and
 produces an empty work-list — `Infra/Demo.lean` guards exactly that. This is also what makes a
@@ -453,15 +456,23 @@ outside the fleet.
   that recomputes every edge from `HasDeps` rather than trusting the scheduler.
   It asserts both directions, and that the teardown is exactly the build order
   reversed.
-- **`Plan.outside` is declared but not consumed.** Nothing in `satisfiesAt`,
-  `satisfies`, `actions`, or `pullEntries` reads it — a key type's absence
-  from `Keys.build`'s table (`Nothing`) is what actually leaves a resource
-  alone today, regardless of what `outside` is set to, and `.absent`'s
-  documented "closed-world garbage-collect" is not implemented anywhere. This
-  has been raised with the user and is intentionally left alone pending a
-  decision, per `AGENTS.md`; `Infra.Core.Ergonomics`'s `Keys.build` gives the
-  real scoping mechanism (an unlisted `(provider, kind)` pair, or an unlisted
-  name within one) and documents it as such rather than pointing at `outside`.
+- **Membership is the ledger, and an orphan's references are not recorded.**
+  `Plan.outside` used to head this list, declared and never consumed, so a
+  resource deleted from a declaration was silently abandoned. It is gone,
+  replaced by `Infra.Core.Ledger`: a committed record of
+  `(cloud, kind, name, region)` that survives a resource's line being deleted,
+  which is what makes deleting that line destroy the resource. `forget`
+  releases a row without deleting.
+
+  What the replacement does *not* record is references. A ledger row has a
+  name and a region, not a dependency list, so orphans are scheduled with no
+  edges between them (`Engine.stepOf`). If an orphaned instance still
+  references an orphaned security group, AWS refuses the group's delete with
+  `DependencyViolation` until the instance is gone. Recording edges too would
+  make the ledger a second copy of the declaration, which is the shape that
+  let `S3BucketSpec.region` disagree with the placement. Deleting the two
+  lines in separate applies is the workaround; the ordering is the open
+  question.
 
 ## Not yet adopted
 

@@ -24,9 +24,13 @@ that runs later.
 
 Two consequences worth internalising before you start:
 
-- **Removing a `resource` line does not delete anything.** It removes the key,
-  and an unkeyed resource is *unmanaged* — it keeps running and keeps billing.
-  Deletion is `destroy`, which reconciles against "everything absent".
+- **Removing a `resource` line deletes the resource.** What the fleet manages
+  is recorded in `infra.ledger.json`, which you commit next to your
+  declaration, so a resource whose line you deleted is still named there and
+  still gets destroyed. If you want to keep it and stop managing it, say
+  `forget <cloud> <kind> "<name>"` instead; that drops the ledger row and
+  leaves the cloud alone. Resources you never declared are never touched, in
+  either case, because they have no row.
 - **A bare invocation is offline.** It plans against placeholder backends: no
   credentials, no network, no charges. You have to ask for the real thing.
 
@@ -177,6 +181,8 @@ lake exe my-infra destroy        # delete everything this fleet declares
 
 `check` and a bare invocation are the same thing and are always safe. `plan`
 reads your accounts. `apply` and `destroy` change them.
+`destroy` is `apply` against an empty declaration, so it is the same mechanism
+as deleting every line, not a second one.
 
 Observed state is cached under `.infra/<exe>/` — one directory per executable,
 so two fleets cannot read each other's state. Add `.infra/` to `.gitignore`.

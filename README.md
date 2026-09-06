@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.3.0 covers
+## What 0.6.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **14 resource kinds** (7 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -147,7 +147,9 @@ a guess.
 
 Your declaration is a Lean program, so `lake exe my_infra` *is* the CLI —
 there is no separate binary to keep in step with your code, and no state file
-to lose.
+to commit: what is managed is marked on the resources themselves, and `.infra/`
+is a disposable local record. Neither holds a secret. See
+`docs/persistence.md`.
 
 ### Starting from nothing
 
@@ -185,13 +187,31 @@ lake exe infra apply            # actually reconcile
 lake exe infra destroy          # delete everything the fleet declares
 ```
 
-`destroy` reconciles against `Plan.absent` — the fleet's own keys, every one
-declared `.absent`. That distinction matters: **deleting a resource from the
-declaration does not delete it from the cloud.** `Plan.assign` is total over
-the fleet's keys, so a removed resource has no key for anything to mention and
-is simply left alone, still running. Saying `.absent` is what turns "I no
-longer want this" into a DELETE, and deletions run in the reverse of creation
-order so a resource goes before whatever it depends on.
+**Deleting a resource from the declaration destroys it.** A resource is yours
+if it carries the marker this tool tags everything it creates with, it is
+inside the realm your declaration names, and it is not on the exclusion list.
+So a resource whose line you deleted is still recognisably yours and still gets
+destroyed. Saying `.absent` within the declaration does the same thing;
+`destroy` is `apply` against an empty declaration. All three end at the same
+call, and deletions run in the reverse of creation order so a resource goes
+before whatever it depends on.
+
+Nothing about that needs committing, which is deliberate: membership is a
+consequence of applying, not a statement of intent, so CI never has to write
+back to your branch. `Infra/Core/Ownership.lean` records the reasoning, and
+which way each rule fails.
+
+To stop managing something *without* destroying it, say so:
+
+```lean
+forget scaleway queues "old-queue"
+```
+
+which drops its ledger row and leaves the cloud alone. It is checked: a
+`forget` for something the fleet still declares does not compile.
+
+Resources you never declared are untouched throughout. They have no ledger
+row, so nothing here can name them.
 
 `plan` never touches a cloud. Treat `apply` like you would `terraform apply`:
 read the plan first. Output is coloured by verb when stdout is a terminal —
@@ -243,10 +263,12 @@ $ lake exe scaleway-queue apply
 CREATE scaleway/queues/infra-example ... ok
 ```
 
-A real, billable resource in your Scaleway account — delete it from the Queues
-console when you are done. Re-running `plan` afterwards prints `nothing to do`,
-since the queue already matches the target. Note that *removing the line* only
-un-manages the queue; it does not delete it.
+A real, billable resource in your Scaleway account. Re-running `plan`
+afterwards prints `nothing to do`, since the queue already matches the target.
+Removing the line and applying deletes it, so `lake exe scaleway-queue destroy`
+and deleting the line are two ways of saying the same thing. Use
+`forget scaleway queues "infra-example"` if you want to keep the queue and stop
+managing it.
 
 ### Two instances behind a security group
 
