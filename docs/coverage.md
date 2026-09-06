@@ -150,17 +150,30 @@ This is the section worth reading before trusting anything. Correctness of
 `lake test -- <provider>` is the live sequence, run from a manual workflow
 trigger, one cloud at a time.
 
-**Where the staged sequence has got to, as of 2026-09-07.** Stages 1 and 2 pass
-on all three clouds — which is the first time membership has been exercised
-live: stage 2 drops two resources whose lines are gone from the declaration, so
-the ledger is the only thing that can name them, and the account came back
-holding exactly what the stage declared. Stage 3 failed on all three, for one
-reason in the tool and not in any cloud: the "destroying most of the ledger"
-brake fired on the teardown, which is the one plan it was never meant to
-question. Fixed by deriving the exemption from the target
-(`Plan.declaresAnything`) instead of taking a flag every caller had to
-remember. **The full three-stage sequence has not yet completed on any cloud**,
-and the resources from those runs had to be cleaned up with
+**Where the staged sequence has got to, as of 2026-09-07.** It has found two
+real defects and has not yet completed on any cloud.
+
+*Round one.* Stages 1 and 2 passed on all three clouds — the first live
+exercise of membership: stage 2 drops two resources whose lines are gone from
+the declaration, so the ledger is the only thing that can name them, and the
+account came back holding exactly what the stage declared. Stage 3 failed on
+all three, for one reason in the tool and none in any cloud: the "destroying
+most of the ledger" brake fired on the teardown, the one plan it was never
+meant to question. Fixed by deriving the exemption from the target
+(`Plan.declaresAnything`) rather than taking a flag every caller had to
+remember.
+
+*Round two.* Stage 1 failed on all three, and this one was worth the money. The
+ledger only learned about a resource through an *action*, so the eight
+resources that a previous run had left standing — and which therefore needed no
+action — were never recorded, and the teardown then deleted only the three that
+had. An apply now adopts what the declaration claims and the cloud already has.
+The offline suite has a check for it now
+(`Main.lean`'s `checkLedgerAdoption`); it should have had one from the start,
+and its absence is what made three live runs necessary to find a leak that
+reproduces with placeholder backends.
+
+Both rounds left resources behind, cleaned up with
 `lake test -- <cloud> destroy`.
 
 #### What one live leg does

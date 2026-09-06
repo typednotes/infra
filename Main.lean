@@ -98,6 +98,46 @@ def checkLedger : IO Unit := do
   finally
     IO.FS.removeDirAll tmp
 
+/-- An apply records what it claims, even when it has nothing to do.
+
+    This is the check the offline suite was missing, and its absence cost three
+    live runs. The ledger used to learn about a resource only through an
+    *action*: a resource that already existed and already matched produced
+    none, so it was never recorded — and then nothing could ever destroy it.
+    On a real account that is a leak, and it is the commonest case there is,
+    because it is what every second apply looks like.
+
+    `composedAppliedWorld` is exactly that world: all three resources exist and
+    match, so the work-list is empty. The assertion is that the ledger comes
+    out holding all three anyway. -/
+def checkLedgerAdoption : IO Unit := do
+  let tmp ← IO.FS.createTempDir
+  try
+    let bs := Infra.Providers.all
+    let store : Store composedKeys :=
+      { root := some tmp, regionOf := fun _ _ _ => "fr-par" }
+    -- Nothing to do: the world already realises the target.
+    let dry ← push bs composedPlan composedAppliedWorld {} (store := store)
+    unless dry.any (fun l => (l.splitOn "nothing to do").length > 1) do
+      throw (IO.userError s!"expected an empty plan, got: {dry}")
+    -- A dry run must not have written anything.
+    unless (← Ledger.load tmp).isEmpty do
+      throw (IO.userError "a dry run wrote to the ledger")
+
+    let applied ← push bs composedPlan composedAppliedWorld { apply := true } (store := store)
+    unless applied.any (fun l => (l.splitOn "nothing to do").length > 1) do
+      throw (IO.userError s!"expected an empty apply, got: {applied}")
+    let rows ← Ledger.load tmp
+    unless rows.length == 3 do
+      throw (IO.userError s!"an apply with nothing to do recorded {rows.length} of 3 \
+resources; a resource that needs no action is still managed")
+    -- And the region was recorded, which is what routes its eventual delete.
+    unless rows.all (fun r => r.region == "fr-par") do
+      throw (IO.userError "adopted rows lost their region")
+    IO.println "ledger: ok (an apply with nothing to do still records what it claims)"
+  finally
+    IO.FS.removeDirAll tmp
+
 /-- Pulls from both placeholder backends, caches the result, and reports what the target would
     still ask for. Nothing behind `list` is live yet, so the world comes back empty and every
     declared resource needs creating. -/
@@ -531,6 +571,7 @@ def selfCheck : IO Unit := do
   IO.println "infra: refinement core loaded"
   checkPersistenceRoundTrip
   checkLedger
+  checkLedgerAdoption
   checkPullAndPlan
   checkCredentials
   checkSigning

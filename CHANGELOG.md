@@ -16,6 +16,25 @@ declared and never consumed, so a resource whose line you removed had no key
 for anything to mention and was silently abandoned, still billing. The minor
 bump marks the fix and the API break that comes with it.
 
+### An apply records what it claims, not just what it changed
+
+Worth stating separately because it was the substantive bug in this work, and
+because it is the kind that only a live account finds. The ledger originally
+learned about a resource through an *action*, so a resource that already
+existed and already matched produced none and was never recorded — after which
+nothing could destroy it. That is a leak, and it is the commonest case there
+is, since it is what every second apply looks like.
+
+An apply now adopts everything the declaration claims and the cloud already
+has, before running anything, and persists that before the first mutation.
+It also no longer returns early on an empty work-list: having nothing to do and
+having something to record are different questions.
+
+Claiming a resource because the declaration names it and it exists is the same
+rule the planner already uses to call it converged, so this adds no new
+judgement. It is a rule about *names*, which is what `Infra.Core.Ownership`
+exists to improve on.
+
 ### The mechanism
 
 What a fleet manages is recorded in `Infra.Core.Ledger` — a local file of

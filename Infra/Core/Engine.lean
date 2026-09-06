@@ -433,9 +433,13 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
   let work ← match orderActions T (plan T W store.rows store.forgets) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
-  if work.isEmpty then
-    return [Ansi.style opts.colour Ansi.dim "nothing to do"]
+  -- A dry run returns here and writes nothing. An *apply* deliberately does
+  -- not return early on an empty work-list: it still has to record what it
+  -- claims. See the adoption block below — a fully converged fleet has nothing
+  -- to do and everything to adopt, and that is the commonest case of all.
   if !opts.apply then
+    if work.isEmpty then
+      return [Ansi.style opts.colour Ansi.dim "nothing to do"]
     return (work.map fun a =>
         Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
       [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
@@ -464,7 +468,39 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
   let mut entries ← match seen with
     | some es => pure es
     | none    => pullEntries (κ := κ) bs
+  -- Adopt what this declaration claims and the cloud already has, *before*
+  -- running anything.
+  --
+  -- Without this the ledger only ever learns about a resource through an
+  -- action, and a resource that already exists and already matches produces
+  -- no action — so it would never be recorded, and nothing could destroy it
+  -- afterwards. That is a leak, not a cosmetic gap, and the first live run of
+  -- the staged sequence found it: stage 1 re-ran against resources a previous
+  -- failed run had left standing, eight of the eleven needed no action, and
+  -- the teardown then deleted only the three that had.
+  --
+  -- Claiming a resource because the declaration names it and it exists is the
+  -- same rule the planner already applies to decide it is converged, so this
+  -- adds no new judgement. It is a rule about *names*, which is why
+  -- `Infra.Core.Ownership` exists: a marker on the resource is what would let
+  -- this distinguish "mine" from "someone else's, identically named".
   let mut rows := store.rows
+  for p in Finite.elems (α := ProviderId) do
+    for k in Finite.elems (α := Kind) do
+      for key in Finite.elems (α := κ.Key p k) do
+        match T.assign p k key, W.sighting p k key with
+        | .present _, some _ =>
+          let nm := κ.name p k key
+          unless rows.any (Ledger.Row.isAt · p k nm) do
+            rows := { cloud := p, kind := k, name := nm
+                      region := store.regionOf p k nm } :: rows
+        | _, _ => pure ()
+  -- Persist the adoptions before the first mutation, so a crash mid-apply
+  -- cannot leave a resource that exists, is claimed, and is recorded nowhere.
+  if let some root := store.root then
+    unless rows == store.rows do Ledger.save root rows
+  if work.isEmpty then
+    return [Ansi.style opts.colour Ansi.dim "nothing to do"]
   let mut log : List String := []
   for a in work do
     let rowsBefore := rows
