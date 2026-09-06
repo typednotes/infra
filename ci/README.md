@@ -120,7 +120,43 @@ aws iam put-role-policy --role-name infra-ci \
 
 ### Google Cloud
 
-`infra-ci@typednotes.iam.gserviceaccount.com` holds `roles/pubsub.editor`,
+Google needs **two** things, and a role alone is not enough. Each API must be
+*enabled on the project* before anything can call it, which is a separate act
+from granting permission to call it — and it fails with its own error:
+
+    HTTP 403 PERMISSION_DENIED: Secret Manager API has not been used in
+    project typednotes before or it is disabled.
+
+That is not a missing role. Enable the services the live fleet touches:
+
+```sh
+gcloud services enable --project=typednotes \
+  pubsub.googleapis.com \
+  secretmanager.googleapis.com \
+  storage.googleapis.com \
+  artifactregistry.googleapis.com \
+  run.googleapis.com \
+  iam.googleapis.com \
+  cloudresourcemanager.googleapis.com
+```
+
+`cloudresourcemanager` is there for `Gcp.Iam.readPolicies`, which reads the
+project's IAM policy to report the roles bound to a service account. That one
+degrades to `unknown` rather than failing if it is unavailable, so it is the
+only optional entry.
+
+`sqladmin.googleapis.com` is deliberately absent: `postgres` is not in the live
+fleet, and enabling an API is not free of consequence — it widens what a
+compromised credential could reach.
+
+To see what is already on:
+
+```sh
+gcloud services list --enabled --project=typednotes
+```
+
+Then the roles. `infra-ci@typednotes.iam.gserviceaccount.com` holds
+`roles/pubsub.editor`,
 which covers `queues` and nothing else. The remaining four kinds need one role
 each. These are **project-level** grants, which is broader than the AWS policy
 above — Google's predefined roles are not resource-scoped, and writing a custom

@@ -325,6 +325,25 @@ can leave more behind than it removes. The driver now has a `destroy` mode that
 tears down and nothing else, sharing one code path with the round trip's own
 teardown so the two cannot drift.
 
+**Round three** — AWS repeated round two's failure because the fix was not yet
+pushed, Scaleway's newly-contextual error pinpointed itself
+(`GET /iam/v1alpha1/applications: 403`, the `iam` kind's listing during
+`pull`), and GCP produced a *third* kind of prerequisite:
+
+    Secret Manager API has not been used in project typednotes before or
+    it is disabled.
+
+On Google Cloud an API must be **enabled on the project** before anything can
+call it, which is a separate act from being permitted to call it. Roles were
+documented; enablement was not. `ci/README.md` now has the
+`gcloud services enable` line, and notes that `sqladmin` is deliberately left
+off because `postgres` is not in the fleet and enabling an API widens what a
+compromised credential can reach.
+
+Worth noting for contrast: Google's message names the API, the project, the
+console page and the propagation delay. AWS's named a regex. Scaleway's named
+nothing until this repo made it.
+
 **Round one** — three legs, three different failures:
 
 Only one was a permissions gap of the kind expected.
