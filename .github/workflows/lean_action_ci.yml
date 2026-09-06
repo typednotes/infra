@@ -83,10 +83,46 @@ jobs:
       # so it is repointed at this checkout to test *these* flags.
       - name: Scaffold a project and build it
         run: |
+          set -e
+          rm -rf /tmp/scaffold-check
           lake exe infra new /tmp/scaffold-check
-          sed -i 's|require infra from git "[^"]*" @ "main"|require infra from "'"$PWD"'"|'             /tmp/scaffold-check/lakefile.lean
+          # Repoint the dependency at this checkout, so the flags under test are
+          # these ones and not `main`'s.
+          #
+          # Not `sed -i`: BSD sed reads the next argument as a backup suffix
+          # and GNU sed does not, so the one-liner that worked on the Linux
+          # runner failed on the macOS one — which is exactly the half of the
+          # matrix this step was added to protect. Python is on both runners
+          # and needs no such dialect.
+          python3 - "$PWD" <<'PY'
+          import re, sys
+          p = "/tmp/scaffold-check/lakefile.lean"
+          s = open(p).read()
+          s2 = re.sub(r'require infra from git "[^"]*" @ "main"',
+                      'require infra from "%s"' % sys.argv[1], s, count=1)
+          assert s2 != s, "the scaffolded lakefile did not carry the expected require line"
+          open(p, "w").write(s2)
+          PY
           cp lean-toolchain /tmp/scaffold-check/
-          cd /tmp/scaffold-check && lake build && ./.lake/build/bin/scaffold_check
+          cd /tmp/scaffold-check
+          # Reuse this checkout's package directory rather than resolving a
+          # fresh one. Two reasons, and the second is the important one.
+          #
+          # Cost: without it the scaffolded project builds the whole of `linen`
+          # a second time — the job above has already built it once — which
+          # locally was killed by the OOM killer (`Lean exited with code 137`)
+          # part-way through `Linen.PostgREST.App`.
+          #
+          # Reproducibility: `lake update` would resolve `linen` at `main`,
+          # because that is what this repo's own lakefile asks for. A consumer
+          # would then get whatever linen happens to be at HEAD rather than the
+          # revision infra was tested against, so this check could fail — or
+          # pass — for reasons that have nothing to do with the commit under
+          # test. Pointing at the packages this checkout already resolved uses
+          # the pinned revision from its manifest.
+          export LAKE_PACKAGES_DIR="$GITHUB_WORKSPACE/.lake/packages"
+          lake build
+          ./.lake/build/bin/scaffold_check
       # Every example is test surface, per AGENTS.md. All but `scaleway-pull`
       # are offline and free, so CI runs them; a bare invocation plans against
       # the placeholder backends.
