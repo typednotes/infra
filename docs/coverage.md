@@ -453,6 +453,24 @@ whole surface. The cross-resource paths — reading a secret's value, resolving 
 key reference — are separate, they are not exercised by a fleet of independent
 resources, and they live in files named after a different kind.
 
+### Known gap: `scalewayContainer.timeoutSec` is never compared
+
+Scaleway reports a container's `timeout` as a **duration string** (`'300s'`),
+and `Compute.Containers.readFull` reads it with `natField`, which fails on a
+string and yields `unknown`. `unknown` diverges from nothing, so the field is
+silently *unchecked* rather than wrong — no false replace, no false update, and
+no verification either.
+
+Deliberately not fixed on the eve of a live run: parsing it would start
+comparing a field that has never been compared, and if the declared and stored
+values differ in any way this would introduce a fresh non-convergence into the
+path being tested. `Gcp.CloudRun.parseSeconds` already exists and is the
+obvious implementation, once Scaleway's leg is green and a change can be
+attributed.
+
+The same reading explains why `max_concurrency` is consulted first in that
+function — it is a number, so it tells the code the response was parsed at all.
+
 ### Implemented, never exercised
 
 - **Scaleway Serverless SQL Database** — the `postgres` kind's serverless
