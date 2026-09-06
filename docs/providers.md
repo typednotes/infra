@@ -56,9 +56,18 @@ file to compile.
 | `scalewayFunction` | — | Serverless Functions | Scaleway-only kind |
 | `scalewayContainer` | — | Serverless Containers | Scaleway-only kind; the portable `compute` kind cannot bind secret-backed env vars |
 
-Two kinds need no per-cloud code at all, because both clouds speak the same
-API. That is the portability claim actually paying off, and `infra check`
-asserts it: `S3.endpoint` differs only in host, and both sign service `s3`.
+Two kinds — `objectStore` and `queues` — need no per-cloud code *between AWS
+and Scaleway*, because Scaleway's endpoints are S3- and SQS-compatible. That is
+the portability claim actually paying off, and `infra check` asserts it:
+`S3.endpoint` differs only in host, and both sign service `s3`.
+
+GCP is not in that sharing, and it is worth being exact about why rather than
+leaving it as an omission. Cloud Storage does expose an S3-compatible API, but
+it authenticates with HMAC keys — a credential obtained by hand in the console,
+and never one this library holds, since every GCP credential here is a bearer
+token. Pub/Sub is not SQS in any sense. So both kinds have a second
+implementation for GCP (`Gcp.Storage`, `Gcp.PubSub`), and `objectStore` in
+particular was silently routed to the S3 client until that was noticed.
 
 ## Regions reach a backend through the credentials
 

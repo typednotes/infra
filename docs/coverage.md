@@ -41,9 +41,16 @@ and Lean reports one as unreachable.
 | `iam` | IAM users | IAM applications | no |
 | `postgres` | RDS | Managed Database | no |
 
-Two of the seven need no per-cloud code at all, because both clouds speak the
-same API. That is the portability claim actually paying off rather than being
-asserted.
+Two of the seven — `objectStore` and `queues` — need no per-cloud code
+*between AWS and Scaleway*, because Scaleway's endpoints are S3- and
+SQS-compatible, so one client serves both. That is the portability claim
+paying off rather than being asserted.
+
+The qualifier matters and used to be absent: GCP shares neither. Cloud Storage
+authenticates its S3-compatible API with HMAC keys, which is a credential this
+library never holds, and Pub/Sub is not SQS at all — so both kinds needed a
+GCP client of their own (`Gcp.Storage`, `Gcp.PubSub`). Three clouds, two
+clients for those kinds, not one.
 
 ### Provider-local — the escape hatch
 

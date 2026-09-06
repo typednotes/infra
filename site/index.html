@@ -260,7 +260,6 @@
       <div class="stats">
         <div class="stat"><b>3</b><span>clouds — AWS, Scaleway, GCP</span></div>
         <div class="stat"><b>14</b><span>resource kinds</span></div>
-        <div class="stat"><b>2</b><span>of them need no per-cloud code at all</span></div>
       </div>
       <div class="ctas">
         <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Read the tutorial</a>
@@ -524,8 +523,7 @@ would CREATE scaleway/secrets/db-url
         <h4 style="color:var(--blue)">One spec, either cloud</h4>
         <p>
           Portable kinds are indexed by kind alone, never by provider, so the
-          same value applies to AWS or Scaleway; the provider enters only at
-          apply. Two of the seven portable kinds need no per-cloud code at all.
+          same value applies to any cloud; the provider enters only at apply.
           Reaching for a cloud-specific concept makes the loss of portability
           visible in the <em>type</em>, not in a comment.
         </p>
