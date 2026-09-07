@@ -783,6 +783,115 @@ def liveTeardown (name : String) (regions : Regions) : IO Unit := do
 {rows.length} resource(s)")
   progress s!"[{name}] torn down, and the ledger is empty"
 
+/-! ## Sweeping an account, without a ledger to go on
+
+  `destroy` tears down what the *ledger* records, which is the right thing
+  inside a run and useless between them: the ledger lives under `.infra/`,
+  which is gitignored and does not survive a CI job. So a fresh job asked to
+  clean up finds an empty ledger and deletes nothing, however much debris is
+  standing.
+
+  A sweep answers a different question — *what in this account looks like this
+  test's?* — and answers it from the account rather than from local state.
+  Every resource this test creates is named `ci-tests-infra-*`; that naming
+  rule is guarded above precisely so it can be relied on here.
+
+  It is the operation `docs/coverage.md` has been telling humans to do by hand
+  ("look for 'ci-tests-infra-*' in the account") ever since the first failed
+  live run left something behind. -/
+
+/-- Whether a name is this test's to delete.
+
+    The single safety property of the whole sweep, so it is one function and it
+    is used nowhere else: a sweep must never touch a resource it did not
+    create. Anything without the prefix belongs to somebody. -/
+def isDebris (name : String) : Bool := ciPrefix.isPrefixOf name
+
+/-- One pass: delete every prefixed resource the credentials can see.
+
+    Returns what went and what refused. A refusal is usually a dependency —
+    a container before its namespace, an instance before its security group —
+    and is not reported as an error here, because the caller retries. Nothing
+    knows the dependency graph: a sweep has no declaration to read edges from,
+    which is why it converges by repetition instead of by ordering.
+
+    Listing happens per region the fleet uses, through `Backends.listers`, and
+    each listing's own backend performs the deletes — so a resource is deleted
+    against the endpoint that reported it, with no region to resolve. -/
+def sweepPass (bs : Backends) (p : ProviderId) :
+    IO (List String × List String) := do
+  let mut gone : List String := []
+  let mut stuck : List String := []
+  for k in Finite.elems (α := Kind) do
+    for (b, _) in bs.listers p k do
+      -- A kind the cloud does not implement lists nothing, so this is safe to
+      -- ask for every kind rather than only the declared ones — which is the
+      -- point: debris from a *previous* version of the fleet is still debris.
+      let observed ← match ← (b.list k).toBaseIO with
+        | .ok os   => pure os
+        | .error _ => pure []   -- an unreadable kind is not a reason to stop
+      for o in observed do
+        let nm := (observedHandle k o).raw
+        if isDebris nm then
+          let slot := Ledger.slotId p k nm
+          match ← (b.delete k (observedHandle k o)).toBaseIO with
+          | .ok _    => gone := slot :: gone
+          | .error e => stuck := s!"{slot}: {e}" :: stuck
+  return (gone.reverse, stuck.reverse)
+
+/-- Sweep until a pass deletes nothing.
+
+    Bounded by a fuel counter so this is not `partial` and the measure is real.
+    Each round either deletes something — strictly reducing what is left — or
+    stops, so the bound is only reached if a cloud keeps producing new
+    prefixed resources, which nothing does. -/
+def sweepUntilQuiet (bs : Backends) (p : ProviderId)
+    (label : String) (fuel : Nat) (deleted : Nat) : IO Nat := do
+  match fuel with
+  | 0 =>
+    progress s!"[{label}] gave up sweeping with resources still standing"
+    return deleted
+  | fuel + 1 =>
+    let (gone, stuck) ← sweepPass bs p
+    for slot in gone do
+      progress s!"[{label}] deleted {slot}"
+    if gone.isEmpty then
+      -- Nothing went this round, so nothing will next round either: every
+      -- remaining refusal is permanent as far as this tool can tell.
+      unless stuck.isEmpty do
+        progress s!"[{label}] {stuck.length} resource(s) would not delete:"
+        for line in stuck do progress s!"[{label}]   {line}"
+        throw (IO.userError s!"[{label}] swept {deleted} resource(s), but \
+{stuck.length} would not delete — the first is: {stuck.headD "?"}")
+      return deleted
+    else
+      -- Something went, so a refusal may have been a dependency that is now
+      -- satisfied. Go round again.
+      sweepUntilQuiet bs p label fuel (deleted + gone.length)
+
+/-- Delete every `ci-tests-infra-*` resource one cloud's credentials can see.
+
+    Independent of any declaration and of any local state, which is what makes
+    it the right thing for a scheduled cleanup: it needs no ledger, no cache
+    and no knowledge of which fleet created what. It also clears debris from a
+    *previous* version of the fleet, which `destroy` cannot, because the
+    ledger only ever knew what the current declaration named. -/
+def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
+    IO Unit := do
+  let (bs, _) ← Infra.Cli.liveFor κ regions
+  progress s!"[{name}] sweeping for '{ciPrefix}*'…"
+  -- Fuel of eight: the deepest dependency chain this test can build is four
+  -- (base → a → sink → tail), and a sweep needs one round per level plus a
+  -- final round that finds nothing. Eight is that with room.
+  let n ← sweepUntilQuiet bs p name 8 0
+  if n == 0 then
+    progress s!"[{name}] nothing to sweep — the account is clean"
+  else
+    progress s!"[{name}] swept {n} resource(s)"
+  -- The ledger may name things that are now gone, so clear it rather than
+  -- leave it claiming resources that do not exist.
+  Ledger.save (".infra" / s!"live-{name}") []
+
 /-- Every stage in order, with the teardown guaranteed.
 
     The final stage *is* the teardown, so a clean run ends with nothing left.
@@ -823,7 +932,7 @@ def liveSequence (name : String) (stages : List Stage) (regions : Regions) :
 {rows.length} resource(s) still managed")
 
 def usage : String :=
-  "usage: lake test [-- <aws|scaleway|gcp> [destroy]]\n\n\
+  "usage: lake test [-- <aws|scaleway|gcp|all> [sweep|destroy]]\n\n\
   With no argument:     the offline checks. No cloud, no credentials, no cost.\n\
   With a provider:      runs three declarations in sequence against one\n\
                         ledger — the whole fleet, then a trimmed version, then\n\
@@ -831,6 +940,12 @@ def usage : String :=
                         the account holds exactly what that stage declares.\n\
                         Ten or eleven real resources, all named\n\
                         'ci-tests-infra-*'. The last stage destroys them.\n\
+  …plus 'sweep':        deletes every resource in the account named\n\
+                        'ci-tests-infra-*', whatever created it. Needs no\n\
+                        ledger, so unlike 'destroy' it works in a fresh\n\
+                        checkout and clears debris from an older version of\n\
+                        the fleet. `lake test -- all sweep` does all three\n\
+                        clouds. This is the scheduled cleanup.\n\
   …plus 'destroy':      runs only the last stage. Safe to re-run: it destroys\n\
                         whatever the *ledger* holds rather than whatever some\n\
                         declaration names, so it also cleans up after a run\n\
@@ -846,13 +961,108 @@ def usage : String :=
   committed literal would not compile, which is what `secretsAreSound`\n\
   proves. Set " ++ secretValueVar ++ " before running a live leg."
 
-/-- The placement to tear down with, per cloud. `liveTeardown` declares nothing,
-    so it has no `in` clause of its own to take one from. -/
+/-- The sweep deletes debris and nothing else.
+
+    The one assertion that matters about a sweep, and it runs offline on every
+    push, because getting it wrong means deleting somebody's resource and no
+    live test would be a safe place to discover that.
+
+    The backend below lists four buckets: two carrying the CI prefix, one
+    belonging to production and one whose name merely *contains* the prefix
+    rather than starting with it. Only the first two may go. -/
+def checkSweepTouchesOnlyDebris : IO Unit := do
+  let seen ← IO.mkRef ([] : List String)
+  let listed : List (ObservedOf .objectStore) :=
+    [ { handle := ⟨"ci-tests-infra-store-1"⟩, url := "" }
+    , { handle := ⟨"ci-tests-infra-store-2"⟩, url := "" }
+    , { handle := ⟨"production-billing-exports"⟩, url := "" }
+      -- Contains the prefix but does not start with it. `isPrefixOf`, not a
+      -- substring test, is what makes this survive — and a substring test is
+      -- the obvious way to write this wrong.
+    , { handle := ⟨"archive-of-ci-tests-infra-store-0"⟩, url := "" } ]
+  let b : Backend :=
+    { Infra.Providers.placeholderBackend "sweep-test" with
+      list := fun k => match k with
+        | .objectStore => pure listed
+        | _            => pure []
+      delete := fun k h => seen.modify (Ledger.slotId .aws k h.raw :: ·) }
+  let bs : Backends := { backend := fun _ => b }
+  let (gone, stuck) ← sweepPass bs .aws
+  unless stuck.isEmpty do
+    throw (IO.userError s!"a sweep against a compliant backend reported failures: {stuck}")
+  let deleted := (← seen.get).reverse
+  let expected := ["aws/object-store/ci-tests-infra-store-1",
+                   "aws/object-store/ci-tests-infra-store-2"]
+  unless deleted == expected do
+    throw (IO.userError s!"a sweep deleted the wrong things.\n  \
+deleted: {deleted}\n  expected: {expected}")
+  unless gone == expected do
+    throw (IO.userError s!"a sweep reported the wrong things: {gone}")
+  IO.println "sweep: ok (deletes every 'ci-tests-infra-*' and nothing else)"
+
+/-- A sweep keeps going while it makes progress, because it has no dependency
+    graph to order by.
+
+    The backend here refuses the namespace until the container is gone, which
+    is the real Scaleway ordering constraint, and it is the reason a sweep
+    converges by repetition rather than by sorting. One pass would leave the
+    namespace standing and report a failure. -/
+def checkSweepRetriesUntilQuiet : IO Unit := do
+  -- A deleted resource stops being listed, as a real cloud's would. Without
+  -- that the double is not a cloud at all: the sweep would keep finding the
+  -- namespace and keep deleting it.
+  let containerGone ← IO.mkRef false
+  let nsGone ← IO.mkRef false
+  let b : Backend :=
+    { Infra.Providers.placeholderBackend "sweep-order" with
+      list := fun k => match k with
+        | .scalewayContainerNamespace => do
+          if ← nsGone.get then pure []
+          else pure [{ handle := ⟨"ci-tests-infra-ctrs"⟩, namespaceId := ""
+                       registryEndpoint := "" }]
+        | .scalewayContainer => do
+          if ← containerGone.get then pure []
+          else pure [{ handle := ⟨"ci-tests-infra-ctr"⟩, url := "" }]
+        | _ => pure []
+      delete := fun k _ => do
+        match k with
+        | .scalewayContainer => containerGone.set true
+        | .scalewayContainerNamespace =>
+          -- What Scaleway actually does while a container is still in it, and
+          -- the reason a sweep cannot simply delete in one pass.
+          if ← containerGone.get then nsGone.set true
+          else throw (IO.userError "namespace is not empty")
+        | _ => pure () }
+  let bs : Backends := { backend := fun _ => b }
+  let n ← sweepUntilQuiet bs .scaleway "sweep-order" 8 0
+  unless n == 2 do
+    throw (IO.userError s!"a sweep with a dependency swept {n} of 2 resources; \
+one pass is not enough and the retry is what makes it converge")
+  IO.println "sweep: ok (retries past a dependency, with no graph to go on)"
+
+/-- The placement to tear down or sweep with. Neither declares anything, so
+    neither has an `in` clause of its own to take one from. -/
 def regionsFor : String → Option Regions
   | "aws"      => some awsFull.regions
   | "scaleway" => some scalewayFull.regions
   | "gcp"      => some gcpFull.regions
   | _          => none
+
+/-- The key family to authenticate with, per cloud.
+
+    Which cloud gets authenticated falls out of this and not out of any `if`:
+    `liveFor` authenticates exactly the providers a key family declares
+    resources in, so sweeping AWS never reads Scaleway's credentials. That is
+    `Keys.providers`, and it is why a sweep can be handed one cloud's key
+    family and be trusted to touch only that cloud. -/
+def keysFor : String → Option (Keys × ProviderId)
+  | "aws"      => some (awsFull.keys, .aws)
+  | "scaleway" => some (scalewayFull.keys, .scaleway)
+  | "gcp"      => some (gcpFull.keys, .gcp)
+  | _          => none
+
+/-- The clouds a sweep covers when asked for all of them. -/
+def allClouds : List String := ["aws", "scaleway", "gcp"]
 
 def main (args : List String) : IO UInt32 := do
   match args with
@@ -861,6 +1071,8 @@ def main (args : List String) : IO UInt32 := do
     -- guards above have already run by now: they are `#guard`s, so they ran
     -- while this file elaborated.
     Infra.Cli.offlinePlan awsFull.plan "offline checks — no cloud contacted"
+    checkSweepTouchesOnlyDebris
+    checkSweepRetriesUntilQuiet
     IO.println "\nFor a live sequence: lake test -- <aws|scaleway|gcp>"
     return 0
   | [p] =>
@@ -876,5 +1088,33 @@ def main (args : List String) : IO UInt32 := do
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
     match ← (liveTeardown p regions).toBaseIO with
     | .ok _    => progress s!"[{p}] torn down"; return 0
+    | .error e => IO.eprintln s!"error: {e}"; return 1
+  -- `sweep all` keeps going after a failure and reports at the end, rather
+  -- than stopping at the first cloud that will not come clean. A cleanup that
+  -- abandons two accounts because the first one had a problem is the opposite
+  -- of useful.
+  | ["all", "sweep"] => do
+    let mut failures : List String := []
+    for cloud in allClouds do
+      let some (κ, pid) := keysFor cloud | continue
+      let some regions := regionsFor cloud | continue
+      match ← (liveSweep cloud κ pid regions).toBaseIO with
+      | .ok _    => pure ()
+      | .error e =>
+        IO.eprintln s!"error: [{cloud}] {e}"
+        failures := cloud :: failures
+    if failures.isEmpty then
+      progress "swept every cloud"
+      return 0
+    else
+      IO.eprintln s!"error: {failures.reverse} did not come clean"
+      return 1
+  | [p, "sweep"] =>
+    let some (κ, pid) := keysFor p
+      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+    let some regions := regionsFor p
+      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+    match ← (liveSweep p κ pid regions).toBaseIO with
+    | .ok _    => return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | _ => IO.eprintln usage; return 2

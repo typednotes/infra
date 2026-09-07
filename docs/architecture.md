@@ -1,5 +1,9 @@
 # Architecture
 
+For a trace of what actually runs — the call chain, the type stack, the
+scheduler and the membership mechanism, with diagrams — see
+[`internals.md`](internals.md). This file is the *why*; that one is the *how*.
+
 ## General goal
 
 The goal of this project is to enable the definition of remote architectures within Lean, like Terraform/OpenTofu.

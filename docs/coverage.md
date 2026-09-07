@@ -173,8 +173,39 @@ The offline suite has a check for it now
 and its absence is what made three live runs necessary to find a leak that
 reproduces with placeholder backends.
 
-Both rounds left resources behind, cleaned up with
-`lake test -- <cloud> destroy`.
+Both rounds left resources behind, which is what prompted the sweep below.
+
+#### Cleaning up after a run that did not
+
+There are two cleanups, and they answer different questions.
+
+`lake test -- <cloud> destroy` destroys what the **ledger** records. It is the
+right thing *inside* a run, and the live workflow's backstop calls it — but the
+ledger lives under `.infra/`, which is gitignored, so it does not survive the
+job. A later job asked to clean up finds an empty ledger and deletes nothing,
+however much is standing. That is exactly what happened after both rounds
+above.
+
+`lake test -- <cloud> sweep` asks the **account**: list every kind, delete
+everything named `ci-tests-infra-*`. It needs no ledger, no cache and no
+declaration, so it works in a fresh checkout, and it also clears debris created
+by an *older* version of the fleet — which `destroy` cannot, because the ledger
+only ever knew what the current declaration named. `lake test -- all sweep`
+does all three clouds. `.github/workflows/cleanup.yml` runs it weekly and on
+demand, one job per cloud, sharing each cloud's concurrency group with the live
+test so a sweep can never race the run whose resources it would delete.
+
+Two things about the sweep are checked offline, on every push, because getting
+either wrong is expensive and no live test is a safe place to find out:
+
+- **It deletes debris and nothing else.** The check lists four buckets: two
+  prefixed, one belonging to production, and one whose name merely *contains*
+  the prefix rather than starting with it. Only the first two may go, which is
+  what makes `isPrefixOf` rather than a substring test load-bearing.
+- **It retries past a dependency.** A sweep has no declaration to read edges
+  from, so it converges by repetition: the check's backend refuses a namespace
+  while a container is still in it, which is the real Scaleway constraint, and
+  one pass is not enough.
 
 #### What one live leg does
 

@@ -368,8 +368,12 @@ Then the design documents, which explain *why* and are worth reading before
 extending anything:
 
 - [`docs/architecture.md`](docs/architecture.md) — overall design and the portability rules
+- [`docs/internals.md`](docs/internals.md) — **how it works**: the pipeline
+  from source to API call, the type stack, the scheduler, and the membership
+  mechanism, with diagrams. The one to read before changing the engine
 - [`docs/authentication.md`](docs/authentication.md) — where credentials come from
-- [`docs/persistence.md`](docs/persistence.md) — how observed state is cached
+- [`docs/persistence.md`](docs/persistence.md) — the two local records, and
+  why membership is not intent
 - [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the
   trademark policies that constrain them
 - [`docs/ci-auth.md`](docs/ci-auth.md) — how CI authenticates without storing

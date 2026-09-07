@@ -255,4 +255,9 @@ jobs:
         run: |
           echo "::warning::live run did not finish cleanly; tearing down"
           lake test -- ${{ inputs.provider }} destroy || true
-          echo "If this still fails, look for resources named 'ci-tests-infra-*'"
+          # A sweep as well, because `destroy` only removes what the ledger
+          # records and this run may have died before recording something —
+          # or before the ledger existed at all. The sweep asks the account
+          # instead, so it catches what the ledger cannot name.
+          lake test -- ${{ inputs.provider }} sweep || true
+          echo "If this still fails, run the Cleanup workflow, or look for resources named 'ci-tests-infra-*'"

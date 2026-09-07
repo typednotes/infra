@@ -114,6 +114,25 @@ redundant edge, and a four-deep chain — the shape `Infra/Demo.lean`'s
 `dagFleet` already checks offline. The last stage is `apply` against an empty
 declaration, which is the half that had never run live.
 
+### A cleanup that works between runs
+
+`lake test -- <cloud> sweep`, and `lake test -- all sweep`, delete every
+resource named `ci-tests-infra-*` from an account. Unlike `destroy` this asks
+the account rather than the ledger, so it needs no local state: it works in a
+fresh checkout, and it clears debris an older version of the fleet created,
+which `destroy` never could.
+
+`.github/workflows/cleanup.yml` runs it weekly and on demand, one job per
+cloud. Each job shares that cloud's concurrency group with the live test, so a
+sweep cannot race the run whose resources it would delete, and each job holds
+only its own cloud's credentials.
+
+The sweep has no dependency graph to order by, so it repeats until a pass
+deletes nothing — which is how a container gets deleted before its namespace
+without anything knowing that it must. Both properties are checked offline on
+every push: that it deletes debris and *only* debris, and that it retries past
+a dependency.
+
 ### A probe that was added and removed
 
 Making membership the ledger's business invited answering *existence* per

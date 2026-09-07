@@ -1,0 +1,182 @@
+name: Cleanup
+
+# Deletes every resource named `ci-tests-infra-*` from all three accounts.
+#
+# This exists because the live test's own backstop cannot do it. That backstop
+# runs `lake test -- <cloud> destroy`, which tears down what the *ledger*
+# records — and the ledger lives under `.infra/`, which is gitignored and does
+# not survive a job. So it works inside a run and not between them: a run
+# killed mid-flight, or a runner that vanished, leaves resources that no later
+# job can find from local state.
+#
+# A sweep asks the account instead of asking local state: list every kind, and
+# delete whatever carries the prefix. That also clears debris an older version
+# of the fleet created, which `destroy` never could, because the ledger only
+# ever knew what the current declaration named.
+#
+# It is safe to run at any time, including while nothing is broken. It is not
+# safe to run *during* a live test, which is what the shared concurrency group
+# below prevents.
+on:
+  # Weekly, because debris costs money quietly. Sunday 04:00 UTC, away from
+  # the working week so a sweep never races a live test somebody started.
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'Which cloud to sweep'
+        required: true
+        default: all
+        type: choice
+        options: [all, aws, scaleway, gcp]
+
+permissions:
+  contents: read
+  id-token: write   # required for both AWS's OIDC and GCP's WIF
+
+jobs:
+  # Which clouds to sweep, as a matrix. A scheduled run has no inputs, so it
+  # sweeps all three; that is the point of the schedule — nobody chose, so
+  # check everything.
+  choose:
+    runs-on: ubuntu-latest
+    outputs:
+      clouds: ${{ steps.pick.outputs.clouds }}
+    steps:
+      - id: pick
+        run: |
+          TARGET="${{ inputs.provider }}"
+          [ -n "$TARGET" ] || TARGET=all
+          if [ "$TARGET" = "all" ]; then
+            echo 'clouds=["aws","scaleway","gcp"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "clouds=[\"$TARGET\"]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sweeping: $TARGET"
+
+  sweep:
+    needs: choose
+    runs-on: ubuntu-latest
+    strategy:
+      # One job per cloud rather than one job sweeping all three, for two
+      # reasons. It puts each sweep in the *same* concurrency group as that
+      # cloud's live test, so a sweep can never race the run whose resources
+      # it would delete — which one job covering three clouds cannot express,
+      # since a job has one group. And it keeps each cloud's credentials in
+      # the job that needs them: the AWS sweep never has Scaleway's secrets in
+      # its environment.
+      #
+      # `fail-fast: false` because a cleanup that abandons two accounts over a
+      # problem in the first is the opposite of useful.
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(needs.choose.outputs.clouds) }}
+    # The same group `live-test.yml` uses for this cloud, so a sweep and a
+    # live run against one account are serialised. Queued rather than
+    # cancelled: a half-finished sweep is worse than a late one.
+    concurrency:
+      group: live-test-${{ matrix.cloud }}
+      cancel-in-progress: false
+    # Load-bearing for the same reason as in `live-test.yml`: the AWS role's
+    # trust policy pins `sub` to this environment, so the OIDC token is only
+    # accepted when the job declares it. It is also where required reviewers
+    # live, which is the compensating control for a job whose whole purpose is
+    # deleting things.
+    environment: production
+    # A sweep is a handful of list calls and however many deletes it finds.
+    # Generous rather than tight, because some kinds delete slowly — Scaleway's
+    # namespaces and a Cloud Run service take tens of seconds each — and a
+    # sweep that times out leaves exactly the mess it came to clear.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: false
+          test: false
+
+      # Same reason as the live test: Lean's bundled OpenSSL looks for a trust
+      # store at a path that does not exist on a runner, so every HTTPS call
+      # fails with `certificate verify failed` until it is pointed at the real
+      # bundle.
+      - name: Point OpenSSL at the runner's CA bundle
+        run: |
+          for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
+          done
+          echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
+
+      # Only this cloud's auth runs. Which cloud is actually *touched* does
+      # not depend on these steps either: `liveFor` authenticates exactly the
+      # providers the key family it is handed declares resources in, so a
+      # sweep cannot reach another cloud even with its credentials present.
+      - name: Check the AWS role ARN is configured
+        if: matrix.cloud == 'aws'
+        env:
+          ROLE: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+        run: |
+          ROLE="$(echo "$ROLE" | xargs)"
+          echo "AWS_ROLE_ARN_CLEAN=$ROLE" >> "$GITHUB_ENV"
+          if [ -z "$ROLE" ]; then
+            echo "::error::AWS_ROLE_ARN is not set. See live-test.yml for where it goes."
+            exit 1
+          fi
+
+      - name: Authenticate to AWS (OIDC)
+        if: matrix.cloud == 'aws'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN_CLEAN }}
+          aws-region: eu-west-1
+          role-session-name: infra-cleanup
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        id: gcp-auth
+        if: matrix.cloud == 'gcp'
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: typednotes
+          workload_identity_provider: projects/113928363564/locations/global/workloadIdentityPools/github/providers/github-provider
+          service_account: infra-ci@typednotes.iam.gserviceaccount.com
+          token_format: access_token
+
+      - name: Export the GCP token for infra
+        if: matrix.cloud == 'gcp'
+        run: |
+          echo "GOOGLE_OAUTH_ACCESS_TOKEN=${{ steps.gcp-auth.outputs.access_token }}" >> "$GITHUB_ENV"
+          echo "GOOGLE_CLOUD_PROJECT=typednotes" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: lake build live-test
+
+      - name: Sweep ${{ matrix.cloud }}
+        env:
+          # Scaleway only, and only in the Scaleway job. AWS and GCP arrive as
+          # environment variables from their own auth steps.
+          SCW_ACCESS_KEY: ${{ matrix.cloud == 'scaleway' && secrets.SCW_ACCESS_KEY || '' }}
+          SCW_SECRET_KEY: ${{ matrix.cloud == 'scaleway' && secrets.SCW_SECRET_KEY || '' }}
+          SCW_DEFAULT_PROJECT_ID: ${{ matrix.cloud == 'scaleway' && secrets.SCW_DEFAULT_PROJECT_ID || '' }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ matrix.cloud == 'scaleway' && secrets.SCW_DEFAULT_ORGANIZATION_ID || '' }}
+        run: lake test -- ${{ matrix.cloud }} sweep
+
+      # A sweep that found nothing is the expected outcome, and it exits zero.
+      # A sweep that found something is worth knowing about, because it means a
+      # live run did not clean up after itself — so say so in the run summary
+      # rather than only in the log, which nobody reads on a green run.
+      - name: Note the outcome
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "Swept \`${{ matrix.cloud }}\`. Anything listed above was debris a live run left behind." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::the sweep did not come clean — resources named 'ci-tests-infra-*' are still standing"
+            echo "The sweep failed. Resources named \`ci-tests-infra-*\` may still exist; the log says which refused to delete." >> "$GITHUB_STEP_SUMMARY"
+          fi
