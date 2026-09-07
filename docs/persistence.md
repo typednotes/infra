@@ -162,10 +162,21 @@ to write back to the branch it was applied from: push permissions for CI, races
 with concurrent merges, and a loop unless carefully guarded. Terraform keeps
 state remote rather than committed for exactly this reason.
 
-So the ledger is local and disposable, and membership is *derived* instead,
-from three things a human authors and no run has to write back: the realm, an
-inclusion marker on each created resource, and an exclusion snapshot. See
-`Infra.Core.Ownership`, which also records which way each of those fails.
+So the ledger is local and disposable, and membership is *meant* to be derived
+instead, from three things a human authors and no run has to write back: the
+realm, an inclusion marker on each created resource, and an exclusion snapshot.
+See `Infra.Core.Ownership`, which also records which way each of those fails.
+
+Only the first of those three exists today. `checkAccounts` enforces the realm
+before anything is listed; nothing writes the marker and nothing reads the
+boundary, so `ownershipOf` decides nothing and its `#guard`s pin an intended
+semantics rather than a live one. Until that changes the ledger *is* the
+authority — `Action.actionsOrphaned` consults it and nothing else — and
+membership is a rule about names: a declaration adopts a resource because it
+names it and the cloud has it (`Infra/Core/Engine.lean`). That rule cannot
+distinguish a resource of yours from a stranger's with the same name, which is
+the gap the marker is for. The rest of this section describes the ledger as it
+actually behaves.
 
 | | Ledger | Cache |
 |---|---|---|
@@ -173,7 +184,14 @@ inclusion marker on each created resource, and an exclusion snapshot. See
 | Path | `.infra/<exe>/infra.ledger.json` | `.infra/<exe>/<provider>/<kind>.json` |
 | Committed | no | no |
 | Written by | `apply` and `destroy`, never `refresh` | every `refresh` |
-| If lost | a `discover` rebuilds it from the marker | nothing. One re-read restores it |
+| If lost | every row it held becomes an orphan | nothing. One re-read restores it |
+
+Losing the ledger is therefore the one unrecoverable loss under the cache root.
+A resource whose row is gone still exists and still costs money, but nothing
+can name it: the declaration no longer mentions it, the cache is keyed by the
+declaration, and there is no `discover` command to rebuild the rows by sweeping
+the account for the marker. Restoring that from the marker is the point of
+`Infra.Core.Ownership`, and it is not yet built.
 
 Three consequences worth stating outright.
 
@@ -208,9 +226,12 @@ shows up in a plan before it happens, and in a diff when it is reviewed.
 
 Nothing here locks. Two applies at once against one account can interleave, and
 the local ledger of each will disagree with the other. What keeps that from
-being silent is that neither is authoritative: the marker on the resource is,
-and a `discover` reconciles both. This is inside the scope this document
-already assumes (single operator, not a team or CI fleet sharing state). Remote
+being *catastrophic* is only the scope this document already assumes: a single
+operator, not a team or a CI fleet sharing state. It is not currently kept from
+being silent at all. The intended answer is that neither local ledger is
+authoritative — the marker on the resource is, and a sweep for it reconciles
+both — but nothing writes the marker yet, so today the two ledgers simply
+disagree and the loser's rows are orphans. Remote
 state with a lock remains available behind the same `load`/`save` interface as
 the DB option above, and is the answer if that scope grows.
 

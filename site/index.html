@@ -800,8 +800,9 @@ would CREATE scaleway/secrets/db-url
       what is absent, so it is safe to re-run and safe on a project with work
       in it. Your declaration is a Lean program, so
       <code>lake exe my_infra</code> <em>is</em> the CLI: nothing to keep in
-      step with your code. What it manages is a committed ledger of names; what it
-      last saw is a disposable cache. Neither holds a secret.
+      step with your code. What it manages is a local ledger of names; what it
+      last saw is a disposable cache. Neither is committed, and neither holds a
+      secret.
     </p>
     <div class="card" style="max-width:760px">
       <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>

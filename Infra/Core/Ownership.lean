@@ -5,7 +5,12 @@ import Infra.Core.Ledger
 
   This is the question that decides whether deleting a line from a declaration
   destroys the resource or abandons it, and getting it wrong is expensive in
-  both directions. It replaces an earlier answer that could not work.
+  both directions. It is the intended replacement for an earlier answer that
+  could not work, and it is a sketch: nothing writes the marker and nothing
+  constructs a `Boundary`, so none of what follows decides anything yet. The
+  ledger is still the authority (`Infra.Core.Ledger`). The `#guard`s below pin
+  the semantics this is meant to have, so that wiring it up later is a matter
+  of calling it rather than of re-deciding it.
 
   ## Why not a committed ledger
 
@@ -66,7 +71,8 @@ def markerKey : String := "managed-by-infra"
     Three states rather than two, because "not ours" has two causes that must
     not be conflated: something nobody told us about, and something we were
     explicitly told to leave alone. The second is a decision on the record and
-    survives a `discover`; the first is just an absence. -/
+    would survive a sweep of the account for the marker; the first is just an
+    absence. -/
 inductive Ownership
   /-- Carries the marker, and is not excluded. Deleting its line destroys it. -/
   | managed
@@ -80,8 +86,8 @@ inductive Ownership
 
     Same shape as a ledger row minus the region, which is only needed to route
     a delete, and nothing here is ever deleted. Authored by a human (or written
-    once by `discover` and then committed), so unlike the ledger it never has
-    to be written back by a run. -/
+    once by a sweep of the account and then committed), so unlike the ledger it
+    never has to be written back by a run. -/
 structure Exclusion where
   cloud : ProviderId
   kind  : Kind
