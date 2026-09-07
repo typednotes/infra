@@ -176,6 +176,8 @@ instance : Settleable .scalewayFunction where
     let nsKey ← settleField env s.namespace'
     return { name := ← settleField env s.name
              runtime := ← settleField env s.runtime
+             code := ← settleField env s.code
+             handler := ← settleField env s.handler
              namespace' := ← settleRefReq env .scaleway .scalewayFunctionNamespace nsKey
              sourceBucket := ← settleRef env .aws .s3Bucket refKey }
 

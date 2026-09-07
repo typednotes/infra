@@ -454,7 +454,7 @@ def listRuntimes (creds : Credentials) : IO (List String) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/runtimes")
   return (arrayField reply "runtimes").filterMap fun r => stringField r "name"
 
-def create (creds : Credentials) (name runtime ns : String)
+def create (creds : Credentials) (name runtime ns handler : String)
     (bucket : Option (Handle .s3Bucket)) : IO String := do
   let nsId ← namespaceIdOf creds ns
   let attempt ← (Scaleway.call creds "POST" (prefix' creds.region ++ "/functions")
@@ -462,6 +462,9 @@ def create (creds : Credentials) (name runtime ns : String)
       [ ("namespace_id", .string nsId)
       , ("name", .string name)
       , ("runtime", .string runtime)
+      -- Scaleway names the entry point `<file>.<function>` and requires it at
+      -- create; the archive `deployCode` uploads has to contain that file.
+      , ("handler", .string handler)
       , ("environment_variables", envFor bucket) ]))).toBaseIO
   match attempt with
   | .ok reply => return (stringField reply "domain_name").getD ""
@@ -477,6 +480,66 @@ def create (creds : Credentials) (name runtime ns : String)
       throw (IO.userError s!"{e}: runtime '{runtime}' is not one this region offers{hint}")
     else
       throw e
+
+/-- Split an absolute `https://` URL into host, path and query.
+
+    Needed because the upload target is *presigned*: Scaleway hands back a
+    complete URL with its signature in the query string, and it must be used
+    exactly as given. `Scaleway.call` cannot serve it — that helper pins the
+    host and attaches the auth token, and adding either to a presigned URL
+    invalidates the signature it already carries.
+
+    Deliberately not a general URL parser. It handles what this one call
+    produces and refuses anything else, which is the safe direction: a URL
+    shape this does not understand raises rather than being half-parsed into a
+    request that goes somewhere unintended. -/
+private def splitUrl (url : String) : IO (String × String × String) := do
+  let rest ← match url.dropPrefix? "https://" with
+    | some r => pure r.toString
+    | none   => throw (IO.userError
+        s!"function upload: expected an https:// URL, got '{url}'")
+  let (hostPart, afterHost) := match rest.splitOn "/" with
+    | h :: tl => (h, "/" ++ String.intercalate "/" tl)
+    | []      => (rest, "/")
+  match afterHost.splitOn "?" with
+  | [path]     => return (hostPart, path, "")
+  -- The query is carried as one opaque string, never parsed into parameters:
+  -- the signature covers the exact encoded bytes in the exact order, so
+  -- splitting and re-rendering it would break it. That is what
+  -- `Http.requestPresigned` exists for.
+  | path :: qs => return (hostPart, path, String.intercalate "?" qs)
+  | []         => return (hostPart, afterHost, "")
+
+/-- Deploy source code to a function: ask for a presigned URL, PUT the archive
+    at it, then tell Scaleway to deploy what was uploaded.
+
+    Three calls, and they have to be in this order. The function must already
+    exist (`create` above), because the upload URL is issued for its id.
+
+    `content_length` is required on the first call and must match the archive
+    exactly. Scaleway signs the URL for that length, so a mismatch is refused
+    at the PUT with a signature error that says nothing about length. -/
+def deployCode (creds : Credentials) (name : String) (zip : ByteArray) :
+    IO Unit := do
+  let id ← requireId creds name
+  let reply ← Scaleway.call creds "GET"
+    (prefix' creds.region ++ s!"/functions/{id}/upload-url")
+    (query := [("content_length", some (toString zip.size))])
+  let some url := stringField reply "url"
+    | throw (IO.userError
+        s!"function '{name}': upload-url reply carried no 'url'")
+  let (host, path, queryString) ← splitUrl url
+  -- The presigned PUT. No auth header: the signature in the query string *is*
+  -- the authorisation, and `X-Auth-Token` alongside it is what Scaleway
+  -- rejects.
+  discard <| match ← (Http.sendChecked (Http.requestPresigned "PUT" host path
+      queryString [("Content-Type", "application/octet-stream")]
+      (some zip))).toBaseIO with
+    | .ok r    => pure r
+    | .error e => throw (IO.userError s!"function '{name}': uploading \
+{zip.size} bytes to the presigned URL failed: {e}")
+  discard <| Scaleway.call creds "POST"
+    (prefix' creds.region ++ s!"/functions/{id}/deploy")
 
 def update (creds : Credentials) (name : String)
     (bucket : Option (Handle .s3Bucket)) : IO Unit := do

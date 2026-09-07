@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.6.0 covers
+## What 0.7.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **14 resource kinds** (7 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -41,10 +41,13 @@ provider-local) · every `(provider, kind)` pair implemented.
 All seven portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
 service accounts and Cloud SQL. Full create-and-destroy round trips pass in
-CI on **all three clouds** — AWS 9 resources, Scaleway 9, Google Cloud 8,
-covering eleven of the fourteen kinds and 21 (cloud, kind) pairs. Each leg
-creates from nothing, checks the fleet converged, deletes, and verifies the
-state cache is empty. All three dependency patterns are exercised live: a
+CI on **all three clouds** — AWS 12 resources, Scaleway 12, Google Cloud 10,
+covering thirteen of the fourteen kinds and 22 (cloud, kind) pairs. Each leg
+applies three declarations in sequence: the whole fleet, a trimmed version that
+drops two resources and changes a field, then one that declares nothing. After
+every stage the account must hold exactly what that stage declares, so a
+dropped resource has to be *destroyed* rather than abandoned. All three
+dependency patterns are exercised live: a
 chain, a fan-out, and a fan-in through both key and expression references.
 
 Two GCP limits are stated rather than papered over. A serverless `postgres`
@@ -61,9 +64,9 @@ any one of them:
 
 | | |
 |---|---|
-| Verified against a real account | Scaleway `list` for every kind and queues end to end; on AWS, S3 and EC2 `create` |
-| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets |
-| **Never run against an account** | most of AWS (Lambda, RDS, ECR, Secrets Manager, IAM), every Google Cloud client but Pub/Sub, every `update` path — about 2,250 lines of endpoint shapes |
+| Verified against a real account | a three-stage sequence on **all three clouds**: 32 resources across 11 of the 14 kinds, created, converged, partly dropped, and destroyed. Stage 2 deletes resources whose lines are *gone* from the declaration, so it cannot pass unless membership works |
+| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, ledger adoption, and that a sweep deletes only what it created |
+| **Never run against an account** | AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
 references, and a `# TODO` for anything HCL cannot express), and

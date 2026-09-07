@@ -296,6 +296,35 @@ structure ScalewayFunctionSpec (K : ProviderId → Kind → Type) (o : Type u �
       "no namespace named 'typndotes'". As a reference into this very fleet it
       cannot be misspelled, cannot dangle, and orders the namespace first. -/
   namespace'   : Field .required o f (K .scaleway .scalewayFunctionNamespace)
+  /-- The source code, inline.
+
+      Required, and inline rather than a path or a bucket, because Serverless
+      Functions has no other way in: it deploys from an uploaded archive, so
+      something has to produce one. Putting the source in the declaration means
+      the declaration says what will run, which a path to a zip somebody built
+      elsewhere would not. The backend zips it (`Infra.Providers.Zip`) and
+      deploys it.
+
+      Small on purpose. This is the field for a handler, not for an
+      application; anything larger wants a container, which is the
+      `scalewayContainer` kind.
+
+      *Optional rather than required*, and the reason is a trap this file has
+      fallen into before. The reported shape shares this structure, and
+      Scaleway does not hand source code back, so a required field would force
+      the backend to report *something* — and a blank compared against a real
+      target is a divergence on every pull. `runtime` and `namespace'` did
+      exactly that and made every plan propose a replace. Optional means the
+      backend can say `unknown`, and `unknown` is never drift. A function
+      declared with no code fails at create, naming this field, which is how
+      `ComputeSpec.executionRole` handles the same situation. -/
+  code         : Field .optional o f String
+  /-- The entry point, as Scaleway names it: `<file>.<function>`.
+
+      The file must be the one `code` is written to — see `Live.lean`'s
+      `helloHandler` for the pair that matches. Optional for the same reason
+      `code` is. -/
+  handler      : Field .optional o f String
   /-- A bucket the function reads from.
 
       The function is not *deployed from* this bucket — Scaleway Functions
@@ -365,7 +394,18 @@ structure SecurityGroupSpec (K : ProviderId → Kind → Type) (o : Type u → T
 structure AwsInstanceSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
   name          : Field .required o f String
-  /-- The AMI to launch. Immutable: changing it replaces the instance. -/
+  /-- The AMI to launch. Immutable: changing it replaces the instance.
+
+      The literal `"latest"` is resolved at apply time to the newest Amazon
+      Linux 2023 image in the instance's own region, via `DescribeImages`.
+      Anything else is used verbatim.
+
+      A magic string rather than a `Locality`-style table, because an AMI id
+      is not drawn from a small closed set — it is generated per rebuild, and
+      there are hundreds of thousands. What the table pattern gives elsewhere
+      (`Region`, `InstanceType`) is a check; here there is nothing to check
+      against offline, so the honest choice is to ask the cloud. Pinning an
+      exact id still works and still means exactly what it says. -/
   imageId       : Field .required o f String
   /-- The hardware shape, as a family and a size rather than a string: see
       `Infra.Core.InstanceType`. `forcesReplace` below, so a typo used to be
@@ -465,6 +505,12 @@ instance : Fillable ScalewayFunctionSpec where
     { name         := s.name
       runtime      := s.runtime
       namespace'   := s.namespace'
+      -- Blank when unsaid. Harmless, because neither field is in the
+      -- divergence table: `Live.lean`'s `read` reports both as `unknown`, so
+      -- nothing ever compares this default against anything. The backend
+      -- refuses an empty `code` at create, naming the field.
+      code         := s.code.getD (.lit "")
+      handler      := s.handler.getD (.lit "handler.handle")
       sourceBucket := s.sourceBucket.getD (.lit none) }
 
 /-- `secretEnv` defaults to `.lit []` — no secret-backed env vars — matching the

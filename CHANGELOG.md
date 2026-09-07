@@ -8,6 +8,84 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.7.0] — 2026-09-07
+
+**The live sequence ramps.** Each cloud now applies five declarations against
+one ledger rather than three: the whole fleet, the same fleet scaled *up*, the
+same scaled back *down*, a trimmed version, then one that declares nothing.
+
+The two new stages exist to close the hole `docs/coverage.md` has been naming
+since the first live run: almost no `update` path had ever been called. Every
+field the ramps move is on a `.mutable` row of its kind's divergence table, so
+each ramp stage is an `update` rather than a replace, and doing it in both
+directions exercises the path each way. Scaleway's container goes from a floor
+of zero instances to a floor of one and a ceiling of three, with twice the
+memory and twice the timeout, and then back — scaling *down* to a floor of zero
+being the direction that costs money if it does not work. Cloud Run goes to a
+gigabyte and back. A queue's visibility timeout goes to two minutes and back.
+ECR tag immutability goes off and on.
+
+Three guards keep the ramps honest, because a ramp that had rotted into a no-op
+would pass every live assertion while testing nothing: each ramp stage must
+declare *exactly* what stage 1 declares (same resources, same names, same
+graph — only mutable fields move), and each must declare something, so none is
+mistaken for a teardown by the brake.
+
+### Breaking
+
+- **`Infra.Cli.run` requires `forgets`** as of 0.6.0, and consumer projects
+  need `(forgets := myFleet.forgets)` added. `infra new`'s template does this;
+  an existing `Main.lean` does not, and the error names the missing argument.
+
+### Two more kinds go live: thirteen of fourteen
+
+Both were excluded for a stated reason, and both are included now because the
+reason was removed rather than waived.
+
+**`awsInstance`.** `imageId := "latest"` resolves the newest Amazon Linux 2023
+image in the instance's own region at apply time, through a new
+`Ec2.Image.latestAl2023` (`DescribeImages`, filtered to Amazon's own published
+naming scheme and `owner-alias = amazon`, newest by `creationDate`). Anything
+else is used verbatim, so pinning an id still works. That deleted the excuse —
+"a rotting constant in a test whose failure looks like a library bug" — and
+also deleted the pinned id from `example/ParisInstances.lean`, which had
+carried one with a comment admitting it was unverified.
+
+It is also the one resource in the live fleet with a *required* reference, so
+its creation order is forced rather than incidental: the security group first,
+and teardown in reverse.
+
+**`scalewayFunction`.** Serverless Functions deploys from an uploaded archive
+and takes code no other way, so the declaration carries the code:
+`ScalewayFunctionSpec.code` is inline source and `handler` is the entry point.
+The backend zips it and deploys it — fetch a presigned URL, PUT the archive,
+call deploy. The live fleet's function is a four-line Python handler returning
+`Hello, world!`.
+
+Three new pieces made that possible:
+
+- **`Infra.Providers.Zip`** — CRC-32 and a stored-method ZIP writer. No
+  compression: method 0 is sufficient for a handler and smaller than the code
+  that would deflate one. Deterministic, because the DOS date fields are
+  written as zero rather than read from the clock, so an unchanged redeploy
+  produces identical bytes. Checked offline against `crc32 "123456789" =
+  0xCBF43926` and against the archive's own signature bytes.
+- **`Http.requestPresigned`** — a request whose query string is used exactly as
+  given. `Http.request` renders queries through `canonicalQuery`, which encodes
+  and sorts them; correct when this library signs, and fatal when somebody else
+  already did.
+- **`code` and `handler` are optional**, not required, and that is deliberate:
+  the reported shape shares the structure and Scaleway does not hand source
+  back, so a required field would force the backend to report a blank, and a
+  blank compared against a real target is a divergence on every pull. `runtime`
+  and `namespace'` did exactly that once and made every plan propose a replace.
+
+### Still not covered
+
+`postgres`, on all three clouds: five to fifteen minutes to create and as long
+to delete, longer than the workflow step it would run in. It wants its own
+opt-in leg with its own timeout, which does not exist yet.
+
 ## [0.6.0] — 2026-09-07
 
 **Deleting a resource from a declaration now destroys it.** It used to leave it
@@ -113,6 +191,13 @@ fan-out: five secrets forming a fan-out of two, a fan-in of three including a
 redundant edge, and a four-deep chain — the shape `Infra/Demo.lean`'s
 `dagFleet` already checks offline. The last stage is `apply` against an empty
 declaration, which is the half that had never run live.
+
+**All three legs pass.** Every stage, on AWS, Scaleway and GCP: 32 resources
+across 11 of the 14 kinds. It took two rounds of failures to get there, both
+recorded in `docs/coverage.md` because the second is the kind of bug only a
+real account finds — the ledger learned about a resource only through an
+*action*, so resources that already existed and already matched were never
+recorded, and the teardown then deleted only the ones that had needed doing.
 
 ### A cleanup that works between runs
 

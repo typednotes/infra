@@ -52,6 +52,551 @@ open Infra.Specs
     CI run of this repository and can be deleted. -/
 def ciPrefix : String := "ci-tests-infra-"
 
+/-- The handler a `scalewayFunction` deploys, and the smallest thing that can
+    prove the kind works end to end.
+
+    The file name inside the archive comes from `handler`, which is
+    `handler.handle` in the fleets below, so this lands as `handler.py` and
+    Scaleway calls `handle` in it. `Infra.Providers.Zip` builds the archive and
+    `Compute.Functions.deployCode` uploads it.
+
+    Inline in the declaration on purpose: the declaration then says what will
+    run, which a path to a zip built somewhere else would not. That is why
+    `ScalewayFunctionSpec.code` is source rather than a reference. -/
+def helloHandler : String :=
+  "def handle(event, context):\n" ++
+  "    return {\"statusCode\": 200, \"body\": \"Hello, world!\"}\n"
+
+/-! ### Stage 1: the whole fleet -/
+
+fleet awsFull in ireland where
+  provider aws where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret" as awsBase
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as awsA
+      { valueFrom := composed expr!"a:{secretValueOf awsBase}" }
+    resource secrets "ci-tests-infra-b" as awsB
+      { valueFrom := composed expr!"b:{secretValueOf awsBase}" }
+    -- Fan-in of three, one edge of which is redundant.
+    resource secrets "ci-tests-infra-sink" as awsSink
+      { valueFrom := composed
+          expr!"{secretValueOf awsA}|{secretValueOf awsB}|{secretValueOf awsBase}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf awsSink}" }
+    resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
+    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
+    -- Both bucket kinds: they differ in Object Lock, which is creation-time
+    -- only, so nothing short of a real create exercises it.
+    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
+      { versioning := true, objectLock := true }
+    resource securityGroup "ci-tests-infra-sg" as awsSg
+      { description := "created and destroyed by the infra live test" }
+    -- The kind that used to be excluded, and the reason it can be included
+    -- now: `imageId := "latest"` resolves the newest Amazon Linux 2023 image
+    -- in this region at apply time, so there is no id in this file to rot.
+    --
+    -- It also carries the library's only *required* reference, so its creation
+    -- order is forced rather than incidental: the group has to exist first,
+    -- and teardown has to reverse that.
+    --
+    -- A `t3.nano`, destroyed within the run. It bills by the second.
+    resource awsInstance "ci-tests-infra-vm"
+      { imageId       := "latest"
+      , instanceType  := InstanceType.of .t3 .nano
+      , securityGroup := awsSg }
+    resource iam "ci-tests-infra-user" {}
+
+/-! ### Ramp up, then back down
+
+  Same resources throughout: only mutable fields move. Every field changed here
+  is on a `.mutable` row of its kind's divergence table, so each stage is an
+  `update` rather than a replace, and the pair up-then-down exercises the path
+  in both directions. Before this, one field on one kind had ever been updated
+  against a real account. -/
+
+fleet awsRampUp in ireland where
+  provider aws where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 120 }
+    resource secrets "ci-tests-infra-secret" as awsBaseU
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as awsAU
+      { valueFrom := composed expr!"a:{secretValueOf awsBaseU}" }
+    resource secrets "ci-tests-infra-b" as awsBU
+      { valueFrom := composed expr!"b:{secretValueOf awsBaseU}" }
+    -- Fan-in of three, one edge of which is redundant.
+    resource secrets "ci-tests-infra-sink" as awsSinkU
+      { valueFrom := composed
+          expr!"{secretValueOf awsAU}|{secretValueOf awsBU}|{secretValueOf awsBaseU}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf awsSinkU}" }
+    resource imageRegistry "ci-tests-infra-images" { immutableTags := false }
+    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
+    -- Both bucket kinds: they differ in Object Lock, which is creation-time
+    -- only, so nothing short of a real create exercises it.
+    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
+      { versioning := true, objectLock := true }
+    resource securityGroup "ci-tests-infra-sg" as awsSgU
+      { description := "created and destroyed by the infra live test" }
+    -- The kind that used to be excluded, and the reason it can be included
+    -- now: `imageId := "latest"` resolves the newest Amazon Linux 2023 image
+    -- in this region at apply time, so there is no id in this file to rot.
+    --
+    -- It also carries the library's only *required* reference, so its creation
+    -- order is forced rather than incidental: the group has to exist first,
+    -- and teardown has to reverse that.
+    --
+    -- A `t3.nano`, destroyed within the run. It bills by the second.
+    resource awsInstance "ci-tests-infra-vm"
+      { imageId       := "latest"
+      , instanceType  := InstanceType.of .t3 .nano
+      , securityGroup := awsSgU }
+    resource iam "ci-tests-infra-user" {}
+
+fleet awsRampDown in ireland where
+  provider aws where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret" as awsBaseD
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as awsAD
+      { valueFrom := composed expr!"a:{secretValueOf awsBaseD}" }
+    resource secrets "ci-tests-infra-b" as awsBD
+      { valueFrom := composed expr!"b:{secretValueOf awsBaseD}" }
+    -- Fan-in of three, one edge of which is redundant.
+    resource secrets "ci-tests-infra-sink" as awsSinkD
+      { valueFrom := composed
+          expr!"{secretValueOf awsAD}|{secretValueOf awsBD}|{secretValueOf awsBaseD}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf awsSinkD}" }
+    resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
+    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
+    -- Both bucket kinds: they differ in Object Lock, which is creation-time
+    -- only, so nothing short of a real create exercises it.
+    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
+      { versioning := true, objectLock := true }
+    resource securityGroup "ci-tests-infra-sg" as awsSgD
+      { description := "created and destroyed by the infra live test" }
+    -- The kind that used to be excluded, and the reason it can be included
+    -- now: `imageId := "latest"` resolves the newest Amazon Linux 2023 image
+    -- in this region at apply time, so there is no id in this file to rot.
+    --
+    -- It also carries the library's only *required* reference, so its creation
+    -- order is forced rather than incidental: the group has to exist first,
+    -- and teardown has to reverse that.
+    --
+    -- A `t3.nano`, destroyed within the run. It bills by the second.
+    resource awsInstance "ci-tests-infra-vm"
+      { imageId       := "latest"
+      , instanceType  := InstanceType.of .t3 .nano
+      , securityGroup := awsSgD }
+    resource iam "ci-tests-infra-user" {}
+
+/-! ### Stage 2: two resources dropped, one changed, one added
+
+  `ci-tests-infra-b` and `ci-tests-infra-sg` are simply absent below, which
+  also shortens the graph: with `b` gone, `sink` fans in on two instead of
+  three. `queues`' visibility timeout goes from 30 to 60, which is a mutable
+  field and so an `update` rather than a replace. And `ci-tests-infra-late`
+  is new. -/
+
+/-! The trimming stage drops `b` and the instance, and *keeps* the security
+  group. Deliberately that way round: an instance holds a required reference to
+  its group, so dropping the group while keeping the instance would not
+  compile, and dropping both would make two orphans with a dependency between
+  them — which is the one ordering case the ledger cannot express, since a row
+  records a name and a region and not an edge. Dropping the dependent alone is
+  the case it can. -/
+
+fleet awsTrimmed in ireland where
+  provider aws where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 60 }
+    resource secrets "ci-tests-infra-secret" as awsBase'
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as awsA'
+      { valueFrom := composed expr!"a:{secretValueOf awsBase'}" }
+    resource secrets "ci-tests-infra-sink" as awsSink'
+      { valueFrom := composed expr!"{secretValueOf awsA'}|{secretValueOf awsBase'}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf awsSink'}" }
+    resource secrets "ci-tests-infra-late"
+      { valueFrom := composed expr!"late:{secretValueOf awsBase'}" }
+    resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
+    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
+    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
+      { versioning := true, objectLock := true }
+    resource securityGroup "ci-tests-infra-sg"
+      { description := "created and destroyed by the infra live test" }
+    resource iam "ci-tests-infra-user" {}
+
+fleet scalewayFull in paris where
+  provider scaleway where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret" as scwBase
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as scwA
+      { valueFrom := composed expr!"a:{secretValueOf scwBase}" }
+    resource secrets "ci-tests-infra-b" as scwB
+      { valueFrom := composed expr!"b:{secretValueOf scwBase}" }
+    resource secrets "ci-tests-infra-sink" as scwSink
+      { valueFrom := composed
+          expr!"{secretValueOf scwA}|{secretValueOf scwB}|{secretValueOf scwBase}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf scwSink}" }
+    -- The suffix is here for the same reason it is on the buckets, and the
+    -- reason is not obvious until you look at the endpoint: a Scaleway
+    -- registry namespace's name *is* its hostname path —
+    -- `rg.fr-par.scw.cloud/<name>` — so names are unique per region across
+    -- every project, not per project.
+    --
+    -- Two consequences, both met in practice. A leftover namespace from a
+    -- failed run blocks every future run, in any project, with
+    -- `400 Namespace already exist` — the same permanent-deadlock shape as the
+    -- SQS credential name. And a fork would collide with this repository.
+    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
+    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
+    -- No `iam` here, unlike the AWS and GCP fleets. Scaleway's IAM
+    -- applications live in the **organization**, not in a project, so testing
+    -- the kind would need CI to hold organization-level IAM rights — and
+    -- those cannot be confined to the isolated CI project the rest of this
+    -- fleet lives in. One kind of live coverage is the cheaper thing to give
+    -- up. `iam` is still covered on the other two clouds, where the identity
+    -- is project- or account-scoped.
+    resource scalewayFunctionNamespace "ci-tests-infra-fns" as scwFns
+      { description := "created and destroyed by the infra live test" }
+    -- The other kind that used to be excluded, and the reason it can be
+    -- included now: Serverless Functions deploys from an uploaded archive, so
+    -- the source is in the declaration and the backend zips it
+    -- (`Infra.Providers.Zip`) and uploads it. `handler.handle` means the
+    -- archive holds `handler.py` and Scaleway calls `handle` in it.
+    resource scalewayFunction "ci-tests-infra-fn"
+      { runtime    := "python311"
+      , namespace' := scwFns
+      , code       := helloHandler
+      , handler    := "handler.handle" }
+    resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrs
+      { description := "created and destroyed by the infra live test" }
+    -- Fan-in of a *different* provenance from the secrets graph: this depends
+    -- on the namespace above (a key reference, via `depsKey`) and on the base
+    -- secret (via `depsKeys s.secretEnv`), so two edges of two different kinds
+    -- converge on one resource. It is the only place the live test exercises
+    -- `depsKey`/`depsKeys` rather than an expression reference, and teardown
+    -- has to reverse both.
+    --
+    -- A public image, which is what makes this includable at all: Serverless
+    -- Containers can pull from an external registry, so nothing has to be
+    -- built and pushed first.
+    resource scalewayContainer "ci-tests-infra-ctr"
+      { namespace' := scwCtrs
+      , image      := "docker.io/library/nginx:alpine"
+      , port       := 80
+      , minScale   := 0
+      , maxScale   := 1
+      , memoryMb   := 256
+      , timeoutSec := 60
+      , secretEnv  := [("BASE", scwBase)] }
+
+fleet scalewayRampUp in paris where
+  provider scaleway where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 120 }
+    resource secrets "ci-tests-infra-secret" as scwBaseU
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as scwAU
+      { valueFrom := composed expr!"a:{secretValueOf scwBaseU}" }
+    resource secrets "ci-tests-infra-b" as scwBU
+      { valueFrom := composed expr!"b:{secretValueOf scwBaseU}" }
+    resource secrets "ci-tests-infra-sink" as scwSinkU
+      { valueFrom := composed
+          expr!"{secretValueOf scwAU}|{secretValueOf scwBU}|{secretValueOf scwBaseU}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf scwSinkU}" }
+    -- The suffix is here for the same reason it is on the buckets, and the
+    -- reason is not obvious until you look at the endpoint: a Scaleway
+    -- registry namespace's name *is* its hostname path —
+    -- `rg.fr-par.scw.cloud/<name>` — so names are unique per region across
+    -- every project, not per project.
+    --
+    -- Two consequences, both met in practice. A leftover namespace from a
+    -- failed run blocks every future run, in any project, with
+    -- `400 Namespace already exist` — the same permanent-deadlock shape as the
+    -- SQS credential name. And a fork would collide with this repository.
+    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
+    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
+    -- No `iam` here, unlike the AWS and GCP fleets. Scaleway's IAM
+    -- applications live in the **organization**, not in a project, so testing
+    -- the kind would need CI to hold organization-level IAM rights — and
+    -- those cannot be confined to the isolated CI project the rest of this
+    -- fleet lives in. One kind of live coverage is the cheaper thing to give
+    -- up. `iam` is still covered on the other two clouds, where the identity
+    -- is project- or account-scoped.
+    resource scalewayFunctionNamespace "ci-tests-infra-fns" as scwFnsU
+      { description := "created and destroyed by the infra live test" }
+    -- The other kind that used to be excluded, and the reason it can be
+    -- included now: Serverless Functions deploys from an uploaded archive, so
+    -- the source is in the declaration and the backend zips it
+    -- (`Infra.Providers.Zip`) and uploads it. `handler.handle` means the
+    -- archive holds `handler.py` and Scaleway calls `handle` in it.
+    resource scalewayFunction "ci-tests-infra-fn"
+      { runtime    := "python311"
+      , namespace' := scwFnsU
+      , code       := helloHandler
+      , handler    := "handler.handle" }
+    resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrsU
+      { description := "created and destroyed by the infra live test" }
+    -- Fan-in of a *different* provenance from the secrets graph: this depends
+    -- on the namespace above (a key reference, via `depsKey`) and on the base
+    -- secret (via `depsKeys s.secretEnv`), so two edges of two different kinds
+    -- converge on one resource. It is the only place the live test exercises
+    -- `depsKey`/`depsKeys` rather than an expression reference, and teardown
+    -- has to reverse both.
+    --
+    -- A public image, which is what makes this includable at all: Serverless
+    -- Containers can pull from an external registry, so nothing has to be
+    -- built and pushed first.
+    resource scalewayContainer "ci-tests-infra-ctr"
+      { namespace' := scwCtrsU
+      , image      := "docker.io/library/nginx:alpine"
+      , port       := 80
+      , minScale   := 1
+      , maxScale   := 3
+      , memoryMb   := 512
+      , timeoutSec := 120
+      , secretEnv  := [("BASE", scwBaseU)] }
+
+fleet scalewayRampDown in paris where
+  provider scaleway where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret" as scwBaseD
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as scwAD
+      { valueFrom := composed expr!"a:{secretValueOf scwBaseD}" }
+    resource secrets "ci-tests-infra-b" as scwBD
+      { valueFrom := composed expr!"b:{secretValueOf scwBaseD}" }
+    resource secrets "ci-tests-infra-sink" as scwSinkD
+      { valueFrom := composed
+          expr!"{secretValueOf scwAD}|{secretValueOf scwBD}|{secretValueOf scwBaseD}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf scwSinkD}" }
+    -- The suffix is here for the same reason it is on the buckets, and the
+    -- reason is not obvious until you look at the endpoint: a Scaleway
+    -- registry namespace's name *is* its hostname path —
+    -- `rg.fr-par.scw.cloud/<name>` — so names are unique per region across
+    -- every project, not per project.
+    --
+    -- Two consequences, both met in practice. A leftover namespace from a
+    -- failed run blocks every future run, in any project, with
+    -- `400 Namespace already exist` — the same permanent-deadlock shape as the
+    -- SQS credential name. And a fork would collide with this repository.
+    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
+    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
+    -- No `iam` here, unlike the AWS and GCP fleets. Scaleway's IAM
+    -- applications live in the **organization**, not in a project, so testing
+    -- the kind would need CI to hold organization-level IAM rights — and
+    -- those cannot be confined to the isolated CI project the rest of this
+    -- fleet lives in. One kind of live coverage is the cheaper thing to give
+    -- up. `iam` is still covered on the other two clouds, where the identity
+    -- is project- or account-scoped.
+    resource scalewayFunctionNamespace "ci-tests-infra-fns" as scwFnsD
+      { description := "created and destroyed by the infra live test" }
+    -- The other kind that used to be excluded, and the reason it can be
+    -- included now: Serverless Functions deploys from an uploaded archive, so
+    -- the source is in the declaration and the backend zips it
+    -- (`Infra.Providers.Zip`) and uploads it. `handler.handle` means the
+    -- archive holds `handler.py` and Scaleway calls `handle` in it.
+    resource scalewayFunction "ci-tests-infra-fn"
+      { runtime    := "python311"
+      , namespace' := scwFnsD
+      , code       := helloHandler
+      , handler    := "handler.handle" }
+    resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrsD
+      { description := "created and destroyed by the infra live test" }
+    -- Fan-in of a *different* provenance from the secrets graph: this depends
+    -- on the namespace above (a key reference, via `depsKey`) and on the base
+    -- secret (via `depsKeys s.secretEnv`), so two edges of two different kinds
+    -- converge on one resource. It is the only place the live test exercises
+    -- `depsKey`/`depsKeys` rather than an expression reference, and teardown
+    -- has to reverse both.
+    --
+    -- A public image, which is what makes this includable at all: Serverless
+    -- Containers can pull from an external registry, so nothing has to be
+    -- built and pushed first.
+    resource scalewayContainer "ci-tests-infra-ctr"
+      { namespace' := scwCtrsD
+      , image      := "docker.io/library/nginx:alpine"
+      , port       := 80
+      , minScale   := 0
+      , maxScale   := 1
+      , memoryMb   := 256
+      , timeoutSec := 60
+      , secretEnv  := [("BASE", scwBaseD)] }
+
+/-! Stage 2 drops `b` and the container — the latter deliberately, because it
+  is the resource with the two key-typed edges, so dropping it makes an orphan
+  whose deletion has to precede a namespace that is *still declared*. That is
+  the ordering case a single-stage test cannot produce. -/
+fleet scalewayTrimmed in paris where
+  provider scaleway where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 60 }
+    resource secrets "ci-tests-infra-secret" as scwBase'
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as scwA'
+      { valueFrom := composed expr!"a:{secretValueOf scwBase'}" }
+    resource secrets "ci-tests-infra-sink" as scwSink'
+      { valueFrom := composed expr!"{secretValueOf scwA'}|{secretValueOf scwBase'}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf scwSink'}" }
+    resource secrets "ci-tests-infra-late"
+      { valueFrom := composed expr!"late:{secretValueOf scwBase'}" }
+    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
+    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
+    resource scalewayFunctionNamespace "ci-tests-infra-fns"
+      { description := "created and destroyed by the infra live test" }
+    resource scalewayContainerNamespace "ci-tests-infra-ctrs"
+      { description := "created and destroyed by the infra live test" }
+
+/-! GCP's leg used to be expected to fail: there was no live GCP backend, so
+    it raised on the first call, and this comment said the day one landed the
+    leg would start passing on its own. It has, and it does. `queues` on GCP is
+    a Pub/Sub topic — see `Infra.Providers.Gcp.PubSub`.
+
+    Note what is *not* asserted as a result. A Pub/Sub topic has no visibility
+    timeout — that belongs to a subscription — so `visibilityTimeoutSec` below
+    is declared, carried through the plan, and then reported `unknown` by the
+    backend. The convergence check still means something, because an unknown
+    field is not a divergence; it just does not mean the number was stored
+    anywhere. In particular stage 2's change from 30 to 60 is a real `update`
+    on AWS and Scaleway and a no-op here, which is why the stage assertions
+    are about *which resources exist* rather than about action counts. -/
+
+fleet gcpFull in paris where
+  provider gcp where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
+    resource secrets "ci-tests-infra-secret" as gcpBase
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as gcpA
+      { valueFrom := composed expr!"a:{secretValueOf gcpBase}" }
+    resource secrets "ci-tests-infra-b" as gcpB
+      { valueFrom := composed expr!"b:{secretValueOf gcpBase}" }
+    resource secrets "ci-tests-infra-sink" as gcpSink
+      { valueFrom := composed
+          expr!"{secretValueOf gcpA}|{secretValueOf gcpB}|{secretValueOf gcpBase}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf gcpSink}" }
+    resource imageRegistry "ci-tests-infra-images" {}
+    resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
+    -- `compute` becomes testable here and nowhere else, because Cloud Run will
+    -- pull a public image. Google's own sample is used rather than something
+    -- of ours: nothing to build, and it will not disappear.
+    --
+    -- Lambda is why AWS has no `compute` here — a container function must come
+    -- from an ECR repository in the same account, so it cannot be created from
+    -- nothing.
+    resource compute "ci-tests-infra-run"
+      { image      := "gcr.io/cloudrun/hello"
+      , memoryMb   := 512
+      , timeoutSec := 60
+      -- Naming the runtime identity, rather than letting Cloud Run pick. Its
+      -- default is the project's compute service account, which Google grants
+      -- `roles/editor` — so a test that said nothing here would deploy a
+      -- container running as an Editor on the whole project, and enshrine
+      -- that as the example. Deploying as an identity still requires
+      -- `iam.serviceAccounts.actAs` on it; `ci/README.md` has the grant.
+      , executionRole := "infra-ci@typednotes.iam.gserviceaccount.com" }
+    -- Google constrains a service-account id to 6-30 lowercase characters
+    -- starting with a letter. `Gcp.Iam.checkAccountId` rejects a bad one by
+    -- naming the rule, because the name is fixed at compile time — so a bad
+    -- one fails every apply rather than one of them.
+    resource iam "ci-tests-infra-sa" {}
+
+/-! ## Three stages per cloud, and the same shape on all three
+
+  The live legs used to be one declaration each: create it, check it converged,
+  destroy it. That exercises `create` and `delete` and nothing in between —
+  and, more importantly, nothing about *membership*. A resource is only ever
+  destroyed by asking for an empty target, which is a different code path from
+  the one an operator actually uses, which is editing a file.
+
+  So each cloud now runs a **sequence of declarations**, applied in order
+  against one ledger:
+
+  | Stage | What it declares | What that has to make happen |
+  |---|---|---|
+  | 1 `full` | the whole fleet | `create`, and a dependency order that works |
+  | 2 `trimmed` | two resources dropped, one field changed, one added | `deleteOrphan` for the dropped, `update` for the changed, `create` for the added |
+  | 3 `empty` | nothing at all | `deleteOrphan` for everything left |
+
+  Stage 2 is the one worth having, and it is the one nothing tested before. Its
+  dropped resources have no key in stage 2's key family at all — their lines
+  are *gone*, exactly as if a person had deleted them — so the only thing that
+  knows they exist is the ledger. If membership were still derived from the
+  declaration, stage 2 would silently abandon them and stage 3 would have
+  nothing to clean up, and both stages would pass while leaking two billable
+  resources per cloud. The assertion that catches that is in `liveSequence`:
+  after each stage the account must contain *exactly* what the stage declares.
+
+  Stage 3 is `apply` against a declaration with no resources in it, not the
+  `destroy` verb. Those are the same operation — see `Plan.absent` — and this
+  is the half that had never run.
+
+  ### The dependency graph, identical on all three clouds
+
+  Five secrets, shaped to be more than a chain:
+
+      base ──┬──▶ a ──┐
+             ├──▶ b ──┼──▶ sink ──▶ tail
+             └────────┘
+
+  A fan-out of two from `base`, a fan-in of three on `sink` (including a
+  redundant direct edge from `base`, which the two paths through `a` and `b`
+  already imply), and a four-deep chain `base → a → sink → tail`. It is the
+  same shape `Infra/Demo.lean`'s `dagFleet` checks offline against a
+  recomputed topological order, so the offline and live tests agree on what a
+  hard graph looks like. Every edge comes from `HasDeps SecretsSpec`, so all
+  five are created in one apply and deleted in the reverse of that order.
+
+  Names are prefixed `ci-tests-infra-` and, where a cloud's namespace is wider
+  than the project, suffixed — see the notes on `bucketSuffix` and on
+  Scaleway's registry namespaces below. -/
+
+fleet gcpRampUp in paris where
+  provider gcp where
+    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 120 }
+    resource secrets "ci-tests-infra-secret" as gcpBaseU
+      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
+    resource secrets "ci-tests-infra-a" as gcpAU
+      { valueFrom := composed expr!"a:{secretValueOf gcpBaseU}" }
+    resource secrets "ci-tests-infra-b" as gcpBU
+      { valueFrom := composed expr!"b:{secretValueOf gcpBaseU}" }
+    resource secrets "ci-tests-infra-sink" as gcpSinkU
+      { valueFrom := composed
+          expr!"{secretValueOf gcpAU}|{secretValueOf gcpBU}|{secretValueOf gcpBaseU}" }
+    resource secrets "ci-tests-infra-tail"
+      { valueFrom := composed expr!"t:{secretValueOf gcpSinkU}" }
+    resource imageRegistry "ci-tests-infra-images" {}
+    resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
+    -- `compute` becomes testable here and nowhere else, because Cloud Run will
+    -- pull a public image. Google's own sample is used rather than something
+    -- of ours: nothing to build, and it will not disappear.
+    --
+    -- Lambda is why AWS has no `compute` here — a container function must come
+    -- from an ECR repository in the same account, so it cannot be created from
+    -- nothing.
+    resource compute "ci-tests-infra-run"
+      { image      := "gcr.io/cloudrun/hello"
+      , memoryMb   := 1024
+      , timeoutSec := 120
+      -- Naming the runtime identity, rather than letting Cloud Run pick. Its
+      -- default is the project's compute service account, which Google grants
+      -- `roles/editor` — so a test that said nothing here would deploy a
+      -- container running as an Editor on the whole project, and enshrine
+      -- that as the example. Deploying as an identity still requires
+      -- `iam.serviceAccounts.actAs` on it; `ci/README.md` has the grant.
+      , executionRole := "infra-ci@typednotes.iam.gserviceaccount.com" }
+    -- Google constrains a service-account id to 6-30 lowercase characters
+    -- starting with a letter. `Gcp.Iam.checkAccountId` rejects a bad one by
+    -- naming the rule, because the name is fixed at compile time — so a bad
+    -- one fails every apply rather than one of them.
+    resource iam "ci-tests-infra-sa" {}
+
 /-! ## What the live fleets cover, and what they cannot
 
   Eleven of the fourteen kinds, on the clouds that have them — eight or nine
@@ -135,219 +680,20 @@ def secretValueVar : String := "CI_TESTS_INFRA_SECRET"
     change it in a fork. -/
 def bucketSuffix : String := "7c1f9a2e"
 
-/-! ## Three stages per cloud, and the same shape on all three
-
-  The live legs used to be one declaration each: create it, check it converged,
-  destroy it. That exercises `create` and `delete` and nothing in between —
-  and, more importantly, nothing about *membership*. A resource is only ever
-  destroyed by asking for an empty target, which is a different code path from
-  the one an operator actually uses, which is editing a file.
-
-  So each cloud now runs a **sequence of declarations**, applied in order
-  against one ledger:
-
-  | Stage | What it declares | What that has to make happen |
-  |---|---|---|
-  | 1 `full` | the whole fleet | `create`, and a dependency order that works |
-  | 2 `trimmed` | two resources dropped, one field changed, one added | `deleteOrphan` for the dropped, `update` for the changed, `create` for the added |
-  | 3 `empty` | nothing at all | `deleteOrphan` for everything left |
-
-  Stage 2 is the one worth having, and it is the one nothing tested before. Its
-  dropped resources have no key in stage 2's key family at all — their lines
-  are *gone*, exactly as if a person had deleted them — so the only thing that
-  knows they exist is the ledger. If membership were still derived from the
-  declaration, stage 2 would silently abandon them and stage 3 would have
-  nothing to clean up, and both stages would pass while leaking two billable
-  resources per cloud. The assertion that catches that is in `liveSequence`:
-  after each stage the account must contain *exactly* what the stage declares.
-
-  Stage 3 is `apply` against a declaration with no resources in it, not the
-  `destroy` verb. Those are the same operation — see `Plan.absent` — and this
-  is the half that had never run.
-
-  ### The dependency graph, identical on all three clouds
-
-  Five secrets, shaped to be more than a chain:
-
-      base ──┬──▶ a ──┐
-             ├──▶ b ──┼──▶ sink ──▶ tail
-             └────────┘
-
-  A fan-out of two from `base`, a fan-in of three on `sink` (including a
-  redundant direct edge from `base`, which the two paths through `a` and `b`
-  already imply), and a four-deep chain `base → a → sink → tail`. It is the
-  same shape `Infra/Demo.lean`'s `dagFleet` checks offline against a
-  recomputed topological order, so the offline and live tests agree on what a
-  hard graph looks like. Every edge comes from `HasDeps SecretsSpec`, so all
-  five are created in one apply and deleted in the reverse of that order.
-
-  Names are prefixed `ci-tests-infra-` and, where a cloud's namespace is wider
-  than the project, suffixed — see the notes on `bucketSuffix` and on
-  Scaleway's registry namespaces below. -/
-
-/-! ### Stage 1: the whole fleet -/
-
-fleet awsFull in ireland where
-  provider aws where
-    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
-    resource secrets "ci-tests-infra-secret" as awsBase
-      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    resource secrets "ci-tests-infra-a" as awsA
-      { valueFrom := composed expr!"a:{secretValueOf awsBase}" }
-    resource secrets "ci-tests-infra-b" as awsB
-      { valueFrom := composed expr!"b:{secretValueOf awsBase}" }
-    -- Fan-in of three, one edge of which is redundant.
-    resource secrets "ci-tests-infra-sink" as awsSink
-      { valueFrom := composed
-          expr!"{secretValueOf awsA}|{secretValueOf awsB}|{secretValueOf awsBase}" }
-    resource secrets "ci-tests-infra-tail"
-      { valueFrom := composed expr!"t:{secretValueOf awsSink}" }
-    resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
-    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
-    -- Both bucket kinds: they differ in Object Lock, which is creation-time
-    -- only, so nothing short of a real create exercises it.
-    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
-      { versioning := true, objectLock := true }
-    resource securityGroup "ci-tests-infra-sg"
-      { description := "created and destroyed by the infra live test" }
-    resource iam "ci-tests-infra-user" {}
-
-/-! ### Stage 2: two resources dropped, one changed, one added
-
-  `ci-tests-infra-b` and `ci-tests-infra-sg` are simply absent below, which
-  also shortens the graph: with `b` gone, `sink` fans in on two instead of
-  three. `queues`' visibility timeout goes from 30 to 60, which is a mutable
-  field and so an `update` rather than a replace. And `ci-tests-infra-late`
-  is new. -/
-
-fleet awsTrimmed in ireland where
-  provider aws where
-    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 60 }
-    resource secrets "ci-tests-infra-secret" as awsBase'
-      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    resource secrets "ci-tests-infra-a" as awsA'
-      { valueFrom := composed expr!"a:{secretValueOf awsBase'}" }
-    resource secrets "ci-tests-infra-sink" as awsSink'
-      { valueFrom := composed expr!"{secretValueOf awsA'}|{secretValueOf awsBase'}" }
-    resource secrets "ci-tests-infra-tail"
-      { valueFrom := composed expr!"t:{secretValueOf awsSink'}" }
-    resource secrets "ci-tests-infra-late"
-      { valueFrom := composed expr!"late:{secretValueOf awsBase'}" }
-    resource imageRegistry "ci-tests-infra-images" { immutableTags := true }
-    resource objectStore "ci-tests-infra-store-7c1f9a2e" { versioning := true }
-    resource s3Bucket "ci-tests-infra-lock-7c1f9a2e"
-      { versioning := true, objectLock := true }
-    resource iam "ci-tests-infra-user" {}
-
-fleet scalewayFull in paris where
-  provider scaleway where
-    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
-    resource secrets "ci-tests-infra-secret" as scwBase
-      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    resource secrets "ci-tests-infra-a" as scwA
-      { valueFrom := composed expr!"a:{secretValueOf scwBase}" }
-    resource secrets "ci-tests-infra-b" as scwB
-      { valueFrom := composed expr!"b:{secretValueOf scwBase}" }
-    resource secrets "ci-tests-infra-sink" as scwSink
-      { valueFrom := composed
-          expr!"{secretValueOf scwA}|{secretValueOf scwB}|{secretValueOf scwBase}" }
-    resource secrets "ci-tests-infra-tail"
-      { valueFrom := composed expr!"t:{secretValueOf scwSink}" }
-    -- The suffix is here for the same reason it is on the buckets, and the
-    -- reason is not obvious until you look at the endpoint: a Scaleway
-    -- registry namespace's name *is* its hostname path —
-    -- `rg.fr-par.scw.cloud/<name>` — so names are unique per region across
-    -- every project, not per project.
-    --
-    -- Two consequences, both met in practice. A leftover namespace from a
-    -- failed run blocks every future run, in any project, with
-    -- `400 Namespace already exist` — the same permanent-deadlock shape as the
-    -- SQS credential name. And a fork would collide with this repository.
-    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
-    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
-    -- No `iam` here, unlike the AWS and GCP fleets. Scaleway's IAM
-    -- applications live in the **organization**, not in a project, so testing
-    -- the kind would need CI to hold organization-level IAM rights — and
-    -- those cannot be confined to the isolated CI project the rest of this
-    -- fleet lives in. One kind of live coverage is the cheaper thing to give
-    -- up. `iam` is still covered on the other two clouds, where the identity
-    -- is project- or account-scoped.
-    resource scalewayFunctionNamespace "ci-tests-infra-fns"
-      { description := "created and destroyed by the infra live test" }
-    resource scalewayContainerNamespace "ci-tests-infra-ctrs" as scwCtrs
-      { description := "created and destroyed by the infra live test" }
-    -- Fan-in of a *different* provenance from the secrets graph: this depends
-    -- on the namespace above (a key reference, via `depsKey`) and on the base
-    -- secret (via `depsKeys s.secretEnv`), so two edges of two different kinds
-    -- converge on one resource. It is the only place the live test exercises
-    -- `depsKey`/`depsKeys` rather than an expression reference, and teardown
-    -- has to reverse both.
-    --
-    -- A public image, which is what makes this includable at all: Serverless
-    -- Containers can pull from an external registry, so nothing has to be
-    -- built and pushed first.
-    resource scalewayContainer "ci-tests-infra-ctr"
-      { namespace' := scwCtrs
-      , image      := "docker.io/library/nginx:alpine"
-      , port       := 80
-      , minScale   := 0
-      , maxScale   := 1
-      , memoryMb   := 256
-      , timeoutSec := 60
-      , secretEnv  := [("BASE", scwBase)] }
-
-/-! Stage 2 drops `b` and the container — the latter deliberately, because it
-  is the resource with the two key-typed edges, so dropping it makes an orphan
-  whose deletion has to precede a namespace that is *still declared*. That is
-  the ordering case a single-stage test cannot produce. -/
-fleet scalewayTrimmed in paris where
-  provider scaleway where
-    resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 60 }
-    resource secrets "ci-tests-infra-secret" as scwBase'
-      { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    resource secrets "ci-tests-infra-a" as scwA'
-      { valueFrom := composed expr!"a:{secretValueOf scwBase'}" }
-    resource secrets "ci-tests-infra-sink" as scwSink'
-      { valueFrom := composed expr!"{secretValueOf scwA'}|{secretValueOf scwBase'}" }
-    resource secrets "ci-tests-infra-tail"
-      { valueFrom := composed expr!"t:{secretValueOf scwSink'}" }
-    resource secrets "ci-tests-infra-late"
-      { valueFrom := composed expr!"late:{secretValueOf scwBase'}" }
-    resource imageRegistry "ci-tests-infra-images-7c1f9a2e" {}
-    resource objectStore "ci-tests-infra-store-scw-7c1f9a2e" { versioning := true }
-    resource scalewayFunctionNamespace "ci-tests-infra-fns"
-      { description := "created and destroyed by the infra live test" }
-    resource scalewayContainerNamespace "ci-tests-infra-ctrs"
-      { description := "created and destroyed by the infra live test" }
-
-/-! GCP's leg used to be expected to fail: there was no live GCP backend, so
-    it raised on the first call, and this comment said the day one landed the
-    leg would start passing on its own. It has, and it does. `queues` on GCP is
-    a Pub/Sub topic — see `Infra.Providers.Gcp.PubSub`.
-
-    Note what is *not* asserted as a result. A Pub/Sub topic has no visibility
-    timeout — that belongs to a subscription — so `visibilityTimeoutSec` below
-    is declared, carried through the plan, and then reported `unknown` by the
-    backend. The convergence check still means something, because an unknown
-    field is not a divergence; it just does not mean the number was stored
-    anywhere. In particular stage 2's change from 30 to 60 is a real `update`
-    on AWS and Scaleway and a no-op here, which is why the stage assertions
-    are about *which resources exist* rather than about action counts. -/
-
-fleet gcpFull in paris where
+fleet gcpRampDown in paris where
   provider gcp where
     resource queues "ci-tests-infra-queue" { visibilityTimeoutSec := 30 }
-    resource secrets "ci-tests-infra-secret" as gcpBase
+    resource secrets "ci-tests-infra-secret" as gcpBaseD
       { valueFrom := fromEnv "CI_TESTS_INFRA_SECRET" }
-    resource secrets "ci-tests-infra-a" as gcpA
-      { valueFrom := composed expr!"a:{secretValueOf gcpBase}" }
-    resource secrets "ci-tests-infra-b" as gcpB
-      { valueFrom := composed expr!"b:{secretValueOf gcpBase}" }
-    resource secrets "ci-tests-infra-sink" as gcpSink
+    resource secrets "ci-tests-infra-a" as gcpAD
+      { valueFrom := composed expr!"a:{secretValueOf gcpBaseD}" }
+    resource secrets "ci-tests-infra-b" as gcpBD
+      { valueFrom := composed expr!"b:{secretValueOf gcpBaseD}" }
+    resource secrets "ci-tests-infra-sink" as gcpSinkD
       { valueFrom := composed
-          expr!"{secretValueOf gcpA}|{secretValueOf gcpB}|{secretValueOf gcpBase}" }
+          expr!"{secretValueOf gcpAD}|{secretValueOf gcpBD}|{secretValueOf gcpBaseD}" }
     resource secrets "ci-tests-infra-tail"
-      { valueFrom := composed expr!"t:{secretValueOf gcpSink}" }
+      { valueFrom := composed expr!"t:{secretValueOf gcpSinkD}" }
     resource imageRegistry "ci-tests-infra-images" {}
     resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
     -- `compute` becomes testable here and nowhere else, because Cloud Run will
@@ -427,6 +773,7 @@ private def before {κ : Keys} (T : Plan κ) (a b : String) : Bool :=
 #guard awsFull.keys.count .aws .objectStore = 1
 #guard awsFull.keys.count .aws .s3Bucket = 1
 #guard awsFull.keys.count .aws .securityGroup = 1
+#guard awsFull.keys.count .aws .awsInstance = 1
 #guard awsFull.keys.count .aws .iam = 1
 
 #guard scalewayFull.keys.count .scaleway .queues = 1
@@ -436,6 +783,7 @@ private def before {κ : Keys} (T : Plan κ) (a b : String) : Bool :=
 #guard scalewayFull.keys.count .scaleway .scalewayFunctionNamespace = 1
 #guard scalewayFull.keys.count .scaleway .scalewayContainerNamespace = 1
 #guard scalewayFull.keys.count .scaleway .scalewayContainer = 1
+#guard scalewayFull.keys.count .scaleway .scalewayFunction = 1
 -- Zero on purpose, and the zero is the assertion: see the note where the
 -- fleet is declared for why Scaleway's IAM cannot be confined to a project.
 #guard scalewayFull.keys.count .scaleway .iam = 0
@@ -452,6 +800,14 @@ private def before {κ : Keys} (T : Plan κ) (a b : String) : Bool :=
 #guard awsFull.keys.count .aws .compute = 0        -- Lambda needs an ECR image
 #guard gcpFull.keys.count .gcp .s3Bucket = 0       -- an S3-only concept
 #guard awsFull.keys.count .aws .scalewayContainer = 0
+
+/- The one kind no live fleet contains, and the assertion is the zero: a
+   Postgres instance takes five to fifteen minutes to create and as long to
+   delete, which is longer than the workflow step it would run in. Everything
+   else is covered — see the thirteen-of-fourteen guard further down. -/
+#guard awsFull.keys.count .aws .postgres = 0
+#guard scalewayFull.keys.count .scaleway .postgres = 0
+#guard gcpFull.keys.count .gcp .postgres = 0
 
 -- The fan-out's two arms, on every cloud.
 #guard before awsFull.plan "secrets/ci-tests-infra-secret" "secrets/ci-tests-infra-a"
@@ -671,17 +1027,23 @@ disagree.\n  still managed but not declared: {String.intercalate ", " extra}\
     are what get destroyed. -/
 def stagesFor : String → Option (List Stage)
   | "aws" => some
-    [ stage "full"    awsFull.plan      awsFull.regions      awsFull.forgets
-    , stage "trimmed" awsTrimmed.plan   awsTrimmed.regions   awsTrimmed.forgets
-    , stage "empty"   nothingAtAll.plan awsFull.regions      nothingAtAll.forgets ]
+    [ stage "full"      awsFull.plan      awsFull.regions      awsFull.forgets
+    , stage "ramp-up"   awsRampUp.plan    awsRampUp.regions    awsRampUp.forgets
+    , stage "ramp-down" awsRampDown.plan  awsRampDown.regions  awsRampDown.forgets
+    , stage "trimmed"   awsTrimmed.plan   awsTrimmed.regions   awsTrimmed.forgets
+    , stage "empty"     nothingAtAll.plan awsFull.regions      nothingAtAll.forgets ]
   | "scaleway" => some
-    [ stage "full"    scalewayFull.plan    scalewayFull.regions    scalewayFull.forgets
-    , stage "trimmed" scalewayTrimmed.plan scalewayTrimmed.regions scalewayTrimmed.forgets
-    , stage "empty"   nothingAtAll.plan    scalewayFull.regions    nothingAtAll.forgets ]
+    [ stage "full"      scalewayFull.plan     scalewayFull.regions     scalewayFull.forgets
+    , stage "ramp-up"   scalewayRampUp.plan   scalewayRampUp.regions   scalewayRampUp.forgets
+    , stage "ramp-down" scalewayRampDown.plan scalewayRampDown.regions scalewayRampDown.forgets
+    , stage "trimmed"   scalewayTrimmed.plan  scalewayTrimmed.regions  scalewayTrimmed.forgets
+    , stage "empty"     nothingAtAll.plan     scalewayFull.regions     nothingAtAll.forgets ]
   | "gcp" => some
-    [ stage "full"    gcpFull.plan      gcpFull.regions      gcpFull.forgets
-    , stage "trimmed" gcpTrimmed.plan   gcpTrimmed.regions   gcpTrimmed.forgets
-    , stage "empty"   nothingAtAll.plan gcpFull.regions      nothingAtAll.forgets ]
+    [ stage "full"      gcpFull.plan      gcpFull.regions      gcpFull.forgets
+    , stage "ramp-up"   gcpRampUp.plan    gcpRampUp.regions    gcpRampUp.forgets
+    , stage "ramp-down" gcpRampDown.plan  gcpRampDown.regions  gcpRampDown.forgets
+    , stage "trimmed"   gcpTrimmed.plan   gcpTrimmed.regions   gcpTrimmed.forgets
+    , stage "empty"     nothingAtAll.plan gcpFull.regions      nothingAtAll.forgets ]
   | _ => none
 
 /-! ### The stages really are different declarations
@@ -708,33 +1070,59 @@ private def awsStages := stagesFor "aws" |>.getD []
 private def scwStages := stagesFor "scaleway" |>.getD []
 private def gcpStages := stagesFor "gcp" |>.getD []
 
-/- Three stages per cloud, and the last one declares nothing at all — which is
-   what makes it `apply`-empty rather than a fourth mechanism. -/
-#guard awsStages.length = 3
-#guard scwStages.length = 3
-#guard gcpStages.length = 3
-#guard (at! awsStages 2).declared = []
-#guard (at! scwStages 2).declared = []
-#guard (at! gcpStages 2).declared = []
+/- Five stages per cloud, and the last one declares nothing at all — which is
+   what makes it `apply`-empty rather than a sixth mechanism. -/
+#guard awsStages.length = 5
+#guard scwStages.length = 5
+#guard gcpStages.length = 5
+#guard (at! awsStages 4).declared = []
+#guard (at! scwStages 4).declared = []
+#guard (at! gcpStages 4).declared = []
 
-/- Stage 2 drops exactly what its comment says, on each cloud. These are the
-   orphans: no key in stage 2 names them, so only the ledger can. -/
-#guard dropped (at! awsStages 0) (at! awsStages 1)
-     = ["aws/secrets/ci-tests-infra-b", "aws/security-group/ci-tests-infra-sg"]
-#guard dropped (at! scwStages 0) (at! scwStages 1)
-     = ["scaleway/secrets/ci-tests-infra-b", "scaleway/scaleway-container/ci-tests-infra-ctr"]
-#guard dropped (at! gcpStages 0) (at! gcpStages 1)
+/- The two ramp stages declare *exactly* what stage 1 does: same resources,
+   same names, same graph. Only mutable fields move. If a ramp accidentally
+   added or dropped a resource it would be testing the wrong thing, and the
+   assertion in `runStage` would pass anyway because it only compares sets. -/
+#guard (at! awsStages 1).declared = (at! awsStages 0).declared
+#guard (at! awsStages 2).declared = (at! awsStages 0).declared
+#guard (at! scwStages 1).declared = (at! scwStages 0).declared
+#guard (at! scwStages 2).declared = (at! scwStages 0).declared
+#guard (at! gcpStages 1).declared = (at! gcpStages 0).declared
+#guard (at! gcpStages 2).declared = (at! gcpStages 0).declared
+
+/- And every ramp stage declares something, so none is mistaken for a teardown
+   by the brake in `push`. A ramp whose numbers matched stage 1 would converge
+   instantly and assert nothing, which is how this test would rot unnoticed;
+   the numbers themselves are in the declarations a few hundred lines up. -/
+#guard awsRampUp.plan.declaresAnything && awsRampDown.plan.declaresAnything
+#guard scalewayRampUp.plan.declaresAnything && scalewayRampDown.plan.declaresAnything
+#guard gcpRampUp.plan.declaresAnything && gcpRampDown.plan.declaresAnything
+
+/- The trimming stage drops exactly what its comment says, on each cloud.
+   These are the orphans: no key in that stage names them, so only the ledger
+   can. -/
+#guard dropped (at! awsStages 0) (at! awsStages 3)
+     = ["aws/secrets/ci-tests-infra-b", "aws/aws-instance/ci-tests-infra-vm"]
+-- Three orphans here, and each one's namespace is *still declared*, which is
+-- what keeps them orderable: the ledger records a name and a region, not an
+-- edge, so an orphan whose dependency is also an orphan is the case it cannot
+-- sequence.
+#guard dropped (at! scwStages 0) (at! scwStages 3)
+     = [ "scaleway/secrets/ci-tests-infra-b"
+       , "scaleway/scaleway-function/ci-tests-infra-fn"
+       , "scaleway/scaleway-container/ci-tests-infra-ctr" ]
+#guard dropped (at! gcpStages 0) (at! gcpStages 3)
      = ["gcp/compute/ci-tests-infra-run", "gcp/secrets/ci-tests-infra-b"]
 
 /- And adds one, so the stage is not purely subtractive: a sequence that only
    ever removed things would never exercise a create after a delete. -/
-#guard added (at! awsStages 0) (at! awsStages 1) = ["aws/secrets/ci-tests-infra-late"]
-#guard added (at! scwStages 0) (at! scwStages 1) = ["scaleway/secrets/ci-tests-infra-late"]
-#guard added (at! gcpStages 0) (at! gcpStages 1) = ["gcp/secrets/ci-tests-infra-late"]
+#guard added (at! awsStages 0) (at! awsStages 3) = ["aws/secrets/ci-tests-infra-late"]
+#guard added (at! scwStages 0) (at! scwStages 3) = ["scaleway/secrets/ci-tests-infra-late"]
+#guard added (at! gcpStages 0) (at! gcpStages 3) = ["gcp/secrets/ci-tests-infra-late"]
 
 /- Stage 3 drops everything stage 2 still held. -/
-#guard dropped (at! awsStages 1) (at! awsStages 2) = (at! awsStages 1).declared
-#guard added (at! awsStages 1) (at! awsStages 2) = []
+#guard dropped (at! awsStages 3) (at! awsStages 4) = (at! awsStages 3).declared
+#guard added (at! awsStages 3) (at! awsStages 4) = []
 
 /- The symmetric core is the same on all three clouds: same kinds, same names,
    same graph. Anything beyond it is a cloud that has something the others do
@@ -755,12 +1143,23 @@ private def coreSlots (cloud : String) : List String :=
 #guard (awsStages ++ scwStages ++ gcpStages).all fun st =>
   st.declared.all fun slot => (slot.splitOn ciPrefix).length > 1
 
-/- The counts, read off the declarations rather than remembered. Eleven, eleven
-   and ten resources, spanning seven kinds on AWS, eight on Scaleway and six on
-   GCP. -/
-#guard (at! awsStages 0).declared.length = 11
-#guard (at! scwStages 0).declared.length = 11
+/- The counts, read off the declarations rather than remembered: twelve, twelve
+   and ten resources, spanning 22 `(cloud, kind)` pairs and *thirteen of the
+   fourteen kinds*. Only `postgres` is left out, because it takes longer to
+   create than a workflow step allows. -/
+#guard (at! awsStages 0).declared.length = 12
+#guard (at! scwStages 0).declared.length = 12
 #guard (at! gcpStages 0).declared.length = 10
+
+private def kindsOf (st : Stage) : List String :=
+  (st.declared.map fun (sl : String) => ((sl.splitOn "/").drop 1).headD "?").eraseDups
+
+#guard (kindsOf (at! awsStages 0)).length + (kindsOf (at! scwStages 0)).length
+     + (kindsOf (at! gcpStages 0)).length = 22
+#guard ((((at! awsStages 0).declared ++ (at! scwStages 0).declared
+          ++ (at! gcpStages 0).declared).map fun (sl : String) =>
+          ((sl.splitOn "/").drop 1).headD "?").eraseDups).length = 13
+#guard card Kind = 14
 
 /-- The teardown, on its own, for the workflow's backstop.
 
@@ -934,9 +1333,10 @@ def liveSequence (name : String) (stages : List Stage) (regions : Regions) :
 def usage : String :=
   "usage: lake test [-- <aws|scaleway|gcp|all> [sweep|destroy]]\n\n\
   With no argument:     the offline checks. No cloud, no credentials, no cost.\n\
-  With a provider:      runs three declarations in sequence against one\n\
-                        ledger — the whole fleet, then a trimmed version, then\n\
-                        one that declares nothing — and checks after each that\n\
+  With a provider:      runs five declarations in sequence against one\n\
+                        ledger: the whole fleet, the same fleet scaled up,\n\
+                        the same scaled back down, a trimmed version, then\n\
+                        one that declares nothing. After each it checks that\n\
                         the account holds exactly what that stage declares.\n\
                         Ten or eleven real resources, all named\n\
                         'ci-tests-infra-*'. The last stage destroys them.\n\

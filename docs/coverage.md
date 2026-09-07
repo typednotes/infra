@@ -1,4 +1,4 @@
-# Coverage in 0.6.0
+# Coverage in 0.7.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-07.
@@ -150,62 +150,30 @@ This is the section worth reading before trusting anything. Correctness of
 `lake test -- <provider>` is the live sequence, run from a manual workflow
 trigger, one cloud at a time.
 
-**Where the staged sequence has got to, as of 2026-09-07.** It has found two
-real defects and has not yet completed on any cloud.
+**The staged sequence passes on all three clouds, as of 2026-09-07.** All three
+stages, on AWS, Scaleway and GCP. That is the first time membership has been
+exercised against real accounts, and it is the claim this whole version rests
+on: stage 2 drops two resources whose lines are *gone* from the declaration, so
+the ledger is the only thing that can name them, and each account came back
+holding exactly what the stage declared.
 
-*Round one.* Stages 1 and 2 passed on all three clouds — the first live
-exercise of membership: stage 2 drops two resources whose lines are gone from
-the declaration, so the ledger is the only thing that can name them, and the
-account came back holding exactly what the stage declared. Stage 3 failed on
-all three, for one reason in the tool and none in any cloud: the "destroying
-most of the ledger" brake fired on the teardown, the one plan it was never
-meant to question. Fixed by deriving the exemption from the target
-(`Plan.declaresAnything`) rather than taking a flag every caller had to
-remember.
+It took two rounds of failures to get there, both of them the tool's fault and
+neither any cloud's. They are recorded because the second one is the kind of
+bug that only a real account finds:
 
-*Round two.* Stage 1 failed on all three, and this one was worth the money. The
-ledger only learned about a resource through an *action*, so the eight
-resources that a previous run had left standing — and which therefore needed no
-action — were never recorded, and the teardown then deleted only the three that
-had. An apply now adopts what the declaration claims and the cloud already has.
-The offline suite has a check for it now
-(`Main.lean`'s `checkLedgerAdoption`); it should have had one from the start,
-and its absence is what made three live runs necessary to find a leak that
-reproduces with placeholder backends.
-
-Both rounds left resources behind, which is what prompted the sweep below.
-
-#### Cleaning up after a run that did not
-
-There are two cleanups, and they answer different questions.
-
-`lake test -- <cloud> destroy` destroys what the **ledger** records. It is the
-right thing *inside* a run, and the live workflow's backstop calls it — but the
-ledger lives under `.infra/`, which is gitignored, so it does not survive the
-job. A later job asked to clean up finds an empty ledger and deletes nothing,
-however much is standing. That is exactly what happened after both rounds
-above.
-
-`lake test -- <cloud> sweep` asks the **account**: list every kind, delete
-everything named `ci-tests-infra-*`. It needs no ledger, no cache and no
-declaration, so it works in a fresh checkout, and it also clears debris created
-by an *older* version of the fleet — which `destroy` cannot, because the ledger
-only ever knew what the current declaration named. `lake test -- all sweep`
-does all three clouds. `.github/workflows/cleanup.yml` runs it weekly and on
-demand, one job per cloud, sharing each cloud's concurrency group with the live
-test so a sweep can never race the run whose resources it would delete.
-
-Two things about the sweep are checked offline, on every push, because getting
-either wrong is expensive and no live test is a safe place to find out:
-
-- **It deletes debris and nothing else.** The check lists four buckets: two
-  prefixed, one belonging to production, and one whose name merely *contains*
-  the prefix rather than starting with it. Only the first two may go, which is
-  what makes `isPrefixOf` rather than a substring test load-bearing.
-- **It retries past a dependency.** A sweep has no declaration to read edges
-  from, so it converges by repetition: the check's backend refuses a namespace
-  while a container is still in it, which is the real Scaleway constraint, and
-  one pass is not enough.
+- *Round one.* Stages 1 and 2 passed; stage 3 failed everywhere. The
+  "destroying most of the ledger" brake fired on the teardown — the one plan it
+  was never meant to question. It had taken `force` from its caller, so every
+  caller had to remember to set it; the CLI did and the test driver did not.
+  Now derived from the target: a declaration that asks for nothing to exist
+  *is* a teardown (`Plan.declaresAnything`).
+- *Round two.* Stage 1 failed everywhere. The ledger only learned about a
+  resource through an *action*, so the resources a previous run had left
+  standing — which therefore needed no action — were never recorded, and the
+  teardown deleted only the few that had. An apply now adopts what the
+  declaration claims and the cloud already has. This reproduces with
+  placeholder backends, and `Main.lean`'s `checkLedgerAdoption` is the check
+  that should have existed from the start.
 
 #### What one live leg does
 
@@ -216,10 +184,17 @@ apply against a real account, and after each one the account must hold
 | Stage | Declares | What it proves |
 |---|---|---|
 | 1 `full` | eleven resources on AWS and Scaleway, ten on GCP | `create` works, and the dependency order works: five secrets forming a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply |
-| 2 `trimmed` | two resources dropped, one field changed, one added | `deleteOrphan` for the dropped — their lines are *gone*, so only the ledger knows they exist — plus `update` for the changed field and `create` for the new one |
-| 3 `empty` | nothing at all | `deleteOrphan` for everything left. This is `apply` against an empty declaration, which is the same operation `destroy` performs, and the half that had never run |
+| 2 `ramp-up` | the same resources, scaled up | `update` on every field that moves, and only `update`: each is on a `.mutable` row, so none may come back as a replace |
+| 3 `ramp-down` | the same resources, scaled back | the same paths in the other direction. Scaling a container back to a floor of zero instances is the direction that costs money when it silently fails |
+| 4 `trimmed` | two resources dropped, one added | `deleteOrphan` for the dropped — their lines are *gone*, so only the ledger knows they exist — plus `create` for the new one |
+| 5 `empty` | nothing at all | `deleteOrphan` for everything left. This is `apply` against an empty declaration, which is the same operation `destroy` performs |
 
-Stage 2 is the one that earns the sequence. If membership still came from the
+The ramp stages are checked offline for not having rotted: each must declare
+*exactly* what stage 1 declares, so only mutable fields move, and each must
+declare something, so none is mistaken for a teardown by the brake. A ramp that
+drifted into a no-op would pass every live assertion while testing nothing.
+
+Stage 4 is the one that earns the sequence. If membership still came from the
 declaration, its two dropped resources would be silently abandoned, stage 3
 would find nothing to clean up, and both stages would pass while leaking two
 billable resources per cloud. The assertion that catches that compares the
@@ -255,7 +230,7 @@ backstop step was *skipped*, which is the evidence that the driver's own
 teardown ran and left nothing behind — and the accounts were checked afterwards
 and are clean.
 
-**Eleven of the fourteen kinds; 21 (cloud, kind) pairs.**
+**Thirteen of the fourteen kinds; 22 (cloud, kind) pairs.**
 
 **All three dependency patterns are exercised live.** The chain and the fan-out
 run on every cloud. The **fan-in** was Scaleway-only and is now covered: its
@@ -273,7 +248,7 @@ document, and is still drawn.
 | Scaleway | the same minus `s3Bucket`/`securityGroup`/`iam`, plus both namespaces and `scalewayContainer` | 9 |
 | GCP | the same minus `s3Bucket`/`securityGroup`, plus `compute` | 8 |
 
-**Eleven of the fourteen kinds**, and 21 (cloud, kind) pairs.
+**Thirteen of the fourteen kinds**, and 22 (cloud, kind) pairs.
 
 `iam` is deliberately absent from the Scaleway fleet, which is the one place a
 kind was dropped rather than never added. Scaleway's IAM applications live in
@@ -289,7 +264,7 @@ built — and `scalewayContainer` for the same reason, since Serverless
 Containers can pull from an external registry. Lambda still cannot: a container
 function must come from an ECR repository in the same account.
 
-Eleven of the fourteen kinds, 22 (cloud, kind) pairs. Every one is written to be
+Thirteen of the fourteen kinds, 22 (cloud, kind) pairs. Every one is written to be
 created from nothing and deleted again, and the set matters as much as the
 count: a fleet is applied and torn down as a *set*, so `create` and `delete`
 each run seven times in one pass and the absence check covers all of them — a
@@ -299,13 +274,35 @@ single-resource test cannot tell a working scheduler from a lucky one.
 not, rather than counting the fleets as coverage — and for the first time
 those are the same set.
 
-**The three that are not covered, each for a reason a test cannot arrange:**
+**The one that is not covered:**
 
 | Kind | Why not |
 |---|---|
-| `scalewayFunction` | Needs deployable code, not just an image — there is no public equivalent to pull |
-| `awsInstance` | Needs a region-specific AMI id that goes stale, which would put a rotting constant in a test whose failure looks like a library bug. Bills by the second and takes minutes to terminate |
 | `postgres` | Five to fifteen minutes to create and as long to delete, on every cloud — longer than the workflow's step timeout, so it would not be a slow test but a failing one |
+
+Two kinds left this table, and both left it by removing the obstacle rather
+than by lowering the bar:
+
+- **`awsInstance`** needed "a region-specific AMI id that goes stale, which
+  would put a rotting constant in a test whose failure looks like a library
+  bug". So `imageId := "latest"` now resolves the newest Amazon Linux 2023
+  image in the instance's own region through `DescribeImages`
+  (`Ec2.Image.latestAl2023`). There is no id in the test to rot. The same
+  change deleted the pinned id from `example/ParisInstances.lean`, which had
+  carried one with a comment admitting it was unverified.
+- **`scalewayFunction`** needed "deployable code, not just an image — there is
+  no public equivalent to pull". So the declaration carries the code:
+  `ScalewayFunctionSpec.code` is inline source, `Infra.Providers.Zip` builds a
+  stored archive from it, and `Compute.Functions.deployCode` fetches a
+  presigned URL, PUTs the archive and deploys. The live fleet's function is a
+  four-line Python handler returning `Hello, world!`.
+
+  That needed a CRC-32 and a ZIP writer, neither of which existed. Both are
+  checked offline against published values — `crc32 "123456789"` is
+  `0xCBF43926`, the vector every implementation of this polynomial is tested
+  against — and the archive's signature bytes, entry count and stored-method
+  flag are asserted directly, because a zip writer is exactly the sort of code
+  that looks right and produces an archive nothing can open.
 
 ### Three dependency patterns, exercised live
 
@@ -558,11 +555,21 @@ called; all three now create, read and delete on every AWS live run.
   Manager, Artifact Registry, Cloud Run, IAM service accounts — creates, reads
   and deletes on every GCP live run. Cloud SQL is untested because `postgres`
   cannot be in the fleet.
-- **Every `update` path, on all three clouds.** This is the significant
-  remaining hole, and the live test cannot close it by design: it creates and
-  deletes, so it never diffs a *changed* target against an existing resource.
-  Closing it needs a second apply with a modified fleet, which is a different
-  test shape.
+- **Some `update` paths.** Much narrower than it was, and worth recording
+  because this entry once said the hole could not be closed without "a second
+  apply with a modified fleet, which is a different test shape". That shape is
+  now stages 2 and 3.
+
+  What runs on every live leg, in both directions:
+  `queues.visibilityTimeoutSec`, `imageRegistry.immutableTags` on AWS,
+  `scalewayContainer`'s `minScale`, `maxScale`, `memoryMb` and `timeoutSec`,
+  and `compute`'s `memoryMb` and `timeoutSec` on GCP.
+
+  What does not: `objectStore`'s and `s3Bucket`'s `versioning` and `tags`,
+  `securityGroup`'s `ingress`, `iam`'s `policies`, and every field of the three
+  kinds no live fleet contains. Adding them means moving more numbers in the
+  ramp declarations rather than inventing a test shape, which is the part that
+  used to be missing.
 
   `delete`, which used to sit here beside `update`, is now exercised on AWS
   across seven kinds and checked against both a fresh listing and the state
@@ -655,17 +662,36 @@ actually produces in `Infra/Demo.lean`'s negative checks:
   compile, because `forgets` has no default. That combination used to compile
   and then destroy the resource.
 
-**Never run against an account.** The wiring in `Infra.Cli` that loads the
-ledger, hands it to `push`, and writes it back after each action — though the
-live legs are now *shaped* to exercise it: each cloud runs three declarations
-in sequence and the middle one drops two resources, so an orphan delete is the
-only way the stage can pass. That has been written and compiled, not run. The
-`#guard`s cover the decision (what a set of rows plus a declaration should
-do); they do not cover the plumbing, because a bare invocation runs the
-offline self-check and never reads a ledger. Specifically unexercised: that a
-`DELETE` derived from a ledger row reaches the right region's endpoint, that
-the ledger is correctly rewritten when an apply fails halfway, and the
-more-than-half brake.
+**Run against all three accounts.** The wiring in `Infra.Cli` that loads the
+ledger, hands it to `push`, and writes it back after each action, and with it
+the three ways a row moves: adoption (a declared resource that already exists
+is claimed even with no action to take), orphan deletion (a resource whose line
+is gone is destroyed), and the empty declaration that ends the sequence. The
+staged sequence passes on AWS, Scaleway and GCP, and it cannot pass without all
+three: after every stage the account must hold exactly what that stage
+declares.
+
+Four things about membership are still not exercised, and each is unexercised
+for a reason rather than by oversight:
+
+- **`forget`.** No live fleet declares one. Adding one would mean deliberately
+  leaving a resource behind for the next run to find, which is the opposite of
+  what a test account wants. Its guarantees are the compiler's anyway — see
+  "Verified by the compiler" above.
+- **Orphan routing across regions.** An orphan is deleted through
+  `Backends.backendAt` on the region its ledger row recorded, because the
+  placement table cannot answer for a slot it no longer contains. Every live
+  fleet is single-region per cloud, so that region is the same one
+  `backendFor` would have chosen: the mechanism runs on every teardown, but it
+  has never had to *disagree* with the fallback.
+- **The more-than-half brake firing.** Stage 3 destroys the whole ledger and
+  the brake correctly stands aside, because an empty declaration is a
+  teardown. A plan that destroys most of the ledger *while still declaring
+  others* is what trips it, and no live fleet does that.
+- **A ledger rewritten after a half-failed apply.** The per-action write is
+  what makes a crash survivable, and rounds one and two above both exercised
+  it accidentally — that is how stage 1 came to run against leftovers at all —
+  but nothing asserts it.
 
 **A `Backend.probe` field was added and then removed**, and the reason is worth
 keeping because it is a fact about this provider layer rather than about the

@@ -139,9 +139,11 @@ def scalewayContainerNamespace (name : Expr K String)
 
 def scalewayFunction (name : Expr K String) (runtime : Expr K String)
     (namespace' : Expr K (K .scaleway .scalewayFunctionNamespace))
+    (code : Partial (Expr K String) := .unknown)
+    (handler : Partial (Expr K String) := .unknown)
     (sourceBucket : Partial (Expr K (Option (K .aws .s3Bucket))) := .unknown) :
     ScalewayFunctionSpec K Partial (Expr K) :=
-  { name, runtime, namespace', sourceBucket }
+  { name, runtime, namespace', code, handler, sourceBucket }
 
 def scalewayContainer (name : Expr K String)
     (namespace' : Expr K (K .scaleway .scalewayContainerNamespace))
@@ -201,7 +203,7 @@ def scalewayContainer (name : Expr K String)
       let _ : ∀ {K}, Expr K String → _ → ScalewayNamespaceSpec K Partial (Expr K) :=
         @scalewayContainerNamespace; ()
   | .scalewayFunction  => let _ : ∀ {K}, Expr K String → Expr K String →
-                            Expr K (K .scaleway .scalewayFunctionNamespace) → _ →
+                            Expr K (K .scaleway .scalewayFunctionNamespace) → _ → _ → _ →
                             ScalewayFunctionSpec K Partial (Expr K) := @scalewayFunction; ()
   | .scalewayContainer => let _ : ∀ {K}, Expr K String →
                             Expr K (K .scaleway .scalewayContainerNamespace) →

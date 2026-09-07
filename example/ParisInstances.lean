@@ -76,10 +76,22 @@ import Infra
 open Infra.Core
 open Infra.Specs
 
-/-- Amazon Linux 2023, `eu-west-3`. An AMI id is region-specific, which is why
-    it is written down rather than derived: this one is meaningless in any
-    other region, and there is no lookup here that would hide that. -/
-def al2023Paris : String := "ami-0d3c032f5934e1b41"
+/-- Amazon Linux 2023, resolved at apply time.
+
+    This was a written-down id, `ami-0d3c032f5934e1b41`, with a comment
+    explaining that an AMI id is region-specific and so could not be derived.
+    That was true of this file and false of EC2: `DescribeImages` will name the
+    newest image matching Amazon's own published naming scheme, in whichever
+    region the instance is placed. So the id is asked for rather than pinned.
+
+    The old constant was wrong twice over — meaningless outside `eu-west-3`,
+    and eventually wrong inside it, because Amazon replaces the image whenever
+    they rebuild it. It was also the reason the live test could not cover
+    `awsInstance` at all: a rotting constant in a test makes a failure look
+    like a library bug.
+
+    Pinning a specific id still works, and still means exactly what it says. -/
+def al2023Paris : String := "latest"
 
 -- `in paris` places every cloud this fleet uses — AWS only, here — at the
 -- `Locality.paris` region, which for AWS is `eu-west-3`. The alternative

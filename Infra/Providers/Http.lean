@@ -119,6 +119,29 @@ def request (method : String) (host path : String) (query : Query := [])
     isSecure := true
     timeoutMillis := timeoutMillis }
 
+/-- Build a request whose query string is used exactly as given.
+
+    For a *presigned* URL, and only for that. `request` above renders the query
+    through `canonicalQuery`, which percent-encodes each component and sorts the
+    parameters — correct when this library is the signer, and fatal when
+    somebody else already signed. A presigned URL's signature covers the exact
+    encoded string in the exact order it arrived, so re-encoding or reordering
+    it produces a request the issuer refuses, with an error about the signature
+    that says nothing about why.
+
+    `queryString` is passed without the leading `?`, which this adds. -/
+def requestPresigned (method : String) (host path queryString : String)
+    (headers : List (String × String) := []) (body : Option ByteArray := none) :
+    Request :=
+  { method := parseMethod method
+    host, path
+    port := 443
+    queryString := if queryString.isEmpty then "" else "?" ++ queryString
+    headers := headers.map fun (n, v) => (Data.CI.mk' n, v)
+    body
+    isSecure := true
+    timeoutMillis := timeoutMillis }
+
 /-- Send a request, retrying transient failures. Does not inspect the status:
     see `sendChecked`. -/
 def send (req : Request) : IO Response :=

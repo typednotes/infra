@@ -116,6 +116,12 @@ def ingestSpec : ScalewayFunctionSpec demoKey Partial (Expr demoKey) where
   name         := "ingest"
   runtime      := "python311"
   namespace'   := Ns.demo
+  -- `unknown` on both: this spec exists to show a cross-cloud reference and is
+  -- never applied, so there is no code to give. `Fillable` would supply a
+  -- blank body and the conventional handler name, and a blank body is refused
+  -- at create, naming the field.
+  code         := .unknown
+  handler      := .unknown
   sourceBucket := some Archive.cold
 
 def demoPlan : Plan demoKeys where

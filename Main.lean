@@ -439,7 +439,8 @@ def checkTeardown : IO Unit := do
     , ⟨.scaleway, .scalewayFunction, .api,
         { observed := { handle := ⟨"ingest"⟩, url := "https://x.invalid" }
           reported := { name := "ingest", runtime := "python3.12"
-                        namespace' := ⟨"demo"⟩, sourceBucket := .unknown } }⟩ ]
+                        namespace' := ⟨"demo"⟩, code := .unknown
+                        handler := .unknown, sourceBucket := .unknown } }⟩ ]
   let ordered ← push bs (Plan.absent demoKeys) both {}
   match slotIdx ordered "scaleway/scaleway-function/ingest",
         slotIdx ordered "aws/s3-bucket/cold" with

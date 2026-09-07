@@ -59,6 +59,49 @@ private def items (parent : Text.XML.Element) (name : String) : List Text.XML.El
   Query.listItems parent name "item"
 
 -- ══════════════════════════════════════════════════════════════
+-- Images
+-- ══════════════════════════════════════════════════════════════
+
+namespace Image
+
+/-- The newest Amazon Linux 2023 image in this endpoint's region.
+
+    An AMI id is region-specific and Amazon replaces it whenever they rebuild
+    the image, so a *constant* one is wrong twice over: wrong in every other
+    region, and eventually wrong in its own. `example/ParisInstances.lean`
+    carried one for exactly this reason and said so, and the live test left
+    `awsInstance` out rather than pin one.
+
+    Resolving it here instead trades a rotting constant for one extra call. The
+    filter is Amazon's own published naming scheme for the x86-64 AL2023 line,
+    restricted to `owner-alias = amazon` so a third party cannot answer with an
+    image of their own by naming it similarly.
+
+    Sorted by `creationDate` and the newest taken. The dates are ISO-8601 in
+    UTC, which sorts lexicographically, so no date parsing is needed — the same
+    reason `Ownership`'s cutoff compares strings.
+
+    `none` means the filter matched nothing, which in a region Amazon publishes
+    to should not happen; the caller decides whether that is fatal. -/
+def latestAl2023 (creds : Credentials) (ep : Endpoint) : IO (Option String) := do
+  let root ← Query.call creds ep "DescribeImages" version
+    [ ("Owner.1", "amazon")
+    , ("Filter.1.Name", "name")
+    , ("Filter.1.Value.1", "al2023-ami-2023.*-kernel-*-x86_64")
+    , ("Filter.2.Name", "state")
+    , ("Filter.2.Value.1", "available")
+    , ("Filter.3.Name", "architecture")
+    , ("Filter.3.Value.1", "x86_64") ]
+  let images := (items root "imagesSet").filterMap fun i =>
+    match i.childText "imageId", i.childText "creationDate" with
+    | some id, some created => some (created, id)
+    | _,       _            => none
+  -- Newest last, then take the last: one sort, no reverse.
+  return (images.mergeSort fun a b => compare a.1 b.1 != .gt).getLast?.map (·.2)
+
+end Image
+
+-- ══════════════════════════════════════════════════════════════
 -- Security groups
 -- ══════════════════════════════════════════════════════════════
 

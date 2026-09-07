@@ -298,8 +298,8 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.6.0</strong> — deleting a resource from a declaration destroys it,
-  and <code>forget</code> is how one leaves without being destroyed.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.7.0</strong> — a five-stage live sequence that scales up and down,
+  on all three clouds.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -665,11 +665,15 @@ would CREATE scaleway/secrets/db-url
       <div class="cov-card ok">
         <h4>Verified live</h4>
         <p>Full create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy
-           round trips in CI on <strong>all three clouds</strong> — 9 resources
-           on AWS, 9 on Scaleway, 8 on Google Cloud, across eleven of the
-           fourteen kinds. Each leg creates from nothing, checks the fleet
-           converged, deletes, and verifies the state cache is empty. All three
-           dependency shapes are covered: a chain, a fan-out, and a fan-in.</p>
+           round trips in CI on <strong>all three clouds</strong> — 12 resources
+           on AWS, 12 on Scaleway, 10 on Google Cloud, across thirteen of the
+           fourteen kinds. Each leg applies three declarations in sequence: the
+           whole fleet, a version with two resources dropped and a field
+           changed, then one that declares nothing. After every stage the
+           account must hold exactly what that stage declares, so a resource
+           whose line is gone has to be <em>destroyed</em> rather than
+           abandoned. All three dependency shapes are covered: a chain, a
+           fan-out, and a fan-in.</p>
       </div>
       <div class="cov-card warn">
         <h4>Proved on every build</h4>
@@ -682,17 +686,17 @@ would CREATE scaleway/secrets/db-url
       <div class="cov-card bad">
         <h4>Not yet exercised</h4>
         <p>Four clients — Lambda, RDS, Cloud SQL, Scaleway's Managed Database
-           and Functions — and every <code>update</code> path, since the live
-           test creates and deletes rather than modifying. About
-           <strong>630 lines</strong> no account has answered, down from 2,250
-           before these runs. Named here because a coverage claim you cannot
+           and Functions — the kinds a test cannot arrange from nothing. Most
+           <code>update</code> paths too: the sequence changes a queue's
+           visibility timeout, so that one path runs on two clouds, and no
+           other kind's does. Named here because a coverage claim you cannot
            check is worth nothing.</p>
       </div>
     </div>
 
     <h3 class="livehead">What the live tests actually do</h3>
     <p class="sub" style="margin:0 0 18px">
-      Eight or nine resources per cloud, and every step below is a real API call
+      Ten to twelve resources per cloud, and every step below is a real API call
       against a real account. Not a coverage matrix — a proof that the whole
       engine works end to end against three different APIs: the credential
       chain, region resolution, list, create, the diff, delete, settling, and
@@ -702,21 +706,25 @@ would CREATE scaleway/secrets/db-url
     </p>
     <div class="scroller">
       <table>
-        <thead><tr><th>Step</th><th>What runs</th><th>What it proves</th></tr></thead>
+        <thead><tr><th>Stage</th><th>What it declares</th><th>What it proves</th></tr></thead>
         <tbody>
-          <tr><td>1</td><td><code>pull</code></td><td><code>list</code> works, and the credential chain reached the right account</td></tr>
-          <tr><td>2</td><td><code>apply</code></td><td><code>create</code> works</td></tr>
-          <tr><td>3</td><td>poll until the plan is empty</td><td><code>read</code> reports it <em>and</em> the diff is empty — a second apply would do nothing</td></tr>
-          <tr><td>4</td><td><code>destroy</code></td><td><code>delete</code> works</td></tr>
-          <tr><td>5</td><td>poll until the listing is empty</td><td>the delete really took, rather than being issued while the resource was invisible</td></tr>
-          <tr><td>6</td><td>read the state cache</td><td>the cache agrees with the account — a past defect left deleted resources listed in it</td></tr>
+          <tr><td>1</td><td>the whole fleet</td><td><code>create</code> works, the credential chain reached the right account, and the dependency order holds — a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply</td></tr>
+          <tr><td>2</td><td>two resources dropped, one field changed, one added</td><td>a resource whose line is <em>gone</em> gets destroyed rather than abandoned — only the ledger can name it. Plus <code>update</code> for the changed field and <code>create</code> for the new one</td></tr>
+          <tr><td>3</td><td>nothing at all</td><td><code>delete</code> for everything left. This is <code>apply</code> against an empty declaration, which is the same operation <code>destroy</code> performs</td></tr>
         </tbody>
       </table>
     </div>
     <p class="sub" style="margin:18px 0 0">
-      Steps 3 and 5 poll rather than reading once: every list API here is
-      eventually consistent, so a single read after a write measures
-      propagation delay rather than correctness.
+      After each stage the account must hold <em>exactly</em> what that stage
+      declares, and each stage polls for that rather than reading once: every
+      list API here is eventually consistent, so a single read after a write
+      measures propagation delay rather than correctness.
+      <br><br>
+      Stage 2 is the one that earns the sequence. If a resource were considered
+      managed because the declaration named it, its two dropped resources would
+      be quietly abandoned, stage 3 would find nothing to clean up, and both
+      stages would pass while leaking two billable resources per cloud. That is
+      exactly what the first two rounds of these runs caught.
       <br><br>
       The fleets also have <strong>shape</strong>, not just size — a chain, a
       fan-out and a fan-in of dependencies — because ordering is the part of

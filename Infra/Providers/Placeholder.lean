@@ -60,6 +60,7 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .scalewayFunctionNamespace,  h => { name := h.raw, description := .unknown }
   | .scalewayContainerNamespace, h => { name := h.raw, description := .unknown }
   | .scalewayFunction, h => { name := h.raw, runtime := "", namespace' := ⟨""⟩
+                              code := .unknown, handler := .unknown
                               sourceBucket := .unknown }
   | .scalewayContainer, h => { name := h.raw, namespace' := ⟨""⟩, image := ""
                                port := .unknown, minScale := .unknown, maxScale := .unknown

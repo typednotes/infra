@@ -34,6 +34,7 @@ import Infra.Abstractions.Auth
 -- One backend per cloud.
 import Infra.Providers.JsonRead
 import Infra.Providers.Http
+import Infra.Providers.Zip
 import Infra.Providers.Aws.Sign
 import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest

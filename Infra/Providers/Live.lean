@@ -6,6 +6,7 @@ import Infra.Providers.Kinds.Compute
 import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
 import Infra.Providers.Kinds.Ec2
+import Infra.Providers.Zip
 import Infra.Providers.Scaleway.Sqs
 import Infra.Core.Backend
 import Infra.Providers.Gcp.PubSub
@@ -279,8 +280,12 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
       -- so a blank made every pull propose a replace. The container had the
       -- identical bug and it cost a twelve-minute CI timeout to find, since
       -- a fleet that never converges looks exactly like a hang.
-      return { name := h.raw, runtime, namespace' := ⟨ns⟩, sourceBucket := bucket }
+      -- `code` and `handler` are `unknown`, not blank: Scaleway does not
+      -- report source back, and `unknown` is never drift. A blank would be.
+      return { name := h.raw, runtime, namespace' := ⟨ns⟩, code := .unknown
+               handler := .unknown, sourceBucket := bucket }
     | .aws => return { name := h.raw, runtime := "", namespace' := ⟨""⟩
+                       code := .unknown, handler := .unknown
                        sourceBucket := .unknown }
   -- `secretEnv` is read once at apply and handed straight to the API, so
   -- it cannot be reported back and is excluded from the divergence table
@@ -464,8 +469,25 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       let group : Handle .securityGroup := spec.securityGroup
       -- Bound with its type for the same reason as `group` above.
       let itype : InstanceType := spec.instanceType
+      -- `latest` asks EC2 for the newest Amazon Linux 2023 image in this
+      -- region instead of pinning one. An AMI id is region-specific and Amazon
+      -- replaces it on every rebuild, so a constant is wrong in every other
+      -- region and eventually wrong in its own — which is why the live test
+      -- could not include this kind and why `example/ParisInstances.lean`
+      -- carried an id it admitted was unverified.
+      --
+      -- Only when the declaration asks for it. A declaration that names an id
+      -- gets that id: resolving one is a convenience, not a policy, and a
+      -- fleet pinning a specific image has a reason to.
+      let imageId ←
+        if spec.imageId == "latest" then
+          match ← Ec2.Image.latestAl2023 creds (ec2For creds) with
+          | some id => pure id
+          | none    => throw (IO.userError s!"awsInstance '{spec.name}': asked \
+for the latest Amazon Linux 2023 image and {creds.region} reported none")
+        else pure spec.imageId
       let r ← Ec2.Instance'.create creds (ec2For creds)
-        spec.name spec.imageId itype.name group.raw
+        spec.name imageId itype.name group.raw
         spec.keyName spec.subnetId
       return { handle := ⟨spec.name⟩, instanceId := r.1
                privateIp := r.2.1, state := r.2.2 }
@@ -566,8 +588,24 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       return { handle := ⟨spec.name⟩, namespaceId := i, registryEndpoint := reg }
     | .scalewayFunction, spec => do
       let ns : Handle .scalewayFunctionNamespace := spec.namespace'
+      -- Refused here rather than deployed empty. Serverless Functions will
+      -- accept a function with no code and then fail every invocation, which
+      -- is a worse failure than this one: it happens later and somewhere else.
+      if spec.code.isEmpty then
+        throw (IO.userError s!"scalewayFunction '{spec.name}': `code` is empty. \
+Serverless Functions deploys from an uploaded archive, so the source has to be \
+in the declaration — a function with no body would deploy and then fail every \
+invocation, which is a worse failure than this one")
+      -- The file name inside the archive has to match the handler: Scaleway
+      -- reads `<file>.<function>`, so `handler.handle` means `handler.py`.
+      let file := ((spec.handler.splitOn ".").headD "handler") ++ ".py"
       let url ← Compute.Functions.create creds spec.name spec.runtime ns.raw
-                  spec.sourceBucket
+                  spec.handler spec.sourceBucket
+      -- Create, then upload, then deploy. A function that exists with no code
+      -- deployed is the state this leaves behind if the upload fails, and
+      -- that is why the error above prefers to refuse first.
+      Compute.Functions.deployCode creds spec.name
+        (Infra.Providers.Zip.archive [⟨file, spec.code.toUTF8⟩])
       return { handle := ⟨spec.name⟩, url }
     | .scalewayContainer, spec => do
       -- The one place a `.scalewayContainer` reads a secret's value; see
