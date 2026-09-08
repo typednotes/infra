@@ -709,7 +709,7 @@ would CREATE scaleway/secrets/db-url
         <thead><tr><th>Stage</th><th>What it declares</th><th>What it proves</th></tr></thead>
         <tbody>
           <tr><td>1</td><td>the whole fleet</td><td><code>create</code> works, the credential chain reached the right account, and the dependency order holds — a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply</td></tr>
-          <tr><td>2</td><td>two resources dropped, one field changed, one added</td><td>a resource whose line is <em>gone</em> gets destroyed rather than abandoned — only the ledger can name it. Plus <code>update</code> for the changed field and <code>create</code> for the new one</td></tr>
+          <tr><td>2</td><td>two resources dropped, one field changed, one added</td><td>a resource whose line is <em>gone</em> gets destroyed rather than abandoned — named by its marker tag where a backend reads one, by the ledger otherwise. Plus <code>update</code> for the changed field and <code>create</code> for the new one</td></tr>
           <tr><td>3</td><td>nothing at all</td><td><code>delete</code> for everything left. This is <code>apply</code> against an empty declaration, which is the same operation <code>destroy</code> performs</td></tr>
         </tbody>
       </table>
