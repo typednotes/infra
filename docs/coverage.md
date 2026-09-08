@@ -183,7 +183,9 @@ What the 2026-09-08 runs actually did:
 
   AWS came out clean only because it *failed*: the workflow's backstop ran
   `sweep`, which lists the account rather than trusting the ledger, and deleted
-  all twelve. A green run has no backstop.
+  all twelve. A green run had no backstop — which is why a green run now runs
+  the audit itself (`assertAccountClean`, in "Known defects" below): the same
+  listing, without the deletes, as the last thing the driver does.
 
 Both are fixed — the first by not comparing an unset optional launch field, the
 second by refusing the placeholder substitution rather than performing it
@@ -445,7 +447,11 @@ in one correctly-ordered apply with no value leaking into output or cache; that
 the `fleet` command produces a fleet indistinguishable from the hand-written
 equivalent; and DAG scheduling over a sixteen-resource graph with a diamond,
 fan-in, a redundant edge, a four-deep chain and cross-cloud edges, checked in
-both directions by a checker that recomputes the edges independently.
+both directions by a checker that recomputes the edges independently. Plus the
+two closures in "Known defects" below: that a refused orphan delete is retried
+and a permanently refused one still fails, and that the account audit lists
+this test's debris, scopes by prefix rather than substring, and deletes
+nothing.
 
 ### What the first multi-kind live runs found
 
@@ -865,21 +871,35 @@ real account yet.
 
 ## Known defects
 
-Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger. The one
-most likely to matter:
+Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger, which is
+where a defect is written down while it stands and deleted when it goes. What
+is left there is soft spots — proof obligations not discharged, and two
+mechanisms deliberately not built (an instance type is not checked against its
+region, a reference field is still an `Expr`) — rather than anything that
+misreports what it did to an account.
 
-- **An orphan's references are not recorded.** The ledger holds names and
-  regions, not dependency edges, so deleting two lines at once where one
-  referenced the other can have the provider refuse the second delete until
-  the first is done. See `docs/diff-semantics.md`.
-- **A green live run is not by itself evidence the account is empty.** The
-  driver checks the ledger against the declaration, and a teardown makes both
-  empty — so anything that empties the ledger without deleting satisfies it.
-  One mechanism that could do that is closed (the placeholder substitution
-  below), but the check's shape is unchanged, and `sweep` is what actually asks
-  the account. Run it after a live run, and read what it says.
+The two that headed this list are closed, and both closures are checked
+offline:
 
-Not a surprise waiting to be discovered; it is written down.
+- **An orphan's references are still not recorded, and no longer need to be.**
+  A ledger row holds a name and a region, not dependency edges, so orphan
+  deletions have nothing to sort by. `push` therefore discovers the order
+  instead of computing it: a refused orphan delete is held back and retried
+  once the rest of the work-list has run, and only a round that frees nothing
+  fails the apply — with the provider's own words. `Main.lean`'s
+  `checkOrphanRetry` pins both halves: a refusal that clears is retried until
+  the teardown completes, and one that never clears still fails.
+- **A green live run now asks the account, not just the ledger.** The
+  end-of-run check used to compare the ledger against the declaration, and a
+  teardown empties both — so anything that emptied the ledger without deleting
+  satisfied it, which is exactly how the placeholder substitution below went
+  unnoticed. `liveTeardown` and `liveSequence` now finish with
+  `assertAccountClean`: the cloud's own listings, polled through the settle
+  window, and a failure naming every `ci-tests-infra-*` resource still
+  standing. It is the sweep's walk without the deletes, from one shared
+  traversal (`forEachDebris`) so the audit cannot see less than the sweep, and
+  `checkAuditListsWithoutDeleting` asserts it deletes nothing and scopes by
+  prefix rather than by substring.
 
 `liveFor`'s placeholder substitution used to head this list — a provider the
 declaration did not name got `placeholderBackend`, whose `delete` returns `()`,

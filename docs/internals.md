@@ -288,11 +288,32 @@ Deletion order used to come from the reverse of the `Kind` enumeration, and
 that deleted a database before the secret that read its endpoint, because
 `secrets` precedes `postgres` in the enum.
 
-*The one gap.* An orphan carries no spec — its declaration is gone — so it
-contributes no edges (`stepOf`'s `.deleteOrphan` case returns `[]`). Delete two
-mutually-dependent lines in one go and the provider may refuse the second until
-the first is done. The ledger records names and regions, not references, and
-recording references too would make it a second copy of the declaration.
+*Orphans have no edges, and are ordered by the provider instead.* An orphan
+carries no spec — its declaration is gone — so it contributes nothing to sort
+by (`stepOf`'s `.deleteOrphan` case returns `[]`), and the ledger records names
+and regions rather than references, because recording references too would make
+it a second copy of the declaration. So `push` does not compute that order, it
+*discovers* it: a refused `deleteOrphan` is held back rather than fatal, and
+tried again after the rest of the work-list has run.
+
+```
+  main pass ─── orphan delete refused ("DependencyViolation") ──┐
+                                                                │ held
+  ┌─── retry round: everything still deferred ◄─────────────────┘
+  │         │                        │
+  │    one went                 none went
+  │         │                        │
+  └─────────┘                        ▼
+   (bounded by the number       throw the provider's
+    of deferred orphans)        own words, naming the slot
+```
+
+Every other verb keeps edges and keeps failing immediately; only orphan
+deletion converges by repetition. That is the same answer `test/Live.lean`'s
+`sweepPass` gives to the same question — a sweep has no declaration at all —
+and the same one AWS's security-group delete already gave for one kind on one
+cloud (`docs/providers.md`). A refusal that never clears still fails the apply,
+so a real error is delayed rather than swallowed.
 
 ## Divergence: the four outcomes
 

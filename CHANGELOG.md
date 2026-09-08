@@ -10,7 +10,56 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A refused orphan delete no longer stops a teardown.** Orphans are the one
+  part of a work-list with nothing to sort by: a resource whose declaration is
+  gone has no spec, and a ledger row holds a name and a region rather than
+  references. So the order is now discovered rather than computed — `push`
+  holds a refused `deleteOrphan` back ("DependencyViolation: resource is in
+  use", on a security group an orphaned instance still holds) and tries it
+  again once the rest of the work-list has run, bounded by the number of
+  deferred orphans. A round that frees nothing ends the apply with the
+  provider's own words, naming the slot, so a refusal that was never about
+  ordering is delayed rather than swallowed. Only orphan deletion works this
+  way; every other verb has edges, and a failure there still stops the apply
+  immediately.
+
+  This was the entry heading `docs/diff-semantics.md`'s ledger, and it is
+  deleted from it rather than softened: the references are still not recorded,
+  deliberately, and the ordering question they left open is answered.
+  `Main.lean`'s `checkOrphanRetry` pins both halves offline. It generalises the
+  retry AWS's security-group delete already did for one kind on one cloud, and
+  it is the answer `test/Live.lean`'s `sweepPass` has always given to the same
+  question.
+
+- **A green live run asks the account, not just the ledger.** The driver's
+  end-of-run check compared the ledger against the declaration, and a teardown
+  empties both — so anything that emptied the ledger without deleting
+  satisfied it, which is how the 0.8.0 placeholder defect went unnoticed on two
+  clouds. `liveTeardown` and `liveSequence` now end with `assertAccountClean`:
+  the cloud's own listings for `ci-tests-infra-*`, polled through the settle
+  window because a delete a cloud has accepted can still be listed for a
+  while, and a failure naming everything still standing.
+
+  It is the sweep's walk without the deletes, and it is *the same* walk:
+  `forEachDebris` is now the one traversal of "every kind, every region the
+  fleet uses, every prefixed name", with the sweep and the audit differing only
+  in what they do on finding one — so the audit can never see less than the
+  sweep would. `checkAuditListsWithoutDeleting` asserts offline that it deletes
+  nothing, scopes by prefix rather than by substring, and reports an empty
+  account as clean.
+
+### Changed
+
+- **`Engine.push`'s per-action work — the marker recheck, the ledger and cache
+  writes, the log line — is one `runStep`.** It runs from two places now, the
+  main pass and the retry rounds, and two copies of "then persist what it did"
+  is the shape that let the two spellings of `delete` drift apart.
+- **The home page no longer mentions known defects.** The banner said what the
+  live sequence found and the coverage section pointed at the ledger; both are
+  the report's business, and the page now says what is generally true and links
+  to it.
 
 ## [0.8.0] — 2026-09-08
 

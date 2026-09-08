@@ -530,8 +530,7 @@ outside the fleet.
   It asserts both directions, and that the teardown is exactly the build order
   reversed.
 - **Membership is decided by ownership evidence where a backend has it, cached
-  in the ledger, and an orphan's references are not recorded.**
-  `Plan.outside` used to head this list, declared and never consumed, so a
+  in the ledger.** `Plan.outside` used to head this list, declared and never consumed, so a
   resource deleted from a declaration was silently abandoned. It is gone,
   replaced by `Infra.Core.Ownership` (a marker tag plus a human-authored realm
   and exclusion list) for the kinds a backend can read tags for, with
@@ -541,15 +540,24 @@ outside the fleet.
   destroy the resource. A kind without tag support yet still relies on the
   ledger alone. `forget` releases a row without deleting.
 
-  What the replacement does *not* record is references. A ledger row has a
-  name and a region, not a dependency list, so orphans are scheduled with no
-  edges between them (`Engine.stepOf`). If an orphaned instance still
-  references an orphaned security group, AWS refuses the group's delete with
-  `DependencyViolation` until the instance is gone. Recording edges too would
-  make the ledger a second copy of the declaration, which is the shape that
-  let `S3BucketSpec.region` disagree with the placement. Deleting the two
-  lines in separate applies is the workaround; the ordering is the open
-  question.
+  What the replacement does *not* record is references, and that is a choice
+  rather than an omission. A ledger row has a name and a region, not a
+  dependency list, so orphans are scheduled with no edges between them
+  (`Engine.stepOf`); recording edges too would make the ledger a second copy
+  of the declaration, which is the shape that let `S3BucketSpec.region`
+  disagree with the placement.
+
+  The ordering used to be the open question here, and it no longer is: an
+  orphan delete the provider refuses — `DependencyViolation` on a security
+  group an orphaned instance still holds — is held back and tried again once
+  the rest of the work-list has run, so `push` converges by repetition where it
+  cannot sort. It is bounded by the number of deferred orphans, a round that
+  frees nothing stops, and the provider's own words are what the apply then
+  fails with, so a refusal that was never about ordering is delayed rather than
+  swallowed. `Main.lean`'s `checkOrphanRetry` pins both halves offline. Same
+  answer as `test/Live.lean`'s `sweepPass`, which has no declaration at all to
+  sort by, and a generalisation of the retry AWS's security-group delete
+  already did for one kind on one cloud.
 
 ## Not yet adopted
 

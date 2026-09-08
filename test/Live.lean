@@ -1204,27 +1204,6 @@ private def kindsOf (st : Stage) : List String :=
           ((sl.splitOn "/").drop 1).headD "?").eraseDups).length = 13
 #guard card Kind = 14
 
-/-- The teardown, on its own, for the workflow's backstop.
-
-    It is the last stage of the sequence and nothing else, which is what makes
-    it safe to re-run: the backstop used to re-run the *whole* command, on the
-    reasoning that destroy is idempotent — but a full run is a create *and* a
-    destroy, so a failed run was followed by a second create that failed the
-    same way and could leave more behind than it cleaned up. That is what the
-    first extended AWS run actually did.
-
-    Because the empty stage destroys whatever the *ledger* holds rather than
-    whatever some declaration names, it also cleans up after a run that failed
-    partway through a different stage. -/
-def liveTeardown (name : String) (κ : Keys) (regions : Regions) : IO Unit := do
-  let root : System.FilePath := ".infra" / s!"live-{name}"
-  runStage name root (emptyStage κ regions)
-  let rows ← Ledger.load root
-  unless rows.isEmpty do
-    throw (IO.userError s!"[{name}] torn down, but the ledger still lists \
-{rows.length} resource(s)")
-  progress s!"[{name}] torn down, and the ledger is empty"
-
 /-! ## Sweeping an account, without a ledger to go on
 
   `destroy` tears down what the *ledger* records, which is the right thing
@@ -1268,21 +1247,20 @@ def isDebris (debrisPrefix : String) (name : String) : Bool :=
 def checkedPrefix (value : String) : Option String :=
   if value.isEmpty then none else some value
 
-/-- One pass: delete every prefixed resource the credentials can see.
+/-- Walk every prefixed resource one cloud's credentials can see, doing `f` to
+    each.
 
-    Returns what went and what refused. A refusal is usually a dependency —
-    a container before its namespace, an instance before its security group —
-    and is not reported as an error here, because the caller retries. Nothing
-    knows the dependency graph: a sweep has no declaration to read edges from,
-    which is why it converges by repetition instead of by ordering.
+    A sweep and the account audit below cover exactly the same ground — every
+    kind, every region the fleet uses, every name carrying the prefix — and
+    differ only in what they do on finding one. One walk and two callers, so a
+    kind or a region that one of them can see is never one the other cannot.
 
     Listing happens per region the fleet uses, through `Backends.listers`, and
-    each listing's own backend performs the deletes — so a resource is deleted
+    `f` is handed the listing's own backend — so a resource is acted on
     against the endpoint that reported it, with no region to resolve. -/
-def sweepPass (bs : Backends) (p : ProviderId) (debrisPrefix : String := ciPrefix) :
-    IO (List String × List String) := do
-  let mut gone : List String := []
-  let mut stuck : List String := []
+def forEachDebris {α : Type} (bs : Backends) (p : ProviderId) (debrisPrefix : String)
+    (f : Backend → (k : Kind) → Handle k → String → IO α) : IO (List α) := do
+  let mut out : List α := []
   for k in Finite.elems (α := Kind) do
     for (b, _) in bs.listers p k do
       -- A kind the cloud does not implement lists nothing, so this is safe to
@@ -1292,13 +1270,30 @@ def sweepPass (bs : Backends) (p : ProviderId) (debrisPrefix : String := ciPrefi
         | .ok os   => pure os
         | .error _ => pure []   -- an unreadable kind is not a reason to stop
       for o in observed do
-        let nm := (observedHandle k o).raw
-        if isDebris debrisPrefix nm then
-          let slot := Ledger.slotId p k nm
-          match ← (b.delete k (observedHandle k o)).toBaseIO with
-          | .ok _    => gone := slot :: gone
-          | .error e => stuck := s!"{slot}: {e}" :: stuck
-  return (gone.reverse, stuck.reverse)
+        let h := observedHandle k o
+        if isDebris debrisPrefix h.raw then
+          out := (← f b k h (Ledger.slotId p k h.raw)) :: out
+  return out.reverse
+
+/-- One pass: delete every prefixed resource the credentials can see.
+
+    Returns what went and what refused. A refusal is usually a dependency —
+    a container before its namespace, an instance before its security group —
+    and is not reported as an error here, because the caller retries. Nothing
+    knows the dependency graph: a sweep has no declaration to read edges from,
+    which is why it converges by repetition instead of by ordering. `push` now
+    answers the same question the same way for orphan deletions, which have no
+    edges either. -/
+def sweepPass (bs : Backends) (p : ProviderId) (debrisPrefix : String := ciPrefix) :
+    IO (List String × List String) := do
+  let outcomes ← forEachDebris bs p debrisPrefix fun b k h slot => do
+    match ← (b.delete k h).toBaseIO with
+    | .ok _    => return Except.ok slot
+    | .error e => return Except.error s!"{slot}: {e}"
+  return (outcomes.filterMap fun (o : Except String String) =>
+            match o with | .ok slot => some slot | .error _ => none,
+          outcomes.filterMap fun (o : Except String String) =>
+            match o with | .ok _ => none | .error e => some e)
 
 /-- Sweep until a pass deletes nothing.
 
@@ -1354,13 +1349,95 @@ def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions)
   -- leave it claiming resources that do not exist.
   Ledger.save (".infra" / s!"live-{name}") []
 
+/-! ## Asking the account, not the ledger
+
+  A teardown empties the ledger, and the check that a run ends clean used to
+  compare the ledger against the declaration — so *anything* that empties the
+  ledger without deleting satisfied it. That is not hypothetical: `liveFor`
+  used to substitute a placeholder for a cloud it loaded no credentials for,
+  a placeholder's `delete` returns `()`, and two clouds reported a clean
+  teardown with their whole estate standing.
+
+  So a run now finishes by asking the cloud's own listings the question the
+  ledger cannot answer. It is the sweep's walk without the deletes. -/
+
+/-- Every prefixed resource one cloud's credentials can see, as slot ids, and
+    nothing deleted. -/
+def debrisStanding (bs : Backends) (p : ProviderId) (debrisPrefix : String := ciPrefix) :
+    IO (List String) := do
+  return (← forEachDebris bs p debrisPrefix fun _ _ _ slot => pure slot).eraseDups
+
+/-- `debrisStanding`, polled until it comes back empty or the settle window
+    runs out.
+
+    The same reason `waitFor` exists: a delete a cloud has accepted can still
+    be listed for a while — Scaleway's namespaces take tens of seconds to go —
+    so a single read straight after a teardown measures propagation delay
+    rather than correctness. A clean account answers on the first read and
+    costs nothing.
+
+    Fuel bounds the recursion so this is not `partial`; the deadline is what
+    actually stops it. -/
+def debrisAfterSettling (name : String) (bs : Backends) (p : ProviderId) :
+    IO (List String) := do
+  let start ← Data.Time.getCurrentTime
+  let deadline := start.nanosSinceEpoch + settleSeconds * 1000000000
+  let rec go (fuel : Nat) : IO (List String) := do
+    let standing ← debrisStanding bs p
+    if standing.isEmpty then return []
+    let now ← Data.Time.getCurrentTime
+    if now.nanosSinceEpoch ≥ deadline then return standing
+    match fuel with
+    | 0     => return standing
+    | n + 1 =>
+      progress s!"[{name}] {standing.length} resource(s) still listed; waiting…"
+      IO.sleep 5000
+      go n
+  go settleSeconds
+
+/-- Fail unless the account itself reports no debris.
+
+    This is the assertion a green run is worth something for: the ledger being
+    empty says only that local state is empty. -/
+def assertAccountClean (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
+    IO Unit := do
+  let (bs, _) ← Infra.Cli.liveFor κ regions
+  let standing ← debrisAfterSettling name bs p
+  unless standing.isEmpty do
+    throw (IO.userError s!"[{name}] the ledger is empty but the account is not: {standing.length} resource(s) named '{ciPrefix}*' are still standing — {String.intercalate ", " standing}. `lake test -- {name} sweep` removes them")
+  progress s!"[{name}] the account reports no '{ciPrefix}*' resource"
+
+/-- The teardown, on its own, for the workflow's backstop.
+
+    It is the last stage of the sequence and nothing else, which is what makes
+    it safe to re-run: the backstop used to re-run the *whole* command, on the
+    reasoning that destroy is idempotent — but a full run is a create *and* a
+    destroy, so a failed run was followed by a second create that failed the
+    same way and could leave more behind than it cleaned up. That is what the
+    first extended AWS run actually did.
+
+    Because the empty stage destroys whatever the *ledger* holds rather than
+    whatever some declaration names, it also cleans up after a run that failed
+    partway through a different stage. -/
+def liveTeardown (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
+    IO Unit := do
+  let root : System.FilePath := ".infra" / s!"live-{name}"
+  runStage name root (emptyStage κ regions)
+  let rows ← Ledger.load root
+  unless rows.isEmpty do
+    throw (IO.userError s!"[{name}] torn down, but the ledger still lists \
+{rows.length} resource(s)")
+  progress s!"[{name}] torn down, and the ledger is empty"
+  -- And the account agrees, which the ledger on its own cannot say.
+  assertAccountClean name κ p regions
+
 /-- Every stage in order, with the teardown guaranteed.
 
     The final stage *is* the teardown, so a clean run ends with nothing left.
     If any earlier stage fails, the teardown still runs, and both errors are
     reported: a teardown failure that swallowed the real error is how a CI job
     becomes a mystery and a bill. -/
-def liveSequence (name : String) (κ : Keys) (stages : List Stage)
+def liveSequence (name : String) (κ : Keys) (p : ProviderId) (stages : List Stage)
     (regions : Regions) : IO Unit := do
   let root : System.FilePath := ".infra" / s!"live-{name}"
   -- Stage by stage rather than `forM`, so that a failure knows *which* stage
@@ -1383,7 +1460,7 @@ def liveSequence (name : String) (κ : Keys) (stages : List Stage)
 [{name}] the teardown stage itself failed, so resources are still standing. \
 `lake test -- {name} destroy` retries it and nothing else")
         else
-          match ← (liveTeardown name κ regions).toBaseIO with
+          match ← (liveTeardown name κ p regions).toBaseIO with
           | .ok _     => throw e
           | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
   go stages
@@ -1392,6 +1469,9 @@ def liveSequence (name : String) (κ : Keys) (stages : List Stage)
   unless rows.isEmpty do
     throw (IO.userError s!"[{name}] the sequence finished with \
 {rows.length} resource(s) still managed")
+  -- The ledger is empty; now ask the cloud, because an empty ledger is what a
+  -- teardown produces whether or not it deleted anything.
+  assertAccountClean name κ p regions
 
 def usage : String :=
   "usage: lake test [-- <aws|scaleway|gcp|all> [sweep [--prefix <p>]|destroy]]\n\n\
@@ -1467,6 +1547,39 @@ deleted: {deleted}\n  expected: {expected}")
   unless gone == expected do
     throw (IO.userError s!"a sweep reported the wrong things: {gone}")
   IO.println "sweep: ok (deletes every 'ci-tests-infra-*' and nothing else)"
+
+/-- The account audit lists debris and deletes nothing.
+
+    Its whole value is being a *check* — the thing a green run is worth
+    something for — so a version of it that deleted, or that scoped like a
+    substring test, would be worse than not having it. Same four buckets as
+    above: two are debris, and neither of the other two may be reported. -/
+def checkAuditListsWithoutDeleting : IO Unit := do
+  let deletes ← IO.mkRef (0 : Nat)
+  let listed : List (ObservedOf .objectStore) :=
+    [ { handle := ⟨"ci-tests-infra-store-1"⟩, url := "" }
+    , { handle := ⟨"production-billing-exports"⟩, url := "" }
+    , { handle := ⟨"archive-of-ci-tests-infra-store-0"⟩, url := "" } ]
+  let b : Backend :=
+    { Infra.Providers.placeholderBackend "audit-test" with
+      list := fun k => match k with
+        | .objectStore => pure listed
+        | _            => pure []
+      delete := fun _ _ => deletes.modify (· + 1) }
+  let standing ← debrisStanding { backend := fun _ => b } .aws ciPrefix
+  unless standing == ["aws/object-store/ci-tests-infra-store-1"] do
+    throw (IO.userError s!"the audit reported the wrong resources: {standing}")
+  unless (← deletes.get) == 0 do
+    throw (IO.userError "the audit deleted something; it is a check, not a sweep")
+  -- And an account with no debris in it reports clean, which is the answer
+  -- every green run gets and therefore the one that must not be a false
+  -- negative in either direction.
+  let clean ← debrisStanding
+    { backend := fun _ => { Infra.Providers.placeholderBackend "audit-test" with
+                              list := fun _ => pure [] } } .aws ciPrefix
+  unless clean.isEmpty do
+    throw (IO.userError s!"an empty account did not report clean: {clean}")
+  IO.println "audit: ok (lists this test's debris, deletes nothing)"
 
 /-- A narrowed prefix scopes the sweep to one project's debris.
 
@@ -1611,6 +1724,7 @@ def main (args : List String) : IO UInt32 := do
     checkSweepTouchesOnlyDebris
     checkSweepPrefixScopes
     checkSweepRetriesUntilQuiet
+    checkAuditListsWithoutDeleting
     IO.println "\nFor a live sequence: lake test -- <aws|scaleway|gcp>"
     return 0
   | [p] =>
@@ -1618,17 +1732,17 @@ def main (args : List String) : IO UInt32 := do
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
     let some regions := regionsFor p
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    let some (κ, _) := keysFor p
+    let some (κ, pid) := keysFor p
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    match ← (liveSequence p κ stages regions).toBaseIO with
+    match ← (liveSequence p κ pid stages regions).toBaseIO with
     | .ok _    => progress s!"[{p}] ok — all {stages.length} stages"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | [p, "destroy"] =>
     let some regions := regionsFor p
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    let some (κ, _) := keysFor p
+    let some (κ, pid) := keysFor p
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    match ← (liveTeardown p κ regions).toBaseIO with
+    match ← (liveTeardown p κ pid regions).toBaseIO with
     | .ok _    => progress s!"[{p}] torn down"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   -- `sweep all` keeps going after a failure and reports at the end, rather

@@ -475,6 +475,13 @@ A run that fails tears itself down: the backstop step calls `destroy` and then
 `sweep`. A run that is cancelled, times out at the job level, or loses its
 runner does not reach the backstop at all — that is the next section.
 
+A run that *passes* checks the account itself, which it did not always: the
+driver's last act is `assertAccountClean`, the sweep's listing without the
+deletes, polled through the settle window. So a green leg means the cloud
+reported no `ci-tests-infra-*` resource, not merely that the local ledger came
+out empty — those are different claims, and 0.8.0 shipped a defect that
+satisfied the second while leaving two whole estates standing.
+
 ## Cleaning up after a failed live run
 
 A failed leg leaves the accounts in whatever state it died in. The workflow's

@@ -261,6 +261,75 @@ def checkOrphanRecheck : IO Unit := do
   finally
     IO.FS.removeDirAll tmp
 
+/-- A refused orphan delete is retried, and only fails when it stops making
+    progress.
+
+    Orphans are the one part of a work-list with no edges to sort by: a
+    resource whose declaration is gone has no spec, so nothing states what it
+    referenced, and a ledger row holds a name and a region rather than a
+    dependency list. So the order is discovered instead of computed — a
+    provider that refuses ("DependencyViolation: resource is in use", the
+    security group an instance still holds) is taken at its word and asked
+    again after the rest of the work-list has run.
+
+    Both halves are pinned, because the second is what stops the first from
+    swallowing real failures: a refusal that clears is retried until the
+    teardown completes, and one that never clears fails the apply with the
+    provider's own words. -/
+def checkOrphanRetry : IO Unit := do
+  let tmp ← IO.FS.createTempDir
+  try
+    let row (nm : String) : Ledger.Row :=
+      { cloud := .aws, kind := .objectStore, name := nm, region := "eu-west-1" }
+    let rows := [row "blocked", row "other"]
+    -- Refuses to delete `blocked` its first `limit` times and then allows it,
+    -- which is the shape of a dependency refusal — no until something else is
+    -- gone — without needing a second kind or a real graph.
+    let flaky (limit : Nat) : IO (Backends × IO.Ref Nat) := do
+      let tries ← IO.mkRef 0
+      return ({ backend := fun p =>
+                  { Infra.Providers.placeholderBackend p.name with
+                      delete := fun _ h => do
+                        if h.raw == "blocked" && (← tries.get) < limit then
+                          tries.modify (· + 1)
+                          throw (IO.userError "DependencyViolation: resource is in use")
+                        pure () } }, tries)
+
+    -- One refusal, then it clears: the apply must finish and empty the ledger.
+    let (bs, tries) ← flaky 1
+    Ledger.save tmp rows
+    let lines ← push bs (Plan.absent demoKeys) emptyWorld { apply := true }
+      (store := { root := some tmp, rows := rows })
+    unless (← tries.get) == 1 do
+      throw (IO.userError "the refusal never happened, so the retry proves nothing")
+    unless (← Ledger.load tmp).isEmpty do
+      throw (IO.userError s!"a retried teardown left the ledger holding {(← Ledger.load tmp).length} row(s)")
+    for nm in ["blocked", "other"] do
+      unless lines.any (mentions · s!"aws/object-store/{nm}") do
+        throw (IO.userError s!"the log does not report deleting {nm}: {lines}")
+
+    -- A refusal that never clears is a failure, reported as the provider put
+    -- it and naming the slot. Retrying must not turn a real error into
+    -- silence.
+    let (stuck, _) ← flaky 99
+    Ledger.save tmp rows
+    match ← (push stuck (Plan.absent demoKeys) emptyWorld { apply := true }
+        (store := { root := some tmp, rows := rows })).toBaseIO with
+    | .ok l => throw (IO.userError s!"a permanently refused delete reported success: {l}")
+    | .error e =>
+      for expected in ["aws/object-store/blocked", "DependencyViolation"] do
+        unless mentions (toString e) expected do
+          throw (IO.userError s!"the refusal does not mention {expected}: {toString e}")
+    -- The one that could go, went; the one that could not, is still recorded.
+    let left ← Ledger.load tmp
+    unless left.map (·.name) == ["blocked"] do
+      throw (IO.userError s!"the ledger after a stuck teardown holds {left.map (·.name)}")
+
+    IO.println "orphan retry: ok (a refused orphan delete is retried; a permanent \
+refusal still fails)"
+  finally
+    IO.FS.removeDirAll tmp
+
 /-- A teardown routed through a cloud nobody authenticated must refuse.
 
     This is the defect the 2026-09-08 live runs hid: `Infra.Cli.liveFor` loads
@@ -871,6 +940,7 @@ def selfCheck : IO Unit := do
   checkOwnershipGate
   checkFleetIsolation
   checkOrphanRecheck
+  checkOrphanRetry
   checkUnreachableRefusal
   checkDiscover
   checkLatestImage

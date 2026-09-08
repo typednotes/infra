@@ -462,6 +462,57 @@ private def rowsAfter {κ : Keys} (store : Store κ) (rows : List Ledger.Row)
   -- Destroyed, or released. Either way it is no longer ours.
   | .delete .. | .deleteOrphan .. | .forget .. => without
 
+/-- What one action left behind: the resources seen so far, the ledger rows,
+    and the log lines, threaded from action to action.
+
+    A record rather than three mutable locals, because `push` now runs an
+    action from two places — the main pass and the retry rounds for refused
+    orphan deletions — and "run it, then persist what it did" must be one
+    piece of code in both. -/
+private structure Progress (κ : Keys) where
+  entries : List (Entry κ)
+  rows    : List Ledger.Row
+  log     : List String
+
+/-- Run one action and record what it did. -/
+private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (store : Store κ)
+    (opts : PushOptions) (st : Progress κ) (a : Action κ) : IO (Progress κ) := do
+  -- Belt and suspenders on the one action that deletes purely on the
+  -- ledger's say-so: a `deleteOrphan` fires because a line left the
+  -- declaration, not because anything was just read as ours. Where the
+  -- backend can report tags, re-check the marker immediately before
+  -- deleting rather than trusting a ledger row that might be stale or
+  -- wrong. An unmigrated backend (`none`) keeps the old ledger-only
+  -- behaviour — this is strictly additional caution, not a new gate.
+  match a with
+  | .deleteOrphan p k nm region =>
+    match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
+    | some (tags, createdAt) =>
+      unless (ownershipOf store.boundary p k nm tags createdAt).isOurs do
+        throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but \
+it no longer carries the marker tag; refusing to delete a resource that might not be. If it \
+really is gone, or was never mine, `forget` it instead of applying.")
+    | none => pure ()
+  | _ => pure ()
+  let entries ← runAction bs T st.entries a
+  -- Written after *every* action, not once at the end. An apply that fails
+  -- halfway has still created things, and a created resource missing from
+  -- the ledger is an orphan nothing can name.
+  let rows := rowsAfter store st.rows a
+  -- But only when something changed. `runAction` returns `entries`
+  -- untouched for every deletion, and `rowsAfter` returns `rows` untouched
+  -- when it re-records something already recorded, so a teardown of N
+  -- resources would otherwise rewrite both records N times with identical
+  -- bytes — and `Persistence.save` is a whole-world writer that visits all
+  -- 42 `(provider, kind)` pairs on each call.
+  if let some root := store.root then
+    unless rows == st.rows do Ledger.save root rows
+    unless entries.length == st.entries.length do
+      Persistence.save root (entries.map Entry.cached)
+  return { entries := entries, rows := rows
+           log := s!"{a.renderStyled opts.colour} \
+{Ansi.style opts.colour Ansi.green "... ok"}" :: st.log }
+
 /-- Reconcile the world to the target.
 
     Returns the lines describing what was done — or, in a dry run, what would
@@ -582,43 +633,47 @@ it and let this fleet create it — see docs/persistence.md"
     unless rows == store.rows do Ledger.save root rows
   if work.isEmpty then
     return [Ansi.style opts.colour Ansi.dim "nothing to do"]
-  let mut log : List String := []
+  let mut st : Progress κ := { entries := entries, rows := rows, log := [] }
+  -- Orphan deletions are the one part of the work-list with no dependency
+  -- edges to sort by: a resource whose declaration is gone has no spec, so
+  -- nothing states what it referenced, and the ledger records names and
+  -- regions rather than references (`stepOf`). So an orphan delete the
+  -- provider refuses — `DependencyViolation` on a security group an orphaned
+  -- instance still uses — is *held back* rather than fatal, and tried again
+  -- once the rest of the work-list has run. The schedule converges by
+  -- repetition instead of by ordering, which is the same answer
+  -- `test/Live.lean`'s `sweepPass` gives to the same question: an ordering
+  -- nothing can know is discovered from what the provider allows.
+  --
+  -- Only `deleteOrphan` is treated this way. Every other verb has edges, so a
+  -- failure there is a real failure and stops the apply as it always did.
+  let mut deferred : List (Action κ × IO.Error) := []
   for a in work do
-    -- Belt and suspenders on the one action that deletes purely on the
-    -- ledger's say-so: a `deleteOrphan` fires because a line left the
-    -- declaration, not because anything was just read as ours. Where the
-    -- backend can report tags, re-check the marker immediately before
-    -- deleting rather than trusting a ledger row that might be stale or
-    -- wrong. An unmigrated backend (`none`) keeps the old ledger-only
-    -- behaviour — this is strictly additional caution, not a new gate.
     match a with
-    | .deleteOrphan p k nm region =>
-      match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
-      | some (tags, createdAt) =>
-        unless (ownershipOf store.boundary p k nm tags createdAt).isOurs do
-          throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but \
-it no longer carries the marker tag; refusing to delete a resource that might not be. If it \
-really is gone, or was never mine, `forget` it instead of applying.")
-      | none => pure ()
-    | _ => pure ()
-    let rowsBefore := rows
-    let entriesBefore := entries.length
-    entries ← runAction bs T entries a
-    -- Written after *every* action, not once at the end. An apply that fails
-    -- halfway has still created things, and a created resource missing from
-    -- the ledger is an orphan nothing can name.
-    rows := rowsAfter store rows a
-    -- But only when something changed. `runAction` returns `entries`
-    -- untouched for every deletion, and `rowsAfter` returns `rows` untouched
-    -- when it re-records something already recorded, so a teardown of N
-    -- resources would otherwise rewrite both records N times with identical
-    -- bytes — and `Persistence.save` is a whole-world writer that visits all
-    -- 42 `(provider, kind)` pairs on each call.
-    if let some root := store.root then
-      unless rows == rowsBefore do Ledger.save root rows
-      unless entries.length == entriesBefore do
-        Persistence.save root (entries.map Entry.cached)
-    log := s!"{a.renderStyled opts.colour} {Ansi.style opts.colour Ansi.green "... ok"}" :: log
-  return log.reverse
+    | .deleteOrphan .. =>
+      match ← (runStep bs T store opts st a).toBaseIO with
+      | .ok st'  => st := st'
+      | .error e => deferred := deferred ++ [(a, e)]
+    | _ => st ← runStep bs T store opts st a
+  -- Bounded, and the bound is a real measure: a round that deletes nothing
+  -- stops, so every round but the last removes at least one orphan.
+  for _ in [0:deferred.length] do
+    if deferred.isEmpty then break
+    let before := deferred.length
+    let mut left : List (Action κ × IO.Error) := []
+    for (a, _) in deferred do
+      match ← (runStep bs T store opts st a).toBaseIO with
+      | .ok st'  => st := st'
+      | .error e => left := left ++ [(a, e)]
+    deferred := left
+    -- Nothing went this round, so nothing will go next round either: what is
+    -- left is not waiting on an ordering.
+    if left.length == before then break
+  -- Reported with the provider's own words, from the last attempt, so a
+  -- refusal that was never about ordering reads exactly as it did before.
+  match deferred with
+  | (_, e) :: _ => throw e
+  | []          => pure ()
+  return st.log.reverse
 
 end Infra.Core
