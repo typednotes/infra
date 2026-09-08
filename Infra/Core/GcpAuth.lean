@@ -183,10 +183,35 @@ def exchange (sa : ServiceAccount) (jwt : String) : IO String := do
       let desc := (str? j "error_description").getD ""
       throw (IO.userError s!"gcp: token exchange failed: {err} {desc}")
 
+/-- Sign an assertion with `sa` and exchange it for an access token.
+
+    The two steps only ever happen together — a signed assertion is good for
+    nothing else — so both key-file paths below share this pair rather than
+    repeating it. -/
+def tokenFor (sa : ServiceAccount) (scope : String := defaultScope) : IO String := do
+  exchange sa (← assertion sa scope)
+
+/-- A service-account key file to an access token, in one call.
+
+    The *explicit-path* entry point, for a caller that has a path rather than
+    the environment variable — a `--key-file` flag, a check command, a key
+    handed to a library — and the only way to ask for a non-default scope.
+    `fromKeyFile` below is this, reading `keyFileVar`. -/
+def tokenFromKeyFile (path : System.FilePath) (scope : String := defaultScope) :
+    IO (String × Option String) := do
+  let contents ← IO.FS.readFile path
+  match parse contents with
+  | .error e => throw (IO.userError s!"{path}: {e}")
+  | .ok sa => return (← tokenFor sa scope, sa.projectId)
+
 /-- The standard variable pointing at a key file. Google's own libraries read
     it, so a machine already set up for `gcloud`-free service-account auth
-    needs no extra configuration here. -/
-def keyFileVar : String := "GOOGLE_APPLICATION_CREDENTIALS"
+    needs no extra configuration here.
+
+    Defined as `Credentials.gcpKeyFileVar` rather than spelled again, because
+    the credential chain's own diagnostics name it and a second copy is a
+    second thing to get wrong. -/
+def keyFileVar : String := gcpKeyFileVar
 
 /-- Credentials from a key file named by the environment, if there is one.
 
@@ -206,11 +231,32 @@ def fromKeyFile : IO (Option Credentials) := do
   match parse contents with
   | .error e => throw (IO.userError s!"{path}: {e}")
   | .ok sa =>
-    let jwt ← assertion sa defaultScope
-    let token ← exchange sa jwt
+    let token ← tokenFor sa
     return some
       { accessKey := "", secretKey := "", region := ""
         accessToken := some token, projectId := sa.projectId }
+
+/-- The whole credential chain for any cloud, GCP's key file included.
+
+    `Credentials.load` cannot try a service-account key itself: minting a token
+    from one needs `Infra.Providers.Http`, which needs `Credentials`, so the
+    fourth source has to be added from above. This is the one place that adds
+    it, and every front end goes through here — `Infra.Cli.liveFor` and
+    `Infra.Providers.liveFromEnvironment` both — so a long-lived key works
+    wherever any credential works, rather than only on the path that remembered
+    to ask.
+
+    Tried before the rest for GCP, and the order is the point: a key file is an
+    explicit choice, whereas `gcloud` is whatever the developer last logged
+    into. For the other clouds this *is* `Credentials.load`: their chains
+    already start with a long-lived key. -/
+def loadWithKeyFile (p : ProviderId) : IO Credentials := do
+  match p with
+  | .gcp =>
+    match ← fromKeyFile with
+    | some c => return c
+    | none   => Credentials.load p
+  | _ => Credentials.load p
 
 /-! ## Self-checks
 

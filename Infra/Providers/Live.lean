@@ -7,6 +7,7 @@ import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
 import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Zip
+import Infra.Core.GcpAuth
 import Infra.Providers.Scaleway.Sqs
 import Infra.Core.Backend
 import Infra.Providers.Gcp.PubSub
@@ -890,9 +891,14 @@ def live (aws scaleway gcp : Credentials) (fleet : Option String := none) :
     | .scaleway => liveBackend .scaleway scaleway fleet
     | .gcp      => liveBackend .gcp gcp fleet
 
-/-- Load credentials for every cloud and build the live backends. -/
+/-- Load credentials for every cloud and build the live backends.
+
+    `loadWithKeyFile` rather than `Credentials.load`, so that a GCP
+    service-account key works here too: this is the entry point a consumer's
+    own code uses, and it offered one source fewer than the CLI did until the
+    chain moved to one place. -/
 def liveFromEnvironment (fleet : Option String := none) : IO Backends := do
-  return live (← Credentials.load .aws) (← Credentials.load .scaleway)
-    (← Credentials.load .gcp) fleet
+  let load := Infra.Core.GcpAuth.loadWithKeyFile
+  return live (← load .aws) (← load .scaleway) (← load .gcp) fleet
 
 end Infra.Providers

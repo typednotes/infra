@@ -172,6 +172,17 @@ def fromGcloud : IO (Option Credentials) := do
       projectId := ← run #["config", "get-value", "project"]
       region := (← run #["config", "get-value", "compute/region"]).getD "" }
 
+/-- The variable naming a GCP service-account key file — the long-lived
+    credential that cloud has, and the closest thing it offers to the API-key
+    pair the other two use.
+
+    The *name* lives here, with the other sources, even though the source
+    itself cannot: reading one means minting a token, which needs HTTP, which
+    needs this module. `GcpAuth.keyFileVar` is this string and
+    `GcpAuth.loadWithKeyFile` is what tries it — written down once so a
+    diagnostic here cannot name a variable no loader reads. -/
+def gcpKeyFileVar : String := "GOOGLE_APPLICATION_CREDENTIALS"
+
 -- ── Source 2: the OS credential store ──
 
 /-- The keychain service these entries live under. -/
@@ -280,9 +291,14 @@ def fromEnvironment (provider : ProviderId) : IO (Option Credentials) := do
 
 -- ── The chain ──
 
-/-- Where each source would have looked, for the not-found message. Naming all
-    three is the difference between a usable error and a mystery. -/
-private def sourceDescriptions (paths : Paths) (provider : ProviderId) (profile : String) :
+/-- Where each source would have looked, for the not-found message. Naming
+    every one is the difference between a usable error and a mystery.
+
+    Four for GCP, in the order they are tried, and the first is one this module
+    cannot try itself — see `gcpKeyFileVar`. Not private, because `infra check`
+    asserts the list: a source the user is never told about is a source they
+    cannot use. -/
+def sourceDescriptions (paths : Paths) (provider : ProviderId) (profile : String) :
     List String :=
   let (kv, sv, _, _) := envVars provider
   match provider with
@@ -295,7 +311,13 @@ private def sourceDescriptions (paths : Paths) (provider : ProviderId) (profile 
     , s!"keychain service '{keychainService}' account 'scaleway'"
     , s!"environment {kv} and {sv}" ]
   | .gcp =>
-    [ "`gcloud auth print-access-token` (is the CLI installed and logged in?)"
+    -- The key file is listed first because that is the order it is tried in,
+    -- even though this module cannot try it: `GcpAuth.loadWithKeyFile` adds
+    -- that source from above (an import cycle keeps it out of here) and every
+    -- front end goes through it, so by the time this message is built the key
+    -- file has already declined.
+    [ s!"a service-account key file named by {gcpKeyFileVar}"
+    , "`gcloud auth print-access-token` (is the CLI installed and logged in?)"
     , s!"keychain service '{keychainService}' account 'gcp'"
     , "environment GOOGLE_OAUTH_ACCESS_TOKEN" ]
 
@@ -336,8 +358,8 @@ def Credentials.requireToken (c : Credentials) (provider : ProviderId) : IO Stri
   match c.accessToken with
   | some t => return t
   | none   => throw (IO.userError
-      s!"no {provider.name} access token; run `gcloud auth login` or set \
-GOOGLE_OAUTH_ACCESS_TOKEN")
+      s!"no {provider.name} access token; point {gcpKeyFileVar} at a \
+service-account key, run `gcloud auth login`, or set GOOGLE_OAUTH_ACCESS_TOKEN")
 
 /-- The Scaleway project, or a clear failure. Creating anything on Scaleway
     needs one, and its absence otherwise surfaces as an opaque API error. -/

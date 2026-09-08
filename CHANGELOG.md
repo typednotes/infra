@@ -105,6 +105,27 @@ offline, because the placeholder backends echo the target back.
 
 ### Changed
 
+- **Every cloud is reachable with a long-lived key from every entry point.**
+  AWS and Scaleway always were — a key pair is the first thing their chains
+  look for — but GCP's equivalent, a service-account key file, was tried only
+  by `Infra.Cli.liveFor`. `Infra.Providers.liveFromEnvironment`, which is what
+  a consumer's own code calls, went through `Credentials.load`, and that cannot
+  try a key file: minting a token from one needs HTTP, which needs
+  `Credentials`. So the same key counted through the CLI and silently did not
+  count through the library.
+
+  `GcpAuth.loadWithKeyFile` is now the one place the fourth source is added and
+  both front ends call it. The not-found message names all four sources in the
+  order they are tried, `Credentials.gcpKeyFileVar` holds the variable's name
+  once so a diagnostic cannot name a variable no loader reads, and
+  `checkCredentials` asserts both — a source nobody is told about is a source
+  nobody can use. `docs/authentication.md` has the per-cloud table.
+- **`GcpAuth.tokenFromKeyFile` is back**, and is no longer dead: it is the
+  explicit-path entry point — a path that did not come from the environment,
+  or a scope other than the default — which the env-var-only `fromKeyFile`
+  cannot serve. Both now share `GcpAuth.tokenFor`, the sign-then-exchange pair
+  that is all they ever had in common. Removed earlier in this cycle as
+  unreferenced, which was the wrong call: it was the general one of the pair.
 - **`Regions.coversSlots` is defined from a per-cloud `coversSlotsIn`**, which
   is what `Infra.Cli.liveFor` now calls. The per-slot walk existed twice —
   once in `Region.lean` uncalled, once inlined in `liveFor` — and two docs
@@ -112,12 +133,11 @@ offline, because the placeholder backends echo the target back.
 
 ### Removed
 
-- **Three unreachable declarations**, from a dead-code sweep of every `.lean`
-  outside `.lake`: `JsonRead.asString` (`stringArrayField` does that itself),
-  `Credentials.storeInKeychain` (a wrapper for the `infra login`
+- **Two unreachable declarations**, from a dead-code sweep of every `.lean`
+  outside `.lake`: `JsonRead.asString` (`stringArrayField` does that itself)
+  and `Credentials.storeInKeychain` (a wrapper for the `infra login`
   `docs/authentication.md` decides against; `storeInKeychainAccount` is the one
-  in use) and `GcpAuth.tokenFromKeyFile` (superseded by `fromKeyFile`, which
-  `liveFor` calls).
+  in use).
 
   Kept, and why, so the next sweep does not re-propose them: `LawfulMerge` is a
   stated law awaiting a proof and is listed as such below; `Core.Auth`'s

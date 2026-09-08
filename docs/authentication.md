@@ -274,19 +274,53 @@ repository's live-test workflow uses OIDC for AWS, and needs only a repository
 Scaleway has no federation, so a scoped API key is the only option; keep it
 project-scoped rather than organization-scoped.
 
+### Every cloud can be driven by a long-lived key
+
+Whatever the recommendation above, all three clouds can be reached with a
+stored credential and nothing else — which is what a laptop with no cloud CLI
+installed and a runner with no federation both need:
+
+| AWS | Scaleway | GCP |
+|---|---|---|
+| access key + secret key (a session token is accepted, not required) | API key: access key + secret key | a service-account key file |
+
+GCP's is not an API-key pair, because that cloud has none, but it is the same
+kind of thing: a long-lived secret on disk, exchanged for an hour's token on
+every run.
+
+All three are found by **one chain, `Infra.Core.GcpAuth.loadWithKeyFile`**,
+which both front ends call — `Infra.Cli.liveFor` and
+`Infra.Providers.liveFromEnvironment` — so which sources exist does not depend
+on which entry point you came through. It did until 0.8.0:
+`liveFromEnvironment` called `Credentials.load`, which *cannot* try a key file
+(minting a token from one needs HTTP, and HTTP needs `Credentials`), so a
+consumer's own code had one source fewer than the CLI and a GCP key silently
+did not count. The extra source is added in exactly one place now, and
+`infra check` asserts that the not-found message names all four in the order
+they are tried.
+
 ### GCP, specifically
 
-Three sources, tried in this order:
+Four sources, tried in this order:
 
 1. **`GOOGLE_APPLICATION_CREDENTIALS`** — a path to a service-account key
    file. `Infra.Core.GcpAuth` reads it, builds an RFC 7523 assertion, signs it
-   RS256 and exchanges it for an access token. No `gcloud` needed.
+   RS256 and exchanges it for an access token. No `gcloud` needed. For a path
+   that does not come from the environment — a flag, a check command, a key
+   handed to a library — `GcpAuth.tokenFromKeyFile` takes one directly, and is
+   the only way to ask for a scope other than the default.
 2. **`gcloud auth print-access-token`** — whatever the developer last logged
    into.
-3. **`GOOGLE_OAUTH_ACCESS_TOKEN`** — a token supplied directly, which is what
+3. **The OS keychain**, under service `infra`, account `gcp`.
+4. **`GOOGLE_OAUTH_ACCESS_TOKEN`** — a token supplied directly, which is what
    Workload Identity Federation produces.
 
-The first is new, and only became possible when `linen` gained RSA *signing*
+A key file is tried first because it is an explicit choice, where `gcloud` is
+whatever happened to be logged into last; a file that turns out to be a
+*user* credential rather than a service-account key declines and lets the rest
+of the chain run.
+
+The first only became possible when `linen` gained RSA *signing*
 — it could verify a signature and not produce one, which is why this used to
 shell out to a CLI. It requires **linen ≥ 0.13.0**.
 

@@ -486,6 +486,18 @@ def checkCredentials : IO Unit := do
     unless mentions shown "<redacted>" do
       throw (IO.userError "Credentials rendering did not redact")
 
+    -- GCP's first source is added from above (`GcpAuth.loadWithKeyFile`), so
+    -- nothing in `Credentials` can try it — but the not-found message is built
+    -- there, and a source the user is never told about is a source they cannot
+    -- use. Order matters too: it is what decides whether an explicit key or
+    -- whatever `gcloud` last logged into wins.
+    let gcpSources := sourceDescriptions paths .gcp "default"
+    for expected in [gcpKeyFileVar, "gcloud", "keychain", "GOOGLE_OAUTH_ACCESS_TOKEN"] do
+      unless gcpSources.any (mentions · expected) do
+        throw (IO.userError s!"the gcp source list omits {expected}: {gcpSources}")
+    unless (gcpSources.head?.map (mentions · gcpKeyFileVar)).getD false do
+      throw (IO.userError s!"the gcp source list does not lead with the key file: {gcpSources}")
+
     -- With no config, no keychain entry and no environment, the failure must
     -- name every place that was tried.
     let empty := Paths.under (tmp / "nonexistent")

@@ -103,6 +103,16 @@ This is the section worth reading before trusting anything. Correctness of
   RS256, exchanged with Google for a live access token, and the credential
   chain picking the file up from `GOOGLE_APPLICATION_CREDENTIALS`. The key was
   created for the test and deleted immediately after.
+
+  Live-tested through the CLI, which was the only path that tried the key file
+  at the time. Since 0.8.0 the source is added in one place
+  (`GcpAuth.loadWithKeyFile`) that both the CLI and
+  `Providers.liveFromEnvironment` call, so **every cloud can be driven by a
+  long-lived stored credential from either entry point** — a key pair for AWS
+  and Scaleway, a service-account key file for GCP. The one-place-ness is
+  offline-checked (`checkCredentials` asserts the four GCP sources and their
+  order); the library entry point's key-file path has not itself been exercised
+  against a real project yet.
 - **GCP `objectStore`**, over the Cloud Storage JSON API, and **GCP
   `secrets`**, over Secret Manager — both full CRUD. Neither is live-tested
   against a real project yet; only `queues` is. Two things they exposed:
