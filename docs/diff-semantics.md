@@ -180,6 +180,14 @@ Tags, policies and environment variables come back in whatever order the
 service felt like. Positional comparison would report drift on untouched
 resources, for ever.
 
+They compare as *equal* sets, not as a subset, which is what makes a tag the
+declaration does not name into drift. That is the intended reading — a tag
+added by hand is drift, and `apply` removes it — and it is why the ownership
+marker must never reach this comparison: `Live.withoutMarker` strips
+`managed-by-infra` out of the reported set as it is read, so the diff sees
+declared tags against declared tags. See "a value nobody declared" below for
+what happened when it did not.
+
 ## Settling: what a backend actually receives
 
 `Plan.assign` yields `SpecOf k κ.Key Partial (Expr κ.Key)`; `Backend.create`
@@ -216,7 +224,8 @@ type would otherwise destroy live resources on a first run.
 
 ## A required field the backend cannot report is a perpetual replace
 
-The sharpest trap in this design, and it has now been hit twice.
+The sharpest trap in this design, and it has now been hit four times, in two
+shapes. This is the first shape: the *report* is a sentinel.
 
 `divergesReq` compares a **required** field directly — there is no `Partial`,
 so no `unknown` escape. That is correct for a field the cloud always reports.
@@ -245,6 +254,48 @@ divergence, and `.forcesReplace` on top of that is a permanent replace.
 
 `S3BucketSpec.region` was the first version of this and was removed for it.
 These two were the second and third.
+
+### The second shape: a target that is not a value, and a value nobody declared
+
+The rule above asks what `read` reports. Both of the next two got a truthful
+report and diverged anyway, because the mismatch was on the *other* side of
+the comparison. Both were found by the staged live test, which is the only
+thing here that watches a real fleet try to converge, and both produced the
+same symptom as the sentinel cases — a plan that never empties.
+
+- **A target that is not a value.** `awsInstance.imageId := "latest"` reads
+  like an image id and is an instruction: `Live.liveBackend` resolves it inside
+  `create`, through `DescribeImages`, to the newest Amazon Linux 2023 in the
+  instance's own region. So the target held the word `"latest"` for ever while
+  the instance reported `ami-…`, and `imageId` is `.forcesReplace` — `REPLACE`
+  in every plan, and every real `apply` destroying and recreating a healthy
+  instance. `Divergent .awsInstance` now treats a target of `"latest"` as
+  matching whatever is reported. The price is named rather than hidden: a fleet
+  that says `"latest"` is **not** rebuilt when AWS publishes a newer image —
+  "latest at create time", not "track latest" — and a pinned id still detects
+  drift exactly as before.
+- **A value nobody declared.** The ownership marker (`Infra.Core.Ownership`) is
+  a tag `infra` writes on every bucket it creates, and `objectStore` compares
+  tags as an equal set. So a bucket this tool had created reported a tag its
+  declaration did not name, diverged on `tags`, and the resulting `update`
+  rewrote the marker — leaving the divergence precisely where it was.
+  `Live.withoutMarker` now strips it on read, so bookkeeping stays out of the
+  comparison, while `Backend.ownershipInfo` — a separate call, for a different
+  question — still sees the raw set.
+
+**The second rule for a new kind.** For every field, also ask: is the target a
+value the cloud can be asked for, or an instruction to be carried out? And does
+the backend write anything into this field that the declaration did not say?
+Either one makes the two sides unequal by construction, which `divergesReq` and
+`.forcesReplace` turn into a fleet that cannot converge.
+
+Neither was visible offline, and that is a property of the harness worth
+stating: the placeholder backends echo the target back and report
+`tags := .unknown`, so **anything the live backend rewrites on create is
+invisible to the offline suite**. `Main.lean`'s `checkLatestImage` closes that
+for the first case by comparing a `"latest"` target against a resolved id — the
+pair a live pull actually produces — and `Live.lean`'s `#guard`s on
+`withMarker`/`withoutMarker` close it for the second.
 
 ## Ledger: what is a compile error, and what is not
 

@@ -290,6 +290,12 @@ than by lowering the bar:
   (`Ec2.Image.latestAl2023`). There is no id in the test to rot. The same
   change deleted the pinned id from `example/ParisInstances.lean`, which had
   carried one with a comment admitting it was unverified.
+
+  What it costs is now stated where it is decided (`Divergent .awsInstance`):
+  because the resolution happens inside `create`, a target of `"latest"` is
+  compared against nothing at all, so a fleet saying `"latest"` is not rebuilt
+  when AWS publishes a newer image. Round four below is what it took to learn
+  that comparing them instead means never converging.
 - **`scalewayFunction`** needed "deployable code, not just an image — there is
   no public equivalent to pull". So the declaration carries the code:
   `ScalewayFunctionSpec.code` is inline source, `Infra.Providers.Zip` builds a
@@ -404,7 +410,48 @@ both directions by a checker that recomputes the edges independently.
 
 ### What the first multi-kind live runs found
 
-Two rounds so far, and every failure was a different kind of thing.
+Four rounds so far, and every failure was a different kind of thing.
+
+**Round four** — the first run after ownership was wired into the engine, and
+the first in which all three clouds failed *differently* while the library was
+doing what it had been told to. Three findings, in order of how badly they read:
+
+- **AWS never converged**: `REPLACE aws/aws-instance/ci-tests-infra-vm`, once
+  per poll, until the 180-second settle window ran out. `imageId := "latest"`
+  is resolved inside `create`, so the target held the word and the instance
+  reported an `ami-…` id: unequal by construction, on a `.forcesReplace` field.
+  Not a regression from the ownership work at all — it arrived with the
+  instance itself, and no offline check could see it. See
+  [`diff-semantics.md`](diff-semantics.md), "a target that is not a value".
+- **Scaleway and GCP left a bucket behind**: `the ledger and the declaration
+  disagree … declared but not managed:
+  scaleway/object-store/ci-tests-infra-store-scw-7c1f9a2e`. The bucket predated
+  the marker, so `ownershipOf` read it as `foreign`, the adoption loop refused
+  to claim it, and the teardown — which destroys what the *ledger* holds —
+  left it standing for the workflow's sweep to remove. That the accounts held
+  debris at all is visible in the same logs: the AWS sweep deleted
+  `aws/secrets/ci-tests-infra-late`, which only the *trimmed* stage creates and
+  which never ran in that job.
+
+  This is the model's intended direction — refusing to claim an unmarked
+  resource is the whole point — but nothing said so. A declared resource that
+  exists and matches produces no action, no plan line and no ledger row, so a
+  fleet could manage less than it declared in silence. `push` now warns per
+  resource, naming the verdict and what to do about it, and the live test's
+  ledger assertion is what turns that warning into a red build.
+- **And the fix for the second one uncovered a third**, before it could reach
+  an account: the marker is a tag, `objectStore` compares tags as an equal set,
+  so every bucket created by this build would have diverged on `tags` for ever
+  — an `update` that rewrites the marker and changes nothing. The marker is now
+  stripped as the tags are read. The buckets in CI were old enough not to carry
+  it, which is the only reason the run failed on the ledger rather than on a
+  plan that never emptied.
+
+The shared lesson is one property of the harness, now written down in
+`diff-semantics.md`: the placeholder backends echo the target and report
+`tags := .unknown`, so **anything the live backend writes on create that the
+declaration did not say is invisible offline**. Two of the three findings above
+live in exactly that blind spot.
 
 **Round two** — the `ClientRequestToken` fix worked, and AWS got as far as the
 security group before failing on this:
@@ -735,6 +782,22 @@ silently dropped:
   not have an obvious tag surface on every cloud they support and need a
   per-kind look before they can join the table.
 
+A marker written into a field the diff compares is a fleet that cannot
+converge, and `objectStore`'s tags are exactly that field: `Live.withoutMarker`
+strips it back out as the tags are read, so the comparison only ever sees
+declared state, while `ownershipInfo` still reads the raw set. The `#guard`s on
+that pair are in `Infra/Providers/Live.lean`, next to the code, because nothing
+in the offline suite can reach it — see round four above.
+
+The verdict is also **said out loud** when it goes against a resource the
+declaration names. `foreign` or `excluded` on a declared, existing resource
+means the fleet manages less than it declares, and nothing else about that
+state is observable: there is no action, no plan line and no row. So
+`push` warns per resource and per apply, naming the verdict and the two ways
+out (exclude it deliberately, or delete it and let the fleet create it).
+Deliberate, not a stopgap: adopting it instead is the failure this model exists
+to prevent.
+
 `createdAt` is `none` for every row above — the `since` cutoff in
 `Infra.Core.Ownership.Boundary` is unexercised outside the module's own
 guards, on real evidence. `Infra.Cli.discover` is the new command that rebuilds
@@ -743,7 +806,9 @@ the ledger from this table for a fleet that already has one.
 All three of the offline suite's checks give a placeholder backend a fixed
 `ownershipInfo` answer, since the placeholder backends never say `some` on
 their own: `checkOwnershipGate` (`Main.lean`) asserts a matching-but-unmarked
-resource is not adopted and a marked one is, `checkOrphanRecheck` asserts a
+resource is not adopted, that the run *says* so — captured streams, since the
+warning is the only observable half — and that a marked one is adopted,
+`checkOrphanRecheck` asserts a
 `deleteOrphan` refuses when the marker has vanished and proceeds when it has
 not, and `checkDiscover` asserts `discover` rebuilds a row for a marked
 resource and nothing for an unmarked one. None of the three has run against a

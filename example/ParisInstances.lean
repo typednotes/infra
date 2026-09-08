@@ -90,7 +90,14 @@ open Infra.Specs
     `awsInstance` at all: a rotting constant in a test makes a failure look
     like a library bug.
 
-    Pinning a specific id still works, and still means exactly what it says. -/
+    Pinning a specific id still works, and still means exactly what it says —
+    and it is the spelling to choose if you want drift on the image *reported*.
+    `"latest"` is resolved inside `create`, so the diff has a word on one side
+    and an `ami-…` on the other and deliberately does not compare them
+    (`Divergent .awsInstance`); the honest reading is therefore "latest at
+    create time", not "track latest". A running instance is not rebuilt when
+    Amazon publishes a newer image. Comparing them instead is a plan that says
+    REPLACE for ever, which is what the live test found. -/
 def al2023Paris : String := "latest"
 
 -- `in paris` places every cloud this fleet uses — AWS only, here — at the

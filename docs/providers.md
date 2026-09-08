@@ -217,8 +217,18 @@ necessary but not sufficient — its network interface holds the group for a
 while after the call returns. Bounded at a couple of minutes, then a named
 error telling the operator to re-run.
 
-Two deliberate limitations, both visible in a plan before anything is applied:
+Three deliberate limitations, all visible in a plan before anything is applied:
 
+- **`imageId := "latest"` is never compared.** The word is resolved to a real
+  id inside `create` (`DescribeImages`, newest Amazon Linux 2023 in the
+  instance's own region), so the target keeps the word while the instance
+  reports `ami-…`. Comparing them proposes a replace on every single plan and
+  never converges, which is what the live test found; so a target of `"latest"`
+  matches whatever is reported. The consequence is the honest reading of the
+  word: **latest at create time, not track-latest** — a running instance is not
+  rebuilt when Amazon publishes a newer image. Pin an id to get drift detection
+  back, and `example/ParisInstances.lean` explains the trade in the other
+  direction.
 - **`instanceType` is `forcesReplace`.** EC2 can resize a *stopped* instance,
   but doing it in place means stop → poll until stopped → modify → start, a
   state machine this backend does not have. Replace is the honest description

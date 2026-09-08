@@ -164,10 +164,19 @@ def checkOwnershipGate : IO Unit := do
     -- named the same as the one this fleet declares. Adopting it anyway is
     -- exactly the bug this model exists to prevent.
     let foreign : Store demoKeys := { root := some tmp, regionOf := fun _ _ _ => "eu-west-1" }
-    let _ ← push (gatedBackends false) demoPlan partialWorld { apply := true } (store := foreign)
+    -- Streams captured, because *saying so* is half of the behaviour here. Not
+    -- adopting the bucket is the safe half; the loud half is that the operator
+    -- is told, since a fleet managing less than it declares produces no plan
+    -- line, no action and no other trace. The live test's ledger assertion is
+    -- what turns this warning into a red build in CI.
+    let (said, _) ← IO.FS.withIsolatedStreams
+      (push (gatedBackends false) demoPlan partialWorld { apply := true } (store := foreign))
     let rows ← Ledger.load tmp
     if rows.any (Ledger.Row.isAt · .aws .objectStore "assets") then
       throw (IO.userError "an unmarked bucket was adopted into the ledger")
+    unless mentions said "aws/object-store/assets" && mentions said markerKey do
+      throw (IO.userError s!"an unmarked but declared bucket was passed over silently; \
+the run said: {said}")
 
     -- Same bucket, marker present: this time it must be adopted.
     let managed : Store demoKeys := { root := some tmp, regionOf := fun _ _ _ => "eu-west-1" }
@@ -237,6 +246,43 @@ def checkDiscover : IO Unit := do
     throw (IO.userError "discover claimed an unmarked bucket")
 
   IO.println "discover: ok (rebuilds a lost ledger from the marker tag, not from naming)"
+
+/-- `imageId := "latest"` must not diverge.
+
+    It reads like an image id and is not one: it is an instruction, carried out
+    inside `Live.liveBackend`'s `create` by asking `DescribeImages` for the
+    newest Amazon Linux 2023 in the instance's own region. So the target holds
+    the word `"latest"` and the instance reports `ami-…` — never equal, and
+    `imageId` forces a replace. The live test found what that means: `REPLACE`
+    in every plan for ever, a fleet that cannot converge, and an apply that
+    destroys and recreates a healthy instance each time.
+
+    Nothing offline could see it, because the resolution only exists in the
+    live backend. This check is the offline stand-in: it compares a target
+    saying `"latest"` against a report saying a real id, which is exactly the
+    pair a live pull produces. -/
+def checkLatestImage : IO Unit := do
+  let spec (imageId : String) : ProviderSpec .awsInstance :=
+    { name := "vm", imageId := imageId
+      instanceType := InstanceType.of .t3 .nano
+      securityGroup := ⟨"sg"⟩, keyName := "", subnetId := "" }
+  let seen (imageId : String) : Reported .awsInstance :=
+    { name := "vm", imageId := imageId
+      instanceType := InstanceType.of .t3 .nano
+      securityGroup := ⟨"sg"⟩, keyName := .unknown, subnetId := .unknown }
+  let fields (t : ProviderSpec .awsInstance) (r : Reported .awsInstance) : List String :=
+    (divergence .awsInstance t r).map (·.1)
+
+  unless fields (spec "latest") (seen "ami-0123456789abcdef0") == [] do
+    throw (IO.userError s!"'latest' diverged from a resolved AMI id: \
+{fields (spec "latest") (seen "ami-0123456789abcdef0")} — every plan would REPLACE the instance")
+  -- A pinned id still means what it says, which is the half that must survive
+  -- the exemption: this is drift detection, not an excuse to stop comparing.
+  unless fields (spec "ami-1111111111111111") (seen "ami-2222222222222222") == ["imageId"] do
+    throw (IO.userError "a pinned AMI id stopped being compared")
+  unless fields (spec "ami-1111111111111111") (seen "ami-1111111111111111") == [] do
+    throw (IO.userError "a matching pinned AMI id reported drift")
+  IO.println "latest AMI: ok ('latest' converges; a pinned id still detects drift)"
 
 /-- Pulls from both placeholder backends, caches the result, and reports what the target would
     still ask for. Nothing behind `list` is live yet, so the world comes back empty and every
@@ -676,6 +722,7 @@ def selfCheck : IO Unit := do
   checkOwnershipGate
   checkOrphanRecheck
   checkDiscover
+  checkLatestImage
   checkPullAndPlan
   checkCredentials
   checkSigning

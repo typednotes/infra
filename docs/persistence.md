@@ -197,6 +197,36 @@ that has not been migrated, a lost row still means a resource that exists and
 still costs money but that nothing can name: the declaration no longer
 mentions it, and there is no marker evidence yet to fall back on.
 
+**A declared resource that exists without the marker is not managed, and is
+told to you.** This is the case the engine used to pass over in silence, and
+the one `push`'s warning names:
+
+    warning: scaleway/object-store/my-bucket is declared and exists, but is
+    not carrying the 'managed-by-infra' tag, so not ours. It will not be
+    created, changed or destroyed by this fleet, which therefore manages less
+    than it declares. …
+
+Nothing else about that state is observable. The resource exists, so there is
+no `create`; it is not managed, so there is no `update` and never a `delete` —
+so no plan line, no ledger row, and a fleet quietly doing less than its
+declaration says. It is also unreachable by every other path: `push` will not
+adopt it, `destroy` only knows the ledger, and `discover` re-derives from the
+same marker and reaches the same verdict, so only a name-based sweep can see
+it at all.
+
+Refusing to claim it is deliberate — a marker is the *only* positive evidence
+of ownership, and adopting on a name match is how you delete a stranger's
+bucket. The two ways out are both a human's decision: add it to the boundary's
+exclusions, which puts the intent on the record, or delete the resource and let
+the fleet create it, marker and all. There is deliberately no "adopt this"
+flag; writing a marker onto something because it was in the way is the same
+mistake spelled differently.
+
+This is what a fleet adopted after the fact will see for its whole
+pre-existing estate, and it is why the live test asserts the ledger holds
+everything its stage declares: the assertion is what turns the warning into a
+failed build rather than a line in a log nobody reads.
+
 Three consequences worth stating outright.
 
 **A row is keyed by name, not by a fleet key.** `CachedEntry κ` is indexed by

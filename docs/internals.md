@@ -84,7 +84,8 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │    2. brake: refuse to destroy most of the ledger while    │
   │       still declaring things (T.declaresAnything)          │
   │    3. ADOPT: record every declared resource that exists,   │
-  │       even with no action to take                          │
+  │       action or not — but only if it is ours; warn about   │
+  │       one that exists and is not (Ownership.describe)      │
   │    4. for each action: runAction, then persist both        │
   │       records if they changed                              │
   └───────────────────────────────────────────────────────────┘

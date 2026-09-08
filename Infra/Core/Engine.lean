@@ -539,7 +539,21 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
             let claim ← match ← (bs.backendFor p k nm).ownershipInfo k handle with
               | none => pure true
               | some (tags, createdAt) =>
-                pure (ownershipOf store.boundary p k nm tags createdAt).isOurs
+                let verdict := ownershipOf store.boundary p k nm tags createdAt
+                -- Said out loud, because the alternative is the quietest bad
+                -- state this tool can be in: the declaration names it, it
+                -- exists, it matches — so there is no action, no plan line and
+                -- nothing to notice — and yet it is not managed, so a later
+                -- deletion of its line abandons it instead of destroying it.
+                -- Warned on every apply rather than once, since there is no
+                -- "once" to hang it on: the ledger is a cache, and a run that
+                -- rebuilt it would forget it had already mentioned this.
+                unless verdict.isOurs do
+                  IO.eprintln s!"warning: {Ledger.slotId p k nm} is declared and exists, \
+but is {verdict.describe}. It will not be created, changed or destroyed by this fleet, \
+which therefore manages less than it declares. Either exclude it deliberately, or delete \
+it and let this fleet create it — see docs/persistence.md"
+                pure verdict.isOurs
             if claim then
               rows := { cloud := p, kind := k, name := nm
                         region := store.regionOf p k nm } :: rows

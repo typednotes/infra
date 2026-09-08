@@ -155,8 +155,22 @@ instance : Divergent .awsInstance where
   divergence t r :=
     -- The `Name` tag, which `CreateTags` can change on a live instance.
     divergesReq "name" .mutable t.name r.name
-    -- A running instance cannot change image.
-    ++ divergesReq "imageId" .forcesReplace t.imageId r.imageId
+    -- A running instance cannot change image — but `"latest"` is not an image
+    -- id, it is an instruction, and `Infra.Providers.Live` carries it out
+    -- inside `create` (`DescribeImages` for the newest Amazon Linux 2023 in
+    -- the instance's own region). So the target holds the word and the
+    -- instance reports `ami-…`, which are never equal: comparing them puts
+    -- `REPLACE` in every plan for ever, and each apply destroys and recreates
+    -- a healthy instance. The live test hit exactly that.
+    --
+    -- The price is stated rather than hidden: a fleet that says `"latest"` is
+    -- not rebuilt when AWS publishes a newer image. That is the weaker of the
+    -- two readings of the word — "latest at create time", not "track latest" —
+    -- and it is the only one this tool can implement, because rebuilding on a
+    -- schedule set by someone else's release cadence is not something a diff
+    -- should decide. Pin an id to get drift detection back.
+    ++ (if t.imageId == "latest" then []
+        else divergesReq "imageId" .forcesReplace t.imageId r.imageId)
     -- EC2 *can* resize a stopped instance, but this tool never stops one, so
     -- the honest classification for what it will actually do is replace — and
     -- a plan says REPLACE before anything is applied. See `docs/providers.md`.

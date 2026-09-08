@@ -139,6 +139,37 @@ private def ec2For (creds : Credentials) : Endpoint := Query.ec2Endpoint creds.r
 private def withMarker (tags : List (String × String)) : List (String × String) :=
   if tags.any (·.1 == markerKey) then tags else (markerKey, "true") :: tags
 
+/-- The reported tag set with the marker taken back out.
+
+    The other half of `withMarker`, and not optional: `Divergent .objectStore`
+    compares tags as an exact set, so a bucket this tool created would
+    otherwise report a tag its declaration does not name and diverge on every
+    single plan — an `UPDATE` that rewrites the marker and leaves the
+    divergence exactly where it was. That is a non-converging fleet, which is
+    the one failure mode a diff must not have.
+
+    Hiding it on the *read* rather than exempting it in the divergence table
+    is what keeps the marker out of the semantics: `Divergent` compares
+    declared state against reported state, and the marker is neither. What
+    reads it as evidence is `Backend.ownershipInfo`, which is a separate call
+    and deliberately still sees the raw set. -/
+private def withoutMarker :
+    Partial (List (String × String)) → Partial (List (String × String))
+  | .unknown  => .unknown
+  | .known ts => .known (ts.filter (·.1 != markerKey))
+
+/- The round trip, pinned: a declaration's own tags survive both directions,
+   and the marker survives neither. These are cheap, and the defect they stand
+   for was not — a bucket that could never converge, invisible to the offline
+   suite because the placeholder backends report `tags := .unknown`. -/
+#guard withoutMarker (.known (withMarker [("team", "infra")])) = .known [("team", "infra")]
+#guard withoutMarker (.known (withMarker [])) = .known []
+#guard withoutMarker .unknown = (.unknown : Partial (List (String × String)))
+/- And a marker somebody wrote by hand, with a different value, is still
+   hidden: `ownershipOf` only ever checks the key, so the read must not
+   discriminate on the value either. -/
+#guard withoutMarker (.known [(markerKey, "someone-elses-value")]) = .known []
+
 private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
   S3.endpoint provider creds.region
 
@@ -160,12 +191,12 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
     | .gcp =>
       return { name := h.raw
                versioning := ← Gcp.Storage.readVersioning creds h.raw
-               tags := ← Gcp.Storage.readLabels creds h.raw }
+               tags := withoutMarker (← Gcp.Storage.readLabels creds h.raw) }
     | .aws | .scaleway =>
       let ep := s3For provider creds
       return { name := h.raw
                versioning := ← ObjectStore.readVersioning creds ep h.raw
-               tags := ← ObjectStore.readTags creds ep h.raw }
+               tags := withoutMarker (← ObjectStore.readTags creds ep h.raw) }
   | .s3Bucket, h => do
     let ep := s3For provider creds
     return { name := h.raw

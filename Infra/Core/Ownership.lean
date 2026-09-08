@@ -151,6 +151,25 @@ def Ownership.isOurs : Ownership → Bool
   | .managed => true
   | _        => false
 
+/-- The verdict, as a warning line's worth of English.
+
+    There is one place this is needed and it is the case that used to be
+    silent: a declaration names a resource, the resource exists, and it is not
+    ours. Nothing then happens to it — no create, because it exists; no
+    update, because a plan only touches what it manages; no destroy, ever.
+    A fleet in that state manages less than it declares and, before this,
+    said nothing at all about it.
+
+    Which is a worse failure than it looks. The resource is unreachable by
+    every path: `push` will not adopt it, `destroy` only knows the ledger, and
+    `discover` re-derives from the same marker and reaches the same verdict.
+    Only a name-based sweep can see it. So the warning is the whole remedy the
+    tool offers, and it has to name the fix. -/
+def Ownership.describe : Ownership → String
+  | .managed  => "managed"
+  | .excluded => "excluded from management, by the boundary or a release"
+  | .foreign  => s!"not carrying the '{markerKey}' tag, so not ours"
+
 /-! ## Guards
 
   The failure directions, pinned. These are the assertions to read first if the
@@ -200,6 +219,11 @@ private def anyKind : Kind := .queues
    mine". -/
 #guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
          .aws anyKind "x" [] (some "2026-09-15T00:00:00Z") = .foreign
+
+/- The two unowned verdicts must not read the same: "nobody told us about
+   this" and "we were told to leave it alone" call for different actions from
+   whoever reads the warning. -/
+#guard Ownership.foreign.describe != Ownership.excluded.describe
 
 /- Only `managed` is destroyable. -/
 #guard Ownership.managed.isOurs = true

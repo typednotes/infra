@@ -8,6 +8,52 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [Unreleased]
+
+**Three convergence and ownership defects the first post-ownership live run
+found.** All three had the same shape as far as an operator is concerned — the
+fleet does not do what the declaration says — and none of them was visible
+offline, because the placeholder backends echo the target back.
+
+### Fixed
+
+- **`imageId := "latest"` could never converge.** The word is resolved to a
+  real AMI id inside `create`, so the target held `"latest"` while the instance
+  reported `ami-…`, on a `.forcesReplace` field: `REPLACE` in every plan for
+  ever, and every real `apply` destroying and recreating a healthy instance.
+  `Divergent .awsInstance` now treats a target of `"latest"` as matching
+  whatever is reported. The consequence is stated where it is decided and in
+  `docs/providers.md`: latest *at create time*, not track-latest, so pin an id
+  to keep drift detection on the image.
+- **The ownership marker was written into a field the diff compares.**
+  `objectStore` compares tags as an equal set, so every bucket created since
+  the marker landed would have diverged on `tags` for ever — an `update` that
+  rewrites the marker and leaves the divergence exactly where it was.
+  `Live.withoutMarker` strips it as the tags are read; `Backend.ownershipInfo`
+  still sees the raw set, which is a different question.
+- **A declared resource that exists without the marker was passed over in
+  silence.** Refusing to adopt it is deliberate and stays — a name match is how
+  you delete a stranger's bucket — but nothing said so, and nothing else about
+  that state is observable: no action, no plan line, no ledger row, and a fleet
+  managing less than it declares. `push` now warns per resource, naming the
+  verdict (`Ownership.describe`) and the two ways out. `docs/persistence.md`
+  has the full note.
+
+### Added
+
+- **`checkLatestImage`** in the offline suite, comparing a `"latest"` target
+  against a resolved id — the pair a live pull produces — plus `#guard`s on
+  `withMarker`/`withoutMarker` in `Infra/Providers/Live.lean`, and a
+  captured-stream assertion in `checkOwnershipGate` that the unmanaged-resource
+  warning is actually printed.
+
+`docs/diff-semantics.md` records the general lesson under the perpetual-replace
+section, which has now been hit four times in two shapes: the *report* is a
+sentinel, or the *target* is not a value the cloud can be asked for. It also
+now states the harness property behind all of this — anything the live backend
+writes on create that the declaration did not say is invisible to the offline
+suite.
+
 ## [0.7.0] — 2026-09-07
 
 **The live sequence ramps.** Each cloud now applies five declarations against

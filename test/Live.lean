@@ -1016,7 +1016,12 @@ def runStage (name : String) (root : System.FilePath) (st : Stage) : IO Unit := 
     let missing := expected.filter (!managed.contains ·)
     throw (IO.userError s!"[{name}/{st.label}] the ledger and the declaration \
 disagree.\n  still managed but not declared: {String.intercalate ", " extra}\
-\n  declared but not managed: {String.intercalate ", " missing}")
+\n  declared but not managed: {String.intercalate ", " missing}\
+\n  A resource on the second list exists and matches, or the stage would not have \
+converged, so it was refused rather than missed: look for `push`'s warning about the \
+'{markerKey}' tag just above. Debris from an earlier run predates the marker, is not \
+adopted, and is therefore not destroyed by the teardown either — \
+`lake test -- {name} sweep` is what removes it.")
   progress s!"[{name}/{st.label}] converged; {managed.length} managed"
 
 /-- The stages for one cloud, ending in a declaration that names nothing.
