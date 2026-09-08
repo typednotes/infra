@@ -353,15 +353,24 @@ def setSlot (rs : Regions) {p : ProviderId} (k : Kind) (name : String)
 def covers (rs : Regions) (κ : Keys) : Bool :=
   κ.providers.all fun p => (rs.region p).isSome
 
+/-- Whether every *resource of one cloud* has a region, counting per-slot
+    placements.
+
+    Per cloud rather than per fleet because that is the question a caller can
+    act on: a credential region is loaded one cloud at a time, and it is needed
+    exactly when that cloud leaves something unplaced. `Infra.Cli.liveFor` asks
+    this before requiring one. -/
+def coversSlotsIn (rs : Regions) (κ : Keys) (p : ProviderId) : Bool :=
+  (Finite.elems (α := Kind)).all fun k =>
+    (Finite.elems (α := κ.Key p k)).all fun key =>
+      (rs.codeFor p k (κ.name p k key)).isSome
+
 /-- Whether every *resource* has a region, counting per-slot placements.
 
     The honest coverage question, and the one `covers` cannot afford to be. Not
     an `Assert`: only ever evaluated at runtime. -/
 def coversSlots (rs : Regions) (κ : Keys) : Bool :=
-  (Finite.elems (α := ProviderId)).all fun p =>
-    (Finite.elems (α := Kind)).all fun k =>
-      (Finite.elems (α := κ.Key p k)).all fun key =>
-        (rs.codeFor p k (κ.name p k key)).isSome
+  (Finite.elems (α := ProviderId)).all (coversSlotsIn rs κ)
 
 /-- The distinct regions a `(provider, kind)` bucket's resources live in,
     with `fallback` standing for a slot the fleet does not place.

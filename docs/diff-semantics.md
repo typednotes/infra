@@ -294,7 +294,7 @@ same symptom as the sentinel cases — a plan that never empties.
 
   The reading that makes this converge is that an unset optional launch field
   is **not a request** — "I did not choose" rather than "there must be none" —
-  so it is not compared. That is `Diverge.divergesRequested`, which both
+  so it is not compared. That is `Diverge.divergesIfSet`, which both
   `keyName` and `subnetId` now go through: an empty target contributes nothing,
   a non-empty one is compared exactly as before, so a declared subnet still
   detects drift. The price, stated rather than hidden: a fleet that leaves
@@ -359,7 +359,8 @@ misplaced fleet never reaches a DNS lookup:
 weakening: `by decide` reduces in the kernel, and a per-slot check compares
 slot names there — kernel `String` equality walks a character list, and a
 six-resource fleet in four regions overflowed the stack. The per-slot question
-is `Regions.coversSlots`, evaluated at runtime by `Infra.Cli.liveFor`. Nothing
+is `Regions.coversSlots`, whose per-cloud form `Regions.coversSlotsIn` is what
+`Infra.Cli.liveFor` evaluates at runtime. Nothing
 escapes as a result: a resource inside a region block is placed by
 construction, so the only thing left to check is a cloud-level default.
 

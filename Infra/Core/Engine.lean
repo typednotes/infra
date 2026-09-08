@@ -496,10 +496,11 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
   -- test double answers `none` and is unaffected, which is what keeps the
   -- offline suite — which is placeholders throughout — working.
   for r in store.rows do
-    match (bs.backendAt r.cloud r.region).unreachable with
-    | none     => pure ()
-    | some why =>
-      throw (IO.userError s!"the ledger records {Ledger.slotId r.cloud r.kind r.name}, but {why}. Refusing to apply: this would report every {r.cloud.name} resource as destroyed without deleting any of them. Declare the cloud, or point the ledger elsewhere")
+    if let some why := (bs.backendAt r.cloud r.region).unreachable then
+      throw (IO.userError s!"the ledger records \
+{Ledger.slotId r.cloud r.kind r.name}, but {why}. Refusing to apply: this would \
+report every {r.cloud.name} resource as destroyed without deleting any of them. \
+Declare the cloud, or point the ledger elsewhere")
   -- The brake, and note what it is *not* asked on: a declaration that asks for
   -- nothing to exist. That is a teardown, it is the explicit statement this
   -- check exists to demand, and it is recognisable from the target itself —

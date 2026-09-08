@@ -325,7 +325,9 @@ One check had to be weakened, and it is recorded rather than hidden:
 `by decide` in the kernel and a per-slot version compares strings there —
 which took Lean down with a stack overflow on a six-resource fleet.
 `Regions.coversSlots` is the honest question, evaluated only at runtime, and
-`Infra.Cli.liveFor` asks it per cloud before requiring a credential region.
+`Infra.Cli.liveFor` asks its per-cloud form (`Regions.coversSlotsIn`) before
+requiring a credential region — one walk, defined once, so the check the docs
+promise is the check that runs.
 Nothing is lost: a resource in a block is placed by construction.
 
 There is exactly **one** mechanism for where a resource lives, and that is the

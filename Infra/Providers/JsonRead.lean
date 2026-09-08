@@ -62,12 +62,4 @@ def stringArrayField (v : Value) (k : String) : List String :=
     | .string s => some s
     | _         => none
 
-/-- A whole value as text, for elements of a string array. -/
-def asString (v : Value) : Option String :=
-  match v with
-  | .string s => some s
-  | .number n => some (toString n)
-  | .bool b   => some (if b then "true" else "false")
-  | _         => none
-
 end Infra.Providers.JsonRead

@@ -221,12 +221,6 @@ def storeInKeychainAccount (account : String) (c : Credentials) : IO Unit := do
             | none   => []) }
   entry.setPassword body
 
-/-- Write credentials to the OS credential store, for `infra login`-style
-    provisioning. The only function here that handles a secret in the writing
-    direction. -/
-def storeInKeychain (provider : ProviderId) (c : Credentials) : IO Unit :=
-  storeInKeychainAccount provider.name c
-
 -- ── Source 3: the environment ──
 
 /-- The environment variables each cloud's own tooling reads. -/

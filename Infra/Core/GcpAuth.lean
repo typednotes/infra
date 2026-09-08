@@ -183,16 +183,6 @@ def exchange (sa : ServiceAccount) (jwt : String) : IO String := do
       let desc := (str? j "error_description").getD ""
       throw (IO.userError s!"gcp: token exchange failed: {err} {desc}")
 
-/-- A service-account key file to an access token, in one call. -/
-def tokenFromKeyFile (path : System.FilePath) (scope : String := defaultScope) :
-    IO (String × Option String) := do
-  let contents ← IO.FS.readFile path
-  match parse contents with
-  | .error e => throw (IO.userError s!"{path}: {e}")
-  | .ok sa =>
-    let jwt ← assertion sa scope
-    return (← exchange sa jwt, sa.projectId)
-
 /-- The standard variable pointing at a key file. Google's own libraries read
     it, so a machine already set up for `gcloud`-free service-account auth
     needs no extra configuration here. -/

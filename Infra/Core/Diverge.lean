@@ -56,7 +56,7 @@ def divergesReq {α : Type} [BEq α] (name : String) (m : Mutability)
     So an unset target is not compared, and the price is stated rather than
     hidden: a fleet that leaves the field out does not notice the cloud's
     choice changing. See `docs/diff-semantics.md`. -/
-def divergesRequested (name : String) (m : Mutability)
+def divergesIfSet (name : String) (m : Mutability)
     (target : String) (reported : Partial String) : List (String × Mutability) :=
   if target.isEmpty then [] else diverges name m target reported
 
@@ -196,10 +196,10 @@ instance : Divergent .awsInstance where
     ++ divergesReq "securityGroup" .mutable t.securityGroup r.securityGroup
     -- Both are launch-time only, and both are optional fields the cloud fills
     -- in whether or not the declaration asked: every instance is in a subnet.
-    -- So an unset one is not a request — `divergesRequested`, not `diverges`,
+    -- So an unset one is not a request — `divergesIfSet`, not `diverges`,
     -- or the plan proposes REPLACE for ever and the fleet never converges.
-    ++ divergesRequested "keyName" .forcesReplace t.keyName r.keyName
-    ++ divergesRequested "subnetId" .forcesReplace t.subnetId r.subnetId
+    ++ divergesIfSet "keyName" .forcesReplace t.keyName r.keyName
+    ++ divergesIfSet "subnetId" .forcesReplace t.subnetId r.subnetId
 
 /-- Both namespace kinds compare the same two fields. A namespace cannot be
     renamed — the name is its identity here, as with a bucket. -/

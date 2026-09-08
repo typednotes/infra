@@ -10,6 +10,10 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.8.0] — 2026-09-08
+
 **Three convergence and ownership defects the first post-ownership live run
 found.** All three had the same shape as far as an operator is concerned — the
 fleet does not do what the declaration says — and none of them was visible
@@ -41,7 +45,7 @@ offline, because the placeholder backends echo the target back.
   `AwsInstanceSpec.subnetId` settles to `""` when the declaration omits it,
   every EC2 instance is in a subnet regardless, and the field is
   `.forcesReplace`: `REPLACE` in every plan for ever, which is what the AWS leg
-  of the 2026-09-08 run failed on. `Diverge.divergesRequested` reads an empty
+  of the 2026-09-08 run failed on. `Diverge.divergesIfSet` reads an empty
   target as "I did not choose" rather than "there must be none" and does not
   compare it; a declared subnet is compared exactly as before. `keyName` has
   the same shape and goes through it too. The mirror image of
@@ -98,6 +102,31 @@ offline, because the placeholder backends echo the target back.
   warning is actually printed. `checkFleetIsolation` covers all four legs of
   the fleet-name scheme, and `checkSweepPrefixScopes` both directions of the
   sweep prefix.
+
+### Changed
+
+- **`Regions.coversSlots` is defined from a per-cloud `coversSlotsIn`**, which
+  is what `Infra.Cli.liveFor` now calls. The per-slot walk existed twice —
+  once in `Region.lean` uncalled, once inlined in `liveFor` — and two docs
+  claimed the first was what ran. One definition, and the claim is true.
+
+### Removed
+
+- **Three unreachable declarations**, from a dead-code sweep of every `.lean`
+  outside `.lake`: `JsonRead.asString` (`stringArrayField` does that itself),
+  `Credentials.storeInKeychain` (a wrapper for the `infra login`
+  `docs/authentication.md` decides against; `storeInKeychainAccount` is the one
+  in use) and `GcpAuth.tokenFromKeyFile` (superseded by `fromKeyFile`, which
+  `liveFor` calls).
+
+  Kept, and why, so the next sweep does not re-propose them: `LawfulMerge` is a
+  stated law awaiting a proof and is listed as such below; `Core.Auth`'s
+  `authorizationUrl`/`openBrowser` are the pieces a future device-grant login
+  reuses; `Specs.Build.postgresClassic` is public builder surface with no
+  example yet; `Scaleway.Rest.zonalPrefix` is what a zone-scoped product needs;
+  the three `describeVersion` implementations are what version-based drift
+  detection on `.secrets` would call, and `Infra/Providers/Live.lean` now says
+  that instead of claiming `read` supplies a version, which it does not.
 
 ### Breaking
 

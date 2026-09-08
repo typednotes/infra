@@ -83,10 +83,7 @@ def liveFor (κ : Keys) (regions : Regions := {}) (fleet : Option String := none
     -- declaration does not place falls back to the credentials, and that is
     -- exactly when the credentials have to supply one. A fully placed fleet
     -- has already answered the question and never reaches the check.
-    let unplaced := (Finite.elems (α := Kind)).any fun k =>
-      (Finite.elems (α := κ.Key p k)).any fun key =>
-        (regions.codeFor p k (κ.name p k key)).isNone
-    if unplaced then discard <| c.requireRegion p
+    unless regions.coversSlotsIn κ p do discard <| c.requireRegion p
     creds := (p, c) :: creds
   let lookup := fun p => (creds.find? fun c => c.1 == p).map (·.2)
   -- One backend per (cloud, region). Cheap: a `Backend` is a record of

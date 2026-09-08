@@ -429,8 +429,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
         | .gcp      => Gcp.SecretManager.list creds (← Gcp.requireProject creds)
         | .aws      => Secrets.Asm.list creds (asmFor creds)
         | .scaleway => Secrets.Scw.list creds
-      -- The version is metadata the caller may want; fetching it per secret
-      -- would cost a call each, and `read` supplies it for claimed keys anyway.
+      -- Left empty deliberately: a version costs one `describeVersion` call
+      -- per secret, and nothing consumes it — `liveRead` reports the spec, and
+      -- the divergence table for `.secrets` never looks at a version. The
+      -- three `describeVersion` implementations are there for the drift
+      -- detection that would, and are uncalled until then.
       return names.map fun n => { handle := ⟨n⟩, version := "" }
     | .compute => do
       let names ← match provider with
