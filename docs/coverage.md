@@ -151,16 +151,44 @@ This is the section worth reading before trusting anything. Correctness of
 trigger, one cloud at a time. How to trigger it, approve it and read it is in
 `ci/README.md` ("Running the live test").
 
-**The staged sequence passes on all three clouds, as of 2026-09-07.** All three
-stages, on AWS, Scaleway and GCP. That is the first time membership has been
-exercised against real accounts, and it is the claim this whole version rests
-on: stage 2 drops two resources whose lines are *gone* from the declaration, so
-the ledger is the only thing that can name them, and each account came back
-holding exactly what the stage declared.
+**The sequence is five stages now — `full`, `ramp-up`, `ramp-down`, `trimmed`,
+`empty` — and as of 2026-09-08 no cloud has passed all five honestly.** The
+three-cloud pass recorded here on 2026-09-07 was of the earlier three-stage
+sequence, and is left standing as what it was; it does not carry over.
+
+What the 2026-09-08 runs actually did:
+
+- **AWS failed**, on `full`, and correctly: a permanent `REPLACE` on the
+  instance, from `subnetId` — recorded in
+  [`diff-semantics.md`](diff-semantics.md)'s ledger.
+- **Scaleway and GCP printed `ok — all 5 stages` and deleted nothing.** The
+  `empty` stage declares no resources, so its key family names no provider, so
+  `Infra.Cli.liveFor` loaded no credentials and every backend was a
+  placeholder. Ten resources' worth of `delete` returned `()` in two
+  milliseconds, the ledger was emptied as though they were gone, and both
+  accounts were still holding the whole estate an hour later — bucket, five
+  secrets, both namespaces, a registry namespace and a 355 MB image. The
+  driver's own end-of-stage check compares the ledger against the declaration,
+  and after a teardown both are empty, so it agreed.
+
+  AWS came out clean only because it *failed*: the workflow's backstop ran
+  `sweep`, which lists the account rather than trusting the ledger, and deleted
+  all twelve. A green run has no backstop.
+
+Both are fixed — the first by not comparing an unset optional launch field, the
+second by refusing the placeholder substitution rather than performing it
+(`docs/internals.md`, "Which clouds get authenticated"). Neither is
+re-verified: **the claim to make after the next live run is the five-stage
+one**, and until it runs this section says only what the runs above showed.
+
+The membership property the sequence exists to test is unchanged and still
+worth stating: stage 4 drops resources whose lines are *gone* from the
+declaration, so the ledger is the only thing that can name them.
 
 It took two rounds of failures to get there, both of them the tool's fault and
 neither any cloud's. They are recorded because the second one is the kind of
-bug that only a real account finds:
+bug that only a real account finds. Both predate the ramp stages, so the stage
+numbers in them are the three-stage sequence's: its stage 3 is now stage 5.
 
 - *Round one.* Stages 1 and 2 passed; stage 3 failed everywhere. The
   "destroying most of the ledger" brake fired on the teardown — the one plan it
@@ -178,16 +206,16 @@ bug that only a real account finds:
 
 #### What one live leg does
 
-Three declarations, applied in order against one ledger. Each stage is a real
+Five declarations, applied in order against one ledger. Each stage is a real
 apply against a real account, and after each one the account must hold
 *exactly* what that stage declares:
 
 | Stage | Declares | What it proves |
 |---|---|---|
-| 1 `full` | eleven resources on AWS and Scaleway, ten on GCP | `create` works, and the dependency order works: five secrets forming a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply |
+| 1 `full` | twelve resources on AWS and Scaleway, ten on GCP | `create` works, and the dependency order works: five secrets forming a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply |
 | 2 `ramp-up` | the same resources, scaled up | `update` on every field that moves, and only `update`: each is on a `.mutable` row, so none may come back as a replace |
 | 3 `ramp-down` | the same resources, scaled back | the same paths in the other direction. Scaling a container back to a floor of zero instances is the direction that costs money when it silently fails |
-| 4 `trimmed` | two resources dropped, one added | `deleteOrphan` for the dropped — their lines are *gone*, so only the ledger knows they exist — plus `create` for the new one |
+| 4 `trimmed` | resources dropped — two on AWS and GCP, three on Scaleway — and one added | `deleteOrphan` for the dropped — their lines are *gone*, so only the ledger knows they exist — plus `create` for the new one |
 | 5 `empty` | nothing at all | `deleteOrphan` for everything left. This is `apply` against an empty declaration, which is the same operation `destroy` performs |
 
 The ramp stages are checked offline for not having rotted: each must declare
@@ -196,9 +224,9 @@ declare something, so none is mistaken for a teardown by the brake. A ramp that
 drifted into a no-op would pass every live assertion while testing nothing.
 
 Stage 4 is the one that earns the sequence. If membership still came from the
-declaration, its two dropped resources would be silently abandoned, stage 3
-would find nothing to clean up, and both stages would pass while leaking two
-billable resources per cloud. The assertion that catches that compares the
+declaration, the resources it drops would be silently abandoned, stage 5 would
+find nothing to clean up, and both stages would pass while leaking billable
+resources on every cloud. The assertion that catches that compares the
 ledger against the stage's own declared slots, derived from the key family
 rather than written out.
 
@@ -834,8 +862,21 @@ most likely to matter:
   regions, not dependency edges, so deleting two lines at once where one
   referenced the other can have the provider refuse the second delete until
   the first is done. See `docs/diff-semantics.md`.
+- **A green live run is not by itself evidence the account is empty.** The
+  driver checks the ledger against the declaration, and a teardown makes both
+  empty — so anything that empties the ledger without deleting satisfies it.
+  One mechanism that could do that is closed (the placeholder substitution
+  below), but the check's shape is unchanged, and `sweep` is what actually asks
+  the account. Run it after a live run, and read what it says.
 
 Not a surprise waiting to be discovered; it is written down.
+
+`liveFor`'s placeholder substitution used to head this list — a provider the
+declaration did not name got `placeholderBackend`, whose `delete` returns `()`,
+so a teardown against an empty declaration deleted nothing and said it had. It
+is gone, not softened: a live apply refuses to act on a ledger row through a
+placeholder. The offline suite is unaffected, because nothing there has a
+ledger row for a cloud it is not pretending to be.
 
 `Plan.outside` used to head this list — declared, never consumed, and the
 reason deleting a resource from a declaration left it running in the cloud. It

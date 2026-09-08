@@ -364,17 +364,24 @@ Three ways a row appears or leaves:
             → the row goes, the cloud is untouched.
 ```
 
-The three-stage live test is this mechanism as a sequence:
+The five-stage live test is this mechanism as a sequence (AWS's counts; see
+`test/Live.lean`):
 
 ```
-  stage 1  full      declare 11 ──▶ 11 managed
-  stage 2  trimmed   declare 10 ──▶ 10 managed
-                     │   drops 2 (lines GONE — only the ledger knows)
-                     │   changes 1 field    → UPDATE
-                     └── adds 1             → CREATE
-  stage 3  empty     declare 0  ──▶ 0 managed
-                     everything is an orphan; this is `apply` reaching
-                     the same place `destroy` does
+  stage 1  full       declare 12 ──▶ 12 managed
+  stage 2  ramp-up    declare 12 ──▶ 12 managed
+                      same names, same graph, larger numbers → UPDATE
+  stage 3  ramp-down  declare 12 ──▶ 12 managed
+                      the same paths back down
+  stage 4  trimmed    declare 11 ──▶ 11 managed
+                      │   drops 2 (lines GONE — only the ledger knows)
+                      └── adds 1             → CREATE
+  stage 5  empty      declare 0  ──▶ 0 managed
+                      everything is an orphan; this is `apply` reaching
+                      the same place `destroy` does, and it is
+                      `Plan.absent` over stage 1's own key family — see
+                      "Which clouds get authenticated" below for why that
+                      last clause is load-bearing
 ```
 
 *What the ledger is not.* It is local and gitignored, so it does not survive a
@@ -415,6 +422,59 @@ credentials and no idea what a region is. It knows only slots.
 
 `Backend` itself is a record rather than a class, so `Backends` can be a total
 function over `ProviderId` without sigma gymnastics.
+
+### Which clouds get authenticated, and the hole that leaves
+
+`Infra.Cli.liveFor` builds all four of those from **`κ.providers`** — the
+clouds the declaration's key family names. That is what lets an all-Scaleway
+fleet run without AWS credentials, and it is deliberate.
+
+The consequence is not: a provider `κ` does not name gets
+`Infra.Providers.placeholderBackend`, whose `delete` returns `()` and whose
+`list` returns `[]`. For a declaration that names *nothing at all* — which is
+the same statement as a teardown, see `Plan.absent` — that means every backend
+is a placeholder, and a teardown of a full ledger becomes a loop of successful
+no-ops that empties the ledger and touches no cloud. It takes milliseconds and
+reports success.
+
+That is not a hypothetical: it is what the 2026-09-08 live runs did on GCP and
+Scaleway. Both printed `ok — all 5 stages`, both left their whole estate
+standing, and only AWS came out clean — because its run *failed*, and the
+workflow's backstop sweep deleted the twelve resources the teardown had not.
+
+So a live apply now **refuses the substitution rather than performing it**.
+`Backend.unreachable : Option String` is how a backend says it cannot reach its
+cloud and why; `liveFor` sets it on every placeholder it substitutes, and
+`push`, before running any action, throws if the ledger holds a row for a
+provider whose backend answers `some`:
+
+```
+the ledger records aws/object-store/old-bucket, but no aws credentials were
+loaded, because this declaration names no aws resources. Refusing to apply:
+this would report every aws resource as destroyed without deleting any of
+them. Declare the cloud, or point the ledger elsewhere
+```
+
+The field, rather than a test for "is this the placeholder", is what keeps the
+rule narrow: a placeholder used *deliberately* as a test double answers `none`
+and is unaffected, so the offline suite — which is placeholders throughout,
+including its own teardown checks — keeps working. `Main.lean`'s
+`checkUnreachableRefusal` pins both halves, since neither is visible any other
+way offline.
+
+The other half of the fix is in the test driver: `Live.emptyStage` builds its
+teardown as `Plan.absent κ` over the cloud's *own* key family rather than as an
+empty `fleet` of its own, so `κ.providers` still names the cloud and the
+credentials still load. `#guard (at! awsStages 4).κ.providers = [.aws]` is what
+stops that regressing — `declared = []`, the guard that was already there,
+cannot see the difference.
+
+The general shape is worth naming, because the fix above closes one instance of
+it: **a placeholder is indistinguishable from a cloud that agreed.** Every
+placeholder method answers the way a successful call would. That is the right
+default for an offline suite and a live-fire hazard everywhere else, so the
+question to ask of any new path through `Backends` is what it does when the
+credentials for a cloud were never loaded.
 
 ## The two records
 

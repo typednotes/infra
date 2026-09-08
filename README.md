@@ -40,13 +40,16 @@ provider-local) · every `(provider, kind)` pair implemented.
 
 All seven portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
-service accounts and Cloud SQL. Full create-and-destroy round trips pass in
-CI on **all three clouds** — AWS 12 resources, Scaleway 12, Google Cloud 10,
+service accounts and Cloud SQL. Create-and-destroy round trips run in CI on
+**all three clouds** — AWS 12 resources, Scaleway 12, Google Cloud 10,
 covering thirteen of the fourteen kinds and 22 (cloud, kind) pairs. Each leg
-applies three declarations in sequence: the whole fleet, a trimmed version that
-drops two resources and changes a field, then one that declares nothing. After
+applies five declarations in sequence: the whole fleet, a scale up, a scale
+down, a version with resources dropped, then one that declares nothing. After
 every stage the account must hold exactly what that stage declares, so a
-dropped resource has to be *destroyed* rather than abandoned. All three
+dropped resource has to be *destroyed* rather than abandoned. The five-stage
+sequence has not yet been passed honestly on any cloud: the 2026-09-08 runs
+found two defects, both fixed and neither re-verified — `docs/coverage.md`
+says what each run showed. All three
 dependency patterns are exercised live: a
 chain, a fan-out, and a fan-in through both key and expression references.
 

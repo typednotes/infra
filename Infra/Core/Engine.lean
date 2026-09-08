@@ -483,6 +483,23 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     return (work.map fun a =>
         Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
       [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
+  -- No cloud, no apply. A ledger row this fleet cannot reach is not something
+  -- to be quietly reconciled: every backend method would answer as if the
+  -- account were empty, so the row would be dropped and the resource left
+  -- standing and billing. Checked here, before any action runs, rather than
+  -- left to fail at the first call — the calls do not fail, that is the whole
+  -- problem.
+  --
+  -- Narrow by construction: it fires only on a backend that says it is
+  -- unreachable, which is only ever `Infra.Cli.liveFor`'s substitution for a
+  -- cloud it loaded no credentials for. A placeholder used deliberately as a
+  -- test double answers `none` and is unaffected, which is what keeps the
+  -- offline suite — which is placeholders throughout — working.
+  for r in store.rows do
+    match (bs.backendAt r.cloud r.region).unreachable with
+    | none     => pure ()
+    | some why =>
+      throw (IO.userError s!"the ledger records {Ledger.slotId r.cloud r.kind r.name}, but {why}. Refusing to apply: this would report every {r.cloud.name} resource as destroyed without deleting any of them. Declare the cloud, or point the ledger elsewhere")
   -- The brake, and note what it is *not* asked on: a declaration that asks for
   -- nothing to exist. That is a teardown, it is the explicit statement this
   -- check exists to demand, and it is recognisable from the target itself —

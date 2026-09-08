@@ -224,7 +224,7 @@ type would otherwise destroy live resources on a first run.
 
 ## A required field the backend cannot report is a perpetual replace
 
-The sharpest trap in this design, and it has now been hit four times, in two
+The sharpest trap in this design, and it has now been hit five times, in two
 shapes. This is the first shape: the *report* is a sentinel.
 
 `divergesReq` compares a **required** field directly — there is no `Partial`,
@@ -282,6 +282,27 @@ same symptom as the sentinel cases — a plan that never empties.
   `Live.withoutMarker` now strips it on read, so bookkeeping stays out of the
   comparison, while `Backend.ownershipInfo` — a separate call, for a different
   question — still sees the raw set.
+- **A value the cloud assigns and the declaration left unset.**
+  `AwsInstanceSpec.subnetId` is optional and settles to `""` when it is not
+  given. Every EC2 instance is in a subnet regardless, so `DescribeInstances`
+  reports `subnet-…`, `diverges` compares that against `""`, and the field is
+  `.forcesReplace`: `REPLACE` in every plan, for ever. Found by the live test
+  on 2026-09-08, and the same shape as `imageId := "latest"` seen from the
+  other side — there the target was an instruction, here the target is an
+  absence and the cloud fills it in. `keyName` is the same field shape and
+  escapes only because an instance without a key pair reports nothing.
+
+  The reading that makes this converge is that an unset optional launch field
+  is **not a request** — "I did not choose" rather than "there must be none" —
+  so it is not compared. That is `Diverge.divergesRequested`, which both
+  `keyName` and `subnetId` now go through: an empty target contributes nothing,
+  a non-empty one is compared exactly as before, so a declared subnet still
+  detects drift. The price, stated rather than hidden: a fleet that leaves
+  `subnetId` unset does not notice the instance moving, and there is no way to
+  say "must be in no particular subnet", which is not a thing EC2 can be asked
+  for anyway. `Main.lean`'s `checkUnsetLaunchField` is the offline stand-in,
+  built by hand because a placeholder reports `.unknown` and `unknown`
+  contributes nothing either.
 
 **The second rule for a new kind.** For every field, also ask: is the target a
 value the cloud can be asked for, or an instruction to be carried out? And does

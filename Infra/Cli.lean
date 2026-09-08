@@ -95,7 +95,13 @@ def liveFor (κ : Keys) (regions : Regions := {}) (fleet : Option String := none
   let backendIn := fun (p : ProviderId) (code : String) =>
     match lookup p with
     | some c => Infra.Providers.liveBackend p { c with region := code } fleet
-    | none   => Infra.Providers.placeholderBackend p.name
+    -- Marked unreachable, not merely absent. The engine may hold ledger rows
+    -- for a cloud this key family does not name — a stale row, or a teardown
+    -- whose declaration names nothing — and routing those through a
+    -- placeholder would delete nothing and say it had. `push` refuses instead.
+    | none   => { Infra.Providers.placeholderBackend p.name with
+                    unreachable := some s!"no {p.name} credentials were loaded, because \
+this declaration names no {p.name} resources" }
   -- Where a cloud goes when the fleet does not say: the credentials' region.
   let fallback := fun (p : ProviderId) => ((lookup p).map (·.region)).getD ""
   let resolve := fun p k nm => (regions.codeFor p k nm).getD (fallback p)

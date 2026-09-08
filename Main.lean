@@ -261,6 +261,60 @@ def checkOrphanRecheck : IO Unit := do
   finally
     IO.FS.removeDirAll tmp
 
+/-- A teardown routed through a cloud nobody authenticated must refuse.
+
+    This is the defect the 2026-09-08 live runs hid: `Infra.Cli.liveFor` loads
+    credentials for the providers a key family names and substitutes a
+    placeholder for the rest, and a placeholder's `delete` returns `()`. Two
+    clouds reported a clean teardown with their whole estate standing.
+
+    The two halves are checked here because nothing else can see them: a real
+    cloud is not available offline, and the substitution is invisible by
+    construction — a placeholder answers exactly as an empty account does. So
+    the marked backend must refuse and leave the row, and an unmarked one —
+    every test double in this file, and every live backend — must still be
+    free to delete. -/
+def checkUnreachableRefusal : IO Unit := do
+  let tmp ← IO.FS.createTempDir
+  try
+    let staleRow : Ledger.Row :=
+      { cloud := .aws, kind := .objectStore, name := "old-bucket", region := "eu-west-1" }
+    -- Exactly what `liveFor` hands back for a cloud it loaded no credentials
+    -- for, and otherwise the same placeholder the rest of this suite uses.
+    let unreachable : Backends :=
+      { backend := fun p =>
+          { Infra.Providers.placeholderBackend p.name with
+              unreachable := some "no aws credentials were loaded" } }
+
+    -- Written to disk first, because the refusal happens before `push` writes
+    -- anything: "the row survived" has to mean the file still holds it, not
+    -- that a file was never created.
+    Ledger.save tmp [staleRow]
+
+    match ← (push unreachable (Plan.absent demoKeys) emptyWorld { apply := true }
+        (store := { root := some tmp, rows := [staleRow] })).toBaseIO with
+    | .error e =>
+      unless mentions (toString e) "aws/object-store/old-bucket" do
+        throw (IO.userError s!"the refusal did not name the row: {toString e}")
+      unless mentions (toString e) "without deleting any of them" do
+        throw (IO.userError s!"push refused for the wrong reason: {toString e}")
+    | .ok lines =>
+      throw (IO.userError s!"a teardown through an unreachable cloud was allowed: {lines}")
+    unless (← Ledger.load tmp).any (·.name == "old-bucket") do
+      throw (IO.userError "a refused teardown still dropped the ledger row")
+
+    -- And the same teardown through a reachable backend still empties it, so
+    -- the guard is the substitution and not teardowns in general.
+    let reachable : Backends := { backend := fun p => Infra.Providers.placeholderBackend p.name }
+    let _ ← push reachable (Plan.absent demoKeys) emptyWorld { apply := true }
+      (store := { root := some tmp, rows := [staleRow] })
+    unless (← Ledger.load tmp).isEmpty do
+      throw (IO.userError "a teardown through a reachable backend left the ledger populated")
+
+    IO.println "unreachable cloud: ok (a ledger row it cannot reach refuses the apply)"
+  finally
+    IO.FS.removeDirAll tmp
+
 /-- `discover` rebuilds a ledger row straight from `list` and `ownershipInfo`,
     with no ledger to start from at all — the "lost ledger" case
     `docs/persistence.md` claims `discover` recovers from. -/
@@ -326,6 +380,46 @@ def checkLatestImage : IO Unit := do
   unless fields (spec "ami-1111111111111111") (seen "ami-1111111111111111") == [] do
     throw (IO.userError "a matching pinned AMI id reported drift")
   IO.println "latest AMI: ok ('latest' converges; a pinned id still detects drift)"
+
+/-- An unset optional launch field must not diverge either.
+
+    The same failure as `checkLatestImage` from the other side: there the
+    target was an instruction, here it is an absence the cloud fills in.
+    `subnetId` is optional and settles to `""`, every EC2 instance is in a
+    subnet, so `DescribeInstances` reports `subnet-…`, and the field is
+    `.forcesReplace` — `REPLACE` in every plan for ever. That is what the AWS
+    leg of the 2026-09-08 live run failed on, after ten polls of a fleet that
+    could never converge.
+
+    Invisible offline until this check, for the reason `docs/diff-semantics.md`
+    gives: the placeholder backend reports `subnetId := .unknown`, and
+    `unknown` contributes nothing to a divergence. So the report here is built
+    by hand to be what a live pull actually returns. -/
+def checkUnsetLaunchField : IO Unit := do
+  let spec (keyName subnetId : String) : ProviderSpec .awsInstance :=
+    { name := "vm", imageId := "ami-1111111111111111"
+      instanceType := InstanceType.of .t3 .nano
+      securityGroup := ⟨"sg"⟩, keyName, subnetId }
+  let seen (keyName subnetId : String) : Reported .awsInstance :=
+    { name := "vm", imageId := "ami-1111111111111111"
+      instanceType := InstanceType.of .t3 .nano
+      securityGroup := ⟨"sg"⟩
+      keyName := .known keyName, subnetId := .known subnetId }
+  let fields (t : ProviderSpec .awsInstance) (r : Reported .awsInstance) : List String :=
+    (divergence .awsInstance t r).map (·.1)
+
+  -- Unset, and the cloud chose: not a request, so not a divergence.
+  unless fields (spec "" "") (seen "kp-ci" "subnet-0abc") == [] do
+    throw (IO.userError s!"an unset subnet/key pair diverged from what AWS assigned: {fields (spec "" "") (seen "kp-ci" "subnet-0abc")} — every plan would REPLACE the instance and it would never converge")
+  -- Asked for, and honoured.
+  unless fields (spec "kp-ci" "subnet-0abc") (seen "kp-ci" "subnet-0abc") == [] do
+    throw (IO.userError "a satisfied subnet request reported drift")
+  -- Asked for, and not honoured: the half that must survive the exemption.
+  unless fields (spec "kp-ci" "subnet-0abc") (seen "kp-ci" "subnet-0def") == ["subnetId"] do
+    throw (IO.userError "a declared subnet stopped being compared")
+  unless fields (spec "kp-ci" "subnet-0abc") (seen "kp-other" "subnet-0abc") == ["keyName"] do
+    throw (IO.userError "a declared key pair stopped being compared")
+  IO.println "unset launch fields: ok (a subnet nobody asked for converges; a declared one still detects drift)"
 
 /-- Pulls from both placeholder backends, caches the result, and reports what the target would
     still ask for. Nothing behind `list` is live yet, so the world comes back empty and every
@@ -765,8 +859,10 @@ def selfCheck : IO Unit := do
   checkOwnershipGate
   checkFleetIsolation
   checkOrphanRecheck
+  checkUnreachableRefusal
   checkDiscover
   checkLatestImage
+  checkUnsetLaunchField
   checkPullAndPlan
   checkCredentials
   checkSigning

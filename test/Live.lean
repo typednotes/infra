@@ -740,14 +740,23 @@ fleet gcpTrimmed in paris where
     resource objectStore "ci-tests-infra-store-gcp-7c1f9a2e" { versioning := true }
     resource iam "ci-tests-infra-sa" {}
 
-/-! ### Stage 3: nothing at all
+/-! ### The last stage: nothing at all
 
-  One declaration, shared by all three clouds, that declares no resources. Its
-  key family is empty, so it cannot name anything — which is the point:
-  everything the ledger records becomes an orphan, and orphans are what get
-  destroyed. This is `apply` reaching the same place `destroy` does. -/
+  A declaration that declares no resources — `Plan.absent` over the cloud's
+  *own* key family. Everything the ledger records becomes an orphan, and
+  orphans are what get destroyed. This is `apply` reaching the same place
+  `destroy` does.
 
-fleet nothingAtAll where
+  Over the full key family, and not over an empty `fleet` of its own, which is
+  what it used to be. `liveFor` authenticates exactly `κ.providers`, so a key
+  family that names no cloud gets no credentials, and every backend it hands
+  back is `Infra.Providers.placeholderBackend` — whose `delete` returns `()`.
+  A teardown built that way deleted nothing, emptied the ledger, and satisfied
+  `runStage`'s check because `[] == []`. Two clouds reported five green stages
+  on 2026-09-08 with their whole estate still standing. `Plan.absent κ` says
+  the same thing about the resources while keeping the providers, and `push`
+  now refuses the substitution besides — see `docs/internals.md`, "Which clouds
+  get authenticated, and the hole that leaves". -/
 
 /-- Where a slot first appears in the create order, or `none`. -/
 private def createIndexOf {κ : Keys} (T : Plan κ) (slot : String) : Option Nat :=
@@ -968,6 +977,19 @@ def stage {κ : Keys} (label : String) (plan : Plan κ) (regions : Regions)
           | .present _ => some (Ledger.slotId p k (κ.name p k key))
           | _          => none
 
+/-- The teardown stage: declare nothing, over the key family that names the
+    cloud.
+
+    `Plan.absent κ` and an empty `fleet` say the same thing about resources and
+    different things about *providers*, and the difference is not cosmetic —
+    `liveFor` authenticates `κ.providers`, so the empty family authenticates
+    nothing and tears down through placeholder backends that delete nothing.
+    Nothing is forgotten in a teardown either: a `Released` key is one the
+    ledger drops without deleting, which is the opposite of what this stage is
+    for. -/
+def emptyStage (κ : Keys) (regions : Regions) : Stage :=
+  stage "empty" (Plan.absent κ) regions []
+
 /-- Everything the ledger says is managed, as slot strings. -/
 def ledgerSlots (rows : List Ledger.Row) : List String :=
   (Ledger.sorted rows).map Ledger.Row.slot
@@ -1036,19 +1058,19 @@ def stagesFor : String → Option (List Stage)
     , stage "ramp-up"   awsRampUp.plan    awsRampUp.regions    awsRampUp.forgets
     , stage "ramp-down" awsRampDown.plan  awsRampDown.regions  awsRampDown.forgets
     , stage "trimmed"   awsTrimmed.plan   awsTrimmed.regions   awsTrimmed.forgets
-    , stage "empty"     nothingAtAll.plan awsFull.regions      nothingAtAll.forgets ]
+    , emptyStage awsFull.keys awsFull.regions ]
   | "scaleway" => some
     [ stage "full"      scalewayFull.plan     scalewayFull.regions     scalewayFull.forgets
     , stage "ramp-up"   scalewayRampUp.plan   scalewayRampUp.regions   scalewayRampUp.forgets
     , stage "ramp-down" scalewayRampDown.plan scalewayRampDown.regions scalewayRampDown.forgets
     , stage "trimmed"   scalewayTrimmed.plan  scalewayTrimmed.regions  scalewayTrimmed.forgets
-    , stage "empty"     nothingAtAll.plan     scalewayFull.regions     nothingAtAll.forgets ]
+    , emptyStage scalewayFull.keys scalewayFull.regions ]
   | "gcp" => some
     [ stage "full"      gcpFull.plan      gcpFull.regions      gcpFull.forgets
     , stage "ramp-up"   gcpRampUp.plan    gcpRampUp.regions    gcpRampUp.forgets
     , stage "ramp-down" gcpRampDown.plan  gcpRampDown.regions  gcpRampDown.forgets
     , stage "trimmed"   gcpTrimmed.plan   gcpTrimmed.regions   gcpTrimmed.forgets
-    , stage "empty"     nothingAtAll.plan gcpFull.regions      nothingAtAll.forgets ]
+    , emptyStage gcpFull.keys gcpFull.regions ]
   | _ => none
 
 /-! ### The stages really are different declarations
@@ -1069,7 +1091,7 @@ private def added (a b : Stage) : List String :=
 /-- A stage by position, with an empty declaration as the fallback so a wrong
     index fails a guard rather than failing to compile. -/
 private def at! (sts : List Stage) (i : Nat) : Stage :=
-  (sts.drop i).headD (stage "missing" nothingAtAll.plan {} nothingAtAll.forgets)
+  (sts.drop i).headD { emptyStage awsFull.keys {} with label := "missing" }
 
 private def awsStages := stagesFor "aws" |>.getD []
 private def scwStages := stagesFor "scaleway" |>.getD []
@@ -1083,6 +1105,15 @@ private def gcpStages := stagesFor "gcp" |>.getD []
 #guard (at! awsStages 4).declared = []
 #guard (at! scwStages 4).declared = []
 #guard (at! gcpStages 4).declared = []
+
+/- And the teardown stage still names its cloud. This is the guard the false
+   green of 2026-09-08 needed: the stage declared nothing *and* its key family
+   named no provider, so `liveFor` loaded no credentials, every backend was a
+   placeholder, and the teardown deleted nothing while reporting success.
+   `declared = []` above cannot see that; `providers` can. -/
+#guard (at! awsStages 4).κ.providers = [.aws]
+#guard (at! scwStages 4).κ.providers = [.scaleway]
+#guard (at! gcpStages 4).κ.providers = [.gcp]
 
 /- The two ramp stages declare *exactly* what stage 1 does: same resources,
    same names, same graph. Only mutable fields move. If a ramp accidentally
@@ -1152,6 +1183,13 @@ private def coreSlots (cloud : String) : List String :=
    and ten resources, spanning 22 `(cloud, kind)` pairs and *thirteen of the
    fourteen kinds*. Only `postgres` is left out, because it takes longer to
    create than a workflow step allows. -/
+-- And after the trim: two dropped and one added on AWS and GCP, three dropped
+-- and one added on Scaleway. Quoted by `docs/internals.md`'s sequence diagram,
+-- so a fleet that grows has one place to correct.
+#guard (at! awsStages 3).declared.length = 11
+#guard (at! scwStages 3).declared.length = 10
+#guard (at! gcpStages 3).declared.length = 9
+
 #guard (at! awsStages 0).declared.length = 12
 #guard (at! scwStages 0).declared.length = 12
 #guard (at! gcpStages 0).declared.length = 10
@@ -1178,9 +1216,9 @@ private def kindsOf (st : Stage) : List String :=
     Because the empty stage destroys whatever the *ledger* holds rather than
     whatever some declaration names, it also cleans up after a run that failed
     partway through a different stage. -/
-def liveTeardown (name : String) (regions : Regions) : IO Unit := do
+def liveTeardown (name : String) (κ : Keys) (regions : Regions) : IO Unit := do
   let root : System.FilePath := ".infra" / s!"live-{name}"
-  runStage name root (stage "empty" nothingAtAll.plan regions nothingAtAll.forgets)
+  runStage name root (emptyStage κ regions)
   let rows ← Ledger.load root
   unless rows.isEmpty do
     throw (IO.userError s!"[{name}] torn down, but the ledger still lists \
@@ -1322,8 +1360,8 @@ def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions)
     If any earlier stage fails, the teardown still runs, and both errors are
     reported: a teardown failure that swallowed the real error is how a CI job
     becomes a mystery and a bill. -/
-def liveSequence (name : String) (stages : List Stage) (regions : Regions) :
-    IO Unit := do
+def liveSequence (name : String) (κ : Keys) (stages : List Stage)
+    (regions : Regions) : IO Unit := do
   let root : System.FilePath := ".infra" / s!"live-{name}"
   -- Stage by stage rather than `forM`, so that a failure knows *which* stage
   -- failed. That matters for one case: the last stage is itself the teardown,
@@ -1345,7 +1383,7 @@ def liveSequence (name : String) (stages : List Stage) (regions : Regions) :
 [{name}] the teardown stage itself failed, so resources are still standing. \
 `lake test -- {name} destroy` retries it and nothing else")
         else
-          match ← (liveTeardown name regions).toBaseIO with
+          match ← (liveTeardown name κ regions).toBaseIO with
           | .ok _     => throw e
           | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
   go stages
@@ -1580,13 +1618,17 @@ def main (args : List String) : IO UInt32 := do
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
     let some regions := regionsFor p
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    match ← (liveSequence p stages regions).toBaseIO with
+    let some (κ, _) := keysFor p
+      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+    match ← (liveSequence p κ stages regions).toBaseIO with
     | .ok _    => progress s!"[{p}] ok — all {stages.length} stages"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | [p, "destroy"] =>
     let some regions := regionsFor p
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    match ← (liveTeardown p regions).toBaseIO with
+    let some (κ, _) := keysFor p
+      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+    match ← (liveTeardown p κ regions).toBaseIO with
     | .ok _    => progress s!"[{p}] torn down"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   -- `sweep all` keeps going after a failure and reports at the end, rather

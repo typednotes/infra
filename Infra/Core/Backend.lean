@@ -68,6 +68,22 @@ structure Backend where
       field is unaffected. -/
   ownershipInfo : (k : Kind) → Handle k → IO (Option (List (String × String) × Option String)) :=
     fun _ _ => pure none
+  /-- Why this backend cannot reach its cloud, if it cannot.
+
+      `none` is the normal answer, and it is also the right answer for a test
+      double: a placeholder standing in for a cloud *on purpose* is reachable
+      as far as the engine is concerned, because the test is what decides what
+      it reports. `some why` marks the other case — a backend handed back
+      because the credentials for that cloud were never loaded, which
+      `Infra.Cli.liveFor` does for any provider the key family does not name.
+
+      It exists because the two are otherwise indistinguishable, and the
+      difference is money: a placeholder's `delete` returns `()` and its `list`
+      returns `[]`, so an apply routed through one destroys nothing and reports
+      that everything is gone. `Engine.push` refuses to act on a ledger row
+      through a backend that answers `some`. See `docs/internals.md`, "Which
+      clouds get authenticated, and the hole that leaves". -/
+  unreachable : Option String := none
 
 /-- Every cloud the engine can reach. Total over `ProviderId`, matching `Plan.assign`'s
     totality over the same index.

@@ -17,6 +17,36 @@ offline, because the placeholder backends echo the target back.
 
 ### Fixed
 
+- **A teardown could report success while deleting nothing.** `liveFor`
+  authenticates exactly `κ.providers` and substitutes
+  `Providers.placeholderBackend` for the rest, and a placeholder's `delete`
+  returns `()` while its `list` returns `[]` — so an apply against a
+  declaration that names no cloud emptied the ledger, touched no account, and
+  printed a clean teardown. The live test's last stage was exactly such a
+  declaration, and on 2026-09-08 GCP and Scaleway both reported `ok — all 5
+  stages` with their whole estate standing; only AWS came out clean, because
+  its run failed and the workflow's backstop sweep ran.
+
+  Fixed on both sides. `Backend.unreachable : Option String` says that a
+  backend cannot reach its cloud and why; `liveFor` sets it on every
+  substitution, and `push` refuses before running any action if the ledger
+  holds a row for such a provider. A placeholder used deliberately as a test
+  double answers `none`, so the offline suite is unaffected. And
+  `Live.emptyStage` now builds the teardown as `Plan.absent κ` over the
+  cloud's own key family, so the credentials load in the first place.
+  `Main.lean`'s `checkUnreachableRefusal` and a `#guard` on the stage's
+  `κ.providers` pin the two halves — neither is visible offline otherwise,
+  which is how this survived three rounds of live runs.
+- **An unset optional launch field could never converge.**
+  `AwsInstanceSpec.subnetId` settles to `""` when the declaration omits it,
+  every EC2 instance is in a subnet regardless, and the field is
+  `.forcesReplace`: `REPLACE` in every plan for ever, which is what the AWS leg
+  of the 2026-09-08 run failed on. `Diverge.divergesRequested` reads an empty
+  target as "I did not choose" rather than "there must be none" and does not
+  compare it; a declared subnet is compared exactly as before. `keyName` has
+  the same shape and goes through it too. The mirror image of
+  `imageId := "latest"` below, and `checkUnsetLaunchField` is its offline
+  stand-in.
 - **`imageId := "latest"` could never converge.** The word is resolved to a
   real AMI id inside `create`, so the target held `"latest"` while the instance
   reported `ami-…`, on a `.forcesReplace` field: `REPLACE` in every plan for
@@ -123,6 +153,16 @@ mistaken for a teardown by the brake.
   declares twelve on AWS and Scaleway and ten on GCP — `#guard`ed in
   `test/Live.lean` since the fleets grew. Corrected in the workflow and quoted
   from the guards in the runbook.
+- **The claim that three clouds had passed the sequence is withdrawn**, in
+  `docs/coverage.md` and on the page: it was a three-stage claim about a
+  five-stage sequence, and the runs that looked like passes were the false
+  green above. What each run actually showed is written down instead, and the
+  claim to make after the next one is named. `docs/internals.md` gains "Which
+  clouds get authenticated, and the hole that leaves"; `docs/diff-semantics.md`
+  gains the unset-optional-field shape as the fifth entry in the list of things
+  that make a fleet unable to converge. The page's Coverage section now leads
+  with a link to the coverage report, on the reasoning that a page cannot be
+  the authority on how far something has been run.
 
 ### Breaking
 

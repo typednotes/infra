@@ -658,22 +658,32 @@ would CREATE scaleway/secrets/db-url
       source, not estimated.
       <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
       is the full breakdown, kept current, and it names what has <em>not</em>
-      been exercised as precisely as what has.
+      been exercised as precisely as what has. It is the document this section
+      summarises, and where a run and this page disagree, it is the one to
+      believe.
     </p>
+    <div class="ctas" style="margin:0 0 26px">
+      <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Read the coverage report</a>
+      <a class="btn btn-ghost" href="https://github.com/typednotes/infra/blob/main/docs/diff-semantics.md">Known defects</a>
+    </div>
 
     <div class="cov">
       <div class="cov-card ok">
         <h4>Verified live</h4>
-        <p>Full create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy
+        <p>Create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy
            round trips in CI on <strong>all three clouds</strong> — 12 resources
            on AWS, 12 on Scaleway, 10 on Google Cloud, across thirteen of the
-           fourteen kinds. Each leg applies three declarations in sequence: the
-           whole fleet, a version with two resources dropped and a field
-           changed, then one that declares nothing. After every stage the
-           account must hold exactly what that stage declares, so a resource
-           whose line is gone has to be <em>destroyed</em> rather than
+           fourteen kinds. Each leg applies <strong>five</strong> declarations
+           in sequence: the whole fleet, a scale up, a scale down, a version
+           with resources dropped, then one that declares nothing. After every
+           stage the account must hold exactly what that stage declares, so a
+           resource whose line is gone has to be <em>destroyed</em> rather than
            abandoned. All three dependency shapes are covered: a chain, a
-           fan-out, and a fan-in.</p>
+           fan-out, and a fan-in. <strong>The five-stage sequence has not yet
+           been passed honestly on any cloud</strong> — the 2026-09-08 runs
+           found two defects, both since fixed and neither re-verified live.
+           The coverage report says exactly what each run showed; this card
+           will say five when a run does.</p>
       </div>
       <div class="cov-card warn">
         <h4>Proved on every build</h4>
@@ -708,9 +718,11 @@ would CREATE scaleway/secrets/db-url
       <table>
         <thead><tr><th>Stage</th><th>What it declares</th><th>What it proves</th></tr></thead>
         <tbody>
-          <tr><td>1</td><td>the whole fleet</td><td><code>create</code> works, the credential chain reached the right account, and the dependency order holds — a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply</td></tr>
-          <tr><td>2</td><td>two resources dropped, one field changed, one added</td><td>a resource whose line is <em>gone</em> gets destroyed rather than abandoned — named by its marker tag where a backend reads one, by the ledger otherwise. Plus <code>update</code> for the changed field and <code>create</code> for the new one</td></tr>
-          <tr><td>3</td><td>nothing at all</td><td><code>delete</code> for everything left. This is <code>apply</code> against an empty declaration, which is the same operation <code>destroy</code> performs</td></tr>
+          <tr><td>1 &middot; <code>full</code></td><td>the whole fleet</td><td><code>create</code> works, the credential chain reached the right account, and the dependency order holds — a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply</td></tr>
+          <tr><td>2 &middot; <code>ramp-up</code></td><td>the same resources, larger numbers</td><td><code>update</code> in place: same names, same graph, only mutable fields move — so a field the provider table calls mutable really can be changed without a replace</td></tr>
+          <tr><td>3 &middot; <code>ramp-down</code></td><td>the same resources, smaller numbers</td><td>the same path back down, which is not symmetric on every cloud — a scale-to-zero is a different request from a scale-up</td></tr>
+          <tr><td>4 &middot; <code>trimmed</code></td><td>resources dropped, one added</td><td>a resource whose line is <em>gone</em> gets destroyed rather than abandoned — named by its marker tag where a backend reads one, by the ledger otherwise. Plus <code>create</code> for the new one</td></tr>
+          <tr><td>5 &middot; <code>empty</code></td><td>nothing at all</td><td><code>delete</code> for everything left. This is <code>apply</code> against an empty declaration, which is the same operation <code>destroy</code> performs</td></tr>
         </tbody>
       </table>
     </div>
@@ -720,11 +732,14 @@ would CREATE scaleway/secrets/db-url
       list API here is eventually consistent, so a single read after a write
       measures propagation delay rather than correctness.
       <br><br>
-      Stage 2 is the one that earns the sequence. If a resource were considered
-      managed because the declaration named it, its two dropped resources would
-      be quietly abandoned, stage 3 would find nothing to clean up, and both
-      stages would pass while leaking two billable resources per cloud. That is
-      exactly what the first two rounds of these runs caught.
+      Stage 4 is the one that earns the sequence. If a resource were considered
+      managed because the declaration named it, the resources it drops would be
+      quietly abandoned, stage 5 would find nothing to clean up, and both
+      stages would pass while leaking billable resources on every cloud. That
+      is exactly what the first two rounds of these runs caught &mdash; and a
+      later round caught the mirror image, a teardown that reported success
+      through a cloud it had never authenticated against. A green run is not
+      evidence an account is empty; the sweep is what asks.
       <br><br>
       The fleets also have <strong>shape</strong>, not just size — a chain, a
       fan-out and a fan-in of dependencies — because ordering is the part of
