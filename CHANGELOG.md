@@ -160,9 +160,14 @@ mistaken for a teardown by the brake.
   claim to make after the next one is named. `docs/internals.md` gains "Which
   clouds get authenticated, and the hole that leaves"; `docs/diff-semantics.md`
   gains the unset-optional-field shape as the fifth entry in the list of things
-  that make a fleet unable to converge. The page's Coverage section now leads
-  with a link to the coverage report, on the reasoning that a page cannot be
-  the authority on how far something has been run.
+  that make a fleet unable to converge.
+- **The page's Coverage section is now a link to the coverage report**, and
+  nothing else. It held three cards, a stage table and the kind matrices, all
+  of which had to be re-edited by hand every time a run changed what was true
+  — and two of its claims were stale in exactly that way when this round
+  started. Which clouds have passed which stages is a property of the last CI
+  run, so it belongs next to the tests, in a file that moves with them. The
+  kind matrices are in `docs/coverage.md` too. The dead CSS went with them.
 
 ### Breaking
 

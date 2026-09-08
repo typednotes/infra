@@ -80,9 +80,6 @@
     --ink-2: #4B5B70;
     --code-bg: #101827;
     --code-ink: #DDE4EE;
-    --ok: #1B7F4B;
-    --warn: #9A5B00;
-    --bad: #A8323C;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -94,9 +91,6 @@
       --ink-2: #9DAABC;
       --code-bg: #0A0F17;
       --code-ink: #DDE4EE;
-      --ok: #56C98A;
-      --warn: #E0A44A;
-      --bad: #F0868F;
       --blue-text: #8FB2F5;
     }
   }
@@ -249,9 +243,6 @@
      unmodified files. Kept for the documented socket — an official reversed
      variant at `<name>-dark.svg` — see docs/branding.md. */
   .cloud picture { display: block; line-height: 0; }
-  .livehead { font-size: 21px; letter-spacing: -.01em; margin: 40px 0 8px; }
-  td.gap { color: var(--ink-2); }
-  .tiny { font-size: 12px; color: var(--ink-2); }
   /* Optical sizing: the AWS mark stacks its wordmark over the smile, so at a
      common height it reads much smaller than the two single-line marks. */
   .cloud img.mark-aws      { height: 34px; }
@@ -269,22 +260,14 @@
     .clouds { background: #FFFFFF; border-radius: 12px; padding: 20px 30px; gap: 40px; }
   }
 
-  /* ── coverage ── */
+  /* ── cards, shared by "why" and coverage ── */
   .cov { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
   @media (max-width: 820px) { .cov { grid-template-columns: 1fr; } }
   .cov-card { background: var(--surface); border: 1px solid var(--border);
               border-radius: 10px; padding: 20px 22px; }
   .cov-card h4 { margin: 0 0 4px; font-size: 15px; letter-spacing: .3px; text-transform: uppercase; }
   .cov-card h4.hl { color: var(--blue-text); }
-  .cov-card.ok h4 { color: var(--ok); }
-  .cov-card.warn h4 { color: var(--warn); }
-  .cov-card.bad h4 { color: var(--bad); }
   .cov-card p { margin: 8px 0 0; font-size: 15px; color: var(--ink-2); }
-  table { border-collapse: collapse; width: 100%; font-size: 15px; margin-top: 8px; }
-  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
-  th { font-size: 13px; text-transform: uppercase; letter-spacing: .4px; color: var(--ink-2); }
-  td code { font-size: 13.5px; }
-  .scroller { overflow-x: auto; }
 
   footer { border-top: 1px solid var(--border); padding: 40px 0 56px; color: var(--ink-2);
            font-size: 14.5px; }
@@ -299,7 +282,8 @@
 
 <div class="banner">
   <strong>0.7.0</strong> — a five-stage live sequence that scales up and down,
-  on all three clouds.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  and two defects it found that no offline test
+  could.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -654,149 +638,19 @@ would CREATE scaleway/secrets/db-url
     <h2>How far this has actually been run</h2>
     <p class="sub">
       The part most project pages leave out — and the reason to trust the rest
-      of this one. Every claim below was read out of a CI run or counted in the
-      source, not estimated.
-      <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
-      is the full breakdown, kept current, and it names what has <em>not</em>
-      been exercised as precisely as what has. It is the document this section
-      summarises, and where a run and this page disagree, it is the one to
-      believe.
+      of this one. It is not summarised here on purpose: which clouds have
+      passed which stages changes with every CI run, and a page that restates
+      it goes stale between runs while still reading as current. Two of the
+      claims that used to sit in this spot were wrong in exactly that way.
+      So the coverage report is the whole answer, kept in the repo next to the
+      tests it describes, and it names what has <em>not</em> been exercised as
+      precisely as what has — kind by kind, cloud by cloud, with the known
+      defects listed rather than softened.
     </p>
-    <div class="ctas" style="margin:0 0 26px">
+    <div class="ctas">
       <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Read the coverage report</a>
       <a class="btn btn-ghost" href="https://github.com/typednotes/infra/blob/main/docs/diff-semantics.md">Known defects</a>
     </div>
-
-    <div class="cov">
-      <div class="cov-card ok">
-        <h4>Verified live</h4>
-        <p>Create&#8202;&rarr;&#8202;converge&#8202;&rarr;&#8202;destroy
-           round trips in CI on <strong>all three clouds</strong> — 12 resources
-           on AWS, 12 on Scaleway, 10 on Google Cloud, across thirteen of the
-           fourteen kinds. Each leg applies <strong>five</strong> declarations
-           in sequence: the whole fleet, a scale up, a scale down, a version
-           with resources dropped, then one that declares nothing. After every
-           stage the account must hold exactly what that stage declares, so a
-           resource whose line is gone has to be <em>destroyed</em> rather than
-           abandoned. All three dependency shapes are covered: a chain, a
-           fan-out, and a fan-in. <strong>The five-stage sequence has not yet
-           been passed honestly on any cloud</strong> — the 2026-09-08 runs
-           found two defects, both since fixed and neither re-verified live.
-           The coverage report says exactly what each run showed; this card
-           will say five when a run does.</p>
-      </div>
-      <div class="cov-card warn">
-        <h4>Proved on every build</h4>
-        <p>SigV4 against AWS's published test vectors. DAG scheduling, checked
-           against an independent topological-order checker on a sixteen-node
-           graph. The credential chain and its redaction. Divergence and the
-           mutability table. That no plaintext secret is in a committed file —
-           decidable, so the compiler establishes it rather than a reviewer.</p>
-      </div>
-      <div class="cov-card bad">
-        <h4>Not yet exercised</h4>
-        <p>Four clients — Lambda, RDS, Cloud SQL, Scaleway's Managed Database
-           and Functions — the kinds a test cannot arrange from nothing. Most
-           <code>update</code> paths too: the sequence changes a queue's
-           visibility timeout, so that one path runs on two clouds, and no
-           other kind's does. Named here because a coverage claim you cannot
-           check is worth nothing.</p>
-      </div>
-    </div>
-
-    <h3 class="livehead">What the live tests actually do</h3>
-    <p class="sub" style="margin:0 0 18px">
-      Ten to twelve resources per cloud, and every step below is a real API call
-      against a real account. Not a coverage matrix — a proof that the whole
-      engine works end to end against three different APIs: the credential
-      chain, region resolution, list, create, the diff, delete, settling, and
-      the on-disk cache. Everything is named
-      <code>ci-tests-infra-&#8230;</code>, and teardown runs even when the
-      assertions fail.
-    </p>
-    <div class="scroller">
-      <table>
-        <thead><tr><th>Stage</th><th>What it declares</th><th>What it proves</th></tr></thead>
-        <tbody>
-          <tr><td>1 &middot; <code>full</code></td><td>the whole fleet</td><td><code>create</code> works, the credential chain reached the right account, and the dependency order holds — a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply</td></tr>
-          <tr><td>2 &middot; <code>ramp-up</code></td><td>the same resources, larger numbers</td><td><code>update</code> in place: same names, same graph, only mutable fields move — so a field the provider table calls mutable really can be changed without a replace</td></tr>
-          <tr><td>3 &middot; <code>ramp-down</code></td><td>the same resources, smaller numbers</td><td>the same path back down, which is not symmetric on every cloud — a scale-to-zero is a different request from a scale-up</td></tr>
-          <tr><td>4 &middot; <code>trimmed</code></td><td>resources dropped, one added</td><td>a resource whose line is <em>gone</em> gets destroyed rather than abandoned — named by its marker tag where a backend reads one, by the ledger otherwise. Plus <code>create</code> for the new one</td></tr>
-          <tr><td>5 &middot; <code>empty</code></td><td>nothing at all</td><td><code>delete</code> for everything left. This is <code>apply</code> against an empty declaration, which is the same operation <code>destroy</code> performs</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="sub" style="margin:18px 0 0">
-      After each stage the account must hold <em>exactly</em> what that stage
-      declares, and each stage polls for that rather than reading once: every
-      list API here is eventually consistent, so a single read after a write
-      measures propagation delay rather than correctness.
-      <br><br>
-      Stage 4 is the one that earns the sequence. If a resource were considered
-      managed because the declaration named it, the resources it drops would be
-      quietly abandoned, stage 5 would find nothing to clean up, and both
-      stages would pass while leaking billable resources on every cloud. That
-      is exactly what the first two rounds of these runs caught &mdash; and a
-      later round caught the mirror image, a teardown that reported success
-      through a cloud it had never authenticated against. A green run is not
-      evidence an account is empty; the sweep is what asks.
-      <br><br>
-      The fleets also have <strong>shape</strong>, not just size — a chain, a
-      fan-out and a fan-in of dependencies — because ordering is the part of
-      this engine most likely to be wrong in a way only a real cloud reveals,
-      and each shape fails differently when the schedule is wrong. Two of the
-      three were found to be broken this way: a container whose namespace
-      reference made every plan propose a replace, so the fleet never
-      converged.
-    </p>
-
-    <div class="scroller">
-      <table>
-        <caption class="sub" style="text-align:left;margin:28px 0 0;caption-side:top">
-          Seven portable kinds — one spec value, any cloud, and every cell now
-          has a live client behind it.
-        </caption>
-        <thead><tr><th>Kind</th><th>AWS</th><th>Scaleway</th><th>Google Cloud</th></tr></thead>
-        <tbody>
-          <tr><td><code>objectStore</code></td><td>S3</td><td>Object Storage</td><td>Cloud Storage</td></tr>
-          <tr><td><code>queues</code></td><td>SQS</td><td>Queues</td><td>Pub/Sub</td></tr>
-          <tr><td><code>secrets</code></td><td>Secrets Manager</td><td>Secret Manager</td><td>Secret Manager</td></tr>
-          <tr><td><code>imageRegistry</code></td><td>ECR</td><td>Container Registry</td><td>Artifact Registry</td></tr>
-          <tr><td><code>compute</code></td><td>Lambda (image)</td><td>Serverless Containers</td><td>Cloud Run</td></tr>
-          <tr><td><code>iam</code></td><td>IAM users</td><td>IAM applications</td><td>Service accounts</td></tr>
-          <tr><td><code>postgres</code></td><td>RDS</td><td>Managed Database<br><span class="tiny">Serverless SQL when no instance class is set</span></td><td>Cloud SQL</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="sub" style="margin:26px 0 12px">
-      And seven provider-local kinds. A dash is not a gap here — it is the
-      point: these name a concept one cloud has and the others do not, so
-      reaching for one makes the loss of portability visible in the
-      <em>type</em> rather than in a comment. Declaring one on the wrong cloud
-      is reported as having no counterpart, not as a missing client.
-    </p>
-    <div class="scroller">
-      <table>
-        <thead><tr><th>Kind</th><th>AWS</th><th>Scaleway</th><th>Google Cloud</th></tr></thead>
-        <tbody>
-          <tr><td><code>s3Bucket</code></td><td>S3, with Object Lock</td><td class="gap">—</td><td class="gap">—</td></tr>
-          <tr><td><code>securityGroup</code></td><td>EC2 security groups</td><td class="gap">—</td><td class="gap">—</td></tr>
-          <tr><td><code>awsInstance</code></td><td>EC2 instances</td><td class="gap">—</td><td class="gap">—</td></tr>
-          <tr><td><code>scalewayFunctionNamespace</code></td><td class="gap">—</td><td>Functions namespaces</td><td class="gap">—</td></tr>
-          <tr><td><code>scalewayFunction</code></td><td class="gap">—</td><td>Serverless Functions</td><td class="gap">—</td></tr>
-          <tr><td><code>scalewayContainerNamespace</code></td><td class="gap">—</td><td>Containers namespaces</td><td class="gap">—</td></tr>
-          <tr><td><code>scalewayContainer</code></td><td class="gap">—</td><td>Serverless Containers</td><td class="gap">—</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="sub" style="margin-top:18px">
-      Fourteen kinds, three clouds. Every cell that is not a dash has a live
-      client behind it — with two limits worth stating rather than discovering:
-      a serverless <code>postgres</code> raises on Google Cloud, because Cloud
-      SQL has no capacity range that scales to a floor, and <code>iam</code>
-      there reads the roles bound to a service account but refuses to write
-      them, since granting a role on GCP rewrites the whole project's policy.
-    </p>
   </div>
 </section>
 
