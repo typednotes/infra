@@ -50,8 +50,15 @@ def defaultCacheRoot : System.FilePath := ".infra"
     is a free choice, and the declaration is where free choices are recorded.
 
     Returns the credentials alongside the backends, because `checkAccounts`
-    needs them and loading twice would prompt a keychain twice. -/
-def liveFor (κ : Keys) (regions : Regions := {}) :
+    needs them and loading twice would prompt a keychain twice.
+
+    `fleet` is `Ownership.Boundary.fleetName`, and it reaches the backends here
+    because this is the only place they are built. It is the *write* half of
+    the marker — the value stamped on what gets created — while the boundary
+    itself is the *read* half. `run` passes one field to both, deliberately: a
+    fleet that wrote one name and required another would refuse to manage
+    everything it had just created. -/
+def liveFor (κ : Keys) (regions : Regions := {}) (fleet : Option String := none) :
     IO (Backends × (ProviderId → Option Credentials)) := do
   let mut creds : List (ProviderId × Credentials) := []
   for p in κ.providers do
@@ -87,7 +94,7 @@ def liveFor (κ : Keys) (regions : Regions := {}) :
   -- every endpoint builder reads.
   let backendIn := fun (p : ProviderId) (code : String) =>
     match lookup p with
-    | some c => Infra.Providers.liveBackend p { c with region := code }
+    | some c => Infra.Providers.liveBackend p { c with region := code } fleet
     | none   => Infra.Providers.placeholderBackend p.name
   -- Where a cloud goes when the fleet does not say: the credentials' region.
   let fallback := fun (p : ProviderId) => ((lookup p).map (·.region)).getD ""
@@ -258,10 +265,19 @@ def usage (exe : String) : String := String.intercalate "\n"
     deleting it.
 
     `boundary` is the realm and exclusion legs of the ownership model
-    (`Infra.Core.Ownership.Boundary`): exclusions, and an optional cutoff date
+    (`Infra.Core.Ownership.Boundary`): exclusions, an optional cutoff date
     below which an unmarked-but-old resource is treated as pre-dating `infra`
-    rather than foreign. Empty by default, which is the same as not having the
-    model at all for a fleet that never sets it.
+    rather than foreign, and `fleetName` — this fleet's own name, which is written
+    into the marker's value and required back out of it. Empty by default,
+    which is the same as not having the model at all for a fleet that never
+    sets it.
+
+    `fleetName` is what makes two fleets in one account safe rather than merely
+    refused, and it is one field feeding both directions: `liveFor` stamps it
+    on everything created, `ownershipOf` requires it back. Setting it to
+    `some exe` is the obvious choice and is deliberately *not* the default —
+    see `Ownership.legacyMarkerValue` for what that would do to an estate
+    tagged before the name existed.
 
     **Deliberately has no default.** It had one, and that was a silent
     catastrophe waiting: a fleet could write `forget scaleway queues "x"`,
@@ -282,7 +298,7 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
   -- this invocation, not of a plan, so the engine is told rather than asking.
   let colour ← Ansi.wanted
   let withLive (act : Backends → IO Unit) : IO Unit := do
-    let (bs, creds) ← liveFor κ regions
+    let (bs, creds) ← liveFor κ regions boundary.fleetName
     checkAccounts κ accounts creds colour
     act bs
   -- Failures are reported, not thrown out of `main`. An escaping exception

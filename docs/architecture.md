@@ -394,7 +394,9 @@ a kind" flag, and none is needed.
 The other half is *membership*, and it deliberately does not live here. Ownership is decided by
 `Infra.Core.Ownership` — a marker tag `infra` writes on create, checked against a human-authored
 realm and exclusion list — for the kinds a backend can read tags for; a kind that cannot yet
-falls back to naming alone. Either way, `Infra.Core.Ledger` — a local, gitignored cache of
+falls back to naming alone. The tag's value carries the fleet's own name where a declaration
+sets one (`Boundary.fleetName`), which is what makes two fleets in one account leave each other
+alone rather than merely being refused. Either way, `Infra.Core.Ledger` — a local, gitignored cache of
 `(cloud, kind, name, region)` rows, rebuildable with `infra discover` — is what actually gets
 consulted at plan and apply time, for one reason: the key family changes when the declaration
 changes, so it cannot answer a question about a resource whose line has just been deleted. That

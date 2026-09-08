@@ -143,12 +143,13 @@ resources; a resource that needs no action is still managed")
     the checks below exercise `Ownership.ownershipOf` itself — the placeholder
     backends alone can only ever exercise the "not migrated" fallback, since
     their `ownershipInfo` never answers `some`. -/
-private def gatedBackends (marked : Bool) : Backends where
+private def gatedBackends (marked : Bool) (value : String := legacyMarkerValue) :
+    Backends where
   backend
     | .aws =>
       { Infra.Providers.placeholderBackend "aws" with
           ownershipInfo := fun _ _ =>
-            pure (some ((if marked then [(markerKey, "true")] else []), none)) }
+            pure (some ((if marked then [(markerKey, value)] else []), none)) }
     | .scaleway => Infra.Providers.placeholderBackend "scaleway"
     | .gcp      => Infra.Providers.placeholderBackend "gcp"
 
@@ -187,6 +188,48 @@ the run said: {said}")
     IO.println "ownership gate: ok (adoption follows the marker, not just a name match)"
   finally
     IO.FS.removeDirAll tmp
+
+/-- Two fleets, one account, one bucket name — and the marker's *value* is
+    what keeps them apart.
+
+    `Boundary.fleet` is opt-in, so this also pins the two directions that must
+    not change for anyone who never sets it: an unnamed fleet still accepts any
+    marker value it finds, and the legacy value still matches every fleet. That
+    second one is what stops naming a fleet from orphaning an estate tagged
+    before the name existed — the failure this would otherwise ship with. -/
+def checkFleetIsolation : IO Unit := do
+  -- One leg, in its own ledger: an account whose bucket carries `tagValue`, a
+  -- fleet calling itself `me`, and whether the bucket ends up managed.
+  let adopts (me : Option String) (tagValue : String) : IO (Bool × String) := do
+    let tmp ← IO.FS.createTempDir
+    let store : Store demoKeys :=
+      { root := some tmp, regionOf := fun _ _ _ => "eu-west-1"
+        boundary := { fleetName := me } }
+    let (said, _) ← IO.FS.withIsolatedStreams
+      (push (gatedBackends true tagValue) demoPlan partialWorld { apply := true }
+        (store := store))
+    let managed := (← Ledger.load tmp).any (Ledger.Row.isAt · .aws .objectStore "assets")
+    IO.FS.removeDirAll tmp
+    return (managed, said)
+
+  -- The isolation itself: another fleet's marker is as good as no marker.
+  let (theirs, said) ← adopts (some "mine") "theirs"
+  if theirs then
+    throw (IO.userError "a bucket marked by another fleet was adopted")
+  unless mentions said "aws/object-store/assets" do
+    throw (IO.userError s!"another fleet's bucket was passed over silently: {said}")
+  -- Our own name, adopted.
+  unless (← adopts (some "mine") "mine").1 do
+    throw (IO.userError "a bucket carrying this fleet's own name was not adopted")
+  -- The legacy value, adopted whatever the fleet is called. Deleting this
+  -- assertion is deleting the upgrade path.
+  unless (← adopts (some "mine") legacyMarkerValue).1 do
+    throw (IO.userError "a bucket tagged before fleets had names was not adopted")
+  -- And an unnamed fleet is unchanged: it reads the key and ignores the value.
+  unless (← adopts none "anything-at-all").1 do
+    throw (IO.userError "an unnamed fleet stopped adopting a marked bucket")
+  IO.println "fleet isolation: ok (the marker's value separates fleets; the legacy value \
+still matches every fleet)"
 
 /-- A ledger row for a name the current declaration no longer claims is an
     orphan, and `push` re-checks its marker immediately before deleting it —
@@ -720,6 +763,7 @@ def selfCheck : IO Unit := do
   checkLedger
   checkLedgerAdoption
   checkOwnershipGate
+  checkFleetIsolation
   checkOrphanRecheck
   checkDiscover
   checkLatestImage

@@ -193,6 +193,9 @@ lake exe infra destroy          # delete everything the fleet declares
 **Deleting a resource from the declaration destroys it.** A resource is yours
 if it carries the marker tag this tool writes on everything it creates, it is
 inside the realm your declaration names, and it is not on the exclusion list —
+and if two fleets share an account, each can put its own name in that tag
+(`boundary := { fleetName := some "…" }`) so the other's resources read as
+foreign and are left alone —
 for the kinds a backend can read tags for; a kind that cannot yet falls back
 to a row in the local ledger under `.infra/`. Either way, a resource whose line
 you deleted can still be named after the fact — the declaration no longer

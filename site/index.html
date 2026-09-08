@@ -801,8 +801,10 @@ would CREATE scaleway/secrets/db-url
       in it. Your declaration is a Lean program, so
       <code>lake exe my_infra</code> <em>is</em> the CLI: nothing to keep in
       step with your code. What it manages is decided by a marker tag on each
-      resource, not a committed file; the local ledger is a disposable cache of
-      that decision, rebuildable with <code>discover</code>. What it last saw
+      resource, not a committed file &#8212; and a fleet sharing an account can
+      write its own name into that tag, so the other fleet&#8217;s resources
+      read as foreign and are left alone. The local ledger is a disposable
+      cache of that decision, rebuildable with <code>discover</code>. What it last saw
       is a disposable cache too. Neither holds a secret.
     </p>
     <div class="card" style="max-width:760px">

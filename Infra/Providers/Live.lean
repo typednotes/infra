@@ -135,9 +135,16 @@ private def ec2For (creds : Credentials) : Endpoint := Query.ec2Endpoint creds.r
 
 /-- A tag list with the ownership marker added, unless it is already there.
     Additive rather than a fixed pair, so a declaration's own tags survive
-    untouched — the marker is bookkeeping, not part of what was declared. -/
-private def withMarker (tags : List (String × String)) : List (String × String) :=
-  if tags.any (·.1 == markerKey) then tags else (markerKey, "true") :: tags
+    untouched — the marker is bookkeeping, not part of what was declared.
+
+    `value` is the fleet's own name where it has one and `legacyMarkerValue`
+    where it does not (`Ownership.Boundary.fleetName`). A tag the declaration
+    itself wrote under `markerKey` is left exactly as it is rather than
+    overwritten: a declaration is not the place to set this, but silently
+    rewriting what it says would be worse than honouring it. -/
+private def withMarker (value : String) (tags : List (String × String)) :
+    List (String × String) :=
+  if tags.any (·.1 == markerKey) then tags else (markerKey, value) :: tags
 
 /-- The reported tag set with the marker taken back out.
 
@@ -162,8 +169,12 @@ private def withoutMarker :
    and the marker survives neither. These are cheap, and the defect they stand
    for was not — a bucket that could never converge, invisible to the offline
    suite because the placeholder backends report `tags := .unknown`. -/
-#guard withoutMarker (.known (withMarker [("team", "infra")])) = .known [("team", "infra")]
-#guard withoutMarker (.known (withMarker [])) = .known []
+#guard withoutMarker (.known (withMarker "me" [("team", "infra")]))
+     = .known [("team", "infra")]
+#guard withoutMarker (.known (withMarker "me" [])) = .known []
+/- Whatever the fleet is called, the marker is hidden by key alone — otherwise
+   renaming a fleet would make its own old resources look like drift. -/
+#guard withoutMarker (.known (withMarker legacyMarkerValue [])) = .known []
 #guard withoutMarker .unknown = (.unknown : Partial (List (String × String)))
 /- And a marker somebody wrote by hand, with a different value, is still
    hidden: `ownershipOf` only ever checks the key, so the read must not
@@ -350,7 +361,8 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
     Every field pattern-matches on the kind directly rather than wrapping a
     `match` inside `do`: the result type is `ObservedOf k`/`Reported k`, so the
     equation compiler has to refine it per branch. -/
-def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
+def liveBackend (provider : ProviderId) (creds : Credentials)
+    (fleet : Option String := none) : Backend where
   list
     | .objectStore => do
       match provider with
@@ -483,13 +495,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       -- versioning and labels in the insert body.
       | .gcp =>
         let project ← Gcp.requireProject creds
-        Gcp.Storage.createBucket creds project spec.name spec.versioning (withMarker spec.tags)
+        Gcp.Storage.createBucket creds project spec.name spec.versioning (withMarker (fleet.getD legacyMarkerValue) spec.tags)
         return { handle := ⟨spec.name⟩, url := Gcp.Storage.bucketUrl spec.name }
       | .aws | .scaleway =>
         let ep := s3For provider creds
         ObjectStore.createBucket creds ep spec.name
         ObjectStore.putVersioning creds ep spec.name spec.versioning
-        ObjectStore.putTags creds ep spec.name (withMarker spec.tags)
+        ObjectStore.putTags creds ep spec.name (withMarker (fleet.getD legacyMarkerValue) spec.tags)
         return { handle := ⟨spec.name⟩, url := ObjectStore.bucketUrl ep spec.name }
     | .securityGroup, spec => do
       -- `CreateSecurityGroup` does not report the VPC, so that stays blank
@@ -525,7 +537,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
         else pure spec.imageId
       let r ← Ec2.Instance'.create creds (ec2For creds)
         spec.name imageId itype.name group.raw
-        spec.keyName spec.subnetId
+        spec.keyName spec.subnetId (fleet.getD legacyMarkerValue)
       return { handle := ⟨spec.name⟩, instanceId := r.1
                privateIp := r.2.1, state := r.2.2 }
     | .s3Bucket, spec => do
@@ -659,7 +671,7 @@ invocation, which is a worse failure than this one")
     | .objectStore, h, spec => do
       match provider with
       | .gcp =>
-        Gcp.Storage.patchBucket creds h.raw spec.versioning (withMarker spec.tags)
+        Gcp.Storage.patchBucket creds h.raw spec.versioning (withMarker (fleet.getD legacyMarkerValue) spec.tags)
         return { handle := h, url := Gcp.Storage.bucketUrl h.raw }
       | .aws | .scaleway =>
         let ep := s3For provider creds
@@ -668,7 +680,7 @@ invocation, which is a worse failure than this one")
         -- additive), so the marker has to be re-merged here too — otherwise
         -- the first tag edit after creation would silently un-manage the
         -- bucket.
-        ObjectStore.putTags creds ep h.raw (withMarker spec.tags)
+        ObjectStore.putTags creds ep h.raw (withMarker (fleet.getD legacyMarkerValue) spec.tags)
         return { handle := h, url := ObjectStore.bucketUrl ep h.raw }
     | .securityGroup, h, spec => do
       -- Additive: a rule present in the cloud but absent from the target is
@@ -683,6 +695,7 @@ invocation, which is a worse failure than this one")
           s!"instance '{h.raw}' disappeared between plan and apply")
       | some (instanceId, privateIp, state) =>
         Ec2.Instance'.update creds ep instanceId spec.name group.raw
+          (fleet.getD legacyMarkerValue)
         return { handle := ⟨spec.name⟩, instanceId, privateIp, state }
     | .s3Bucket, h, spec => do
       let ep := s3For provider creds
@@ -861,16 +874,22 @@ invocation, which is a worse failure than this one")
 
     `Infra.Cli.liveFor` is the path real fleets take and it only authenticates
     the clouds a fleet actually declares, so a fleet with no GCP resources
-    never asks for GCP credentials. -/
-def live (aws scaleway gcp : Credentials) : Backends where
+    never asks for GCP credentials.
+
+    `fleet` is the name written into the ownership marker's value, and it is
+    the same string `Ownership.Boundary.fleetName` requires back out of it — one
+    setting for both sides, threaded from `Infra.Cli.run` so a fleet cannot
+    claim one name and write another. -/
+def live (aws scaleway gcp : Credentials) (fleet : Option String := none) :
+    Backends where
   backend
-    | .aws      => liveBackend .aws aws
-    | .scaleway => liveBackend .scaleway scaleway
-    | .gcp      => liveBackend .gcp gcp
+    | .aws      => liveBackend .aws aws fleet
+    | .scaleway => liveBackend .scaleway scaleway fleet
+    | .gcp      => liveBackend .gcp gcp fleet
 
 /-- Load credentials for every cloud and build the live backends. -/
-def liveFromEnvironment : IO Backends := do
+def liveFromEnvironment (fleet : Option String := none) : IO Backends := do
   return live (← Credentials.load .aws) (← Credentials.load .scaleway)
-    (← Credentials.load .gcp)
+    (← Credentials.load .gcp) fleet
 
 end Infra.Providers

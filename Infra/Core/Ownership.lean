@@ -65,14 +65,29 @@ namespace Infra.Core
     supported arrangement, and `Accounts` is what refuses it. Making the key
     configurable would look like it solved that, and would not.
 
-    `ownershipOf` only ever checks that this key is present (`markedBy`); the
-    value is never compared, so any non-empty value works. The live backends
-    write `"true"` today. Carrying the fleet's executable name in the value
-    instead — so a plan could at least *report* which fleet claims a resource,
-    even though it still could not use that to decide — is a documented
-    follow-up, not yet done: it needs the executable name threaded down to
-    `Infra.Providers.Live.liveBackend`, which does not have it today. -/
+    The **key** is constant; the **value** is where a fleet writes its own
+    name (`Boundary.fleetName`), and that is the split rather than the other way
+    round for one reason worth keeping: a constant key is what makes "what did
+    this tool create in this account?" answerable at all, which is the question
+    `Infra.Cli.discover` and any audit of the account rests on. A configurable
+    key would take that away, and a key with a typo in it would leave an entire
+    estate looking like it belonged to nobody. -/
 def markerKey : String := "managed-by-infra"
+
+/-- The value the marker carried before a fleet could name itself, and the
+    value written by any fleet that still does not.
+
+    It is **grandfathered**: a resource tagged with it matches every fleet, so
+    naming a fleet cannot orphan an estate that was tagged before the name
+    existed. Without that, setting `Boundary.fleetName` on an existing fleet would
+    turn every resource it already manages `foreign` in one step — a fleet that
+    warns about its whole estate and refuses to destroy any of it.
+
+    The grandfathering is permanent rather than a migration window, because
+    there is nothing to migrate *to* on a schedule: a resource is retagged when
+    it is next updated, and a resource nobody updates would otherwise become
+    unmanageable for having been created early. -/
+def legacyMarkerValue : String := "true"
 
 /-- Where a resource sits relative to this tool.
 
@@ -116,10 +131,51 @@ structure Exclusion where
 structure Boundary where
   exclusions : List Exclusion := []
   since      : Option String := none
+  /-- This fleet's own name, written into the marker's value and required back
+      out of it.
 
-/-- Whether the marker is present, given the tags a listing reported. -/
-def markedBy (tags : List (String × String)) : Bool :=
-  tags.any fun t => t.1 == markerKey
+      **Named `fleetName` rather than `fleet`** for the reason `Ledger.Row`'s
+      first field is `cloud` rather than `provider`: `fleet` is a parser token
+      of the `fleet` command, so a file that imports the DSL — which is every
+      file that declares one — cannot write `{ fleet := … }`. The field
+      compiles fine here, where the DSL is not imported, and fails in exactly
+      the place a user would write it. Third instance of this trap; the rule is
+      that a field a declaration author types must not be spelled like a
+      command keyword.
+
+      `none` — the default — is exactly the behaviour that existed before this
+      field: the marker's presence decides and its value is not read, so one
+      account holding two fleets has them claiming each other's resources by
+      name, which is why `Accounts` refuses that arrangement in the first
+      place. Naming the fleet is what makes the arrangement *safe* rather than
+      merely refused: a resource marked `some other-fleet` reads as `foreign`,
+      and foreign resources are left alone.
+
+      Two things it is honest to say about it. It is **opt-in on both sides**:
+      a fleet that names itself is protected from one that does not, but not
+      the reverse — the unnamed fleet still accepts any value it finds, so
+      isolation between two fleets needs both of them to set this. And it is
+      one string, not an identity: nothing stops a second fleet writing the
+      same name, so this separates *fleets that agree to be separate*. The
+      realm (`Infra.Cli.Accounts`) is still the hard container. -/
+  fleetName  : Option String := none
+
+/-- Whether the marker is present *and* claimed by this fleet, given the tags
+    a listing reported.
+
+    Three cases, and the middle one is the whole point of the value:
+
+    - no `markerKey` at all: not ours, whoever we are.
+    - `markerKey` with `legacyMarkerValue`: ours, whatever fleet asks. See
+      that constant for why.
+    - `markerKey` with anything else: ours only if the fleet did not name
+      itself, or named itself this. -/
+def markedBy (fleet : Option String) (tags : List (String × String)) : Bool :=
+  tags.any fun t =>
+    t.1 == markerKey &&
+      (match fleet with
+       | none    => true
+       | some me => t.2 == me || t.2 == legacyMarkerValue)
 
 /-- The decision.
 
@@ -128,6 +184,10 @@ def markedBy (tags : List (String × String)) : Bool :=
     ever take it away. A resource missing from the exclusion list is therefore
     `foreign` rather than `managed`, which is the direction that leaves a
     stranger's resource alone.
+
+    "The marker" now means key *and*, where a fleet has named itself, value —
+    see `markedBy`. A resource carrying another fleet's name fails in the same
+    direction as one carrying no marker at all: `foreign`, and left alone.
 
     `createdAt` is compared as a string because every provider reports it as
     ISO-8601 in UTC, and ISO-8601 in UTC sorts lexicographically. A resource
@@ -139,7 +199,7 @@ def ownershipOf (b : Boundary) (cloud : ProviderId) (k : Kind) (name : String)
     (tags : List (String × String)) (createdAt : Option String) : Ownership :=
   if b.exclusions.any (fun e => e.cloud == cloud && e.kind == k && e.name == name) then
     .excluded
-  else if !markedBy tags then
+  else if !markedBy b.fleetName tags then
     .foreign
   else
     match b.since, createdAt with
@@ -187,6 +247,32 @@ private def anyKind : Kind := .queues
    boundary claims nothing, so a first run against a populated account proposes
    no deletions at all. -/
 #guard ownershipOf {} .aws anyKind "someone-elses-bucket" [] none = .foreign
+
+/- ### The fleet's own name, in the value
+
+   Unset, the value is not read at all — which is the behaviour that existed
+   before the field, and is what keeps this change from touching any fleet that
+   does not ask for it. -/
+#guard ownershipOf {} .aws anyKind "x" [(markerKey, "some-other-fleet")] none = .managed
+
+/- Set, a value that is not ours is `foreign`: the same verdict as no marker,
+   and the same consequence — left alone. This is the isolation the field is
+   for, and the direction it has to fail in. -/
+#guard ownershipOf { fleetName := some "mine" }
+         .aws anyKind "x" [(markerKey, "theirs")] none = .foreign
+#guard ownershipOf { fleetName := some "mine" }
+         .aws anyKind "x" [(markerKey, "mine")] none = .managed
+
+/- The legacy value matches every fleet, permanently: naming a fleet must not
+   turn an estate tagged before the name existed into somebody else's. This is
+   the assertion to read if `legacyMarkerValue` is ever tempting to remove. -/
+#guard ownershipOf { fleetName := some "mine" }
+         .aws anyKind "x" [(markerKey, legacyMarkerValue)] none = .managed
+
+/- And the value never *grants* what the key did not: a fleet's own name under
+   some other key is not a marker. -/
+#guard ownershipOf { fleetName := some "mine" }
+         .aws anyKind "x" [("owner", "mine")] none = .foreign
 
 /- An exclusion overrides the marker, not the other way round. This is what
    makes a released resource stay released even though this tool created it and

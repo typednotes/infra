@@ -361,8 +361,8 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
     That lookup is the reason this takes the endpoint rather than just
     parameters. -/
 def create (creds : Credentials) (ep : Endpoint)
-    (name imageId instanceType securityGroupName keyName subnetId : String) :
-    IO (String × String × String) := do
+    (name imageId instanceType securityGroupName keyName subnetId : String)
+    (markerValue : String) : IO (String × String × String) := do
   let groupId ← match ← SecurityGroup.idOf creds ep securityGroupName with
     | some gid => pure gid
     | none     => throw (IO.userError
@@ -386,7 +386,7 @@ it must exist before an instance can reference it")
     let _ ← Query.call creds ep "CreateTags" version
       [ ("ResourceId.1", instanceId)
       , ("Tag.1.Key", "Name"), ("Tag.1.Value", name)
-      , ("Tag.2.Key", markerKey), ("Tag.2.Value", "true") ]
+      , ("Tag.2.Key", markerKey), ("Tag.2.Value", markerValue) ]
     let state := match i.child "instanceState" with
       | some st => (st.childText "name").getD ""
       | none    => ""
@@ -395,14 +395,14 @@ it must exist before an instance can reference it")
 /-- Retag, and reassign the security group. The only two changes
     `Divergent .awsInstance` classifies as mutable. -/
 def update (creds : Credentials) (ep : Endpoint) (instanceId : String)
-    (name securityGroupName : String) : IO Unit := do
+    (name securityGroupName : String) (markerValue : String) : IO Unit := do
   -- Re-asserted rather than skipped: an instance whose marker was stripped
   -- outside `infra` regains it on the next apply, which is the direction
   -- this model is meant to fail in — never the other way.
   let _ ← Query.call creds ep "CreateTags" version
     [ ("ResourceId.1", instanceId)
     , ("Tag.1.Key", "Name"), ("Tag.1.Value", name)
-    , ("Tag.2.Key", markerKey), ("Tag.2.Value", "true") ]
+    , ("Tag.2.Key", markerKey), ("Tag.2.Value", markerValue) ]
   match ← SecurityGroup.idOf creds ep securityGroupName with
   | none     => throw (IO.userError s!"security group '{securityGroupName}' not found")
   | some gid =>

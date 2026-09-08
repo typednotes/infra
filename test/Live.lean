@@ -1204,12 +1204,31 @@ def liveTeardown (name : String) (regions : Regions) : IO Unit := do
   ("look for 'ci-tests-infra-*' in the account") ever since the first failed
   live run left something behind. -/
 
-/-- Whether a name is this test's to delete.
+/-- Whether a name is this sweep's to delete.
 
     The single safety property of the whole sweep, so it is one function and it
     is used nowhere else: a sweep must never touch a resource it did not
-    create. Anything without the prefix belongs to somebody. -/
-def isDebris (name : String) : Bool := ciPrefix.isPrefixOf name
+    create. Anything without the prefix belongs to somebody.
+
+    The prefix is an argument rather than `ciPrefix` directly, and that is the
+    difference between "delete this test's debris" and "delete every CI-looking
+    thing in the account". One account can hold more than one project's test
+    resources — a fork, a second checkout, somebody's branch — and a sweep that
+    hard-codes the prefix reaches all of them. `ciPrefix` is still the default
+    everywhere, so nothing changes for a caller that does not care; a caller
+    that shares an account can narrow it (`--prefix`). Deliberately no empty
+    check here: an empty prefix matches everything, and `main` refuses it. -/
+def isDebris (debrisPrefix : String) (name : String) : Bool :=
+  debrisPrefix.isPrefixOf name
+
+/-- A `--prefix` value, refused when empty.
+
+    The one input this program must never accept: `isDebris ""` is true of
+    every name in the account, so an empty prefix turns a scoped cleanup into
+    "delete everything the credentials can see". A typo like `--prefix ""` in a
+    workflow file is exactly how that would arrive. -/
+def checkedPrefix (value : String) : Option String :=
+  if value.isEmpty then none else some value
 
 /-- One pass: delete every prefixed resource the credentials can see.
 
@@ -1222,7 +1241,7 @@ def isDebris (name : String) : Bool := ciPrefix.isPrefixOf name
     Listing happens per region the fleet uses, through `Backends.listers`, and
     each listing's own backend performs the deletes — so a resource is deleted
     against the endpoint that reported it, with no region to resolve. -/
-def sweepPass (bs : Backends) (p : ProviderId) :
+def sweepPass (bs : Backends) (p : ProviderId) (debrisPrefix : String := ciPrefix) :
     IO (List String × List String) := do
   let mut gone : List String := []
   let mut stuck : List String := []
@@ -1236,7 +1255,7 @@ def sweepPass (bs : Backends) (p : ProviderId) :
         | .error _ => pure []   -- an unreadable kind is not a reason to stop
       for o in observed do
         let nm := (observedHandle k o).raw
-        if isDebris nm then
+        if isDebris debrisPrefix nm then
           let slot := Ledger.slotId p k nm
           match ← (b.delete k (observedHandle k o)).toBaseIO with
           | .ok _    => gone := slot :: gone
@@ -1250,13 +1269,14 @@ def sweepPass (bs : Backends) (p : ProviderId) :
     stops, so the bound is only reached if a cloud keeps producing new
     prefixed resources, which nothing does. -/
 def sweepUntilQuiet (bs : Backends) (p : ProviderId)
-    (label : String) (fuel : Nat) (deleted : Nat) : IO Nat := do
+    (label : String) (fuel : Nat) (deleted : Nat)
+    (debrisPrefix : String := ciPrefix) : IO Nat := do
   match fuel with
   | 0 =>
     progress s!"[{label}] gave up sweeping with resources still standing"
     return deleted
   | fuel + 1 =>
-    let (gone, stuck) ← sweepPass bs p
+    let (gone, stuck) ← sweepPass bs p debrisPrefix
     for slot in gone do
       progress s!"[{label}] deleted {slot}"
     if gone.isEmpty then
@@ -1271,7 +1291,7 @@ def sweepUntilQuiet (bs : Backends) (p : ProviderId)
     else
       -- Something went, so a refusal may have been a dependency that is now
       -- satisfied. Go round again.
-      sweepUntilQuiet bs p label fuel (deleted + gone.length)
+      sweepUntilQuiet bs p label fuel (deleted + gone.length) debrisPrefix
 
 /-- Delete every `ci-tests-infra-*` resource one cloud's credentials can see.
 
@@ -1280,14 +1300,14 @@ def sweepUntilQuiet (bs : Backends) (p : ProviderId)
     and no knowledge of which fleet created what. It also clears debris from a
     *previous* version of the fleet, which `destroy` cannot, because the
     ledger only ever knew what the current declaration named. -/
-def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
-    IO Unit := do
+def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions)
+    (debrisPrefix : String := ciPrefix) : IO Unit := do
   let (bs, _) ← Infra.Cli.liveFor κ regions
-  progress s!"[{name}] sweeping for '{ciPrefix}*'…"
+  progress s!"[{name}] sweeping for '{debrisPrefix}*'…"
   -- Fuel of eight: the deepest dependency chain this test can build is four
   -- (base → a → sink → tail), and a sweep needs one round per level plus a
   -- final round that finds nothing. Eight is that with room.
-  let n ← sweepUntilQuiet bs p name 8 0
+  let n ← sweepUntilQuiet bs p name 8 0 debrisPrefix
   if n == 0 then
     progress s!"[{name}] nothing to sweep — the account is clean"
   else
@@ -1336,7 +1356,7 @@ def liveSequence (name : String) (stages : List Stage) (regions : Regions) :
 {rows.length} resource(s) still managed")
 
 def usage : String :=
-  "usage: lake test [-- <aws|scaleway|gcp|all> [sweep|destroy]]\n\n\
+  "usage: lake test [-- <aws|scaleway|gcp|all> [sweep [--prefix <p>]|destroy]]\n\n\
   With no argument:     the offline checks. No cloud, no credentials, no cost.\n\
   With a provider:      runs five declarations in sequence against one\n\
                         ledger: the whole fleet, the same fleet scaled up,\n\
@@ -1351,6 +1371,11 @@ def usage : String :=
                         checkout and clears debris from an older version of\n\
                         the fleet. `lake test -- all sweep` does all three\n\
                         clouds. This is the scheduled cleanup.\n\
+  …with '--prefix <p>': narrows what counts as debris, for an account shared\n\
+                        with another project or checkout whose resources also\n\
+                        look like a test's. Defaults to 'ci-tests-infra-'.\n\
+                        An empty prefix is refused: it would match every\n\
+                        resource the credentials can see.\n\
   …plus 'destroy':      runs only the last stage. Safe to re-run: it destroys\n\
                         whatever the *ledger* holds rather than whatever some\n\
                         declaration names, so it also cleans up after a run\n\
@@ -1392,7 +1417,7 @@ def checkSweepTouchesOnlyDebris : IO Unit := do
         | _            => pure []
       delete := fun k h => seen.modify (Ledger.slotId .aws k h.raw :: ·) }
   let bs : Backends := { backend := fun _ => b }
-  let (gone, stuck) ← sweepPass bs .aws
+  let (gone, stuck) ← sweepPass bs .aws ciPrefix
   unless stuck.isEmpty do
     throw (IO.userError s!"a sweep against a compliant backend reported failures: {stuck}")
   let deleted := (← seen.get).reverse
@@ -1404,6 +1429,45 @@ deleted: {deleted}\n  expected: {expected}")
   unless gone == expected do
     throw (IO.userError s!"a sweep reported the wrong things: {gone}")
   IO.println "sweep: ok (deletes every 'ci-tests-infra-*' and nothing else)"
+
+/-- A narrowed prefix scopes the sweep to one project's debris.
+
+    The case `--prefix` exists for: one account, two checkouts, and both of
+    their test resources looking like a test's. With the default prefix a
+    sweep from either one deletes both — which is not a hypothetical, it is
+    what a fork or a second branch running the live tests would do to the run
+    it was racing.
+
+    Asserted in both directions, because a prefix that scoped *nothing* would
+    pass a test that only checked the survivor. -/
+def checkSweepPrefixScopes : IO Unit := do
+  let seen ← IO.mkRef ([] : List String)
+  let listed : List (ObservedOf .objectStore) :=
+    [ { handle := ⟨"ci-tests-infra-a-store"⟩, url := "" }
+    , { handle := ⟨"ci-tests-infra-b-store"⟩, url := "" } ]
+  let b : Backend :=
+    { Infra.Providers.placeholderBackend "sweep-test" with
+      list := fun k => match k with
+        | .objectStore => pure listed
+        | _            => pure []
+      delete := fun k h => seen.modify (Ledger.slotId .aws k h.raw :: ·) }
+  let bs : Backends := { backend := fun _ => b }
+  let (gone, _) ← sweepPass bs .aws "ci-tests-infra-a-"
+  unless gone == ["aws/object-store/ci-tests-infra-a-store"] do
+    throw (IO.userError s!"a narrowed sweep did not scope to its own prefix: {gone}")
+  unless (← seen.get) == ["aws/object-store/ci-tests-infra-a-store"] do
+    throw (IO.userError s!"a narrowed sweep deleted the wrong things: {← seen.get}")
+  -- The default still takes both, so the narrowing is the caller's choice and
+  -- not a change to what a plain sweep does.
+  let (both, _) ← sweepPass bs .aws ciPrefix
+  unless both.length == 2 do
+    throw (IO.userError s!"the default prefix stopped covering both projects: {both}")
+  -- An empty prefix would match every name in the account. `main` refuses it;
+  -- this is the assertion that the refusal is not the only thing standing in
+  -- the way of noticing.
+  unless (checkedPrefix "").isNone && (checkedPrefix "x").isSome do
+    throw (IO.userError "an empty --prefix was accepted")
+  IO.println "sweep: ok (a narrowed prefix scopes to one project; empty is refused)"
 
 /-- A sweep keeps going while it makes progress, because it has no dependency
     graph to order by.
@@ -1439,7 +1503,7 @@ def checkSweepRetriesUntilQuiet : IO Unit := do
           else throw (IO.userError "namespace is not empty")
         | _ => pure () }
   let bs : Backends := { backend := fun _ => b }
-  let n ← sweepUntilQuiet bs .scaleway "sweep-order" 8 0
+  let n ← sweepUntilQuiet bs .scaleway "sweep-order" 8 0 ciPrefix
   unless n == 2 do
     throw (IO.userError s!"a sweep with a dependency swept {n} of 2 resources; \
 one pass is not enough and the retry is what makes it converge")
@@ -1469,6 +1533,36 @@ def keysFor : String → Option (Keys × ProviderId)
 /-- The clouds a sweep covers when asked for all of them. -/
 def allClouds : List String := ["aws", "scaleway", "gcp"]
 
+/-- Sweep every cloud, reporting at the end rather than stopping at the first
+    one that will not come clean: a cleanup that abandons two accounts because
+    the first had a problem is the opposite of useful. -/
+def sweepAllClouds (debrisPrefix : String) : IO UInt32 := do
+  let mut failures : List String := []
+  for cloud in allClouds do
+    let some (κ, pid) := keysFor cloud | continue
+    let some regions := regionsFor cloud | continue
+    match ← (liveSweep cloud κ pid regions debrisPrefix).toBaseIO with
+    | .ok _    => pure ()
+    | .error e =>
+      IO.eprintln s!"error: [{cloud}] {e}"
+      failures := cloud :: failures
+  if failures.isEmpty then
+    progress "swept every cloud"
+    return 0
+  else
+    IO.eprintln s!"error: {failures.reverse} did not come clean"
+    return 1
+
+/-- Sweep one cloud. -/
+def sweepOneCloud (p : String) (debrisPrefix : String) : IO UInt32 := do
+  let some (κ, pid) := keysFor p
+    | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+  let some regions := regionsFor p
+    | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
+  match ← (liveSweep p κ pid regions debrisPrefix).toBaseIO with
+  | .ok _    => return 0
+  | .error e => IO.eprintln s!"error: {e}"; return 1
+
 def main (args : List String) : IO UInt32 := do
   match args with
   | [] =>
@@ -1477,6 +1571,7 @@ def main (args : List String) : IO UInt32 := do
     -- while this file elaborated.
     Infra.Cli.offlinePlan awsFull.plan "offline checks — no cloud contacted"
     checkSweepTouchesOnlyDebris
+    checkSweepPrefixScopes
     checkSweepRetriesUntilQuiet
     IO.println "\nFor a live sequence: lake test -- <aws|scaleway|gcp>"
     return 0
@@ -1498,28 +1593,20 @@ def main (args : List String) : IO UInt32 := do
   -- than stopping at the first cloud that will not come clean. A cleanup that
   -- abandons two accounts because the first one had a problem is the opposite
   -- of useful.
-  | ["all", "sweep"] => do
-    let mut failures : List String := []
-    for cloud in allClouds do
-      let some (κ, pid) := keysFor cloud | continue
-      let some regions := regionsFor cloud | continue
-      match ← (liveSweep cloud κ pid regions).toBaseIO with
-      | .ok _    => pure ()
-      | .error e =>
-        IO.eprintln s!"error: [{cloud}] {e}"
-        failures := cloud :: failures
-    if failures.isEmpty then
-      progress "swept every cloud"
-      return 0
-    else
-      IO.eprintln s!"error: {failures.reverse} did not come clean"
-      return 1
-  | [p, "sweep"] =>
-    let some (κ, pid) := keysFor p
-      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    let some regions := regionsFor p
-      | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
-    match ← (liveSweep p κ pid regions).toBaseIO with
-    | .ok _    => return 0
-    | .error e => IO.eprintln s!"error: {e}"; return 1
+  | ["all", "sweep"] => sweepAllClouds ciPrefix
+  | [p, "sweep"] => sweepOneCloud p ciPrefix
+  -- `--prefix` narrows what counts as debris, for an account that holds more
+  -- than one project's test resources. Spelled out per verb rather than
+  -- stripped from the argument list first, so it cannot be silently accepted
+  -- and ignored by a verb that does not take it.
+  | ["all", "sweep", "--prefix", value] =>
+    let some pre := checkedPrefix value
+      | do IO.eprintln "error: --prefix may not be empty: it would match \
+every resource in the account"; return 1
+    sweepAllClouds pre
+  | [p, "sweep", "--prefix", value] =>
+    let some pre := checkedPrefix value
+      | do IO.eprintln "error: --prefix may not be empty: it would match \
+every resource in the account"; return 1
+    sweepOneCloud p pre
   | _ => IO.eprintln usage; return 2

@@ -170,6 +170,30 @@ three things a human authors and no run has to write back: the realm, an
 inclusion marker on each created resource, and an exclusion snapshot. See
 `Infra.Core.Ownership`, which also records which way each of those fails.
 
+**Two fleets in one account, and the marker's value.** The marker's *key* is
+constant, and its *value* is where a fleet writes its own name
+(`Boundary.fleetName`, threaded to the backends by `Infra.Cli.liveFor` so the
+write and the check are one setting). Unset — the default — the value is not
+read at all, which is the behaviour that existed before the field. Set, a
+resource carrying another fleet's name reads as `foreign`, and foreign
+resources are left alone.
+
+Three honest limits on it. It is **opt-in on both sides**: a fleet that names
+itself is protected from one that does not, not the reverse, so isolation needs
+both to set it. It is **one string, not an identity** — nothing stops a second
+fleet writing the same name, so it separates fleets that agree to be separate,
+and `Accounts` is still the hard container. And the old value `true` is
+**grandfathered for ever**: a resource tagged before the name existed matches
+every fleet, because the alternative is that naming your fleet turns your whole
+estate foreign in one step. `Ownership.legacyMarkerValue` records that, and
+`Main.lean`'s `checkFleetIsolation` asserts it.
+
+The key stays constant deliberately: it is what makes "what did this tool
+create in this account?" answerable at all, which is what `discover` and any
+audit of the account rest on. A configurable key would take that away, and a
+key with a typo in it would leave an entire estate looking like it belonged to
+nobody.
+
 `checkAccounts` enforces the realm before anything is listed. The marker and
 the boundary are wired into `Engine.push` — the adoption loop and the recheck
 before a `deleteOrphan` both consult `ownershipOf` — for the kinds a backend

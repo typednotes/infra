@@ -770,6 +770,13 @@ with real evidence for:
 | `.objectStore` | AWS, Scaleway, GCP | yes, merged into the declared tags on create *and* update (S3's tag PUT is a full replace, so update has to re-merge it too) | tags (`ObjectStore.readTags` / `Gcp.Storage.readLabels`) |
 | `.awsInstance` | AWS | yes, alongside the `Name` tag, re-asserted on update | tags (`Ec2.Instance'.readOwnership`) |
 
+The tag's **value** is the fleet's own name where the declaration sets one
+(`Boundary.fleetName`) and `"true"` where it does not, which is what lets two
+fleets share an account without claiming each other's resources. Opt-in, and
+the old `"true"` matches every fleet permanently so that naming a fleet cannot
+orphan an estate tagged before the name existed — `docs/persistence.md` has the
+three limits of the scheme.
+
 Every other kind's `ownershipInfo` answers `none`, which is the documented
 "not migrated" state: the adoption loop and the orphan-delete recheck both
 fall back to naming-only membership for it, unchanged from before this
@@ -808,6 +815,9 @@ All three of the offline suite's checks give a placeholder backend a fixed
 their own: `checkOwnershipGate` (`Main.lean`) asserts a matching-but-unmarked
 resource is not adopted, that the run *says* so — captured streams, since the
 warning is the only observable half — and that a marked one is adopted,
+`checkFleetIsolation` asserts that another fleet's marker value is refused,
+that this fleet's own is adopted, that the legacy `"true"` is adopted whatever
+the fleet is called, and that an unnamed fleet still ignores the value,
 `checkOrphanRecheck` asserts a
 `deleteOrphan` refuses when the marker has vanished and proceeds when it has
 not, and `checkDiscover` asserts `discover` rebuilds a row for a marked

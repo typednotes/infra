@@ -41,11 +41,44 @@ offline, because the placeholder backends echo the target back.
 
 ### Added
 
+- **A fleet can name itself, in the ownership marker's value.**
+  `Boundary.fleetName` is written into the marker by everything a fleet creates
+  and required back out of it, so two fleets in one account read each other's
+  resources as `foreign` and leave them alone. One field feeds both directions
+  — `Infra.Cli.liveFor` stamps it, `ownershipOf` checks it — so a fleet cannot
+  claim one name and write another. Opt-in: unset, the value is not read, which
+  is exactly the previous behaviour. The marker *key* stays constant on purpose,
+  because it is what makes "what did this tool create in this account?"
+  answerable, and the legacy value `"true"` matches every fleet permanently so
+  that naming a fleet cannot turn an estate tagged before the name existed
+  foreign in one step.
+
+  Spelled `fleetName`, not `fleet`: `fleet` is a parser token of the `fleet`
+  command, so `{ fleet := … }` does not parse in any file that declares one.
+  Third instance of that trap, after `Ledger.Row.cloud` and `Declare.Res`.
+- **`lake test -- <cloud> sweep --prefix <p>`** scopes a sweep to one project's
+  debris, for an account shared with a fork or a second checkout whose
+  resources also look like a test's. Defaults to `ci-tests-infra-`; an empty
+  prefix is refused rather than read as "everything". `ci/README.md` is the
+  runbook.
 - **`checkLatestImage`** in the offline suite, comparing a `"latest"` target
   against a resolved id — the pair a live pull produces — plus `#guard`s on
   `withMarker`/`withoutMarker` in `Infra/Providers/Live.lean`, and a
   captured-stream assertion in `checkOwnershipGate` that the unmanaged-resource
-  warning is actually printed.
+  warning is actually printed. `checkFleetIsolation` covers all four legs of
+  the fleet-name scheme, and `checkSweepPrefixScopes` both directions of the
+  sweep prefix.
+
+### Breaking
+
+- **`Ec2.Instance'.create` and `.update` take the marker value** as a final
+  argument, with no default: writing `"true"` by accident produces a resource
+  the fleet cannot tell apart from another's, so the compiler asks. Only
+  `Infra.Providers.Live` calls them.
+- **`Infra.Providers.liveBackend`, `live` and `liveFromEnvironment` take an
+  optional `fleet` name**, defaulting to `none` — the previous behaviour. So
+  does `Infra.Cli.liveFor`, which `Infra.Cli.run` now feeds from
+  `boundary.fleetName`.
 
 `docs/diff-semantics.md` records the general lesson under the perpetual-replace
 section, which has now been hit four times in two shapes: the *report* is a

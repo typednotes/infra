@@ -485,6 +485,23 @@ concluding an account is clean:
 - **Only prefixed names.** Anything not called `ci-tests-infra-*` is somebody's,
   and a sweep must never touch it. A resource the fleet renamed *away* from the
   prefix would be invisible — which is what the naming `#guard` prevents.
+
+  The prefix cuts the other way too: one account can hold *two* projects' test
+  resources — a fork, a second checkout, someone's branch — and a plain sweep
+  deletes both, including the ones a run currently in flight is using.
+  `--prefix` narrows it:
+
+  ```sh
+  lake test -- scaleway sweep --prefix ci-tests-fork-
+  lake test -- all sweep --prefix ci-tests-fork-
+  ```
+
+  It defaults to `ci-tests-infra-`, and an empty value is refused rather than
+  read as "match everything" (`checkedPrefix`). The complementary fix is on the
+  *fleet* rather than the sweep: `boundary := { fleetName := some "…" }` puts
+  the fleet's name in the ownership marker, so two fleets in one account do not
+  claim each other's resources at all — see
+  [`../docs/persistence.md`](../docs/persistence.md).
 - **Only kinds a lister covers, in regions the fleet declares.** A sweep
   enumerates `Kind` through `Backends.listers`, so a resource placed somewhere
   the declaration never mentions is out of reach. Concretely on Scaleway: the

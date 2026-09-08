@@ -285,7 +285,13 @@ def main (args : List String) : IO UInt32 :=
     -- Without this, a `forget` in the declaration compiles and then the
     -- resource is destroyed anyway, which is the one thing `forget` exists to
     -- prevent.
-    (forgets := " ++ name ++ ".forgets) (args := args)
+    (forgets := " ++ name ++ ".forgets)
+    -- Uncomment if this account holds more than one fleet. The name is
+    -- written into the marker tag on everything this fleet creates and
+    -- required back out of it, so another fleet's resources read as foreign
+    -- and are left alone. Resources tagged before you set it stay yours.
+    -- (boundary := { fleetName := some \"" ++ name ++ "\" })
+    (args := args)
 "
 
 private def gitignore : String :=
