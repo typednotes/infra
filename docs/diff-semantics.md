@@ -456,13 +456,17 @@ outside the fleet.
   that recomputes every edge from `HasDeps` rather than trusting the scheduler.
   It asserts both directions, and that the teardown is exactly the build order
   reversed.
-- **Membership is the ledger, and an orphan's references are not recorded.**
+- **Membership is decided by ownership evidence where a backend has it, cached
+  in the ledger, and an orphan's references are not recorded.**
   `Plan.outside` used to head this list, declared and never consumed, so a
   resource deleted from a declaration was silently abandoned. It is gone,
-  replaced by `Infra.Core.Ledger`: a committed record of
-  `(cloud, kind, name, region)` that survives a resource's line being deleted,
-  which is what makes deleting that line destroy the resource. `forget`
-  releases a row without deleting.
+  replaced by `Infra.Core.Ownership` (a marker tag plus a human-authored realm
+  and exclusion list) for the kinds a backend can read tags for, with
+  `Infra.Core.Ledger` — a local, gitignored *cache* of `(cloud, kind, name,
+  region)` rows, rebuildable with `infra discover` — as what survives a
+  resource's line being deleted, which is what makes deleting that line
+  destroy the resource. A kind without tag support yet still relies on the
+  ledger alone. `forget` releases a row without deleting.
 
   What the replacement does *not* record is references. A ledger row has a
   name and a region, not a dependency list, so orphans are scheduled with no

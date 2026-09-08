@@ -191,22 +191,25 @@ lake exe infra destroy          # delete everything the fleet declares
 ```
 
 **Deleting a resource from the declaration destroys it.** A resource is yours
-if it has a row in the local ledger under `.infra/`, which is how a resource
-whose line you deleted can still be named at all — the declaration no longer
-mentions it, so nothing else can. Saying `.absent` within the declaration does
-the same thing; `destroy` is `apply` against an empty declaration. All three
-end at the same call, and deletions run in the reverse of creation order so a
-resource goes before whatever it depends on.
+if it carries the marker tag this tool writes on everything it creates, it is
+inside the realm your declaration names, and it is not on the exclusion list —
+for the kinds a backend can read tags for; a kind that cannot yet falls back
+to a row in the local ledger under `.infra/`. Either way, a resource whose line
+you deleted can still be named after the fact — the declaration no longer
+mentions it, so nothing else can, until the ledger or the marker does. Saying
+`.absent` within the declaration does the same thing; `destroy` is `apply`
+against an empty declaration. All three end at the same call, and deletions
+run in the reverse of creation order so a resource goes before whatever it
+depends on.
 
 Nothing about that needs committing, which is deliberate: membership is a
 consequence of applying, not a statement of intent, so CI never has to write
-back to your branch. The cost is that the ledger is the *only* thing that can
-name an orphan, so losing it strands one. `Infra/Core/Ownership.lean` holds the
-intended fix — a marker tag on each created resource, checked against the realm
-your declaration names and an exclusion list — and records which way each of
-those rules fails. Nothing writes the marker yet, so it decides nothing today;
-`lake exe infra` runs against the ledger. One guard is live: `apply` refuses to
-touch an account other than the one your declaration names.
+back to your branch. `Infra/Core/Ownership.lean` records the reasoning, and
+which way each rule fails. The ledger is a local cache of the decision, not the
+decision itself, for a kind the marker covers — `lake exe infra discover`
+rebuilds it straight from the account if it is ever lost. For a kind not yet
+taught to read tags, the ledger is still the only thing that can name an
+orphan, so losing it strands one.
 
 To stop managing something *without* destroying it, say so:
 

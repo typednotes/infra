@@ -133,6 +133,12 @@ private def rdsFor (creds : Credentials) : Endpoint := Query.rdsEndpoint creds.r
 /-- The S3 endpoint this cloud uses for a bucket-shaped kind. -/
 private def ec2For (creds : Credentials) : Endpoint := Query.ec2Endpoint creds.region
 
+/-- A tag list with the ownership marker added, unless it is already there.
+    Additive rather than a fixed pair, so a declaration's own tags survive
+    untouched — the marker is bookkeeping, not part of what was declared. -/
+private def withMarker (tags : List (String × String)) : List (String × String) :=
+  if tags.any (·.1 == markerKey) then tags else (markerKey, "true") :: tags
+
 private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
   S3.endpoint provider creds.region
 
@@ -446,13 +452,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials) : Backend where
       -- versioning and labels in the insert body.
       | .gcp =>
         let project ← Gcp.requireProject creds
-        Gcp.Storage.createBucket creds project spec.name spec.versioning spec.tags
+        Gcp.Storage.createBucket creds project spec.name spec.versioning (withMarker spec.tags)
         return { handle := ⟨spec.name⟩, url := Gcp.Storage.bucketUrl spec.name }
       | .aws | .scaleway =>
         let ep := s3For provider creds
         ObjectStore.createBucket creds ep spec.name
         ObjectStore.putVersioning creds ep spec.name spec.versioning
-        ObjectStore.putTags creds ep spec.name spec.tags
+        ObjectStore.putTags creds ep spec.name (withMarker spec.tags)
         return { handle := ⟨spec.name⟩, url := ObjectStore.bucketUrl ep spec.name }
     | .securityGroup, spec => do
       -- `CreateSecurityGroup` does not report the VPC, so that stays blank
@@ -622,12 +628,16 @@ invocation, which is a worse failure than this one")
     | .objectStore, h, spec => do
       match provider with
       | .gcp =>
-        Gcp.Storage.patchBucket creds h.raw spec.versioning spec.tags
+        Gcp.Storage.patchBucket creds h.raw spec.versioning (withMarker spec.tags)
         return { handle := h, url := Gcp.Storage.bucketUrl h.raw }
       | .aws | .scaleway =>
         let ep := s3For provider creds
         ObjectStore.putVersioning creds ep h.raw spec.versioning
-        ObjectStore.putTags creds ep h.raw spec.tags
+        -- `putTags` replaces the whole tag set (S3's `PUT ?tagging` is not
+        -- additive), so the marker has to be re-merged here too — otherwise
+        -- the first tag edit after creation would silently un-manage the
+        -- bucket.
+        ObjectStore.putTags creds ep h.raw (withMarker spec.tags)
         return { handle := h, url := ObjectStore.bucketUrl ep h.raw }
     | .securityGroup, h, spec => do
       -- Additive: a rule present in the cloud but absent from the target is
@@ -800,6 +810,21 @@ invocation, which is a worse failure than this one")
   -- The one inbound plaintext path; see `Backend.secretValue`. `fetchValue`
   -- already exists and is already the narrowly-scoped reader for both clouds.
   secretValue h := Secrets.fetchValue provider creds h.raw
+  -- The first tranche of `Ownership.ownershipOf` evidence: kinds whose tags
+  -- were already read for the divergence table (`liveRead`'s `.objectStore`
+  -- clause) or whose tagging call already existed (`Ec2.Instance'`). Every
+  -- other kind answers `none` — untouched by this change, deferring entirely
+  -- to the ledger exactly as before. `createdAt` is left `none` even where
+  -- it is answered, to keep this tranche to tags alone; `Ownership.ownershipOf`
+  -- treats that as "no cutoff check", which is a documented, safe state.
+  ownershipInfo
+    | .objectStore, h => do
+      match provider with
+      | .gcp => return some ((← Gcp.Storage.readLabels creds h.raw).getD [], none)
+      | .aws | .scaleway =>
+        return some ((← ObjectStore.readTags creds (s3For provider creds) h.raw).getD [], none)
+    | .awsInstance, h => Ec2.Instance'.readOwnership creds (ec2For creds) h.raw
+    | _, _ => pure none
 
 /-- Every cloud, live, using each one's own credentials.
 

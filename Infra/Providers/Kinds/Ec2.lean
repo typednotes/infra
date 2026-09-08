@@ -1,5 +1,6 @@
 import Infra.Providers.Aws.Protocols
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   EC2: security groups and instances, over the Query protocol.
@@ -263,6 +264,14 @@ private def nameTag (i : Text.XML.Element) : Option String :=
   (items i "tagSet").findSome? fun t =>
     if t.childText "key" == some "Name" then t.childText "value" else none
 
+/-- Every tag on an instance, key and value both — the evidence
+    `Ownership.ownershipOf` needs, as opposed to `nameTag`'s single field. -/
+private def allTags (i : Text.XML.Element) : List (String × String) :=
+  (items i "tagSet").filterMap fun t =>
+    match t.childText "key", t.childText "value" with
+    | some k, some v => some (k, v)
+    | _, _           => none
+
 /-- Every instance with a `Name` tag, as `(name, id, privateIp, state)`.
 
     Terminated instances are dropped: EC2 keeps reporting them for about an
@@ -327,6 +336,23 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
       | none    => .known ""
     return (imageId, instanceType, group, keyName, subnetId)
 
+/-- Tags and launch time, by `Name` tag — the evidence `Ownership.ownershipOf`
+    needs. `none` means no live, non-terminated instance carries this name;
+    that is a real answer (there is nothing to own), not "not implemented",
+    so callers reading it as "defer to the ledger" would be wrong — see
+    `Backend.ownershipInfo`'s doc comment for why the two are kept distinct
+    at the `Live.lean` call site instead of collapsed here. -/
+def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let root ← Query.call creds ep "DescribeInstances" version
+    [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
+  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
+  let live := instances.filter fun i =>
+    match i.child "instanceState" with
+    | some st => (st.childText "name").getD "" != "terminated"
+    | none    => true
+  return live.head?.map fun i => (allTags i, i.childText "launchTime")
+
 /-- Launch one instance and tag it.
 
     `securityGroup` arrives as a group *name* (a settled `Handle
@@ -354,9 +380,13 @@ it must exist before an instance can reference it")
   | some i =>
     let instanceId := (i.childText "instanceId").getD ""
     -- The `Name` tag is this fleet's identifier, so it must be set before the
-    -- next `pull` can recognise what was just created.
+    -- next `pull` can recognise what was just created. The marker tag is what
+    -- lets a later `push`/`discover` tell this instance apart from one that
+    -- merely happens to share the name — see `Infra.Core.Ownership`.
     let _ ← Query.call creds ep "CreateTags" version
-      [("ResourceId.1", instanceId), ("Tag.1.Key", "Name"), ("Tag.1.Value", name)]
+      [ ("ResourceId.1", instanceId)
+      , ("Tag.1.Key", "Name"), ("Tag.1.Value", name)
+      , ("Tag.2.Key", markerKey), ("Tag.2.Value", "true") ]
     let state := match i.child "instanceState" with
       | some st => (st.childText "name").getD ""
       | none    => ""
@@ -366,8 +396,13 @@ it must exist before an instance can reference it")
     `Divergent .awsInstance` classifies as mutable. -/
 def update (creds : Credentials) (ep : Endpoint) (instanceId : String)
     (name securityGroupName : String) : IO Unit := do
+  -- Re-asserted rather than skipped: an instance whose marker was stripped
+  -- outside `infra` regains it on the next apply, which is the direction
+  -- this model is meant to fail in — never the other way.
   let _ ← Query.call creds ep "CreateTags" version
-    [("ResourceId.1", instanceId), ("Tag.1.Key", "Name"), ("Tag.1.Value", name)]
+    [ ("ResourceId.1", instanceId)
+    , ("Tag.1.Key", "Name"), ("Tag.1.Value", name)
+    , ("Tag.2.Key", markerKey), ("Tag.2.Value", "true") ]
   match ← SecurityGroup.idOf creds ep securityGroupName with
   | none     => throw (IO.userError s!"security group '{securityGroupName}' not found")
   | some gid =>

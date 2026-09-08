@@ -1,4 +1,5 @@
 import Infra.Core.Action
+import Infra.Core.Ownership
 
 /-
   What a cloud has to be able to do, and how the engine reaches several of them at once.
@@ -55,6 +56,18 @@ structure Backend where
       returned outward — the same discipline as
       `Infra.Providers.Kinds.Postgres.fetchMasterPassword`. -/
   secretValue : Handle .secrets → IO String
+  /-- Tags and creation time for one resource, as evidence for
+      `Ownership.ownershipOf`.
+
+      `none` means this `(cloud, kind)` has not been taught to read this —
+      the honest "not implemented", which defers entirely to ledger
+      membership the way the rest of the engine already behaves. `some (tags,
+      createdAt)` means real evidence, and from that point ownership is
+      decided by the marker and the boundary, not by ledger membership alone.
+      The default answers `none` so that a backend which never overrides this
+      field is unaffected. -/
+  ownershipInfo : (k : Kind) → Handle k → IO (Option (List (String × String) × Option String)) :=
+    fun _ _ => pure none
 
 /-- Every cloud the engine can reach. Total over `ProviderId`, matching `Plan.assign`'s
     totality over the same index.

@@ -101,12 +101,15 @@ These were previously open questions; each is now settled and implemented in
 - **What is cached is `ObservedOf`, never a target.** Observed state is provider-computed and so
   never `Partial`; targets live in Lean source under version control. `Partial` does have a JSON
   encoding (`unknown` ↦ `null`) for when a partially-known target does need serialising.
-- **Membership is a committed ledger, and it *is* the source of truth.**
-  Superseded decision: this bullet used to say the opposite, that the key types
-  alone decide what a target manages and `load` skips any cached name the
-  current fleet no longer declares. That is what made deleting a line from a
-  declaration leave the resource running, which is not what a declarative tool
-  should do. See "Membership is a committed ledger" below for the replacement.
+- **Membership is not decided by the key types, and is not a committed file
+  either.** Superseded decision, twice over: this bullet first said the key
+  types alone decide what a target manages, which is what made deleting a
+  line from a declaration leave the resource running. The fix that followed
+  put membership in a ledger committed next to the declaration, which turned
+  out to be its own mistake — see "Membership is not a committed ledger"
+  below. Membership is now *derived*, from the marker tag `infra` writes and
+  the boundary a human authors (`Infra.Core.Ownership`); the ledger is a local
+  cache of that decision, not the decision itself.
 - **Backend: plain files, no DB, for now.** There's no concrete scale or concurrent-access
   requirement yet (single operator, not a team or CI fleet sharing state). Plain files satisfy
   today's need; the DB option from the section above remains available as a second
@@ -162,21 +165,22 @@ to write back to the branch it was applied from: push permissions for CI, races
 with concurrent merges, and a loop unless carefully guarded. Terraform keeps
 state remote rather than committed for exactly this reason.
 
-So the ledger is local and disposable, and membership is *meant* to be derived
-instead, from three things a human authors and no run has to write back: the
-realm, an inclusion marker on each created resource, and an exclusion snapshot.
-See `Infra.Core.Ownership`, which also records which way each of those fails.
+So the ledger is local and disposable, and membership is derived instead, from
+three things a human authors and no run has to write back: the realm, an
+inclusion marker on each created resource, and an exclusion snapshot. See
+`Infra.Core.Ownership`, which also records which way each of those fails.
 
-Only the first of those three exists today. `checkAccounts` enforces the realm
-before anything is listed; nothing writes the marker and nothing reads the
-boundary, so `ownershipOf` decides nothing and its `#guard`s pin an intended
-semantics rather than a live one. Until that changes the ledger *is* the
-authority — `Action.actionsOrphaned` consults it and nothing else — and
-membership is a rule about names: a declaration adopts a resource because it
-names it and the cloud has it (`Infra/Core/Engine.lean`). That rule cannot
-distinguish a resource of yours from a stranger's with the same name, which is
-the gap the marker is for. The rest of this section describes the ledger as it
-actually behaves.
+`checkAccounts` enforces the realm before anything is listed. The marker and
+the boundary are wired into `Engine.push` — the adoption loop and the recheck
+before a `deleteOrphan` both consult `ownershipOf` — for the kinds a backend
+has been taught to read tags for (`Backend.ownershipInfo`): object storage on
+all three clouds and AWS instances, as of this writing. A kind not yet taught
+this falls back to the older rule, a rule about names: a declaration adopts a
+resource because it names it and the cloud has it (`Infra/Core/Engine.lean`),
+unable to distinguish a resource of yours from a stranger's with the same
+name. `Action.actionsOrphaned` itself still only ever consults the ledger —
+it is pure, with no way to reach a live cloud — so it is the two call sites
+around it that do the asking now.
 
 | | Ledger | Cache |
 |---|---|---|
@@ -184,14 +188,14 @@ actually behaves.
 | Path | `.infra/<exe>/infra.ledger.json` | `.infra/<exe>/<provider>/<kind>.json` |
 | Committed | no | no |
 | Written by | `apply` and `destroy`, never `refresh` | every `refresh` |
-| If lost | every row it held becomes an orphan | nothing. One re-read restores it |
+| If lost | `infra discover` rebuilds what it can from the marker; a kind not yet migrated still leaves an orphan | nothing. One re-read restores it |
 
-Losing the ledger is therefore the one unrecoverable loss under the cache root.
-A resource whose row is gone still exists and still costs money, but nothing
-can name it: the declaration no longer mentions it, the cache is keyed by the
-declaration, and there is no `discover` command to rebuild the rows by sweeping
-the account for the marker. Restoring that from the marker is the point of
-`Infra.Core.Ownership`, and it is not yet built.
+Losing the ledger therefore has two answers depending on the kind. For one a
+backend can read tags for, `discover` sweeps the account, reads the marker
+back off each resource, and rebuilds the row — nothing is lost. For a kind
+that has not been migrated, a lost row still means a resource that exists and
+still costs money but that nothing can name: the declaration no longer
+mentions it, and there is no marker evidence yet to fall back on.
 
 Three consequences worth stating outright.
 
@@ -226,14 +230,13 @@ shows up in a plan before it happens, and in a diff when it is reviewed.
 
 Nothing here locks. Two applies at once against one account can interleave, and
 the local ledger of each will disagree with the other. What keeps that from
-being *catastrophic* is only the scope this document already assumes: a single
-operator, not a team or a CI fleet sharing state. It is not currently kept from
-being silent at all. The intended answer is that neither local ledger is
-authoritative — the marker on the resource is, and a sweep for it reconciles
-both — but nothing writes the marker yet, so today the two ledgers simply
-disagree and the loser's rows are orphans. Remote
-state with a lock remains available behind the same `load`/`save` interface as
-the DB option above, and is the answer if that scope grows.
+being silent, for the kinds the marker covers, is that neither local ledger is
+authoritative — the marker on the resource is, and `discover` reconciles both.
+For a kind not yet migrated, the two ledgers simply disagree and the loser's
+rows are orphans; this is inside the scope this document already assumes
+(single operator, not a team or CI fleet sharing state). Remote state with a
+lock remains available behind the same `load`/`save` interface as the DB
+option above, and is the answer if that scope grows.
 
 ### The safety gate
 

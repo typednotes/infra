@@ -138,6 +138,106 @@ resources; a resource that needs no action is still managed")
   finally
     IO.FS.removeDirAll tmp
 
+/-- A `Backends` whose `.aws` backend answers `ownershipInfo` with a fixed
+    verdict, rather than the placeholder default of `none`. This is what lets
+    the checks below exercise `Ownership.ownershipOf` itself — the placeholder
+    backends alone can only ever exercise the "not migrated" fallback, since
+    their `ownershipInfo` never answers `some`. -/
+private def gatedBackends (marked : Bool) : Backends where
+  backend
+    | .aws =>
+      { Infra.Providers.placeholderBackend "aws" with
+          ownershipInfo := fun _ _ =>
+            pure (some ((if marked then [(markerKey, "true")] else []), none)) }
+    | .scaleway => Infra.Providers.placeholderBackend "scaleway"
+    | .gcp      => Infra.Providers.placeholderBackend "gcp"
+
+/-- The adoption loop in `push` and the recheck before a `deleteOrphan` both
+    used to be pure name matches; both now consult `Ownership.ownershipOf`
+    where a backend can answer it. This is what checks that wiring actually
+    runs, not just that it type-checks. -/
+def checkOwnershipGate : IO Unit := do
+  let tmp ← IO.FS.createTempDir
+  try
+    -- The AWS `assets` bucket already exists and matches its spec, but this
+    -- account's backend reports no marker tag on it: someone else's bucket,
+    -- named the same as the one this fleet declares. Adopting it anyway is
+    -- exactly the bug this model exists to prevent.
+    let foreign : Store demoKeys := { root := some tmp, regionOf := fun _ _ _ => "eu-west-1" }
+    let _ ← push (gatedBackends false) demoPlan partialWorld { apply := true } (store := foreign)
+    let rows ← Ledger.load tmp
+    if rows.any (Ledger.Row.isAt · .aws .objectStore "assets") then
+      throw (IO.userError "an unmarked bucket was adopted into the ledger")
+
+    -- Same bucket, marker present: this time it must be adopted.
+    let managed : Store demoKeys := { root := some tmp, regionOf := fun _ _ _ => "eu-west-1" }
+    let _ ← push (gatedBackends true) demoPlan partialWorld { apply := true } (store := managed)
+    unless (← Ledger.load tmp).any (Ledger.Row.isAt · .aws .objectStore "assets") do
+      throw (IO.userError "a marked bucket was not adopted into the ledger")
+
+    IO.println "ownership gate: ok (adoption follows the marker, not just a name match)"
+  finally
+    IO.FS.removeDirAll tmp
+
+/-- A ledger row for a name the current declaration no longer claims is an
+    orphan, and `push` re-checks its marker immediately before deleting it —
+    see the comment above that check in `Engine.push`. This pins both halves:
+    a stripped marker refuses the delete, and a marker still present lets it
+    proceed. -/
+def checkOrphanRecheck : IO Unit := do
+  let tmp ← IO.FS.createTempDir
+  try
+    let staleRow : Ledger.Row :=
+      { cloud := .aws, kind := .objectStore, name := "old-bucket", region := "eu-west-1" }
+
+    let unmarked : Store demoKeys := { root := some tmp, rows := [staleRow] }
+    match ← (push (gatedBackends false) demoPlan emptyWorld { apply := true }
+        (store := unmarked)).toBaseIO with
+    | .error e =>
+      unless mentions (toString e) "no longer carries the marker tag" do
+        throw (IO.userError s!"orphan recheck failed for the wrong reason: {toString e}")
+    | .ok lines => throw (IO.userError s!"expected the recheck to refuse the delete, got: {lines}")
+    unless (← Ledger.load tmp).any (·.name == "old-bucket") do
+      throw (IO.userError "a refused delete still dropped the ledger row")
+
+    let marked : Store demoKeys := { root := some tmp, rows := [staleRow] }
+    let _ ← push (gatedBackends true) demoPlan emptyWorld { apply := true } (store := marked)
+    if (← Ledger.load tmp).any (·.name == "old-bucket") then
+      throw (IO.userError "a marked orphan was not deleted")
+
+    IO.println "orphan recheck: ok (a stripped marker refuses the delete; present, it proceeds)"
+  finally
+    IO.FS.removeDirAll tmp
+
+/-- `discover` rebuilds a ledger row straight from `list` and `ownershipInfo`,
+    with no ledger to start from at all — the "lost ledger" case
+    `docs/persistence.md` claims `discover` recovers from. -/
+def checkDiscover : IO Unit := do
+  let listsOneBucket (marked : Bool) : Backend :=
+    { Infra.Providers.placeholderBackend "aws" with
+        list := fun k =>
+          match k with
+          | .objectStore => pure [Infra.Providers.placeholderObserved .objectStore "assets"]
+          | _            => pure []
+        ownershipInfo := fun _ _ =>
+          pure (some ((if marked then [(markerKey, "true")] else []), none)) }
+  let bs (marked : Bool) : Backends :=
+    { backend := fun p =>
+        match p with
+        | .aws      => listsOneBucket marked
+        | .scaleway => Infra.Providers.placeholderBackend "scaleway"
+        | .gcp      => Infra.Providers.placeholderBackend "gcp" }
+
+  let found ← discover (κ := demoKeys) (bs true) {} (fun _ _ _ => "eu-west-1") []
+  unless found.any (Ledger.Row.isAt · .aws .objectStore "assets") do
+    throw (IO.userError s!"discover did not recover the marked bucket, found {found.length} row(s)")
+
+  let notFound ← discover (κ := demoKeys) (bs false) {} (fun _ _ _ => "eu-west-1") []
+  if notFound.any (Ledger.Row.isAt · .aws .objectStore "assets") then
+    throw (IO.userError "discover claimed an unmarked bucket")
+
+  IO.println "discover: ok (rebuilds a lost ledger from the marker tag, not from naming)"
+
 /-- Pulls from both placeholder backends, caches the result, and reports what the target would
     still ask for. Nothing behind `list` is live yet, so the world comes back empty and every
     declared resource needs creating. -/
@@ -573,6 +673,9 @@ def selfCheck : IO Unit := do
   checkPersistenceRoundTrip
   checkLedger
   checkLedgerAdoption
+  checkOwnershipGate
+  checkOrphanRecheck
+  checkDiscover
   checkPullAndPlan
   checkCredentials
   checkSigning

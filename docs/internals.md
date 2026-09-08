@@ -377,12 +377,14 @@ The three-stage live test is this mechanism as a sequence:
 ```
 
 *What the ledger is not.* It is local and gitignored, so it does not survive a
-CI job. `Infra.Core.Ownership` sketches the replacement — a marker tag on each
-created resource, plus a realm and an exclusion list, so that membership is
-derived and nothing has to be written back. Nothing writes the marker yet, so
-it decides nothing today. Until it does, `lake test -- <cloud> sweep` is what
-finds debris a ledger cannot name: it asks the account, matching on the
-`ci-tests-infra-` prefix.
+CI job. `Infra.Core.Ownership` is what actually decides membership now — a
+marker tag written on create for the kinds `Backend.ownershipInfo` covers
+(`.objectStore` on all three clouds, `.awsInstance` on AWS), plus a realm and
+an exclusion list — so the ledger for those kinds is a rebuildable cache
+(`infra discover`) rather than the sole record. A kind `ownershipInfo` cannot
+yet read tags for still falls back to ledger membership alone, so
+`lake test -- <cloud> sweep` remains what finds debris a ledger cannot name
+for those: it asks the account, matching on the `ci-tests-infra-` prefix.
 
 ## Backends: three ways to reach a cloud
 

@@ -27,11 +27,17 @@ import Lean.Data.Json
   of it, and it is what drives the destroy path: deleting a resource needs a
   name and a region, and this is where they are.
 
-  It is also, today, the *only* thing consulted — `Action.actionsOrphaned` asks
-  it and nothing else. `Infra.Core.Ownership` holds the marker-and-boundary
-  model that is meant to replace it as the authority, but nothing writes the
-  marker and nothing reads the boundary yet, so it decides nothing. Until it
-  does, a lost ledger means an orphan, not a `discover`.
+  `Action.actionsOrphaned` still asks the ledger and nothing else — it is
+  pure, with no way to reach a live cloud — but the two IO call sites around
+  it in `Engine.push` (the adoption loop, and the recheck immediately before
+  a `deleteOrphan` runs) now consult `Infra.Core.Ownership.ownershipOf`
+  first, for every `(cloud, kind)` whose backend answers
+  `Backend.ownershipInfo` with real tags. That makes this file the *cache* of
+  what those two checks would say, not the authority: `Infra.Cli.discover`
+  rebuilds it straight from the marker tag, so a lost ledger for a migrated
+  kind is a `discover` away from repair rather than a permanent orphan. A
+  kind whose backend has not been taught to read tags still falls back to
+  ledger membership alone, exactly as before.
 -/
 
 namespace Infra.Core.Ledger
@@ -118,8 +124,10 @@ instance : FromJson Row where
 
 /-- Rows in a stable order: by cloud, then kind, then name.
 
-    The ledger is committed, so its diff is read by humans. An unstable order
-    would make every apply touch every line. -/
+    The ledger is a local, gitignored cache rather than a committed file, but
+    it is still read by a human often enough — `cat`, a diff against the
+    previous run, `discover`'s "was N" line — that an unstable order would
+    make every apply rewrite every line for no reason. -/
 def sorted (rows : List Row) : List Row :=
   rows.mergeSort fun a b => compare (a.slot) (b.slot) != .gt
 
@@ -131,7 +139,9 @@ def formatVersion : Nat := 1
 
 def path (root : System.FilePath) : System.FilePath := root / "infra.ledger.json"
 
-/-- Pretty-printed and sorted, because this file is committed and reviewed.
+/-- Pretty-printed and sorted, because a human reads this file even though
+    nothing commits it: it is what `discover` rebuilds and what an operator
+    checks when a `push` claims or drops something unexpected.
 
     An empty ledger writes an empty `rows` array rather than deleting the file.
     The cache does the opposite — see `Persistence.save`, where an emptied pair

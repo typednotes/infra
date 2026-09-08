@@ -5,12 +5,15 @@ import Infra.Core.Ledger
 
   This is the question that decides whether deleting a line from a declaration
   destroys the resource or abandons it, and getting it wrong is expensive in
-  both directions. It is the intended replacement for an earlier answer that
-  could not work, and it is a sketch: nothing writes the marker and nothing
-  constructs a `Boundary`, so none of what follows decides anything yet. The
-  ledger is still the authority (`Infra.Core.Ledger`). The `#guard`s below pin
-  the semantics this is meant to have, so that wiring it up later is a matter
-  of calling it rather than of re-deciding it.
+  both directions. It is the replacement for an earlier answer that could not
+  work (see below). `Engine.push` calls `ownershipOf` from two places — the
+  adoption loop, and the recheck immediately before a `deleteOrphan` runs —
+  for every `(cloud, kind)` whose backend can report a resource's tags
+  (`Backend.ownershipInfo`); `Infra.Providers.Live` writes the marker on
+  create for those same kinds. A kind not yet taught to report tags still
+  falls back to the ledger alone, unchanged from before this module existed.
+  The `#guard`s below pin the semantics this is meant to have, independent of
+  which kinds are wired up.
 
   ## Why not a committed ledger
 
@@ -62,8 +65,13 @@ namespace Infra.Core
     supported arrangement, and `Accounts` is what refuses it. Making the key
     configurable would look like it solved that, and would not.
 
-    The value is the fleet's executable name, so a plan can at least *report*
-    which fleet claims a resource even though it cannot use that to decide. -/
+    `ownershipOf` only ever checks that this key is present (`markedBy`); the
+    value is never compared, so any non-empty value works. The live backends
+    write `"true"` today. Carrying the fleet's executable name in the value
+    instead — so a plan could at least *report* which fleet claims a resource,
+    even though it still could not use that to decide — is a documented
+    follow-up, not yet done: it needs the executable name threaded down to
+    `Infra.Providers.Live.liveBackend`, which does not have it today. -/
 def markerKey : String := "managed-by-infra"
 
 /-- Where a resource sits relative to this tool.

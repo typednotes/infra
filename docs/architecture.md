@@ -391,14 +391,17 @@ against.
 is used, has no key for `Plan.assign` to mention it by. There is no separate "unmanaged within
 a kind" flag, and none is needed.
 
-The other half is *membership*, and it deliberately does not live here. What a fleet manages is
-recorded in `Infra.Core.Ledger` — a committed file of `(cloud, kind, name, region)` rows — for
-one reason: the key family changes when the declaration changes, so it cannot answer a question
-about a resource whose line has just been deleted. That resource has no key, and if the key
-family were the only record it would be indistinguishable from a resource nobody ever declared.
-The ledger is what makes "deleted from the file" mean "destroy" while resources this tool never
-touched stay out of reach. `Plan.outside`, a single fleet-wide verdict meant to do this job, is
-gone; see `docs/persistence.md`.
+The other half is *membership*, and it deliberately does not live here. Ownership is decided by
+`Infra.Core.Ownership` — a marker tag `infra` writes on create, checked against a human-authored
+realm and exclusion list — for the kinds a backend can read tags for; a kind that cannot yet
+falls back to naming alone. Either way, `Infra.Core.Ledger` — a local, gitignored cache of
+`(cloud, kind, name, region)` rows, rebuildable with `infra discover` — is what actually gets
+consulted at plan and apply time, for one reason: the key family changes when the declaration
+changes, so it cannot answer a question about a resource whose line has just been deleted. That
+resource has no key, and if the key family were the only record it would be indistinguishable
+from a resource nobody ever declared. The ledger is what makes "deleted from the file" mean
+"destroy" while resources this tool never touched stay out of reach. `Plan.outside`, a single
+fleet-wide verdict meant to do this job, is gone; see `docs/persistence.md`.
 
 ## Ordering
 

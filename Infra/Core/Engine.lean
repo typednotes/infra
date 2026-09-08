@@ -34,6 +34,10 @@ structure Store (κ : Keys) where
   /-- Names being released rather than destroyed. -/
   forgets    : List (Released κ) := []
   regionOf   : ProviderId → Kind → String → String := fun _ _ _ => ""
+  /-- The realm and exclusion legs of the ownership model (`Ownership.Boundary`).
+      Empty by default: no exclusions, no cutoff, so the marker alone decides
+      for any backend that reports one. -/
+  boundary   : Boundary := {}
 
 /-- Ask every backend to list every kind, and match what comes back to fleet
     keys by `Keys.name`.
@@ -114,6 +118,42 @@ def pull {κ : Keys} (root : System.FilePath) (bs : Backends) : IO (World κ) :=
 def plan {κ : Keys} (T : Plan κ) (W : World κ)
     (ledger : List Ledger.Row := []) (forgets : List (Released κ) := []) :
     List (Action κ) := actions T W ledger forgets
+
+/-- Rebuild the ledger from what the account itself says is ours, for every
+    `(provider, kind)` this fleet's key family names and whose backend can
+    report tags (`Backend.ownershipInfo`).
+
+    This is the ledger's cache nature made concrete: `discover` throws away no
+    information that cannot be recomputed, because everything it writes was
+    read straight back off the resource's own marker tag. A kind whose
+    backend has not been migrated (`ownershipInfo` answers `none` for it) is
+    left exactly as `existing` already had it — `discover` only replaces rows
+    it can actually verify, it never guesses for the rest. Scoped to the
+    regions `listers` already knows about, the same limitation `pullEntries`
+    accepts: a fleet cannot discover resources placed somewhere it declares
+    nothing. -/
+def discover {κ : Keys} (bs : Backends) (boundary : Boundary)
+    (regionOf : ProviderId → Kind → String → String)
+    (existing : List Ledger.Row) : IO (List Ledger.Row) := do
+  let mut rows := existing
+  for p in Finite.elems (α := ProviderId) do
+    for k in Finite.elems (α := Kind) do
+      if (Finite.elems (α := κ.Key p k)).isEmpty then
+        continue
+      for (b, here) in bs.listers p k do
+        let observed ← b.list k
+        for o in observed do
+          let handle := observedHandle k o
+          let nm := handle.raw
+          if here nm then
+            match ← b.ownershipInfo k handle with
+            | none => pure ()
+            | some (tags, createdAt) =>
+              rows := rows.filter fun r => !Ledger.Row.isAt r p k nm
+              if (ownershipOf boundary p k nm tags createdAt).isOurs then
+                rows := { cloud := p, kind := k, name := nm
+                          region := regionOf p k nm } :: rows
+  return rows
 
 -- ══════════════════════════════════════════════════════════════
 -- Ordering
@@ -480,20 +520,29 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
   -- the teardown then deleted only the three that had.
   --
   -- Claiming a resource because the declaration names it and it exists is the
-  -- same rule the planner already applies to decide it is converged, so this
-  -- adds no new judgement. It is a rule about *names*, which is why
-  -- `Infra.Core.Ownership` exists: a marker on the resource is what would let
-  -- this distinguish "mine" from "someone else's, identically named".
+  -- same rule the planner already applies to decide it is converged. Where a
+  -- backend can report tags and a creation date (`ownershipInfo`), that rule
+  -- is now checked against `ownershipOf` first: a resource without
+  -- the marker is left alone rather than claimed, which is what distinguishes
+  -- "mine" from "someone else's, identically named". A backend that cannot
+  -- yet report this (`none`) falls back to the old naming-only rule exactly
+  -- as before, so an unmigrated kind is not regressed by this check.
   let mut rows := store.rows
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
       for key in Finite.elems (α := κ.Key p k) do
         match T.assign p k key, W.sighting p k key with
-        | .present _, some _ =>
+        | .present _, some sighting =>
           let nm := κ.name p k key
           unless rows.any (Ledger.Row.isAt · p k nm) do
-            rows := { cloud := p, kind := k, name := nm
-                      region := store.regionOf p k nm } :: rows
+            let handle := observedHandle k sighting.observed
+            let claim ← match ← (bs.backendFor p k nm).ownershipInfo k handle with
+              | none => pure true
+              | some (tags, createdAt) =>
+                pure (ownershipOf store.boundary p k nm tags createdAt).isOurs
+            if claim then
+              rows := { cloud := p, kind := k, name := nm
+                        region := store.regionOf p k nm } :: rows
         | _, _ => pure ()
   -- Persist the adoptions before the first mutation, so a crash mid-apply
   -- cannot leave a resource that exists, is claimed, and is recorded nowhere.
@@ -503,6 +552,23 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     return [Ansi.style opts.colour Ansi.dim "nothing to do"]
   let mut log : List String := []
   for a in work do
+    -- Belt and suspenders on the one action that deletes purely on the
+    -- ledger's say-so: a `deleteOrphan` fires because a line left the
+    -- declaration, not because anything was just read as ours. Where the
+    -- backend can report tags, re-check the marker immediately before
+    -- deleting rather than trusting a ledger row that might be stale or
+    -- wrong. An unmigrated backend (`none`) keeps the old ledger-only
+    -- behaviour — this is strictly additional caution, not a new gate.
+    match a with
+    | .deleteOrphan p k nm region =>
+      match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
+      | some (tags, createdAt) =>
+        unless (ownershipOf store.boundary p k nm tags createdAt).isOurs do
+          throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but \
+it no longer carries the marker tag; refusing to delete a resource that might not be. If it \
+really is gone, or was never mine, `forget` it instead of applying.")
+      | none => pure ()
+    | _ => pure ()
     let rowsBefore := rows
     let entriesBefore := entries.length
     entries ← runAction bs T entries a

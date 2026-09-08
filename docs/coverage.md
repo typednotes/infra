@@ -640,8 +640,9 @@ this is how far they have actually been exercised.
 
 **Verified offline, every build.** The ledger round-trips through JSON with
 every field intact — the region especially, since nothing else records it once
-a resource's line is gone. Rows come back sorted, because the file is
-committed and its diff is read. An emptied ledger stays a *file*, so "manages
+a resource's line is gone. Rows come back sorted, because a human still reads
+this file even though nothing commits it. An emptied ledger stays a *file*, so
+"manages
 nothing" is distinguishable from "someone deleted the ledger". A file without a
 version is refused rather than read as empty, because reading it as empty would
 orphan everything it recorded. And `actionsOrphaned` is guarded on the three
@@ -709,6 +710,45 @@ accounts for all fourteen kinds. Membership stays the ledger's. The two
 questions were conflated before this change; separating them was right, and
 answering the second one per resource was not.
 
+## Ownership: which kinds it actually decides for
+
+`Infra.Core.Ownership.ownershipOf` was pure and fully guard-checked from the
+start, but for a while nothing called it: `Engine.push`'s adoption loop
+claimed anything named right that existed, and `actionsOrphaned` trusted the
+ledger alone. Both now consult `Backend.ownershipInfo` first, and it answers
+with real evidence for:
+
+| Kind | Cloud | Marker written on create | Read back for the check |
+|---|---|---|---|
+| `.objectStore` | AWS, Scaleway, GCP | yes, merged into the declared tags on create *and* update (S3's tag PUT is a full replace, so update has to re-merge it too) | tags (`ObjectStore.readTags` / `Gcp.Storage.readLabels`) |
+| `.awsInstance` | AWS | yes, alongside the `Name` tag, re-asserted on update | tags (`Ec2.Instance'.readOwnership`) |
+
+Every other kind's `ownershipInfo` answers `none`, which is the documented
+"not migrated" state: the adoption loop and the orphan-delete recheck both
+fall back to naming-only membership for it, unchanged from before this
+section existed. Widening the table to the remaining kinds is tracked, not
+silently dropped:
+
+- `.s3Bucket`, `.securityGroup`, `.queues`, `.imageRegistry`, `.postgres` have
+  tagging APIs on at least one cloud and are the natural next tranche.
+- `.iam`, `.compute`, `.secrets`, the Scaleway-only function/container kinds do
+  not have an obvious tag surface on every cloud they support and need a
+  per-kind look before they can join the table.
+
+`createdAt` is `none` for every row above — the `since` cutoff in
+`Infra.Core.Ownership.Boundary` is unexercised outside the module's own
+guards, on real evidence. `Infra.Cli.discover` is the new command that rebuilds
+the ledger from this table for a fleet that already has one.
+
+All three of the offline suite's checks give a placeholder backend a fixed
+`ownershipInfo` answer, since the placeholder backends never say `some` on
+their own: `checkOwnershipGate` (`Main.lean`) asserts a matching-but-unmarked
+resource is not adopted and a marked one is, `checkOrphanRecheck` asserts a
+`deleteOrphan` refuses when the marker has vanished and proceeds when it has
+not, and `checkDiscover` asserts `discover` rebuilds a row for a marked
+resource and nothing for an unmarked one. None of the three has run against a
+real account yet.
+
 ## Known defects
 
 Recorded in full in [`diff-semantics.md`](diff-semantics.md)'s ledger. The one
@@ -723,9 +763,11 @@ Not a surprise waiting to be discovered; it is written down.
 
 `Plan.outside` used to head this list — declared, never consumed, and the
 reason deleting a resource from a declaration left it running in the cloud. It
-is gone, not softened: membership is now `Infra.Core.Ledger`, a committed
-record that survives the declaration it came from, and `forget` is how a
-resource leaves it without being destroyed.
+is gone, not softened: membership is now decided by `Infra.Core.Ownership`'s
+marker and boundary for the kinds a backend can read tags for, and by naming
+alone for the rest, with `Infra.Core.Ledger` — a local, uncommitted cache,
+rebuildable with `infra discover` — as what survives the declaration it came
+from either way. `forget` is how a resource leaves it without being destroyed.
 
 `S3BucketSpec.region` used to head this list — a field that did not place the
 bucket and was only compared, so a bucket declared without it proposed a

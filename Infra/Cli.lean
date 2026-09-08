@@ -203,10 +203,12 @@ def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Un
     "For the real thing: `plan` (reads), then `apply` (changes).")
 
 def usage (exe : String) : String := String.intercalate "\n"
-  [ s!"usage: {exe} [check | refresh | plan [--destroy] | apply [--force] | destroy]"
+  [ s!"usage: {exe} [check | refresh | discover | plan [--destroy] | apply [--force] | destroy]"
   , ""
   , "  check            run the offline self-checks (default)"
   , "  refresh          observe the declared clouds and cache what is there"
+  , "  discover         rebuild the ledger from real ownership evidence, for"
+  , "                   the kinds a backend can report tags for"
   , "  plan             show what would change, without changing anything"
   , "  plan --destroy   show what tearing the fleet down would delete"
   , "  apply            actually reconcile"
@@ -216,7 +218,9 @@ def usage (exe : String) : String := String.intercalate "\n"
   , "  Deleting a resource from the declaration destroys it, because the"
   , "  ledger and not the declaration records what is managed. To stop"
   , "  managing something without destroying it, say `forget` in the"
-  , "  declaration. `destroy` is `apply` against an empty declaration."
+  , "  declaration. `destroy` is `apply` against an empty declaration. The"
+  , "  ledger is a cache: `discover` rebuilds what it can from the marker tag"
+  , "  `infra` itself writes, rather than trusting past runs to have it right."
   ]
 
 /-- The whole front end for one fleet.
@@ -242,13 +246,22 @@ def usage (exe : String) : String := String.intercalate "\n"
 
     The ledger lives under `cacheRoot` too, and is **not** committed. It was,
     briefly, on the reasoning that what a fleet manages is intent; that was
-    wrong, and CI is where it showed. `Infra.Core.Ownership` records the
-    reasoning and sketches the marker-and-boundary model meant to replace it,
-    which is not yet wired to anything.
+    wrong, and CI is where it showed. `Infra.Core.Ownership`'s marker-and-
+    boundary model is what actually decides membership now — the adoption
+    loop and the orphan-delete check in `Engine.push` both consult it — for
+    the kinds a backend can report tags for (`Backend.ownershipInfo`); the
+    ledger itself is the cache of that decision, rebuildable with `discover`.
+    A kind not yet migrated keeps the old naming-only rule unchanged.
 
     `forgets` is the `forget` declarations, which the `fleet` command generates
     as `myFleet.forgets`. Each one releases a resource from the ledger without
     deleting it.
+
+    `boundary` is the realm and exclusion legs of the ownership model
+    (`Infra.Core.Ownership.Boundary`): exclusions, and an optional cutoff date
+    below which an unmarked-but-old resource is treated as pre-dating `infra`
+    rather than foreign. Empty by default, which is the same as not having the
+    model at all for a fleet that never sets it.
 
     **Deliberately has no default.** It had one, and that was a silent
     catastrophe waiting: a fleet could write `forget scaleway queues "x"`,
@@ -263,7 +276,7 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
     (accounts : Accounts := {})
     (regions : Regions := {})
     (cacheRoot : System.FilePath := defaultCacheRoot / exe)
-    (forgets : List (Released κ)) (args : List String) :
+    (forgets : List (Released κ)) (boundary : Boundary := {}) (args : List String) :
     IO UInt32 := do
   -- Resolved once, at the edge: whether stdout is a terminal is a property of
   -- this invocation, not of a plan, so the engine is told rather than asking.
@@ -299,6 +312,18 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
       let rows ← Ledger.load cacheRoot
       let outstanding := (plan target world rows forgets).length
       IO.println s!"refreshed; {rows.length} managed; {outstanding} action(s) outstanding"
+  -- Rebuilds the ledger as what it is documented to be: a cache of ownership,
+  -- not the record of it. Only kinds a backend has been taught to read tags
+  -- for (`Backend.ownershipInfo`) are actually re-derived; every other kind's
+  -- rows are carried over untouched, so a fleet with un-migrated kinds does
+  -- not lose what it already knew about them.
+  | ["discover"] =>
+    reporting <| withLive fun bs => do
+      let before ← Ledger.load cacheRoot
+      let after ← discover (κ := κ) bs boundary
+        (fun p k nm => (regions.codeFor p k nm).getD "") before
+      Ledger.save cacheRoot after
+      IO.println s!"discovered; {after.length} managed (was {before.length})"
   -- Four commands, one body. They vary in two independent ways — *which*
   -- declaration to reconcile against, and whether to actually do it — so
   -- writing them out separately would be four copies of the same three lines.
@@ -326,7 +351,8 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
         -- The same resolution `backendFor` routes on, so a row records the
         -- region the resource was actually created in rather than a second,
         -- differently-defaulted answer.
-        , regionOf := fun p k nm => (regions.codeFor p k nm).getD "" }
+        , regionOf := fun p k nm => (regions.codeFor p k nm).getD ""
+        , boundary }
       let opts : PushOptions := { apply := doIt, colour, force := forced }
       -- `edges := target` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
