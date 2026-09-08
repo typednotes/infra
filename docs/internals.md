@@ -385,7 +385,10 @@ an exclusion list — so the ledger for those kinds is a rebuildable cache
 (`infra discover`) rather than the sole record. A kind `ownershipInfo` cannot
 yet read tags for still falls back to ledger membership alone, so
 `lake test -- <cloud> sweep` remains what finds debris a ledger cannot name
-for those: it asks the account, matching on the `ci-tests-infra-` prefix.
+for those: it asks the account, matching on the `ci-tests-infra-` prefix. The
+procedure — that verb versus `destroy`, the Cleanup workflow and its review
+gate, and the three things a sweep structurally cannot reach — is in
+[`../ci/README.md`](../ci/README.md).
 
 ## Backends: three ways to reach a cloud
 

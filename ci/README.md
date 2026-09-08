@@ -394,3 +394,107 @@ To see what an application currently has:
 scw iam policy list application-id="$APP_ID"
 scw iam permission-set list
 ```
+
+## Cleaning up after a failed live run
+
+A failed leg leaves the accounts in whatever state it died in. The workflow's
+own backstop tears down and then sweeps, so most failures clean up after
+themselves — but a job that is cancelled, times out, or loses its runner
+does not run the backstop at all, and a resource nobody deleted keeps
+billing quietly.
+
+Two verbs, and picking the wrong one is why this section exists:
+
+| | What it deletes | When it is the right one |
+|---|---|---|
+| `lake test -- <cloud> destroy` | what the **local ledger** records (`.infra/live-<cloud>/infra.ledger.json`) | on the machine that ran the apply, straight after it failed |
+| `lake test -- <cloud> sweep` | every resource named `ci-tests-infra-*` the credentials can **list** | anywhere else, and always in CI |
+
+The ledger is gitignored and does not survive a CI job, so a fresh runner asked
+to `destroy` finds an empty ledger and deletes nothing however much is
+standing. That is the whole reason `sweep` exists: it asks the account instead
+of asking local state. Every resource the live fleets declare is named
+`ci-tests-infra-*`, and a `#guard` in `test/Live.lean` holds that naming rule
+precisely so a sweep can rely on it — `isDebris` is the only thing standing
+between a sweep and somebody else's resources, which is why it is one function
+used in one place.
+
+### The normal route: the Cleanup workflow
+
+`.github/workflows/cleanup.yml` sweeps with CI's own credentials, one job per
+cloud, in the same concurrency group as that cloud's live test so a sweep can
+never race the run whose resources it would delete. It also runs weekly on a
+schedule, because debris costs money quietly.
+
+```sh
+gh workflow run cleanup.yml -f provider=all      # or: aws | scaleway | gcp
+gh run list --workflow=cleanup.yml --limit 3
+```
+
+**The jobs then wait for a review**, because they carry `environment:
+production` and that environment requires a reviewer. That gate is deliberate:
+a sweep deletes without asking anything else. Approve it in the Actions UI, or:
+
+```sh
+RUN=<the run id printed above>
+# The environment id, and whether you are allowed to approve it
+gh api "repos/typednotes/infra/actions/runs/$RUN/pending_deployments" \
+  -q '.[] | "\(.environment.name) \(.environment.id) approvable=\(.current_user_can_approve)"'
+
+gh api -X POST "repos/typednotes/infra/actions/runs/$RUN/pending_deployments" \
+  -F 'environment_ids[]=<the id from above>' \
+  -f state=approved -f comment='sweep debris from a failed live run'
+
+gh run watch "$RUN" --exit-status
+gh run view "$RUN" --log | grep -E "sweeping|deleted|swept|nothing to sweep|would not delete"
+```
+
+A sweep that finds nothing prints `nothing to sweep — the account is clean` and
+exits zero, so it is also the check: run it twice, and the second pass should
+find nothing. A sweep that finds something is worth reading — it means a run
+did not clean up after itself, and the workflow says so in its step summary.
+
+### Sweeping from a laptop
+
+Same code path, your credentials. Each cloud needs only its own variables, and
+the region has to match where the live fleet is placed — `awsFull in ireland`,
+`scalewayFull in paris`, `gcpFull in paris` (`test/Live.lean`), which
+`Infra/Core/Region.lean` maps to `eu-west-1`, `fr-par` and `europe-west9`.
+The variable names are `Infra/Core/Credentials.lean`'s, not the CLIs':
+
+```sh
+# AWS. AWS_SESSION_TOKEN only if the credentials are temporary.
+AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… AWS_REGION=eu-west-1 \
+  lake test -- aws sweep
+
+# Scaleway.
+SCW_ACCESS_KEY=… SCW_SECRET_KEY=… SCW_DEFAULT_PROJECT_ID=… SCW_DEFAULT_REGION=fr-par \
+  lake test -- scaleway sweep
+
+# Google Cloud.
+GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)" \
+GOOGLE_CLOUD_PROJECT=typednotes GOOGLE_CLOUD_REGION=europe-west9 \
+  lake test -- gcp sweep
+```
+
+### What a sweep cannot reach
+
+Three limits, all structural rather than bugs, and worth knowing before
+concluding an account is clean:
+
+- **Only prefixed names.** Anything not called `ci-tests-infra-*` is somebody's,
+  and a sweep must never touch it. A resource the fleet renamed *away* from the
+  prefix would be invisible — which is what the naming `#guard` prevents.
+- **Only kinds a lister covers, in regions the fleet declares.** A sweep
+  enumerates `Kind` through `Backends.listers`, so a resource placed somewhere
+  the declaration never mentions is out of reach. Concretely on Scaleway: the
+  **SQS credential named `infra`** is not a `Kind` at all, so no sweep sees it.
+  It is harmless — `Scaleway.Sqs` reclaims and re-mints the name on a `409`,
+  and logs a `note:` when it does — but it is permanent. Remove it by hand
+  through the Queues console, or through the API the code itself uses:
+  `GET`/`DELETE https://api.scaleway.com/mnq/v1beta1/regions/fr-par/sqs-credentials[/{id}]`.
+- **Unmarked resources are not the sweep's problem, but they look like it.**
+  A resource that exists, matches a declared line and lacks the ownership
+  marker is refused by `push` rather than adopted, so no teardown will remove
+  it and only a sweep will — see `docs/persistence.md`. If a live run fails
+  with *declared but not managed*, that is this case, and a sweep is the fix.

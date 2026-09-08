@@ -212,7 +212,8 @@ so no plan line, no ledger row, and a fleet quietly doing less than its
 declaration says. It is also unreachable by every other path: `push` will not
 adopt it, `destroy` only knows the ledger, and `discover` re-derives from the
 same marker and reaches the same verdict, so only a name-based sweep can see
-it at all.
+it at all (`lake test -- <cloud> sweep`; the procedure is in
+[`../ci/README.md`](../ci/README.md)).
 
 Refusing to claim it is deliberate — a marker is the *only* positive evidence
 of ownership, and adopting on a name match is how you delete a stranger's
