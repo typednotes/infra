@@ -395,6 +395,86 @@ scw iam policy list application-id="$APP_ID"
 scw iam permission-set list
 ```
 
+## Running the live test
+
+`.github/workflows/live-test.yml` is manual only. Nothing pushes to it: a job
+that creates billable resources should be started by a person who meant to.
+
+```sh
+gh workflow run live-test.yml -f provider=aws    # aws | scaleway | gcp
+gh run list --workflow=live-test.yml --limit 3
+```
+
+There is no `all` here, unlike the Cleanup workflow. Each fleet in
+`test/Live.lean` is single-cloud and a run authenticates only the provider it
+was given — the AWS leg never reads Scaleway's secrets, which falls out of
+`Keys.providers` rather than out of the workflow's `if`s. Three clouds is three
+runs.
+
+The run then **waits for a review**, because it declares `environment:
+production`; approve it as below. On AWS that environment is load-bearing
+rather than procedural: the role's trust policy pins `sub` to
+`repo:typednotes/infra:environment:production`, so removing the line does not
+loosen the gate, it breaks OIDC entirely.
+
+### Approving a run
+
+Both this workflow and Cleanup stop here. In the Actions UI, or:
+
+```sh
+RUN=<the run id printed above>
+# The environment id, and whether you are allowed to approve it
+gh api "repos/typednotes/infra/actions/runs/$RUN/pending_deployments" \
+  -q '.[] | "\(.environment.name) \(.environment.id) approvable=\(.current_user_can_approve)"'
+
+gh api -X POST "repos/typednotes/infra/actions/runs/$RUN/pending_deployments" \
+  -F 'environment_ids[]=<the id from above>' \
+  -f state=approved -f comment='live test, aws'
+
+gh run watch "$RUN" --exit-status
+```
+
+A reviewer cannot approve their own run in some configurations, which is what
+`approvable=false` means when you are certain you are on the reviewer list.
+
+### Reading the run
+
+The driver flushes a progress line per stage, so a run in flight is legible
+rather than an eight-minute silence:
+
+```sh
+gh run view "$RUN" --log | grep -E "applying|converged|outstanding|ok — all"
+```
+
+Five stages per cloud — `full`, `ramp-up`, `ramp-down`, `trimmed`, `empty` —
+and each prints `[<cloud>/<stage>] applying (N declared, M managed)…` and then
+`[<cloud>/<stage>] converged; M managed`. While a stage settles, a line every
+fifteen seconds names what is still outstanding. The last stage declares
+nothing, so a clean run ends `[aws] ok — all 5 stages` and leaves the account
+empty; the `empty` stage *is* the teardown.
+
+Before any of that the job builds, runs the offline suite, and checks that the
+chosen provider's credentials are present — a missing repository secret fails
+there, naming the variable, rather than later as an opaque 403. What those
+credentials are and how they were provisioned is `docs/ci-auth.md`. The live
+step is capped at sixteen minutes and the job at twenty, sized from the
+driver's `settleSeconds := 180` polls plus create and delete of what stage 1
+declares — twelve resources on AWS and Scaleway, ten on GCP, pinned by `#guard`
+in `test/Live.lean`.
+
+### Repeating a run
+
+`concurrency: live-test-<provider>` queues a second run for the same cloud
+rather than cancelling it, so two runs can never see each other's resources and
+a run always reaches its teardown. What it does not impose is a *gap*, and AWS
+needs one: SQS refuses to recreate a queue deleted less than sixty seconds ago.
+Back-to-back AWS runs fail on create with an error saying exactly that. Wait a
+minute between them.
+
+A run that fails tears itself down: the backstop step calls `destroy` and then
+`sweep`. A run that is cancelled, times out at the job level, or loses its
+runner does not reach the backstop at all — that is the next section.
+
 ## Cleaning up after a failed live run
 
 A failed leg leaves the accounts in whatever state it died in. The workflow's
@@ -433,18 +513,10 @@ gh run list --workflow=cleanup.yml --limit 3
 
 **The jobs then wait for a review**, because they carry `environment:
 production` and that environment requires a reviewer. That gate is deliberate:
-a sweep deletes without asking anything else. Approve it in the Actions UI, or:
+a sweep deletes without asking anything else. Approve it exactly as under
+*Approving a run* above, then:
 
 ```sh
-RUN=<the run id printed above>
-# The environment id, and whether you are allowed to approve it
-gh api "repos/typednotes/infra/actions/runs/$RUN/pending_deployments" \
-  -q '.[] | "\(.environment.name) \(.environment.id) approvable=\(.current_user_can_approve)"'
-
-gh api -X POST "repos/typednotes/infra/actions/runs/$RUN/pending_deployments" \
-  -F 'environment_ids[]=<the id from above>' \
-  -f state=approved -f comment='sweep debris from a failed live run'
-
 gh run watch "$RUN" --exit-status
 gh run view "$RUN" --log | grep -E "sweeping|deleted|swept|nothing to sweep|would not delete"
 ```

@@ -148,7 +148,8 @@ This is the section worth reading before trusting anything. Correctness of
 
 `lake test` runs the offline driver on every push, and every example with it.
 `lake test -- <provider>` is the live sequence, run from a manual workflow
-trigger, one cloud at a time.
+trigger, one cloud at a time. How to trigger it, approve it and read it is in
+`ci/README.md` ("Running the live test").
 
 **The staged sequence passes on all three clouds, as of 2026-09-07.** All three
 stages, on AWS, Scaleway and GCP. That is the first time membership has been

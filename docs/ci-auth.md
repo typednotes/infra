@@ -7,6 +7,9 @@ short-lived token, and there is nothing to leak, rotate, or revoke in a hurry.
 
 Scaleway is the exception and has no federation, so it keeps a scoped API key.
 
+Running the workflow, rather than provisioning what it authenticates as, is
+`ci/README.md` ("Running the live test").
+
 Everything below was set up for real in `typednotes` (GCP) and is written out
 for AWS; the values are this project's and are not secrets — an AWS account id
 appears in every ARN, and a GCP project number in every resource name.

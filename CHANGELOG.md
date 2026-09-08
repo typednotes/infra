@@ -110,6 +110,20 @@ declare *exactly* what stage 1 declares (same resources, same names, same
 graph — only mutable fields move), and each must declare something, so none is
 mistaken for a teardown by the brake.
 
+### Documentation
+
+- **How to run the live test is written down**, in `ci/README.md` ("Running the
+  live test"): the `gh workflow run live-test.yml -f provider=…` invocation,
+  the approval the `production` environment demands, what the driver prints
+  while it runs, and the sixty-second gap AWS needs between two runs. Only the
+  *cleanup* half of that had a runbook; triggering the thing it cleans up after
+  existed as a workflow file and a sentence in `docs/coverage.md` saying it was
+  manual. The approval commands now live once and Cleanup points at them.
+- **The live step's sizing comment named nine resources**, where stage 1
+  declares twelve on AWS and Scaleway and ten on GCP — `#guard`ed in
+  `test/Live.lean` since the fleets grew. Corrected in the workflow and quoted
+  from the guards in the runbook.
+
 ### Breaking
 
 - **`Infra.Cli.run` requires `forgets`** as of 0.6.0, and consumer projects
