@@ -62,7 +62,9 @@ open Lake DSL
 package «my-infra» where
   version := v!"0.1.0"
 
-require infra from git "https://github.com/typednotes/infra" @ "main"
+-- A tag, not `main`: the front end's shape is part of what your `Main.lean`
+-- is written against, and moving forward should be a deliberate edit.
+require infra from git "https://github.com/typednotes/infra" @ "v0.9.0"
 
 @[default_target]
 lean_exe «my-infra» where

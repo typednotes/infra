@@ -51,6 +51,16 @@ Concretely, when a change lands:
   `lakefile.lean` link flags or workflows change, the scaffolder's copies have
   to change with them. `lake exe infra new /tmp/x` and building the result is
   the check.
+- **A release bumps the version everywhere it is written down.**
+  `lakefile.lean`'s `version`,
+  `Infra/Cli/New.lean`'s `infraRev` (the tag a scaffolded project is pinned
+  to), the `rev`/`@` in `README.md`, `docs/tutorial.md` and `site/index.html`,
+  and the heading in `CHANGELOG.md` and `docs/coverage.md`. A consumer is
+  pinned to a tag rather than to `main` on purpose — the front end's shape is
+  part of what its `Main.lean` is written against — so a release that forgets
+  `infraRev` scaffolds projects against the previous one. Tag the commit, and
+  push the tag: a pinned `require` cannot resolve until the tag exists on the
+  remote.
 - **`docs/branding.md` governs the artwork.** Do not add a third-party logo
   without reading it first.
 

@@ -47,6 +47,27 @@ import Infra.Core.Kind
 
 namespace Infra.Cli.New
 
+/-- The `infra` release a scaffolded project is pinned to, and the `require`
+    line that names it.
+
+    A tag rather than `main`, because the front end's shape is part of what a
+    scaffolded `Main.lean` is written against: `Infra.Cli.run "x" myFleet` does
+    not compile against an `infra` older than 0.9.0, and `main` would hand a
+    new project whatever the library happens to be mid-change. Pinning costs a
+    consumer one deliberate edit to move forward, which is the right way round.
+
+    **Bump this on every release**, in the same commit as `lakefile.lean`'s
+    `version`. It is written into the scaffolded lakefile, into the `require`
+    line `init` appends when converting a `lakefile.toml`, and into what
+    `scaffold` prints when it keeps a lakefile it did not write — one string,
+    so those three cannot disagree. -/
+private def infraRev : String := "v0.9.0"
+
+/-- The dependency line a consumer's `lakefile.lean` needs, pinned to
+    `infraRev`. -/
+private def requireInfra : String :=
+  "require infra from git \"https://github.com/typednotes/infra\" @ \"" ++ infraRev ++ "\""
+
 /-- The platform-conditional native link flags every consumer needs.
 
     Kept byte-for-byte in step with `infra`'s own `lakefile.lean`, for the
@@ -835,7 +856,7 @@ package «" ++ name ++ "» where
   version := v!\"0.1.0\"
   moreLinkArgs := nativeLinkArgs
 
-require infra from git \"https://github.com/typednotes/infra\" @ \"main\"
+" ++ requireInfra ++ "
 
 @[default_target]
 lean_lib Fleet
@@ -1142,7 +1163,7 @@ private def lakefileFromToml (p : Ported) : String :=
   let hasInfra := p.requires.any fun r => (r.splitOn "«infra»").length > 1
   let requires :=
     if hasInfra then p.requires
-    else p.requires ++ ["require infra from git \"https://github.com/typednotes/infra\" @ \"main\""]
+    else p.requires ++ [requireInfra]
   let libs := (p.libs ++ ["Fleet", "Catalogue"]).eraseDups
   let exes := if p.exes.isEmpty then [(p.name, "Main")] else p.exes
   "import Lake\nopen System Lake DSL\n\n" ++
@@ -1325,7 +1346,7 @@ lake exe infra init {dir}"
     IO.println "flags are NOT in it yet. Both are required — Lake does not"
     IO.println "propagate link flags from a dependency. Add to lakefile.lean:"
     IO.println ""
-    IO.println "  require infra from git \"https://github.com/typednotes/infra\" @ \"main\""
+    IO.println s!"  {requireInfra}"
     IO.println ""
     IO.println "  -- and the `moreLinkArgs` block from this project's own"
     IO.println "  -- lakefile.lean, which `lake exe infra new` writes in full:"
