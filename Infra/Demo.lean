@@ -137,6 +137,17 @@ def demoPlan : Plan demoKeys where
     | .scaleway, .scalewayFunction, _ => .present ingestSpec
     | _,         _,                 _ => .unmanaged
 
+/-- The same declaration as a `Fleet`, which is what a front end takes.
+
+    Written out by hand because `demoPlan` is: the `fleet` command builds this
+    value for a declared fleet, and everything it puts in it is available to a
+    hand-written one. `forgets := []` is not boilerplate — the field has no
+    default precisely so that a fleet with releases cannot omit them. -/
+def demoFleet : Fleet where
+  keys    := demoKeys
+  plan    := demoPlan
+  forgets := []
+
 /-- Every key `unmanaged`: ⊥ of the `Status` order, so satisfied by anything. -/
 def idlePlan : Plan demoKeys where
   assign _ _ _ := .unmanaged
@@ -807,23 +818,41 @@ private def ledgerRows : List Ledger.Row :=
       `releasing` is the only way to make one, which is what turns "the check
       is present" into "the check cannot be avoided".
 
-    * **Omitting the releases at the call site.** `Cli.run`'s `forgets` has no
-      default, so a fleet that declares a `forget` and forgets to pass it does
-      not compile:
+    * **Omitting the releases.** They are a field of the declaration rather
+      than an argument to the front end, and the field has no default, so a
+      hand-written `Fleet` that leaves them out does not elaborate:
 
-          Infra.Cli.run "ledger" ledgerFleet.plan (args := args)
+          example : Fleet := { keys := ledgerFleet.keys, plan := ledgerFleet.plan }
+
+          Fields missing: `forgets`
+
+      For a declared fleet the question no longer arises: the `fleet` command
+      fills the field and `Infra.Cli.run` takes the whole value. It used to
+      take the plan and the releases as separate arguments, and while the
+      release argument had a default, that combination compiled and then
+      destroyed the resource.
+
+    * **Assembling one fleet out of two.** The plan and the releases are both
+      indexed by the key family, so a bundle cannot be built from two
+      declarations:
+
+          example : Fleet :=
+            { keys := ledgerFleet.keys, plan := dagFleet.plan
+              forgets := ledgerFleet.forgets }
 
           Type mismatch
-            fun forgets => Infra.Cli.run "ledger" ledgerFleet.plan … forgets args
+            dagFleet.plan
           has type
-            List (Released ledgerFleet.keys) → IO UInt32
+            Plan dagFleet.keys
           but is expected to have type
-            IO UInt32
+            Plan ledgerFleet.keys
 
-      The same shape a missing required field takes everywhere else here: what
-      you are left holding is a function still waiting for the argument. Before
-      the default was removed, that combination compiled and then destroyed the
-      resource. -/
+      Placement is the half that carries no index — `Regions` is deliberately
+      fleet-independent, see `Regions.slot` — and it is guarded by
+      construction instead: `myFleet.regions` reaches the front end inside
+      `myFleet`, so there is no argument left to hand it a different fleet's
+      by. While `run` took the two separately it accepted one fleet's plan
+      with another's placement, and built it in the wrong region. -/
 
 end LedgerGuards
 

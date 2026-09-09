@@ -57,7 +57,5 @@ fleet exampleQueue in paris where
 #guard Locality.warsaw.covers exampleQueue.keys = true
 
 def main (args : List String) : IO UInt32 := do
-  Infra.Cli.run "scaleway-queue" exampleQueue.plan
-    (forgets := exampleQueue.forgets)
-    (accounts := ← Infra.Cli.Accounts.fromEnv)
-    (regions := exampleQueue.regions) (args := args)
+  Infra.Cli.run "scaleway-queue" exampleQueue
+    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)

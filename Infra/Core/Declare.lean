@@ -1,6 +1,7 @@
 import Lean
 import Infra.Core.Ergonomics
 import Infra.Core.Region
+import Infra.Core.Bundle
 import Infra.Specs.Build
 
 /-
@@ -88,8 +89,15 @@ import Infra.Specs.Build
   Omitting `in` is still allowed and still means what it always did — each
   cloud's region comes from its credentials.
 
-  Generates `myFleet.keys : Keys`, `myFleet.plan : Plan myFleet.keys` and
-  `myFleet.regions : Regions`, plus one abbreviation per `as`.
+  Generates `myFleet.keys : Keys`, `myFleet.plan : Plan myFleet.keys`,
+  `myFleet.regions : Regions` and `myFleet.forgets : List (Released
+  myFleet.keys)`, plus one abbreviation per `as` — and `myFleet : Fleet`, the
+  four of them as a single value.
+
+  That last one is what a front end takes: `Infra.Cli.run "my-infra" myFleet`.
+  The members remain ordinary definitions, so `myFleet.keys` still means what
+  it always did; the bundle exists so that a caller cannot pass one fleet's
+  plan with another's placement. See `Infra.Core.Fleet`.
 -/
 
 namespace Infra.Core
@@ -404,6 +412,19 @@ around it names a `{a.getId}` region; a region code belongs to one cloud"
     cmds := cmds.push (← `(
       def $forgetsId : List (Infra.Core.Released $keysId) :=
         [$forgetTerms,*]))
+
+    -- 6. The four of them as one value, which is what a front end takes. The
+    --    members stay as their own definitions — `myFleet.keys` is a `def`,
+    --    not a projection, so a `#guard` over it evaluates exactly as it did
+    --    and every `as` abbreviation keeps its short type. The bundle names
+    --    them; it does not replace them. See `Infra.Core.Fleet` for why the
+    --    front end wants one value rather than three.
+    cmds := cmds.push (← `(
+      def $fleetName : Infra.Core.Fleet where
+        keys    := $keysId
+        plan    := $planId
+        regions := $regionsId
+        forgets := $forgetsId))
 
     for c in cmds do
       elabCommand c

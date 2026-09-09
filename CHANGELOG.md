@@ -8,7 +8,35 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
-## [Unreleased]
+## [0.9.0] — 2026-09-09
+
+### Changed
+
+- **`Infra.Cli.run` takes the fleet, not three pieces of it.** A declaration
+  now elaborates to a value of its own — `myFleet : Infra.Core.Fleet`, holding
+  the keys, the plan, the placement and the `forget`s that `myFleet.keys`,
+  `myFleet.plan`, `myFleet.regions` and `myFleet.forgets` still name
+  individually — and the front end takes that:
+
+      Infra.Cli.run "my-infra" myFleet (accounts := accounts) (args := args)
+
+  **Breaking.** Every call site loses `(regions := …)` and `(forgets := …)`
+  and names the fleet instead of its plan; a hand-written fleet builds the
+  record itself (`{ keys := …, plan := …, forgets := [] }`, see
+  `Infra.Demo.demoFleet`). The three arguments spelled the same fleet's name
+  three times, but the reason to bundle them is not brevity: `Plan κ` and
+  `Released κ` are indexed by the key family and `Regions` deliberately is
+  not, so `run "x" a.plan (regions := b.regions)` compiled and built fleet `a`
+  wherever `b` said it lived. There is no second argument to take the other
+  half from now.
+
+  `forgets` keeps its no-default guarantee, moved to the field: a hand-written
+  `Fleet` that omits it does not elaborate, and a declared one cannot omit it
+  because the `fleet` command fills it in.
+
+  `run` also gained `headline`, which titles the default offline self-check —
+  the whole of what three of the four examples passed `selfCheck` for, and the
+  last place a call site had to name the plan a second time.
 
 ### Fixed
 

@@ -1016,6 +1016,6 @@ def main (args : List String) : IO UInt32 :=
   | ["gcp-check"] =>
     IO.eprintln "usage: lake exe infra gcp-check <service-account-key.json>" *> pure 2
   | ["gcp-check", path] => gcpCheck path
-  -- `demoPlan` is hand-written rather than declared by the `fleet` command, so
-  -- it has no `forget` declarations to pass.
-  | _ => Infra.Cli.run "infra" demoPlan selfCheck (forgets := []) (args := args)
+  -- `demoFleet` is hand-written rather than declared by the `fleet` command;
+  -- it bundles `demoPlan` with an empty release list. See `Infra.Demo`.
+  | _ => Infra.Cli.run "infra" demoFleet (selfCheck := selfCheck) (args := args)

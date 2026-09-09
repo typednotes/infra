@@ -94,8 +94,7 @@ fleet myFleet in paris where
       , tags       := [("project", "tutorial")] }
 
 def main (args : List String) : IO UInt32 :=
-  Infra.Cli.run "my-infra" myFleet.plan
-    (regions := myFleet.regions) (args := args)
+  Infra.Cli.run "my-infra" myFleet (args := args)
 ```
 
 That is a complete, working declaration. Build and run it:
@@ -113,8 +112,10 @@ For the real thing: `plan` (reads), then `apply` (changes).
 
 Nothing was contacted and nothing was charged. Read the four pieces:
 
-- `fleet myFleet` declares the fleet and generates `myFleet.keys`,
-  `myFleet.plan` and `myFleet.regions`.
+- `fleet myFleet` declares the fleet. It generates `myFleet.keys`,
+  `myFleet.plan`, `myFleet.regions` and `myFleet.forgets`, and `myFleet`
+  itself — the four of them as one value, which is what you hand to
+  `Infra.Cli.run`.
 - `in paris` says where it lives — see §5.
 - `provider scaleway where` names the cloud once for everything under it.
 - `resource objectStore "my-first-bucket"` is one resource: its **kind**, its
@@ -159,8 +160,7 @@ def accounts : Infra.Cli.Accounts where
     | .scaleway => some "your-org-uuid"
 
 def main (args : List String) : IO UInt32 :=
-  Infra.Cli.run "my-infra" myFleet.plan
-    (accounts := accounts) (regions := myFleet.regions) (args := args)
+  Infra.Cli.run "my-infra" myFleet (accounts := accounts) (args := args)
 ```
 
 Neither value is a secret — an AWS account id appears in every ARN — and they

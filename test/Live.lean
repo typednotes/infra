@@ -961,20 +961,24 @@ structure Stage where
       against after the stage settles. -/
   declared : List String
 
-/-- Pack a declaration, deriving `declared` from its own keys. -/
-def stage {κ : Keys} (label : String) (plan : Plan κ) (regions : Regions)
-    (forgets : List (Released κ)) : Stage where
-  κ := κ
+/-- Pack a declaration, deriving `declared` from its own keys.
+
+    Takes the whole fleet rather than the three pieces of it the driver used to
+    unpack by hand, for the reason `Infra.Cli.run` does: `regions` carries no
+    key family, so a stage assembled from two declarations was a typo away and
+    would have run one fleet's plan in another's regions. -/
+def stage (label : String) (F : Fleet) : Stage where
+  κ := F.keys
   label := label
-  plan := plan
-  regions := regions
-  forgets := forgets
+  plan := F.plan
+  regions := F.regions
+  forgets := F.forgets
   declared :=
     (Finite.elems (α := ProviderId)).flatMap fun p =>
       (Finite.elems (α := Kind)).flatMap fun k =>
-        (Finite.elems (α := κ.Key p k)).filterMap fun key =>
-          match plan.assign p k key with
-          | .present _ => some (Ledger.slotId p k (κ.name p k key))
+        (Finite.elems (α := F.keys.Key p k)).filterMap fun key =>
+          match F.plan.assign p k key with
+          | .present _ => some (Ledger.slotId p k (F.keys.name p k key))
           | _          => none
 
 /-- The teardown stage: declare nothing, over the key family that names the
@@ -987,8 +991,9 @@ def stage {κ : Keys} (label : String) (plan : Plan κ) (regions : Regions)
     Nothing is forgotten in a teardown either: a `Released` key is one the
     ledger drops without deleting, which is the opposite of what this stage is
     for. -/
-def emptyStage (κ : Keys) (regions : Regions) : Stage :=
-  stage "empty" (Plan.absent κ) regions []
+def emptyStage (F : Fleet) : Stage :=
+  stage "empty" { keys := F.keys, plan := Plan.absent F.keys
+                  regions := F.regions, forgets := [] }
 
 /-- Everything the ledger says is managed, as slot strings. -/
 def ledgerSlots (rows : List Ledger.Row) : List String :=
@@ -1054,23 +1059,23 @@ adopted, and is therefore not destroyed by the teardown either — \
     are what get destroyed. -/
 def stagesFor : String → Option (List Stage)
   | "aws" => some
-    [ stage "full"      awsFull.plan      awsFull.regions      awsFull.forgets
-    , stage "ramp-up"   awsRampUp.plan    awsRampUp.regions    awsRampUp.forgets
-    , stage "ramp-down" awsRampDown.plan  awsRampDown.regions  awsRampDown.forgets
-    , stage "trimmed"   awsTrimmed.plan   awsTrimmed.regions   awsTrimmed.forgets
-    , emptyStage awsFull.keys awsFull.regions ]
+    [ stage "full" awsFull
+    , stage "ramp-up" awsRampUp
+    , stage "ramp-down" awsRampDown
+    , stage "trimmed" awsTrimmed
+    , emptyStage awsFull ]
   | "scaleway" => some
-    [ stage "full"      scalewayFull.plan     scalewayFull.regions     scalewayFull.forgets
-    , stage "ramp-up"   scalewayRampUp.plan   scalewayRampUp.regions   scalewayRampUp.forgets
-    , stage "ramp-down" scalewayRampDown.plan scalewayRampDown.regions scalewayRampDown.forgets
-    , stage "trimmed"   scalewayTrimmed.plan  scalewayTrimmed.regions  scalewayTrimmed.forgets
-    , emptyStage scalewayFull.keys scalewayFull.regions ]
+    [ stage "full" scalewayFull
+    , stage "ramp-up" scalewayRampUp
+    , stage "ramp-down" scalewayRampDown
+    , stage "trimmed" scalewayTrimmed
+    , emptyStage scalewayFull ]
   | "gcp" => some
-    [ stage "full"      gcpFull.plan      gcpFull.regions      gcpFull.forgets
-    , stage "ramp-up"   gcpRampUp.plan    gcpRampUp.regions    gcpRampUp.forgets
-    , stage "ramp-down" gcpRampDown.plan  gcpRampDown.regions  gcpRampDown.forgets
-    , stage "trimmed"   gcpTrimmed.plan   gcpTrimmed.regions   gcpTrimmed.forgets
-    , emptyStage gcpFull.keys gcpFull.regions ]
+    [ stage "full" gcpFull
+    , stage "ramp-up" gcpRampUp
+    , stage "ramp-down" gcpRampDown
+    , stage "trimmed" gcpTrimmed
+    , emptyStage gcpFull ]
   | _ => none
 
 /-! ### The stages really are different declarations

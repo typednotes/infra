@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.8.0 covers
+## What 0.9.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **14 resource kinds** (7 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -273,7 +273,7 @@ fleet exampleQueue where
 ```
 $ lake exe scaleway-queue          # offline: the plan, from placeholders
 would CREATE scaleway/queues/infra-example
-(dry run — pass --apply to execute)
+(dry run — nothing changed)
 
 $ lake exe scaleway-queue apply
 CREATE scaleway/queues/infra-example ... ok

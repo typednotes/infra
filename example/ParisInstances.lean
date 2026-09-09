@@ -315,9 +315,6 @@ private def teardown : List String :=
     `apply` creates **real, billable** instances that run until
     terminated. -/
 def main (args : List String) : IO UInt32 := do
-  Infra.Cli.run "paris-instances" webTier.plan
-    (forgets := webTier.forgets)
-    (selfCheck := Infra.Cli.offlinePlan webTier.plan
-      "paris: two t3.nano behind one security group")
-    (accounts := ← Infra.Cli.Accounts.fromEnv)
-    (regions := webTier.regions) (args := args)
+  Infra.Cli.run "paris-instances" webTier
+    (headline := "paris: two t3.nano behind one security group")
+    (accounts := ← Infra.Cli.Accounts.fromEnv) (args := args)

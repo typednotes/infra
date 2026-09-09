@@ -24,10 +24,12 @@ One apply, end to end. Each box is a real function; the names are searchable.
   ┌──────────────────────────────────────────────────────────┐
   │  myApp.keys     : Keys      one finite key type per      │
   │                             (provider, kind)             │
-  │  myApp.plan     : Plan κ    a total function from keys    │
-  │                             to Status (SpecOf k …)        │
-  │  myApp.regions  : Regions   where each slot lives         │
-  │  myApp.forgets  : List (Released κ)                       │
+  │  myApp.plan     : Plan κ    a total function from keys   │
+  │                             to Status (SpecOf k …)       │
+  │  myApp.regions  : Regions   where each slot lives        │
+  │  myApp.forgets  : List (Released κ)                      │
+  │                                                          │
+  │  myApp          : Fleet     the four above, as one value │
   └──────────────────────────────────────────────────────────┘
                  │
                  │  Everything above is a *value*. Nothing has run.
@@ -35,7 +37,7 @@ One apply, end to end. Each box is a real function; the names are searchable.
                  │  nonexistent instance size never gets this far —
                  │  see "Where the compiler stops you" below.
                  ▼
-  Infra.Cli.run                                    Infra/Cli.lean
+  Infra.Cli.run myApp                              Infra/Cli.lean
        │
        ├─ Ansi.wanted ......... colour on, only if stdout is a terminal
        ├─ liveFor κ regions ... build Backends; authenticate ONLY the
@@ -172,6 +174,7 @@ elaboration and emits ordinary definitions.
      myApp.regions               : Regions       via Regions.covering
      myApp.plan                  : Plan          via assignFromNamed
      myApp.forgets               : List (Released myApp.keys)
+     myApp                       : Fleet         the four, bundled
      a                           : myApp.keys.Key .aws .objectStore
 ```
 

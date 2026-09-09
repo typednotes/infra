@@ -1,6 +1,7 @@
 import Infra.Core.Engine
 import Infra.Core.Credentials
 import Infra.Core.Region
+import Infra.Core.Bundle
 import Infra.Core.GcpAuth
 import Infra.Providers.Live
 import Infra.Providers.Placeholder
@@ -231,19 +232,25 @@ def usage (exe : String) : String := String.intercalate "\n"
 
 /-- The whole front end for one fleet.
 
+    `F` is the declaration, whole: its keys, its plan, its placement and its
+    releases, which the `fleet` command emits as the single value `myFleet`.
+    These used to be three separate arguments, and every call site spelled the
+    same fleet's name three times to supply them — `run "x" x.plan (regions :=
+    x.regions) (forgets := x.forgets)`. Taking one value is not only shorter:
+    `Regions` is not indexed by the key family, so the three-argument form
+    accepted one fleet's plan alongside another's placement and built it in the
+    wrong place. See `Infra.Core.Fleet`.
+
     `selfCheck` is whatever offline checks the consumer wants run by `check`
-    (and by a bare invocation); it must not need credentials or a network.
+    (and by a bare invocation); it must not need credentials or a network. It
+    defaults to the plan against the placeholder backends, under `headline` —
+    which is all three examples ever wanted from it, and which no longer needs
+    the plan named a second time to say.
 
     `accounts` is which accounts the fleet is for. Every live command verifies
     it before touching anything — see `checkAccounts`. Omitting it means no
     check, which is the old behaviour and a worse default: a fleet that names
     its accounts cannot be applied into someone else's.
-
-    `regions` is where the fleet is, and the `fleet` command's `in` clause
-    generates it (`myFleet.regions`). Omitting it means each cloud's region
-    comes from its credentials, which is what every fleet did before placement
-    was expressible — and which fails, by design, when the credentials carry
-    no region at all.
 
     `cacheRoot` defaults to `.infra/<exe>`, not `.infra`: two fleets have
     different key families and their caches must never be read as if they were
@@ -258,10 +265,6 @@ def usage (exe : String) : String := String.intercalate "\n"
     the kinds a backend can report tags for (`Backend.ownershipInfo`); the
     ledger itself is the cache of that decision, rebuildable with `discover`.
     A kind not yet migrated keeps the old naming-only rule unchanged.
-
-    `forgets` is the `forget` declarations, which the `fleet` command generates
-    as `myFleet.forgets`. Each one releases a resource from the ledger without
-    deleting it.
 
     `boundary` is the realm and exclusion legs of the ownership model
     (`Infra.Core.Ownership.Boundary`): exclusions, an optional cutoff date
@@ -278,27 +281,26 @@ def usage (exe : String) : String := String.intercalate "\n"
     see `Ownership.legacyMarkerValue` for what that would do to an estate
     tagged before the name existed.
 
-    **Deliberately has no default.** It had one, and that was a silent
-    catastrophe waiting: a fleet could write `forget scaleway queues "x"`,
-    compile, discharge the `Assert`, and then destroy the queue, because the
-    releases never reached the engine. `forget` exists precisely to prevent
-    that. With no default the compiler asks every fleet, and `Released κ`'s
-    index means it cannot be answered with another fleet's list. Same reasoning
-    as `cacheRoot` above: making it structural is what stops a second fleet
-    forgetting. -/
-def run {κ : Keys} (exe : String) (target : Plan κ)
-    (selfCheck : IO Unit := offlinePlan target)
+    The releases (`F.forgets`) reach the engine because they are part of the
+    declaration rather than an argument someone has to remember — see
+    `Infra.Core.Fleet` for why that field has no default of its own. It was an
+    argument here, and briefly a defaulted one, which was a silent catastrophe
+    waiting: a fleet could write `forget scaleway queues "x"`, compile,
+    discharge the `Assert`, and then destroy the queue, because the releases
+    never reached the engine. -/
+def run (exe : String) (F : Fleet)
+    (headline : String := "")
+    (selfCheck : IO Unit := offlinePlan F.plan headline)
     (accounts : Accounts := {})
-    (regions : Regions := {})
     (cacheRoot : System.FilePath := defaultCacheRoot / exe)
-    (forgets : List (Released κ)) (boundary : Boundary := {}) (args : List String) :
+    (boundary : Boundary := {}) (args : List String) :
     IO UInt32 := do
   -- Resolved once, at the edge: whether stdout is a terminal is a property of
   -- this invocation, not of a plan, so the engine is told rather than asking.
   let colour ← Ansi.wanted
   let withLive (act : Backends → IO Unit) : IO Unit := do
-    let (bs, creds) ← liveFor κ regions boundary.fleetName
-    checkAccounts κ accounts creds colour
+    let (bs, creds) ← liveFor F.keys F.regions boundary.fleetName
+    checkAccounts F.keys accounts creds colour
     act bs
   -- Failures are reported, not thrown out of `main`. An escaping exception
   -- prints as "uncaught exception: …", which reads like a crash in the tool
@@ -323,9 +325,9 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
   -- `destroy` change membership.
   | ["refresh"] =>
     reporting <| withLive fun bs => do
-      let world ← pull (κ := κ) cacheRoot bs
+      let world ← pull (κ := F.keys) cacheRoot bs
       let rows ← Ledger.load cacheRoot
-      let outstanding := (plan target world rows forgets).length
+      let outstanding := (plan F.plan world rows F.forgets).length
       IO.println s!"refreshed; {rows.length} managed; {outstanding} action(s) outstanding"
   -- Rebuilds the ledger as what it is documented to be: a cache of ownership,
   -- not the record of it. Only kinds a backend has been taught to read tags
@@ -335,8 +337,8 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
   | ["discover"] =>
     reporting <| withLive fun bs => do
       let before ← Ledger.load cacheRoot
-      let after ← discover (κ := κ) bs boundary
-        (fun p k nm => (regions.codeFor p k nm).getD "") before
+      let after ← discover (κ := F.keys) bs boundary
+        (fun p k nm => (F.regions.codeFor p k nm).getD "") before
       Ledger.save cacheRoot after
       IO.println s!"discovered; {after.length} managed (was {before.length})"
   -- Four commands, one body. They vary in two independent ways — *which*
@@ -349,30 +351,31 @@ def run {κ : Keys} (exe : String) (target : Plan κ)
     let doIt     := args.head? == some "apply" || args.head? == some "destroy"
     let forced   := args.contains "--force"
     reporting <| withLive fun bs => do
-      let entries ← observe (κ := κ) cacheRoot bs
+      let entries ← observe (κ := F.keys) cacheRoot bs
       let world := worldOf entries
       let rows ← Ledger.load cacheRoot
       -- `Plan.absent` is the empty declaration: the same keys, every one
       -- `.absent`. So `destroy` is not a second teardown mechanism, it is
       -- this one with an empty target, and the guard below checks that.
-      let wanted := if tearDown then Plan.absent κ else target
+      let wanted := if tearDown then Plan.absent F.keys else F.plan
       -- No teardown special-case here: `push` decides that from the target,
       -- because `Plan.absent` declares nothing and that is exactly what a
       -- teardown is. `--force` stays for the other case, a declaration that
       -- still declares things and drops most of them.
-      let store : Store κ :=
+      let store : Store F.keys :=
         { root     := some cacheRoot
-        , rows, forgets
+        , rows
+        , forgets  := F.forgets
         -- The same resolution `backendFor` routes on, so a row records the
         -- region the resource was actually created in rather than a second,
         -- differently-defaulted answer.
-        , regionOf := fun p k nm => (regions.codeFor p k nm).getD ""
+        , regionOf := fun p k nm => (F.regions.codeFor p k nm).getD ""
         , boundary }
       let opts : PushOptions := { apply := doIt, colour, force := forced }
-      -- `edges := target` matters only for a teardown: `Plan.absent` carries
+      -- `edges := F.plan` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
       -- order deletions by. See `orderActions`.
-      for line in ← push bs wanted world opts (edges := target) (store := store)
+      for line in ← push bs wanted world opts (edges := F.plan) (store := store)
                         (seen := some entries) do
         IO.println line
   | _ =>

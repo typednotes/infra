@@ -1,4 +1,4 @@
-# Coverage in 0.8.0
+# Coverage in 0.9.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-07.
@@ -742,7 +742,7 @@ cases that matter: a row still declared produces nothing, a row named in
 `forget` produces a non-destructive `FORGET`, and a row the declaration has
 dropped produces a `DELETE`.
 
-**Verified by the compiler.** Four things, each recorded with the message it
+**Verified by the compiler.** Five things, each recorded with the message it
 actually produces in `Infra/Demo.lean`'s negative checks:
 
 - `forget`ting a resource the same fleet still declares does not elaborate, via
@@ -751,9 +751,14 @@ actually produces in `Infra/Demo.lean`'s negative checks:
   key family.
 - A release cannot be built by hand — `Released.mk` is private, so `releasing`
   and its check are the only way to obtain one.
-- A fleet that declares a `forget` and does not pass it to `Cli.run` does not
-  compile, because `forgets` has no default. That combination used to compile
-  and then destroy the resource.
+- A fleet cannot omit its releases. They are a field of `Infra.Core.Fleet` with
+  no default, so a hand-written one that leaves them out does not elaborate
+  ("Fields missing: `forgets`"), and a declared one cannot leave them out
+  because the `fleet` command fills the field. They used to be an argument to
+  `Cli.run`, and while that argument had a default the omission compiled and
+  then destroyed the resource.
+- A fleet cannot be assembled out of two: `plan` and `forgets` are indexed by
+  the `keys` field beside them.
 
 **Run against all three accounts.** The wiring in `Infra.Cli` that loads the
 ledger, hands it to `push`, and writes it back after each action, and with it

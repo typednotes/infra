@@ -278,14 +278,14 @@ def accounts : Infra.Cli.Accounts where
     | .scaleway => none   -- e.g. some \"your-org-uuid\"
     | .gcp      => none   -- e.g. some \"your-gcp-project\"
 
-/-- The dispatch lives in `infra`; this repo declares. -/
+/-- The dispatch lives in `infra`; this repo declares.
+
+    `" ++ name ++ "` is the whole declaration — its keys, its plan, its
+    placement and its `forget`s — which the `fleet` command builds as one
+    value. Nothing here has to take it apart. -/
 def main (args : List String) : IO UInt32 :=
-  Infra.Cli.run \"" ++ name ++ "\" " ++ name ++ ".plan
-    (accounts := accounts) (regions := " ++ name ++ ".regions)
-    -- Without this, a `forget` in the declaration compiles and then the
-    -- resource is destroyed anyway, which is the one thing `forget` exists to
-    -- prevent.
-    (forgets := " ++ name ++ ".forgets)
+  Infra.Cli.run \"" ++ name ++ "\" " ++ name ++ "
+    (accounts := accounts)
     -- Uncomment if this account holds more than one fleet. The name is
     -- written into the marker tag on everything this fleet creates and
     -- required back out of it, so another fleet's resources read as foreign
@@ -1342,8 +1342,7 @@ lake exe infra init {dir}"
     IO.println ""
     IO.println "  import Fleet"
     IO.println "  def main (args : List String) : IO UInt32 :="
-    IO.println s!"    Infra.Cli.run \"{exeName}\" Fleet.plan (accounts := accounts)"
-    IO.println   "      (regions := Fleet.regions) (forgets := Fleet.forgets) (args := args)"
+    IO.println s!"    Infra.Cli.run \"{exeName}\" {exeName} (accounts := accounts) (args := args)"
     IO.println ""
     IO.println "See the Main.lean that `infra new` writes for the whole file."
     IO.println ""

@@ -281,9 +281,9 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.8.0</strong> — a five-stage live sequence that scales a fleet up
-  and down again on three real
-  clouds.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.9.0</strong> — a declaration is one value: the front end takes the
+  fleet, not three pieces of
+  it.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -353,8 +353,7 @@
       , tags       := [(<span class="s">"project"</span>, <span class="s">"tutorial"</span>)] }
 
 <span class="k">def</span> main (args : <span class="t">List String</span>) : <span class="t">IO UInt32</span> :=
-  Infra.Cli.run <span class="s">"my-infra"</span> myFleet.plan
-    (regions := myFleet.regions) (args := args)</pre>
+  Infra.Cli.run <span class="s">"my-infra"</span> myFleet (args := args)</pre>
         </div>
 
         <div class="slide" id="s1" hidden role="group" aria-roledescription="slide" aria-label="2 of 4">
@@ -688,7 +687,8 @@ lake exe my_infra apply    <span class="c"># make it so</span></pre>
     </div>
     <p class="sub" style="margin:26px 0 12px">
       You get <code>Fleet.lean</code> (the whole declaration),
-      <code>Main.lean</code> (five lines), a <code>.gitignore</code> that
+      <code>Main.lean</code> (the account ids, and one call handing the whole
+      declaration to <code>Infra.Cli.run</code>), a <code>.gitignore</code> that
       excludes the state cache, <code>Catalogue.lean</code> with every resource
       kind declared once to copy from, and pipelines for <strong>GitHub
       Actions, GitLab CI, CircleCI, Azure Pipelines and Jenkins</strong> — each
