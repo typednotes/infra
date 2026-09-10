@@ -98,6 +98,25 @@ def checkLedger : IO Unit := do
   finally
     IO.FS.removeDirAll tmp
 
+/-- `Infra.Providers.all`, except the Scaleway backend answers `ownershipInfo`
+    with the marker tag every kind `composedPlan` uses (`.secrets`,
+    `.postgres`).
+
+    Every backend `Infra.Providers.all` is built from is a placeholder
+    answering `ownershipInfo` with `none` — meaning "cannot verify" — for
+    every kind, so an apply against it now *correctly* refuses to adopt a
+    matched-but-unverified resource (see `Engine.push`'s `none` branch).
+    Exercising the adoption path `checkLedgerAdoption` exists for needs a
+    backend that can verify, exactly as `gatedBackends` below stands in for a
+    tag-capable AWS backend. -/
+private def composedMarkedBackends : Backends where
+  backend
+    | .aws      => Infra.Providers.placeholderBackend "aws"
+    | .scaleway =>
+      { Infra.Providers.placeholderBackend "scaleway" with
+          ownershipInfo := fun _ _ => pure (some ([(markerKey, legacyMarkerValue)], none)) }
+    | .gcp      => Infra.Providers.placeholderBackend "gcp"
+
 /-- An apply records what it claims, even when it has nothing to do.
 
     This is the check the offline suite was missing, and its absence cost three
@@ -109,11 +128,12 @@ def checkLedger : IO Unit := do
 
     `composedAppliedWorld` is exactly that world: all three resources exist and
     match, so the work-list is empty. The assertion is that the ledger comes
-    out holding all three anyway. -/
+    out holding all three anyway, given a backend that can verify ownership —
+    see `composedMarkedBackends`. -/
 def checkLedgerAdoption : IO Unit := do
   let tmp ← IO.FS.createTempDir
   try
-    let bs := Infra.Providers.all
+    let bs := composedMarkedBackends
     let store : Store composedKeys :=
       { root := some tmp, regionOf := fun _ _ _ => "fr-par" }
     -- Nothing to do: the world already realises the target.
@@ -289,6 +309,13 @@ def checkOrphanRetry : IO Unit := do
       let tries ← IO.mkRef 0
       return ({ backend := fun p =>
                   { Infra.Providers.placeholderBackend p.name with
+                      -- The orphan recheck (`Engine.push`, just before
+                      -- `deleteOrphan`) now refuses a delete it cannot verify,
+                      -- same as adoption does — see `composedMarkedBackends`.
+                      -- Both ledger rows here are meant to be deleted, so both
+                      -- must report the marker.
+                      ownershipInfo := fun _ _ =>
+                        pure (some ([(markerKey, legacyMarkerValue)], none))
                       delete := fun _ h => do
                         if h.raw == "blocked" && (← tries.get) < limit then
                           tries.modify (· + 1)
@@ -340,9 +367,12 @@ refusal still fails)"
     The two halves are checked here because nothing else can see them: a real
     cloud is not available offline, and the substitution is invisible by
     construction — a placeholder answers exactly as an empty account does. So
-    the marked backend must refuse and leave the row, and an unmarked one —
-    every test double in this file, and every live backend — must still be
-    free to delete. -/
+    the `unreachable` backend must refuse and leave the row, and a reachable
+    one that can verify the marker tag — every live backend for a migrated
+    kind, and `.objectStore` is one — must still be free to delete. (A
+    reachable backend that cannot verify tags refuses too, but for the
+    ownership reason `checkOrphanRecheck` and `checkOrphanRetry` already
+    cover — this check is only about the `unreachable` substitution.) -/
 def checkUnreachableRefusal : IO Unit := do
   let tmp ← IO.FS.createTempDir
   try
@@ -372,9 +402,14 @@ def checkUnreachableRefusal : IO Unit := do
     unless (← Ledger.load tmp).any (·.name == "old-bucket") do
       throw (IO.userError "a refused teardown still dropped the ledger row")
 
-    -- And the same teardown through a reachable backend still empties it, so
-    -- the guard is the substitution and not teardowns in general.
-    let reachable : Backends := { backend := fun p => Infra.Providers.placeholderBackend p.name }
+    -- And the same teardown through a reachable, tag-verifying backend still
+    -- empties it, so the guard is the substitution and not teardowns in
+    -- general.
+    let reachable : Backends :=
+      { backend := fun p =>
+          { Infra.Providers.placeholderBackend p.name with
+              ownershipInfo := fun _ _ =>
+                pure (some ([(markerKey, legacyMarkerValue)], none)) } }
     let _ ← push reachable (Plan.absent demoKeys) emptyWorld { apply := true }
       (store := { root := some tmp, rows := [staleRow] })
     unless (← Ledger.load tmp).isEmpty do
