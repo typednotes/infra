@@ -130,7 +130,7 @@ run_cmd do
 -- ⟪native-link-flags:end⟫
 
 package infra where
-  version := v!"0.9.4"
+  version := v!"0.10.0"
   -- Metadata Reservoir (the Lake package index) surfaces on the package page.
   -- Reservoir indexes public Lean repos automatically — no submission — but it
   -- only shows what is declared here, and the repo link is all it can infer.
@@ -149,7 +149,7 @@ target is a compile error"
 -- `linen` cuts real releases now, so tracking its tip has the same downside
 -- `typednotes-infra`'s own comment on pinning `infra` describes — the next
 -- breaking change arrives unannounced. Bump deliberately, the same way.
-require linen from git "https://github.com/typednotes/linen" @ "v0.16.0"
+require linen from git "https://github.com/typednotes/linen" @ "v0.17.0"
 
 @[default_target]
 lean_lib Infra
