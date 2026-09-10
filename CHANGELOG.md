@@ -99,6 +99,22 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   to `"16"` (the only PostgreSQL version this product currently supports)
   when the spec leaves it unset.
 
+- **`Divergent .postgres` force-replaced every serverless Scaleway database,
+  on every apply.** `masterUsername` is a required field; Fleet declarations
+  always set it, so the target side is never empty. But Scaleway's
+  Serverless SQL Database has no root user, so `read` (see above) reports
+  `""` for it — the same sentinel `Live.lean` uses elsewhere for "not
+  applicable" — and the two were compared unconditionally with
+  `.forcesReplace`. The result: the very next apply after the two fixes
+  above let `create`+`read` finally succeed once, `plan` proposed replacing
+  the database it had just made, and the resulting `REPLACE` hit the same
+  `HTTP 400 invalid_arguments` `create` had, this time on the recreate. Left
+  unfixed, this would destroy and rebuild the database on every single apply
+  forever. Fixed by only comparing `masterUsername` when `instanceClass` is
+  set — the same discriminator `Live.lean` already routes `create`/`read` on
+  — so a serverless target's inapplicable root user is never compared at
+  all.
+
 ## [0.9.0] — 2026-09-09
 
 ### Changed

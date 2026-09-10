@@ -630,15 +630,26 @@ function — it is a number, so it tells the code the response was parsed at all
   create endpoint requires — `HTTP 400 invalid_arguments`. `create` accepted
   an `engineVersion` parameter and silently dropped it. Also fixed in 0.9.1,
   defaulting to `"16"` (the only version this product currently supports)
-  when the spec leaves it unset. A full apply → plan (no drift) → destroy
-  cycle against a live account is still outstanding.
+  when the spec leaves it unset.
+
+  A third bug followed immediately once the first two let a full
+  create-then-read succeed: `Divergent .postgres` compared the reported
+  `masterUsername` (always `""` — see below) against the target's, which is
+  always set and `.forcesReplace`. Every apply after the first proposed
+  replacing the database it had just made, and the replace's recreate hit
+  the same `HTTP 400` a second time on the way to what would otherwise have
+  been a permanent destroy-and-rebuild loop. Also fixed in 0.9.1 — see
+  `CHANGELOG.md` — by not comparing `masterUsername` for a serverless
+  target. A full apply → plan (no drift) → destroy cycle against a live
+  account is still outstanding.
 
   Note what the portable spec cannot say here: a Serverless SQL Database has no
   root user, so `masterUsername` and `masterPasswordSecret` have no
-  counterpart and are ignored, and there is no node type or fixed storage to
-  report — both read as absent, which diverges from nothing. `version` is
-  the exception: `create` now sends it (see above), though `read` still
-  reports none back, since the `GET` response carries no such field.
+  counterpart and are ignored for divergence, and there is no node type or
+  fixed storage to report — both read as absent, which diverges from
+  nothing. `version` is the exception: `create` now sends it (see above),
+  though `read` still reports none back, since the `GET` response carries no
+  such field.
 
   **AWS's serverless shape is still not implemented** — Aurora Serverless v2
   raises a named error — and **GCP's cannot be**: Cloud SQL has no capacity

@@ -135,8 +135,18 @@ instance : Divergent .postgres where
   divergence t r :=
     divergesReq "name" .forcesReplace t.name r.name
     ++ diverges "instanceClass" .mutable t.instanceClass r.instanceClass
-    -- The master user cannot be renamed after creation.
-    ++ divergesReq "masterUsername" .forcesReplace t.masterUsername r.masterUsername
+    -- The master user cannot be renamed after creation — for a *classic*
+    -- instance. A serverless target (`instanceClass` unset) has no root user
+    -- at all: Scaleway's Serverless SQL Database reports none, so `read`
+    -- leaves it `""` the way "not found" and "not applicable" both do
+    -- elsewhere (see `Live.lean`'s `.postgres` read). Comparing that against
+    -- the target's required `masterUsername` would disagree on every single
+    -- apply and force-replace the database each time — a live account hit
+    -- exactly this on 2026-09-10. So this field only diverges for a classic
+    -- target, matching the same `instanceClass.isEmpty` discriminator
+    -- `Live.lean` routes create/read on.
+    ++ (if t.instanceClass.isEmpty then []
+        else divergesReq "masterUsername" .forcesReplace t.masterUsername r.masterUsername)
     -- Which secret holds the password is our bookkeeping, not the database's:
     -- the service never reports it, so it can never diverge.
     ++ diverges "version" .mutable t.version r.version
