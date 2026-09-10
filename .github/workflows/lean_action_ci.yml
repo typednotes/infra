@@ -93,15 +93,17 @@ jobs:
         run: ./ci/check-site-assets-sync.sh
       # Scaffolding is only really tested by building the thing it produces —
       # which is the one check AGENTS.md names for it, and the one that would
-      # have caught the drift above. The generated lakefile points at `main`,
-      # so it is repointed at this checkout to test *these* flags.
+      # have caught the drift above. The generated lakefile points at
+      # `New.infraRev` (a release tag, not `main` — see "A consumer is pinned
+      # to a release, not to main"), so it is repointed at this checkout to
+      # test *these* flags regardless of which tag is currently pinned.
       - name: Scaffold a project and build it
         run: |
           set -e
           rm -rf /tmp/scaffold-check
           lake exe infra new /tmp/scaffold-check
           # Repoint the dependency at this checkout, so the flags under test are
-          # these ones and not `main`'s.
+          # these ones and not the pinned release's.
           #
           # Not `sed -i`: BSD sed reads the next argument as a backup suffix
           # and GNU sed does not, so the one-liner that worked on the Linux
@@ -112,7 +114,7 @@ jobs:
           import re, sys
           p = "/tmp/scaffold-check/lakefile.lean"
           s = open(p).read()
-          s2 = re.sub(r'require infra from git "[^"]*" @ "main"',
+          s2 = re.sub(r'require infra from git "[^"]*" @ "[^"]*"',
                       'require infra from "%s"' % sys.argv[1], s, count=1)
           assert s2 != s, "the scaffolded lakefile did not carry the expected require line"
           open(p, "w").write(s2)
