@@ -8,6 +8,63 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [Unreleased]
+
+### Pending: delete the code that has moved to `linen`
+
+`linen` 0.16.0 adds `Linen.Cloud`, a cloud-services layer that includes the
+building blocks this project has been carrying:
+
+| moved to `linen` | was here |
+|---|---|
+| `Cloud.Provider` — the three clouds, `Locality`, per-cloud region codes, `Region p` | `Infra/Core/Kind.lean` (`ProviderId`), `Infra/Core/Region.lean` |
+| `Cloud.Credentials` (+ `.Keychain`, `.Gcp`) — the three-source chain, redacting `Repr`, `normalizeEnv`, `sourceDescriptions` | `Infra/Core/Credentials.lean`, `Infra/Core/GcpAuth.lean` |
+| `Cloud.Endpoint` — per-service hosts and signing scopes | `Infra/Providers/Aws/Protocols.lean`, `Infra/Providers/{Scaleway,Gcp}/Rest.lean` |
+| `Cloud.Auth`, `Cloud.Transport` — signing and the single egress point | `Infra/Providers/Aws/Sign.lean`, `Infra/Providers/Http.lean` |
+| `Cloud.Protocol.{S3,AwsJson,GoogleRest,ScalewayRest}` — the four wire dialects | `Infra/Providers/Aws/Protocols.lean`, `.../{Scaleway,Gcp}/Rest.lean` |
+| `Cloud.Error` — the classified taxonomy, including the not-found code list | `Infra/Core/Backend.lean`'s `readsAsAbsent` |
+
+`linen` also gained the **data plane** these never had — object CRUD, message
+send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
+deliberately excluded ("bucket-level operations only: no object CRUD").
+
+**Not done here yet, and why.** This project pins `linen` from git, so the
+deletion needs `linen` 0.16.0 published and `lake update linen` first. It is
+also not mechanical: `ProviderId` and `Credentials` thread through most of
+`Infra/`, and `Region` is indexed by `ProviderId`, so switching to
+`Cloud.Provider` and `Cloud.Credentials` touches the engine as well as the
+providers. Doing that blind against a dependency that cannot yet be built
+would be worse than doing it late, so it is written down rather than
+half-applied.
+
+Three corrections to take at the same time, all of which `linen`'s versions
+already carry:
+
+- **Pagination that reports whether it finished.** `Gcp/Storage.lean` and
+  `Gcp/PubSub.lean` cap at 50 pages, warn on stderr, and return a `List`
+  indistinguishable from a complete one — which their own comments explain is
+  dangerous, since a truncated listing read as complete makes the planner
+  propose creating resources that already exist. `Cloud.Page.Listing` carries
+  `truncated` and derives `complete` from it.
+- **Unsupported operations as values rather than raises.**
+  `Scaleway/Sqs.lean:206` raises, and `Aws/Protocols.lean:199` signs against a
+  deliberately `.invalid` host; `Cloud.Error.Class.unsupported` is returned
+  instead.
+- **No panicking UTF-8 decode.** `Kinds/Secrets.lean` uses `String.fromUTF8!`
+  in two places; `linen` uses `String.fromUTF8?` and reports a `protocol`
+  error.
+
+One thing deliberately **not** moved: `Scaleway/Sqs.lean`'s credential minting.
+It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
+credential holding that name — defensible for a tool that owns its fleet,
+unacceptable in a library, so `linen` reads a dedicated credential instead.
+
+### Changed
+
+- `AGENTS.md` now records that `linen` is a first-party sibling rather than a
+  third-party dependency, what the test for "belongs in `linen`" is, and that
+  pending moves are written down rather than left implicit.
+
 ## [0.9.1] — 2026-09-10
 
 ### Fixed

@@ -117,3 +117,20 @@ availability and product docs.
 ## Linen
 
 If [linen](https://github.com/typednotes/linen) lacks functionalities, you can suggest additions (following instructions from the project).
+
+**`linen` is a first-party sibling, not a third-party dependency.** Building
+blocks belong there, and moving one out of `infra` into `linen` is a *move*
+rather than a fork: `linen`'s copy becomes the only copy, and `infra`'s is
+deleted in the same change. Two live copies of the same code is the outcome to
+avoid — the dependency direction is fixed (`infra` requires `linen`, never the
+reverse), so there is no ambiguity about which way things travel.
+
+The test for "belongs in `linen`" is whether more than one sibling needs it, or
+whether it is a building block rather than an infrastructure-as-code concern. A
+cloud's region codes are a building block; the per-resource placement map that
+reads them is not. A credential chain is a building block; the ownership
+boundary that decides which resources it may touch is not.
+
+Pending moves are listed in `CHANGELOG.md` under `[Unreleased]` rather than
+left implicit, because a duplicate nobody has written down is a duplicate that
+will drift.
