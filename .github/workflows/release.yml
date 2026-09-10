@@ -1,0 +1,75 @@
+name: Release
+
+# Fires on the tag `lean_action_ci.yml` triggers on too (its `on: push:` has
+# no branch/tag filter). That job already re-runs the full build/test/example
+# matrix against the tag, so this workflow does not repeat it — it gates on
+# that run finishing green via `workflow_run`, then does the two things the
+# other workflow does not: check that the tag's version was actually bumped
+# everywhere AGENTS.md's release checklist says it must be, and publish the
+# GitHub Release. If the CI run for this tag failed or hasn't happened yet,
+# this workflow exits without releasing.
+on:
+  workflow_run:
+    workflows: ["Lean Action CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+
+      # The tag is the source of truth for which version this release is —
+      # not any file in the tree — so every check below is phrased in terms
+      # of it.
+      - name: Derive the version from the tag
+        id: version
+        run: |
+          tag="${{ github.event.workflow_run.head_branch }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      # AGENTS.md: "a release bumps the version everywhere it is written
+      # down" — lakefile.lean, Infra/Cli/New.lean's infraRev, README.md,
+      # docs/tutorial.md, site/index.html, CHANGELOG.md, docs/coverage.md.
+      # A tag pushed without updating all seven is exactly the failure this
+      # blocks: it must not turn into a GitHub Release that scaffolds
+      # projects against the wrong `infraRev` or ships a page claiming a
+      # feature the tagged commit doesn't have.
+      - name: Check the tagged version is consistent everywhere
+        run: ./ci/check-release-version.sh "${{ steps.version.outputs.version }}"
+
+      # The release body is that version's own CHANGELOG section — not
+      # hand-written here — so the two can never say different things about
+      # the same release.
+      - name: Extract this version's CHANGELOG section
+        id: notes
+        run: |
+          awk -v ver="${{ steps.version.outputs.version }}" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ "^## \\[" ver "\\]") { found=1; next }
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "error: no CHANGELOG.md section found for [${{ steps.version.outputs.version }}]" >&2
+            exit 1
+          fi
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file /tmp/release-notes.md
