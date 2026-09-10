@@ -623,14 +623,22 @@ function — it is a number, so it tells the code the response was parsed at all
   this product existed, and unconditionally called the classic Managed
   Database client instead. `read` runs right after every `create` to record
   what was made, so the very first live apply of this shape failed on that,
-  not on `create` itself. Fixed in 0.9.1; see its `CHANGELOG.md` entry. A full
-  apply → plan (no drift) → destroy cycle against a live account is still
-  outstanding.
+  not on `create` itself. Fixed in 0.9.1; see its `CHANGELOG.md` entry.
+
+  Once that let `create` actually be reached, the same live account then hit a
+  second bug: the request payload never carried `version`, which Scaleway's
+  create endpoint requires — `HTTP 400 invalid_arguments`. `create` accepted
+  an `engineVersion` parameter and silently dropped it. Also fixed in 0.9.1,
+  defaulting to `"16"` (the only version this product currently supports)
+  when the spec leaves it unset. A full apply → plan (no drift) → destroy
+  cycle against a live account is still outstanding.
 
   Note what the portable spec cannot say here: a Serverless SQL Database has no
   root user, so `masterUsername` and `masterPasswordSecret` have no
-  counterpart and are ignored, and there is no node type, version or fixed
-  storage to report. All four read as absent, which diverges from nothing.
+  counterpart and are ignored, and there is no node type or fixed storage to
+  report — both read as absent, which diverges from nothing. `version` is
+  the exception: `create` now sends it (see above), though `read` still
+  reports none back, since the `GET` response carries no such field.
 
   **AWS's serverless shape is still not implemented** — Aurora Serverless v2
   raises a named error — and **GCP's cannot be**: Cloud SQL has no capacity

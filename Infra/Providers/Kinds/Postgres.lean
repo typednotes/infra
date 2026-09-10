@@ -263,8 +263,9 @@ end Rdb
    names. Harmless, and cheaper to leave than to restructure the branch, but it
    means the secret must exist even though nothing consumes it.
 
-   `storageGb` has no counterpart either — storage grows on its own — and
-   neither does a version: the product does not report one.
+   `storageGb` has no counterpart — storage grows on its own. `version` does
+   have one on `create` (see below), but `read` still reports none: the `GET`
+   response carries no such field for this product.
 
    ## Verified
 
@@ -275,8 +276,13 @@ end Rdb
    (`name`, `cpu_min`, `cpu_max`, `project_id`, `database_id`) come from
    Scaleway's own CLI reference for `scw sdb sql`. Checked 2026-09-06.
 
-   Not yet run against an account: no live test covers it, and `docs/coverage.md`
-   says so. -/
+   `create` was run against a live account on 2026-09-10 and came back `HTTP
+   400 invalid_arguments` with no `version` field in the payload — confirmed
+   against Scaleway's own API reference
+   (developers.scaleway.com/en/developers/api/serverless-sql-databases), whose
+   Create-Database example includes a required `version` field and states only
+   PostgreSQL 16 is currently supported. Fixed by sending it, defaulting to
+   `"16"`; see `docs/coverage.md` and `CHANGELOG.md`. -/
 namespace ServerlessSql
 
 private def prefix' (region : String) : String :=
@@ -324,14 +330,23 @@ def read (creds : Credentials) (name : String) :
     `masterUsername` and `password` are accepted and unused — see the module
     note. They are still in the signature because `Live.lean` calls this and
     the classic path side by side, and dropping them would make the two
-    branches look like they differ in more than they do. -/
-def create (creds : Credentials) (name _masterUsername _password _engineVersion : String)
+    branches look like they differ in more than they do.
+
+    `engineVersion` **is** used, unlike the two above: Scaleway's create
+    endpoint requires a `version` field in the payload and rejects the
+    request with `HTTP 400 invalid_arguments` without one. Falls back to
+    `"16"` — the only PostgreSQL version this product currently supports —
+    when the spec left it unset, since `PostgresSpec.version` is optional and
+    a serverless target has no other way to pick one. -/
+def create (creds : Credentials) (name _masterUsername _password engineVersion : String)
     (minCapacity maxCapacity : Nat) : IO String := do
   let project ← creds.requireProject
+  let version := if engineVersion.isEmpty then "16" else engineVersion
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/databases")
     (payload := some (.object
       [ ("name", .string name)
       , ("project_id", .string project)
+      , ("version", .string version)
       , ("cpu_min", .number (Float.ofNat minCapacity))
       , ("cpu_max", .number (Float.ofNat maxCapacity)) ]))
   return (stringField reply "endpoint").getD ""

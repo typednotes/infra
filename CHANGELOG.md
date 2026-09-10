@@ -32,6 +32,16 @@ been exercised; this file is what changed and when.
   `docs/coverage.md`'s "Implemented, never exercised" entry for Serverless
   SQL Database is updated with what a live account surfaced.
 
+- **Scaleway `postgres.ServerlessSql.create` never sent `version`.** The
+  payload carried `name`, `project_id`, `cpu_min` and `cpu_max` only;
+  `PostgresSpec.version` was accepted as a parameter but silently ignored.
+  Scaleway's create endpoint requires `version` and rejected every request
+  without one: `HTTP 400 invalid_arguments: invalid argument(s)` — the next
+  failure a live apply hit once the `read`/`list`/`delete` fix above let
+  `create` actually be reached and retried. Fixed by sending it, defaulting
+  to `"16"` (the only PostgreSQL version this product currently supports)
+  when the spec leaves it unset.
+
 ## [0.9.0] — 2026-09-09
 
 ### Changed
