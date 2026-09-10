@@ -1,5 +1,6 @@
 import Infra.Providers.Kinds.Secrets
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   Managed PostgreSQL.
@@ -119,7 +120,7 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
     return (cls, user, ver, storage)
 
 def create (creds : Credentials) (ep : Endpoint) (name instanceClass masterUsername
-    password engineVersion : String) (storageGb : Nat) : IO String := do
+    password engineVersion markerValue : String) (storageGb : Nat) : IO String := do
   let root ← Query.call creds ep "CreateDBInstance" version
     [ ("DBInstanceIdentifier", name)
     , ("DBInstanceClass", instanceClass)
@@ -127,7 +128,8 @@ def create (creds : Credentials) (ep : Endpoint) (name instanceClass masterUsern
     , ("EngineVersion", engineVersion)
     , ("AllocatedStorage", toString storageGb)
     , ("MasterUsername", masterUsername)
-    , ("MasterUserPassword", password) ]
+    , ("MasterUserPassword", password)
+    , ("Tags.member.1.Key", markerKey), ("Tags.member.1.Value", markerValue) ]
   return match root.child "CreateDBInstanceResult" with
     | some r => match r.child "DBInstance" with
       | some i => match i.child "Endpoint" with
@@ -135,6 +137,31 @@ def create (creds : Credentials) (ep : Endpoint) (name instanceClass masterUsern
         | none   => ""
       | none => ""
     | none => ""
+
+/-- The ARN behind a name, needed for `ListTagsForResource`: unlike EC2's
+    `DescribeInstances`, RDS's `DescribeDBInstances` does not embed tags in the
+    listing, so a second call is required. -/
+private def arnOf (creds : Credentials) (ep : Endpoint) (name : String) : IO (Option String) := do
+  let root ← Query.call creds ep "DescribeDBInstances" version
+    [("DBInstanceIdentifier", name)]
+  return (instances root "DescribeDBInstancesResult").head?.bind (·.childText "DBInstanceArn")
+
+/-- Tags, for `Ownership.ownershipOf`. `createdAt` is left `none`, matching
+    every other kind's first tranche, though `InstanceCreateTime` is available
+    on the instance if a later pass wants it. -/
+def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  match ← arnOf creds ep name with
+  | none => return none
+  | some arn =>
+    let root ← Query.call creds ep "ListTagsForResource" version [("ResourceName", arn)]
+    let tags := match root.child "ListTagsForResourceResult" with
+      | some r => (Query.listItems r "TagList" "Tag").filterMap fun t =>
+          match t.childText "Key", t.childText "Value" with
+          | some k, some v => some (k, v)
+          | _, _           => none
+      | none => []
+    return some (tags, none)
 
 /-- Only the settings RDS can change in place. Storage can grow but not shrink;
     `ApplyImmediately` avoids the change sitting in a maintenance window where
@@ -165,7 +192,7 @@ namespace Rdb
 private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "rdb" "v1" region
 
-private def listRaw (creds : Credentials) : IO (List (String × String × String)) := do
+private def listRaw (creds : Credentials) : IO (List (String × String × String × List String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/instances")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "instances").filterMap fun i =>
@@ -174,16 +201,23 @@ private def listRaw (creds : Credentials) : IO (List (String × String × String
       let host := match field i "endpoint" with
         | some e => (stringField e "ip").getD ""
         | none   => ""
-      some (n, id, host)
+      some (n, id, host, stringArrayField i "tags")
     | _, _ => none
 
 def list (creds : Credentials) : IO (List (String × String)) := do
-  return (← listRaw creds).map fun (n, _, h) => (n, h)
+  return (← listRaw creds).map fun (n, _, h, _) => (n, h)
 
 private def requireId (creds : Credentials) (name : String) : IO String := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, id, _) => return id
-  | none            => throw (IO.userError s!"scaleway rdb: no instance named '{name}'")
+  | some (_, id, _, _) => return id
+  | none                => throw (IO.userError s!"scaleway rdb: no instance named '{name}'")
+
+/-- Tags, for `Ownership.ownershipOf`. -/
+def readOwnership (creds : Credentials) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | some (_, _, _, tags) => return some (tags.map Scaleway.decodeTag, none)
+  | none                  => return none
 
 def read (creds : Credentials) (name : String) :
     IO (String × String × Partial String × Partial Nat) := do
@@ -205,7 +239,8 @@ def read (creds : Credentials) (name : String) :
     | none => .unknown
   return (cls, "", ver, storage)
 
-def create (creds : Credentials) (name nodeType masterUsername password engineVersion : String)
+def create (creds : Credentials)
+    (name nodeType masterUsername password engineVersion markerValue : String)
     (storageGb : Nat) : IO String := do
   let project ← creds.requireProject
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/instances")
@@ -217,7 +252,8 @@ def create (creds : Credentials) (name nodeType masterUsername password engineVe
       , ("password", .string password)
       , ("volume_size", .number (Float.ofNat (storageGb * 1000000000)))
       , ("volume_type", .string "bssd")
-      , ("project_id", .string project) ]))
+      , ("project_id", .string project)
+      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
   return match field reply "endpoint" with
     | some e => (stringField e "ip").getD ""
     | none   => ""
@@ -282,7 +318,21 @@ end Rdb
    (developers.scaleway.com/en/developers/api/serverless-sql-databases), whose
    Create-Database example includes a required `version` field and states only
    PostgreSQL 16 is currently supported. Fixed by sending it, defaulting to
-   `"16"`; see `docs/coverage.md` and `CHANGELOG.md`. -/
+   `"16"`; see `docs/coverage.md` and `CHANGELOG.md`.
+
+   ## Permanent exception: this product cannot be tagged
+
+   Confirmed against Scaleway's own API reference (as above) — the
+   Create-Database payload has no `tags` field, and `/databases` and
+   `/databases/{id}` responses carry none either. There is no marker to write
+   and none to read back, so `Backend.ownershipInfo` returns `none` for this
+   kind unconditionally (see `Live.lean`'s `.postgres` arm) and the engine's
+   fail-safe (`Engine.lean`, the 2026-09-10 incident) refuses to adopt or
+   delete-as-orphan any Serverless SQL Database purely on the ledger's say-so.
+   A fleet that already has one from before this fix will see it reported as
+   unmanageable until Scaleway adds tag support — this is a permanent,
+   intentional gap, not a half-implemented feature: see `AGENTS.md`'s "no
+   half-implemented features" rule. -/
 namespace ServerlessSql
 
 private def prefix' (region : String) : String :=

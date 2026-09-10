@@ -1,5 +1,6 @@
 import Infra.Providers.Gcp.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   Serverless compute on GCP: Cloud Run services.
@@ -164,9 +165,10 @@ def read (creds : Credentials) (project location name : String) :
   return (image, memory, timeout, env, serviceAccount)
 
 private def bodyOf (image : String) (memoryMb timeoutSec : Nat)
-    (env : List (String × String)) (serviceAccount : String) : Value :=
+    (env : List (String × String)) (serviceAccount markerValue : String) : Value :=
   .object
-    [ ("template", .object
+    [ ("labels", .object [(markerKey, .string markerValue)])
+    , ("template", .object
         ([ ("timeout", .string s!"{timeoutSec}s") ]
          -- Only when named. An empty string is not a service account, and
          -- sending one would be rejected rather than defaulted.
@@ -189,29 +191,48 @@ private def warnIfNoIdentity (name serviceAccount : String) : IO Unit := do
 will run as the project's default compute service account — which Google grants \
 roles/editor. Name one to avoid that."
 
-/-- Create the service and wait for it. -/
-def create (creds : Credentials) (project location name image : String)
+/-- Create the service and wait for it. `markerValue` is written into
+    top-level `labels` — see the 2026-09-10 incident in `AGENTS.md`. -/
+def create (creds : Credentials) (project location name image markerValue : String)
     (memoryMb timeoutSec : Nat) (env : List (String × String))
     (serviceAccount : String) : IO Unit := do
   warnIfNoIdentity name serviceAccount
   let started ← Gcp.call creds "POST" host (parent project location)
     [("serviceId", some name)]
-    (payload := some (bodyOf image memoryMb timeoutSec env serviceAccount))
+    (payload := some (bodyOf image memoryMb timeoutSec env serviceAccount markerValue))
   discard <| Gcp.awaitLro creds host "v2" started s!"cloud run: create {name}"
 
 /-- Update the service and wait for it.
 
     A `PATCH` on a Cloud Run service replaces the template wholesale, so every
     managed field is sent every time — sending only the changed one would drop
-    the others. That is the opposite of the Artifact Registry call above, and
-    the difference is the API's, not a choice made here. -/
-def update (creds : Credentials) (project location name image : String)
+    the others, including `labels`, which is why `markerValue` is re-sent here
+    too. That is the opposite of the Artifact Registry call above, and the
+    difference is the API's, not a choice made here. -/
+def update (creds : Credentials) (project location name image markerValue : String)
     (memoryMb timeoutSec : Nat) (env : List (String × String))
     (serviceAccount : String) : IO Unit := do
   warnIfNoIdentity name serviceAccount
   let started ← Gcp.call creds "PATCH" host (servicePath project location name)
-    (payload := some (bodyOf image memoryMb timeoutSec env serviceAccount))
+    (payload := some (bodyOf image memoryMb timeoutSec env serviceAccount markerValue))
   discard <| Gcp.awaitLro creds host "v2" started s!"cloud run: update {name}"
+
+/-- Tags, for `Ownership.ownershipOf`. Labels come back top-level on the
+    service object, so the existing `GET` (as in `read`) is enough.
+    `createdAt` is left `none`, matching every other kind's first tranche. -/
+def readOwnership (creds : Credentials) (project location name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let attempt ← (Gcp.call creds "GET" host (servicePath project location name)).toBaseIO
+  match attempt with
+  | .error _ => return none
+  | .ok svc =>
+    let tags := match field svc "labels" with
+      | some (.object fields) => fields.filterMap fun (k, v) =>
+          match v with
+          | .string s => some (k, s)
+          | _         => none
+      | _ => []
+    return some (tags, none)
 
 /-- Delete the service and wait for it. Already gone is not an error. -/
 def delete (creds : Credentials) (project location name : String) : IO Unit := do

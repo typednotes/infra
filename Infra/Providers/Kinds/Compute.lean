@@ -1,6 +1,7 @@
 import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   Serverless compute, from a container image.
@@ -88,7 +89,12 @@ private def requireRole (name role : String) : IO String := do
       s!"compute '{name}' on aws needs executionRole: Lambda requires an execution role ARN")
   return role
 
-def create (creds : Credentials) (ep : Endpoint) (name image role : String)
+/-- `markerValue` is the ownership marker's value, written as a Lambda tag at
+    create — `Tags` here is a `{key: value}` map, unlike every other kind's
+    list-of-pairs, because that is the shape `CreateFunction` actually takes.
+    See the 2026-09-10 incident in `AGENTS.md` for why this cannot be left
+    unset. -/
+def create (creds : Credentials) (ep : Endpoint) (name image role markerValue : String)
     (memoryMb timeoutSec : Nat) (env : List (String × String)) : IO Unit := do
   discard <| RestJson.call creds ep "POST" base (payload := some (.object
     [ ("FunctionName", .string name)
@@ -97,7 +103,24 @@ def create (creds : Credentials) (ep : Endpoint) (name image role : String)
     , ("Role", .string (← requireRole name role))
     , ("MemorySize", .number (Float.ofNat memoryMb))
     , ("Timeout", .number (Float.ofNat timeoutSec))
-    , ("Environment", .object [("Variables", envObject env)]) ]))
+    , ("Environment", .object [("Variables", envObject env)])
+    , ("Tags", .object [(markerKey, .string markerValue)]) ]))
+
+/-- Tags, for `Ownership.ownershipOf`. `ListFunctions` does not report them
+    (see the module note on `.compute`'s coverage), but `GetFunction` — the
+    same call `read` above already makes — does, as a top-level `Tags` map
+    rather than a list of pairs. `createdAt` is left `none`, matching every
+    other kind's first tranche. -/
+def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
+  let tags := match field whole "Tags" with
+    | some (.object fields) => fields.filterMap fun (k, v) =>
+        match v with
+        | .string s => some (k, s)
+        | _         => none
+    | _ => []
+  return some (tags, none)
 
 /-- Configuration and code are separate endpoints, so an update is two calls. -/
 def update (creds : Credentials) (ep : Endpoint) (name image role : String)
@@ -125,12 +148,12 @@ namespace Containers
 private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "containers" "v1beta1" region
 
-private def listRaw (creds : Credentials) : IO (List (String × String)) := do
+private def listRaw (creds : Credentials) : IO (List (String × String × List String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "containers").filterMap fun c =>
     match stringField c "name", stringField c "id" with
-    | some n, some i => some (n, i)
+    | some n, some i => some (n, i, stringArrayField c "tags")
     | _,      _      => none
 
 def list (creds : Credentials) : IO (List String) := do
@@ -138,22 +161,45 @@ def list (creds : Credentials) : IO (List String) := do
 
 private def requireId (creds : Credentials) (name : String) : IO String := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, id) => return id
-  | none         => throw (IO.userError s!"scaleway containers: no container named '{name}'")
+  | some (_, id, _) => return id
+  | none            => throw (IO.userError s!"scaleway containers: no container named '{name}'")
+
+/-- Tags, for `Ownership.ownershipOf`. `list`'s reply already carries each
+    container's flat `tags: []string` — see `Scaleway.decodeTag`. -/
+def readOwnership (creds : Credentials) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
+  | none               => return none
+
+private def listNamespacesRaw (creds : Credentials) :
+    IO (List (String × String × List String)) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
+  return (arrayField reply "namespaces").filterMap fun n =>
+    match stringField n "name", stringField n "id" with
+    | some nm, some i => some (nm, i, stringArrayField n "tags")
+    | _,       _      => none
 
 /-- Resolve a namespace name to its id, which every container operation needs. -/
 private def namespaceId (creds : Credentials) (name : String) : IO String := do
   if name.isEmpty then
     throw (IO.userError
       "compute on scaleway needs a namespace: Serverless Containers groups containers into one")
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
-      (query := [("project_id", ← creds.requireProject)])
-  match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
-  | some n =>
-    match stringField n "id" with
-    | some i => return i
-    | none   => throw (IO.userError s!"scaleway containers: namespace '{name}' has no id")
-  | none => throw (IO.userError s!"scaleway containers: no namespace named '{name}'")
+  match (← listNamespacesRaw creds).find? (·.1 == name) with
+  | some (_, id, _) => return id
+  | none            => throw (IO.userError s!"scaleway containers: no namespace named '{name}'")
+
+/-- Tags, for `Ownership.ownershipOf`, on the namespace rather than a
+    container in it. This is the kind directly implicated in the 2026-09-10
+    incident: `deleteNamespace` cascades Scaleway-side to every container the
+    namespace holds, so a namespace claimed by name alone can take an
+    unmanaged sibling container down with it. -/
+def readNamespaceOwnership (creds : Credentials) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  match (← listNamespacesRaw creds).find? (·.1 == name) with
+  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
+  | none               => return none
 
 /-- Public alias of `namespaceId`, for the namespace kind's own operations. -/
 def namespaceIdOfName (creds : Credentials) (name : String) : IO String :=
@@ -176,7 +222,9 @@ def read (creds : Credentials) (name : String) :
     | none   => .unknown
   return (memory, timeout, env, (stringField c "registry_image").getD "")
 
-def create (creds : Credentials) (name image ns : String)
+/-- `markerValue` is written as a flat tag (`Scaleway.encodeTag`) at create —
+    see the 2026-09-10 incident in `AGENTS.md`. -/
+def create (creds : Credentials) (name image ns markerValue : String)
     (memoryMb timeoutSec : Nat) (env : List (String × String)) : IO Unit := do
   let nsId ← namespaceId creds ns
   discard <| Scaleway.call creds "POST" (prefix' creds.region ++ "/containers")
@@ -186,7 +234,8 @@ def create (creds : Credentials) (name image ns : String)
       , ("registry_image", .string image)
       , ("memory_limit", .number (Float.ofNat memoryMb))
       , ("timeout", .string s!"{timeoutSec}s")
-      , ("environment_variables", envObject env) ]))
+      , ("environment_variables", envObject env)
+      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
 
 def update (creds : Credentials) (name image : String)
     (memoryMb timeoutSec : Nat) (env : List (String × String)) : IO Unit := do
@@ -233,12 +282,7 @@ def listFull (creds : Credentials) : IO (List (String × String)) := do
 
 /-- Every namespace, as `(name, id)`. -/
 def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
-      (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "namespaces").filterMap fun n =>
-    match stringField n "name", stringField n "id" with
-    | some nm, some i => some (nm, i)
-    | _,       _      => none
+  return (← listNamespacesRaw creds).map fun (n, i, _) => (n, i)
 
 /-- Every field `.scalewayContainer` can report, beyond what `read` above needs for the
     portable `.compute` kind. -/
@@ -279,7 +323,11 @@ def readFull (creds : Credentials) (name : String) :
           optNat "cpu_limit", optNat "timeout", env,
           (stringField c "registry_image").getD "", nsName)
 
-def createFull (creds : Credentials) (name image ns : String)
+/-- `markerValue` is written as a flat tag (`Scaleway.encodeTag`) at create —
+    see the 2026-09-10 incident in `AGENTS.md`. This is the exact create path
+    `.scalewayContainer` uses, i.e. the resource kind involved in that
+    incident. -/
+def createFull (creds : Credentials) (name image ns markerValue : String)
     (port minScale maxScale memoryMb cpuLimit timeoutSec : Nat)
     (env secretEnv : List (String × String)) : IO String := do
   let nsId ← namespaceId creds ns
@@ -295,7 +343,8 @@ def createFull (creds : Credentials) (name image ns : String)
       , ("cpu_limit", .number (Float.ofNat cpuLimit))
       , ("timeout", .string s!"{timeoutSec}s")
       , ("environment_variables", envObject env)
-      , ("secret_environment_variables", secretEnvArray secretEnv) ]))
+      , ("secret_environment_variables", secretEnvArray secretEnv)
+      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
   return (stringField reply "domain_name").getD ""
 
 def updateFull (creds : Credentials) (name image : String)
@@ -331,13 +380,19 @@ def readNamespace (creds : Credentials) (name : String) : IO (Partial String) :=
                      | some d => .known d
                      | none   => .known ""
 
-/-- Create a namespace. Needs the project id, like every Scaleway create. -/
-def createNamespace (creds : Credentials) (name description : String) : IO (String × String) := do
+/-- Create a namespace. Needs the project id, like every Scaleway create.
+    `markerValue` is written as a flat tag (`Scaleway.encodeTag`) — this is
+    the resource whose unconditional `deleteNamespace` cascade caused the
+    2026-09-10 incident in `AGENTS.md`; the marker here is what lets a future
+    `push` refuse to claim a pre-existing namespace by name alone. -/
+def createNamespace (creds : Credentials) (name description markerValue : String) :
+    IO (String × String) := do
   let project ← creds.requireProject
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/namespaces")
     (payload := some (.object
       [ ("name", .string name), ("description", .string description)
-      , ("project_id", .string project) ]))
+      , ("project_id", .string project)
+      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
   return ((stringField reply "id").getD "",
           (stringField reply "registry_endpoint").getD "")
 
@@ -367,12 +422,12 @@ namespace Functions
 private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "functions" "v1beta1" region
 
-private def listRaw (creds : Credentials) : IO (List (String × String)) := do
+private def listRaw (creds : Credentials) : IO (List (String × String × List String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/functions")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "functions").filterMap fun f =>
     match stringField f "name", stringField f "id" with
-    | some n, some i => some (n, i)
+    | some n, some i => some (n, i, stringArrayField f "tags")
     | _,      _      => none
 
 def list (creds : Credentials) : IO (List (String × String)) := do
@@ -385,21 +440,32 @@ def list (creds : Credentials) : IO (List (String × String)) := do
 
 private def requireId (creds : Credentials) (name : String) : IO String := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, id) => return id
-  | none         => throw (IO.userError s!"scaleway functions: no function named '{name}'")
+  | some (_, id, _) => return id
+  | none            => throw (IO.userError s!"scaleway functions: no function named '{name}'")
+
+/-- Tags, for `Ownership.ownershipOf`. -/
+def readOwnership (creds : Credentials) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
+  | none               => return none
+
+private def listNamespacesRaw (creds : Credentials) :
+    IO (List (String × String × List String)) := do
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+      (query := [("project_id", ← creds.requireProject)])
+  return (arrayField reply "namespaces").filterMap fun n =>
+    match stringField n "name", stringField n "id" with
+    | some nm, some i => some (nm, i, stringArrayField n "tags")
+    | _,       _      => none
 
 /-- The namespace a function belongs to, resolved from its name. -/
 private def namespaceIdOf (creds : Credentials) (name : String) : IO String := do
   if name.isEmpty then
     throw (IO.userError "scalewayFunction needs a namespace")
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
-      (query := [("project_id", ← creds.requireProject)])
-  match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
-  | some n =>
-    match stringField n "id" with
-    | some i => return i
-    | none   => throw (IO.userError s!"scaleway functions: namespace '{name}' has no id")
-  | none => throw (IO.userError s!"scaleway functions: no namespace named '{name}'")
+  match (← listNamespacesRaw creds).find? (·.1 == name) with
+  | some (_, id, _) => return id
+  | none            => throw (IO.userError s!"scaleway functions: no namespace named '{name}'")
 
 /-- Public alias of `namespaceIdOf`, for the namespace kind's own operations. -/
 def namespaceIdOfName (creds : Credentials) (name : String) : IO String :=
@@ -407,12 +473,14 @@ def namespaceIdOfName (creds : Credentials) (name : String) : IO String :=
 
 /-- Every namespace, as `(name, id)`. -/
 def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
-      (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "namespaces").filterMap fun n =>
-    match stringField n "name", stringField n "id" with
-    | some nm, some i => some (nm, i)
-    | _,       _      => none
+  return (← listNamespacesRaw creds).map fun (n, i, _) => (n, i)
+
+/-- Tags, for `Ownership.ownershipOf`, on the namespace. -/
+def readNamespaceOwnership (creds : Credentials) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  match (← listNamespacesRaw creds).find? (·.1 == name) with
+  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
+  | none               => return none
 
 def read (creds : Credentials) (name : String) :
     IO (String × Partial (Option String) × String) := do
@@ -454,7 +522,7 @@ def listRuntimes (creds : Credentials) : IO (List String) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/runtimes")
   return (arrayField reply "runtimes").filterMap fun r => stringField r "name"
 
-def create (creds : Credentials) (name runtime ns handler : String)
+def create (creds : Credentials) (name runtime ns handler markerValue : String)
     (bucket : Option (Handle .s3Bucket)) : IO String := do
   let nsId ← namespaceIdOf creds ns
   let attempt ← (Scaleway.call creds "POST" (prefix' creds.region ++ "/functions")
@@ -465,7 +533,8 @@ def create (creds : Credentials) (name runtime ns handler : String)
       -- Scaleway names the entry point `<file>.<function>` and requires it at
       -- create; the archive `deployCode` uploads has to contain that file.
       , ("handler", .string handler)
-      , ("environment_variables", envFor bucket) ]))).toBaseIO
+      , ("environment_variables", envFor bucket)
+      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))).toBaseIO
   match attempt with
   | .ok reply => return (stringField reply "domain_name").getD ""
   | .error e =>
@@ -567,13 +636,20 @@ def readNamespace (creds : Credentials) (name : String) : IO (Partial String) :=
                      | some d => .known d
                      | none   => .known ""
 
-/-- Create a namespace. Needs the project id, like every Scaleway create. -/
-def createNamespace (creds : Credentials) (name description : String) : IO (String × String) := do
+/-- Create a namespace. Needs the project id, like every Scaleway create.
+    `markerValue` is written as a flat tag (`Scaleway.encodeTag`) — this
+    namespace's own `deleteNamespace` cascades to every function inside it the
+    same way `Containers.deleteNamespace` does, so it needs the same marker to
+    let a future `push` refuse to claim a pre-existing namespace by name
+    alone. -/
+def createNamespace (creds : Credentials) (name description markerValue : String) :
+    IO (String × String) := do
   let project ← creds.requireProject
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/namespaces")
     (payload := some (.object
       [ ("name", .string name), ("description", .string description)
-      , ("project_id", .string project) ]))
+      , ("project_id", .string project)
+      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
   return ((stringField reply "id").getD "",
           (stringField reply "registry_endpoint").getD "")
 

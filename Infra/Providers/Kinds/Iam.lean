@@ -1,6 +1,7 @@
 import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   Machine identities.
@@ -74,8 +75,11 @@ private def detach (creds : Credentials) (name arn : String) : IO Unit := do
   discard <| Query.call creds Query.iamEndpoint "DetachUserPolicy" version
     [("UserName", name), ("PolicyArn", arn)]
 
-def create (creds : Credentials) (name : String) (policies : List String) : IO String := do
-  let root ← Query.call creds Query.iamEndpoint "CreateUser" version [("UserName", name)]
+def create (creds : Credentials) (name markerValue : String) (policies : List String) :
+    IO String := do
+  let root ← Query.call creds Query.iamEndpoint "CreateUser" version
+    [ ("UserName", name)
+    , ("Tags.member.1.Key", markerKey), ("Tags.member.1.Value", markerValue) ]
   for arn in policies do
     attach creds name arn
   let arn := match root.child "CreateUserResult" with
@@ -84,6 +88,25 @@ def create (creds : Credentials) (name : String) (policies : List String) : IO S
       | none   => ""
     | none => ""
   return arn
+
+/-- Tags, for `Ownership.ownershipOf`. `ListUsers` does not report them
+    (same gap as EC2/RDS), so this is a second call keyed by name. `createdAt`
+    is left `none`, matching every other kind's first tranche, though
+    `ListUsers`'s own `CreateDate` is available if a later pass wants it. -/
+def readOwnership (creds : Credentials) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let attempt ← (Query.call creds Query.iamEndpoint "ListUserTags" version
+    [("UserName", name)]).toBaseIO
+  match attempt with
+  | .error _ => return none
+  | .ok root =>
+    let tags := match root.child "ListUserTagsResult" with
+      | some r => (members r "Tags" "member").filterMap fun t =>
+          match t.childText "Key", t.childText "Value" with
+          | some k, some v => some (k, v)
+          | _, _           => none
+      | none => []
+    return some (tags, none)
 
 /-- Reconcile the attached set: detach what is no longer wanted, attach what is
     newly wanted. Sending the whole list blindly would fail on the ones already
@@ -111,6 +134,18 @@ end Aws'
 -- Scaleway IAM
 -- ══════════════════════════════════════════════════════════════
 
+/- ## Permanent exception: Scaleway IAM applications cannot be tagged
+
+   Scaleway's IAM API (`/iam/v1alpha1/applications`) has no `tags` field on
+   create or on the application object — confirmed against the same API
+   reference used for the other Scaleway products in this codebase. There is
+   no marker to write and none to read back, so `Backend.ownershipInfo`
+   returns `none` for `.iam` on this cloud unconditionally (see `Live.lean`),
+   and the engine's fail-safe (`Engine.lean`, the 2026-09-10 incident)
+   refuses to adopt or delete-as-orphan an application on the ledger's
+   say-so alone. This is a permanent, intentional gap, not a
+   half-implemented feature: see `AGENTS.md`'s "no half-implemented
+   features" rule. -/
 namespace Scw
 
 private def prefix' : String := Scaleway.globalPrefix "iam" "v1alpha1"

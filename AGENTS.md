@@ -4,6 +4,22 @@
 
 Please commit code but do not push without approval.
 
+**No half-implemented features.** If a feature (a safety check, a tagging
+scheme, an ownership model, ...) is only wired up for some of the kinds/cases
+it should logically cover, that is not "done for now" — it is a trap for
+whoever assumes the feature applies uniformly. A 2026-09-10 incident: the
+ownership/tag system (`Infra/Core/Ownership.lean`) was wired for `.objectStore`
+and `.awsInstance` only, with every other kind silently falling back to
+ledger-only matching; `destroy` on a Scaleway container namespace cascaded
+Scaleway-side and deleted an unmanaged sibling container that a user
+reasonably assumed the tag system would have protected. Either implement a
+feature for every case it claims to cover in the same change, or say loudly
+in the code, the docs, and to the user exactly which cases it does **not**
+cover yet — never let partial coverage look complete. When you can only do
+part of a feature, stop and get explicit agreement from the user on the
+partial scope before shipping it, rather than deciding unilaterally that
+"the common case" is good enough.
+
 ## Documentation
 
 The code should stay in sync with the documentation in `docs/`.

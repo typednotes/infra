@@ -1096,7 +1096,7 @@ private def added (a b : Stage) : List String :=
 /-- A stage by position, with an empty declaration as the fallback so a wrong
     index fails a guard rather than failing to compile. -/
 private def at! (sts : List Stage) (i : Nat) : Stage :=
-  (sts.drop i).headD { emptyStage awsFull.keys {} with label := "missing" }
+  (sts.drop i).headD { emptyStage awsFull with label := "missing" }
 
 private def awsStages := stagesFor "aws" |>.getD []
 private def scwStages := stagesFor "scaleway" |>.getD []
@@ -1427,7 +1427,7 @@ def assertAccountClean (name : String) (κ : Keys) (p : ProviderId) (regions : R
 def liveTeardown (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
     IO Unit := do
   let root : System.FilePath := ".infra" / s!"live-{name}"
-  runStage name root (emptyStage κ regions)
+  runStage name root (emptyStage { keys := κ, plan := Plan.absent κ, regions := regions, forgets := [] })
   let rows ← Ledger.load root
   unless rows.isEmpty do
     throw (IO.userError s!"[{name}] torn down, but the ledger still lists \
@@ -1435,6 +1435,242 @@ def liveTeardown (name : String) (κ : Keys) (p : ProviderId) (regions : Regions
   progress s!"[{name}] torn down, and the ledger is empty"
   -- And the account agrees, which the ledger on its own cannot say.
   assertAccountClean name κ p regions
+
+/-! ## The ownership perimeter: a resource nobody told us about
+
+  Everything above proves the fleet converges and cleans up after itself. None
+  of it proves the fleet leaves a *stranger's* resource alone — every resource
+  any stage touches is one this test itself created, so a bug that adopted or
+  destroyed by name coincidence rather than by tag would pass every assertion
+  above and still be exactly the 2026-09-10 incident.
+
+  This section re-enacts that incident on purpose, once per cloud. It plants
+  one extra resource that a fleet's own listing would see — sharing a
+  namespace, or just the same flat account/project — but never gives it the
+  `managed-by-infra` tag, the same way a resource nobody declared through this
+  tool never has one. Then it runs the fleet's create, two updates and an
+  orphan-deletion pass, and checks after each one that the untagged sibling is
+  still standing. If `push` ever fell back to matching by name, by namespace
+  membership, or by "it showed up in a list", this is where it would show.
+
+  Scaleway's decoy is a container sharing the managed fleet's own container
+  namespace, whose own delete cascades to everything inside it — see
+  `Compute.Containers.readNamespaceOwnership`, and the 2026-09-10 incident
+  this is named for. AWS and GCP have no equivalent grouping resource, so
+  their decoys are a secret each: same flat, account-wide namespace every
+  other kind those fleets manage lives in, and the risk the perimeter is
+  actually checking — an orphan pass adopting or deleting by listing rather
+  than by tag — is exactly the same one regardless of whether there happens
+  to be a cascading container to hide the story in. -/
+
+/-- Fail, naming exactly what would have to be true for this to trip: the
+    perimeter did not hold, and something in this run destroyed or adopted a
+    resource it does not own. -/
+private def assertDecoySurvives (name desc : String) (stillThere : IO Bool) : IO Unit := do
+  unless ← stillThere do
+    throw (IO.userError s!"[{name}] the ownership perimeter failed: {desc} is \
+gone. Something in this run touched a resource it does not own.")
+
+/-- The perimeter check, shared by all three clouds: run the sequence with one
+    untagged, unmanaged decoy sitting where the fleet's own listing would see
+    it, and prove it survives every stage that is not itself the decoy's own
+    teardown.
+
+    Cleanup is unconditional: on any failure the decoy and the managed fleet
+    are both torn down before the original error is reported, the same
+    discipline `liveSequence` already applies to the managed fleet alone. -/
+private def perimeterCheck (name : String) (κ : Keys) (p : ProviderId)
+    (stages : List Stage) (regions : Regions) (desc : String)
+    (createDecoy : IO Unit) (decoyStillThere : IO Bool) (deleteDecoy : IO Unit) :
+    IO Unit := do
+  let root : System.FilePath := ".infra" / s!"live-{name}"
+
+  -- Cleans up both the decoy and the managed fleet, best-effort, and reports
+  -- every failure alongside the one that triggered it — never silently.
+  let cleanupAndRethrow (e : IO.Error) : IO Unit := do
+    let mut msg := toString e
+    match ← deleteDecoy.toBaseIO with
+    | .ok _     => pure ()
+    | .error e2 => msg := s!"{msg}\nand the decoy also failed to delete: {e2} \
+— remove it by hand before the next run against this account, or it may \
+collide with a name the next run creates."
+    match ← (liveTeardown name κ p regions).toBaseIO with
+    | .ok _     => pure ()
+    | .error e3 => msg := s!"{msg}\nand tearing down the managed fleet also \
+failed: {e3}"
+    throw (IO.userError msg)
+
+  match ← (do
+      -- Stage 1 first: whatever the decoy shares a namespace with does not
+      -- exist until this runs.
+      runStage name root (at! stages 0)
+      createDecoy
+      progress s!"[{name}] perimeter: {desc} created, carrying no \
+'{markerKey}' tag"
+      -- Ramp up, ramp down, trim: the decoy surviving each of these is the
+      -- perimeter holding.
+      runStage name root (at! stages 1); assertDecoySurvives name desc decoyStillThere
+      runStage name root (at! stages 2); assertDecoySurvives name desc decoyStillThere
+      runStage name root (at! stages 3); assertDecoySurvives name desc decoyStillThere
+      progress s!"[{name}] perimeter: {desc} survived a create, two updates \
+and an orphan-deletion pass untouched"
+      -- Deleted by hand now, before the final stage tears the managed fleet
+      -- down: a cascade (Scaleway's namespace) taking the decoy with it would
+      -- prove nothing either way about the perimeter.
+      deleteDecoy
+      progress s!"[{name}] perimeter: {desc} removed by hand before the \
+managed fleet is torn down"
+      runStage name root (at! stages 4)
+      let rows ← Ledger.load root
+      unless rows.isEmpty do
+        throw (IO.userError s!"[{name}] perimeter check torn down, but the \
+ledger still lists {rows.length} resource(s)")
+      assertAccountClean name κ p regions).toBaseIO with
+  | .ok _    => progress s!"[{name}] perimeter: ok — {desc} was never adopted \
+or destroyed by the managed fleet's lifecycle"
+  | .error e => cleanupAndRethrow e
+
+/-! ### Scaleway: a container sharing the managed namespace -/
+
+/-- The decoy's name. Prefixed like everything else here, on purpose: if this
+    check is ever interrupted before its own cleanup runs, `lake test --
+    scaleway sweep` still finds and removes it, the same as any other debris. -/
+def decoyContainerName : String := "ci-tests-infra-perimeter-decoy"
+
+/-- Create the decoy directly against Scaleway's API, bypassing
+    `Compute.Containers.create` entirely: that function always writes the
+    marker tag, and there is no argument that tells it not to. A payload with
+    no `tags` field at all is what a resource this tool never touched actually
+    looks like on the wire. -/
+def createForeignContainer (creds : Credentials) (ns : String) : IO Unit := do
+  let nsId ← Infra.Providers.Kinds.Compute.Containers.namespaceIdOfName creds ns
+  discard <| Infra.Providers.Scaleway.call creds "POST"
+    (Infra.Providers.Scaleway.regionalPrefix "containers" "v1beta1" creds.region
+      ++ "/containers")
+    (payload := some (.object
+      [ ("namespace_id", .string nsId)
+      , ("name", .string decoyContainerName)
+      , ("registry_image", .string "docker.io/library/nginx:alpine")
+      , ("memory_limit", .number (Float.ofNat 256))
+      , ("timeout", .string "60s")
+      , ("environment_variables", .object []) ]))
+
+/-- Whether the decoy is still there, by name — the same lookup
+    `Compute.Containers.delete` itself uses, so this cannot disagree with what
+    a real delete would find. -/
+def foreignContainerExists (creds : Credentials) : IO Bool := do
+  return (← Infra.Providers.Kinds.Compute.Containers.list creds).contains decoyContainerName
+
+/-- Delete the decoy. Already gone is not an error, the same tolerance every
+    other `delete` in this library has for a resource removed between a list
+    and an act on it. -/
+def deleteForeignContainer (creds : Credentials) : IO Unit := do
+  match ← (Infra.Providers.Kinds.Compute.Containers.delete creds decoyContainerName).toBaseIO with
+  | .ok _ => pure ()
+  | .error e =>
+    let msg := toString e
+    unless (msg.splitOn "HTTP 404").length > 1 || (msg.splitOn "not found").length > 1 do
+      throw e
+
+def scalewayPerimeterCheck : IO Unit := do
+  let name := "scaleway"
+  let (_, credsOf) ← Infra.Cli.liveFor scalewayFull.keys scalewayFull.regions
+  let some creds := credsOf .scaleway
+    | throw (IO.userError s!"[{name}] perimeter check: no credentials were loaded")
+  perimeterCheck name scalewayFull.keys .scaleway scwStages scalewayFull.regions
+    s!"the foreign, untagged container '{decoyContainerName}' — sharing the \
+'ci-tests-infra-ctrs' namespace with a managed container"
+    (createForeignContainer creds "ci-tests-infra-ctrs")
+    (foreignContainerExists creds)
+    (deleteForeignContainer creds)
+
+/-! ### AWS and GCP: a secret sharing the account or project
+
+  Neither cloud has a grouping object for any kind these fleets manage, so the
+  decoy shares the plainest thing that *is* shared: the account (AWS) or
+  project (GCP) a secret lives in, which is exactly the scope an orphan-sweep
+  over that kind would list. -/
+
+def decoySecretName : String := "ci-tests-infra-perimeter-decoy-secret"
+
+/-- AWS Secrets Manager insists on a fresh idempotency token per
+    `CreateSecret`/`PutSecretValue` call — see `Kinds.Secrets.Asm.requestToken`
+    for the incident that found this. That helper is private to its own
+    namespace, so this is the same recipe, not a shared function. -/
+private def awsRequestToken : IO String := do
+  let now ← Data.Time.getCurrentTime
+  let hi ← IO.rand 0 (2 ^ 32 - 1)
+  let hex (n : Nat) (width : Nat) : String :=
+    let digits := String.ofList (Nat.toDigits 16 n)
+    (String.ofList (List.replicate (width - min width digits.length) '0')) ++ digits
+  return hex now.nanosSinceEpoch 24 ++ hex hi 8
+
+/-- Create the decoy directly against Secrets Manager, bypassing
+    `Kinds.Secrets.Asm.create`: it always writes the marker tag under `Tags`,
+    and there is no argument that omits it. No `Tags` key at all is what a
+    secret this tool never touched actually looks like on the wire. -/
+def createForeignSecretAws (creds : Credentials) : IO Unit := do
+  let ep := Infra.Providers.Aws.Json.secretsEndpoint creds.region
+  discard <| Infra.Providers.Aws.Json.call creds ep "secretsmanager.CreateSecret"
+    (.object
+      [ ("Name", .string decoySecretName)
+      , ("SecretString", .string "decoy")
+      , ("ClientRequestToken", .string (← awsRequestToken)) ])
+
+def foreignSecretExistsAws (creds : Credentials) : IO Bool := do
+  let ep := Infra.Providers.Aws.Json.secretsEndpoint creds.region
+  return (← Infra.Providers.Kinds.Secrets.Asm.list creds ep).contains decoySecretName
+
+/-- `Kinds.Secrets.Asm.delete` is already name-based and tag-indifferent, and
+    already forces immediate deletion rather than the recovery window — safe
+    to reuse as-is. -/
+def deleteForeignSecretAws (creds : Credentials) : IO Unit :=
+  Infra.Providers.Kinds.Secrets.Asm.delete creds
+    (Infra.Providers.Aws.Json.secretsEndpoint creds.region) decoySecretName
+
+def awsPerimeterCheck : IO Unit := do
+  let name := "aws"
+  let (_, credsOf) ← Infra.Cli.liveFor awsFull.keys awsFull.regions
+  let some creds := credsOf .aws
+    | throw (IO.userError s!"[{name}] perimeter check: no credentials were loaded")
+  perimeterCheck name awsFull.keys .aws awsStages awsFull.regions
+    s!"the foreign, untagged secret '{decoySecretName}'"
+    (createForeignSecretAws creds)
+    (foreignSecretExistsAws creds)
+    (deleteForeignSecretAws creds)
+
+/-- Create the decoy directly against Secret Manager, bypassing
+    `Gcp.SecretManager.create`: it always writes `labels`, and there is no
+    argument that omits it. A create with no `labels` key at all, followed by
+    the same `addVersion` any secret needs, is what a secret this tool never
+    touched actually looks like on the wire. -/
+def createForeignSecretGcp (creds : Credentials) : IO Unit := do
+  let project ← Infra.Providers.Gcp.requireProject creds
+  discard <| Infra.Providers.Gcp.call creds "POST" Infra.Providers.Gcp.SecretManager.host
+    s!"/v1/projects/{project}/secrets" [("secretId", some decoySecretName)]
+    (payload := some (.object [("replication", .object [("automatic", .object [])])]))
+  discard <| Infra.Providers.Gcp.SecretManager.addVersion creds project decoySecretName "decoy"
+
+def foreignSecretExistsGcp (creds : Credentials) : IO Bool := do
+  let project ← Infra.Providers.Gcp.requireProject creds
+  return (← Infra.Providers.Gcp.SecretManager.list creds project).contains decoySecretName
+
+/-- `Gcp.SecretManager.delete` is already name-based and tag-indifferent —
+    safe to reuse as-is. -/
+def deleteForeignSecretGcp (creds : Credentials) : IO Unit := do
+  let project ← Infra.Providers.Gcp.requireProject creds
+  Infra.Providers.Gcp.SecretManager.delete creds project decoySecretName
+
+def gcpPerimeterCheck : IO Unit := do
+  let name := "gcp"
+  let (_, credsOf) ← Infra.Cli.liveFor gcpFull.keys gcpFull.regions
+  let some creds := credsOf .gcp
+    | throw (IO.userError s!"[{name}] perimeter check: no credentials were loaded")
+  perimeterCheck name gcpFull.keys .gcp gcpStages gcpFull.regions
+    s!"the foreign, untagged secret '{decoySecretName}'"
+    (createForeignSecretGcp creds)
+    (foreignSecretExistsGcp creds)
+    (deleteForeignSecretGcp creds)
 
 /-- Every stage in order, with the teardown guaranteed.
 
@@ -1505,7 +1741,16 @@ def usage : String :=
                         that died partway through. This is what CI's backstop\n\
                         runs after a failed leg — the full command is a create\n\
                         *and* a destroy, so re-running that to clean up would\n\
-                        create again.\n\n\
+                        create again.\n\
+  …plus 'perimeter':    plants one untagged, unmanaged decoy where the fleet's\n\
+                        own listing would see it — a container sharing\n\
+                        Scaleway's namespace, a secret sharing the account or\n\
+                        project on AWS/GCP — runs the sequence around it, and\n\
+                        fails unless the decoy is still there after every\n\
+                        stage that does not itself destroy it. The decoy and\n\
+                        the managed fleet are both deleted no matter how it\n\
+                        comes out. Re-enacts the 2026-09-10 incident: an\n\
+                        adopt-or-delete by name or listing rather than by tag.\n\n\
   The middle stage is the one that earns the sequence: it drops two resources,\n\
   so their lines are gone from the declaration entirely, and only the ledger\n\
   knows they exist. If membership came from the declaration they would be\n\
@@ -1750,6 +1995,21 @@ def main (args : List String) : IO UInt32 := do
     match ← (liveTeardown p κ pid regions).toBaseIO with
     | .ok _    => progress s!"[{p}] torn down"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
+  | ["scaleway", "perimeter"] =>
+    match ← scalewayPerimeterCheck.toBaseIO with
+    | .ok _    => return 0
+    | .error e => IO.eprintln s!"error: {e}"; return 1
+  | ["aws", "perimeter"] =>
+    match ← awsPerimeterCheck.toBaseIO with
+    | .ok _    => return 0
+    | .error e => IO.eprintln s!"error: {e}"; return 1
+  | ["gcp", "perimeter"] =>
+    match ← gcpPerimeterCheck.toBaseIO with
+    | .ok _    => return 0
+    | .error e => IO.eprintln s!"error: {e}"; return 1
+  | [p, "perimeter"] =>
+    IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"
+    return 1
   -- `sweep all` keeps going after a failure and reports at the end, rather
   -- than stopping at the first cloud that will not come clean. A cleanup that
   -- abandons two accounts because the first one had a problem is the opposite

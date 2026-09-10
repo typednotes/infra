@@ -1,4 +1,4 @@
-# Coverage in 0.9.3
+# Coverage in 0.9.4
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-10.

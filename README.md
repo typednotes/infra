@@ -108,7 +108,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.9.3"
+rev = "v0.9.4"
 ```
 
 Then:

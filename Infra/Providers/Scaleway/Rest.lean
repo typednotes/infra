@@ -90,4 +90,34 @@ def call (creds : Credentials) (method path : String)
 -- needs the same ones, which made this the wrong home for them. Scaleway call
 -- sites should `open Infra.Providers.JsonRead`.
 
+-- ── Tags ──
+
+/-- Scaleway's `tags` field is a flat `[]string`, unlike AWS/GCP's key/value
+    pairs — so the ownership marker (`Infra.Core.Ownership.markerKey`, a
+    `(String × String)` pair everywhere else) has to be serialised into one
+    plain string to travel in it. `=` is not a character either side of this
+    ever produces on its own (`markerKey` is a fixed identifier; a fleet name
+    is validated shorter down the same rules as any other resource name), so
+    splitting on the first one is unambiguous in practice; it is still done as
+    "first `=` splits key from the rest" rather than "no `=` allowed in the
+    value" so a value that did contain one would not silently misparse into
+    a different key. -/
+def encodeTag (t : String × String) : String := t.1 ++ "=" ++ t.2
+
+/-- The other half of `encodeTag`. A flat tag with no `=` at all (hand-written,
+    or from a product that also stores non-key/value labels) decodes to itself
+    as the key with an empty value, rather than being dropped — dropping it
+    would mean a tag this tool did not write could vanish from what `tags`
+    round-trips, which is the kind of silent loss `Divergent` must not have. -/
+def decodeTag (s : String) : String × String :=
+  match s.splitOn "=" with
+  | k :: rest =>
+    if rest.isEmpty then (k, "") else (k, String.intercalate "=" rest)
+  | [] => (s, "")
+
+#guard decodeTag (encodeTag ("managed-by-infra", "my-fleet")) = ("managed-by-infra", "my-fleet")
+#guard decodeTag "team=infra" = ("team", "infra")
+#guard decodeTag "just-a-label" = ("just-a-label", "")
+#guard decodeTag "a=b=c" = ("a", "b=c")
+
 end Infra.Providers.Scaleway

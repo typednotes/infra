@@ -1,5 +1,6 @@
 import Infra.Providers.Gcp.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   Managed Postgres on GCP: Cloud SQL.
@@ -97,10 +98,18 @@ def read (creds : Credentials) (project name : String) :
   return (tier, builtinUser, version, storage)
 
 /-- Create an instance and wait for it. Returns an empty address; see the
-    module note. -/
-def create (creds : Credentials) (project region name instanceClass password : String)
+    module note.
+
+    `markerValue` is written under `settings.userLabels` — Cloud SQL nests
+    labels there, unlike Cloud Run/Secret Manager's top-level `labels`, which
+    is easy to miss (`labels` at the top level is a *different*, deprecated
+    field on this API). See the 2026-09-10 incident in `AGENTS.md`. -/
+def create (creds : Credentials)
+    (project region name instanceClass password markerValue : String)
     (version : String) (storageGb : Nat) : IO String := do
-  let mut settings : List (String × Value) := [("tier", .string instanceClass)]
+  let mut settings : List (String × Value) :=
+    [ ("tier", .string instanceClass)
+    , ("userLabels", .object [(markerKey, .string markerValue)]) ]
   if storageGb != 0 then
     settings := settings ++ [("dataDiskSizeGb", .string (toString storageGb))]
   let payload : Value := .object
@@ -112,6 +121,23 @@ def create (creds : Credentials) (project region name instanceClass password : S
   let started ← Gcp.call creds "POST" host (instances project) (payload := some payload)
   Gcp.awaitSqlOperation creds project started s!"cloud sql: create {name}"
   return ""
+
+/-- Tags, for `Ownership.ownershipOf`. Reads `settings.userLabels` — the
+    trap this file's create already documents. `createdAt` is left `none`,
+    matching every other kind's first tranche. -/
+def readOwnership (creds : Credentials) (project name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let attempt ← (Gcp.call creds "GET" host (instancePath project name)).toBaseIO
+  match attempt with
+  | .error _ => return none
+  | .ok i =>
+    let tags := match (field i "settings").bind (field · "userLabels") with
+      | some (.object fields) => fields.filterMap fun (k, v) =>
+          match v with
+          | .string s => some (k, s)
+          | _         => none
+      | _ => []
+    return some (tags, none)
 
 /-- Refuse a serverless declaration, and say what to write instead. -/
 def createServerless (name : String) : IO String := do

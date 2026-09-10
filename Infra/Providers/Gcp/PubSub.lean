@@ -1,5 +1,6 @@
 import Infra.Providers.Gcp.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   Queues on GCP, over Pub/Sub topics.
@@ -82,10 +83,28 @@ the list may be incomplete"
     `PUT` rather than `POST`: the name is chosen by the caller and is part of
     the URL, so creation is idempotent in shape though not in effect — a second
     call answers `409 ALREADY_EXISTS`. -/
-def createTopic (creds : Credentials) (project name : String) : IO String := do
+def createTopic (creds : Credentials) (project name markerValue : String) : IO String := do
   let reply ← Gcp.call creds "PUT" host (topicPath project name)
-    (payload := some (.object []))
+    (payload := some (.object [("labels", .object [(markerKey, .string markerValue)])]))
   return (stringField reply "name").getD (topicName project name)
+
+/-- Tags, for `Ownership.ownershipOf`. Labels come back top-level on the
+    topic object, so the existing `GET` (as in `readTopic`) is enough.
+    `createdAt` is left `none`, matching every other kind's first tranche —
+    Pub/Sub topics report none anyway. -/
+def readOwnership (creds : Credentials) (project name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let attempt ← (Gcp.call creds "GET" host (topicPath project name)).toBaseIO
+  match attempt with
+  | .error _ => return none
+  | .ok reply =>
+    let tags := match field reply "labels" with
+      | some (.object fields) => fields.filterMap fun (k, v) =>
+          match v with
+          | .string s => some (k, s)
+          | _         => none
+      | _ => []
+    return some (tags, none)
 
 /-- A topic's resource name, or a failure if it is not there.
 

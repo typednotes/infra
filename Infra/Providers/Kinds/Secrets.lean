@@ -2,6 +2,7 @@ import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Infra.Providers.Gcp.SecretManager
 import Infra.Core.Stage
+import Infra.Core.Ownership
 import Linen.Data.Base64
 import Linen.Data.Time.Clock
 
@@ -159,11 +160,33 @@ private def requestToken : IO String := do
     (String.ofList (List.replicate (width - min width digits.length) '0')) ++ digits
   return hex now.nanosSinceEpoch 24 ++ hex hi 8
 
-def create (creds : Credentials) (ep : Endpoint) (name value : String) : IO String := do
+/-- `markerValue` is the ownership marker's own value (the fleet's name, or
+    `legacyMarkerValue`) — see `Infra.Core.Ownership`. Written as a real AWS
+    tag at creation, the same way `Ec2.Instance'.create` does it, so a later
+    `push` can tell this fleet's secret apart from one that merely happens to
+    share the name (see the 2026-09-10 incident in `AGENTS.md`). -/
+def create (creds : Credentials) (ep : Endpoint) (name value markerValue : String) :
+    IO String := do
   let reply ← Json.call creds ep (target "CreateSecret")
     (.object [ ("Name", .string name), ("SecretString", .string value)
-             , ("ClientRequestToken", .string (← requestToken)) ])
+             , ("ClientRequestToken", .string (← requestToken))
+             , ("Tags", .array #[.object [("Key", .string markerKey), ("Value", .string markerValue)]]) ])
   return (stringField reply "VersionId").getD ""
+
+/-- Tags, for `Ownership.ownershipOf`. `DescribeSecret` embeds them directly,
+    so this is one call, not a list-then-fetch. `createdAt` is left `none`
+    even though `CreatedDate` is reported: it arrives as an epoch float, and
+    this tranche sticks to tags alone, matching every other kind wired so
+    far — see `Live.lean`'s `ownershipInfo` doc comment. -/
+def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let reply ← Json.call creds ep (target "DescribeSecret")
+    (.object [("SecretId", .string name)])
+  let tags := (arrayField reply "Tags").filterMap fun t =>
+    match stringField t "Key", stringField t "Value" with
+    | some k, some v => some (k, v)
+    | _,      _      => none
+  return some (tags, none)
 
 def putValue (creds : Credentials) (ep : Endpoint) (name value : String) : IO String := do
   let reply ← Json.call creds ep (target "PutSecretValue")
@@ -198,12 +221,12 @@ namespace Scw
 private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "secret-manager" "v1beta1" region
 
-private def listRaw (creds : Credentials) : IO (List (String × String)) := do
+private def listRaw (creds : Credentials) : IO (List (String × String × List String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/secrets")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "secrets").filterMap fun s =>
     match stringField s "name", stringField s "id" with
-    | some n, some i => some (n, i)
+    | some n, some i => some (n, i, stringArrayField s "tags")
     | _,      _      => none
 
 def list (creds : Credentials) : IO (List String) := do
@@ -213,8 +236,17 @@ def list (creds : Credentials) : IO (List String) := do
     first. The extra call keeps fleet keys readable. -/
 private def requireId (creds : Credentials) (name : String) : IO String := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, id) => return id
-  | none         => throw (IO.userError s!"scaleway secrets: no secret named '{name}'")
+  | some (_, id, _) => return id
+  | none            => throw (IO.userError s!"scaleway secrets: no secret named '{name}'")
+
+/-- Tags, for `Ownership.ownershipOf`. Scaleway's list already returns each
+    secret's flat `tags: []string`, so this is the same call as `list`,
+    decoded rather than an extra round trip — see `Scaleway.decodeTag`. -/
+def readOwnership (creds : Credentials) (name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
+  | none               => return none
 
 /-- The number of versions, as a stand-in for "which contents". Metadata only:
     the value itself is never fetched. -/
@@ -230,10 +262,15 @@ private def addVersion (creds : Credentials) (id value : String) : IO String := 
     (payload := some (.object [("data", .string (Data.Base64.encode value.toUTF8))]))
   return (stringField reply "revision").getD ""
 
-def create (creds : Credentials) (name value : String) : IO String := do
+/-- `markerValue` is written as a flat tag, encoded via `Scaleway.encodeTag`
+    — see that function's doc comment for the serialisation convention, and
+    the 2026-09-10 AGENTS.md incident for why this cannot be left `none`. -/
+def create (creds : Credentials) (name value markerValue : String) : IO String := do
   let project ← creds.requireProject
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/secrets")
-    (payload := some (.object [("name", .string name), ("project_id", .string project)]))
+    (payload := some (.object
+      [ ("name", .string name), ("project_id", .string project)
+      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
   match stringField reply "id" with
   | some id => addVersion creds id value
   | none    => throw (IO.userError s!"scaleway secrets: create returned no id for '{name}'")

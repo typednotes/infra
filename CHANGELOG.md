@@ -65,6 +65,36 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   third-party dependency, what the test for "belongs in `linen`" is, and that
   pending moves are written down rather than left implicit.
 
+## [0.9.4] — 2026-09-10
+
+### Fixed
+
+- **Ownership was never the only rule deciding "mine".** Both places the
+  engine grants ownership of a resource — the adoption loop in `push` and
+  `deleteOrphan` in `runStep` — fell back to naming/ledger matching alone for
+  any backend that could not yet report tags, which is exactly the naming-only
+  rule that let `destroy` cascade-delete an unmanaged sibling container in the
+  2026-09-10 incident `AGENTS.md` records. A backend that cannot read tags is
+  now refused rather than adopted or deleted-on-the-ledger's-say-so — the
+  fleet manages less than it declares until that kind's backend is taught to
+  report tags, loudly warned, rather than silently trusting a name. Tag-based
+  `readOwnership` was added for every remaining kind across AWS, GCP and
+  Scaleway to close that gap, leaving four documented, permanent exceptions
+  where the underlying API has no place to put a tag.
+
+### Added
+
+- **A live ownership-perimeter test per cloud** (`lake test -- <aws|scaleway|gcp>
+  perimeter`), proving the fix above holds against a real account rather than
+  only the offline engine. Each run plants one untagged, unmanaged decoy where
+  the fleet's own listing would see it — a container sharing Scaleway's
+  managed namespace (whose own delete cascades — the shape of the 2026-09-10
+  incident), a secret sharing the account/project on AWS and GCP (the same
+  flat namespace every other kind those fleets manage lives in) — then runs
+  the fleet's create, two updates and an orphan-deletion pass around it and
+  fails unless the decoy is still standing after each. The decoy and the
+  managed fleet are both torn down unconditionally, on any outcome.
+
 ## [0.9.3] — 2026-09-10
 
 ### Changed

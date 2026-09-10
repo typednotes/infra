@@ -573,11 +573,17 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
       | .gcp =>
         let project ← Gcp.requireProject creds
         let resource ← Gcp.PubSub.createTopic creds project spec.name
+                         (fleet.getD legacyMarkerValue)
         return { handle := ⟨spec.name⟩, url := resource }
       | .aws | .scaleway =>
         let ep := sqsFor provider creds
         let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
-        let url ← Queues.createQueue sqsCreds ep spec.name spec.visibilityTimeoutSec
+        -- Scaleway's mnq queues cannot be tagged at all — see the permanent
+        -- exception documented on `Queues.readOwnership`.
+        let tags := match provider with
+          | .aws => [(markerKey, fleet.getD legacyMarkerValue)]
+          | _    => []
+        let url ← Queues.createQueue sqsCreds ep spec.name spec.visibilityTimeoutSec tags
         return { handle := ⟨spec.name⟩, url }
     | .imageRegistry, spec => do
       let uri ← match provider with
@@ -594,37 +600,44 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
       let value ← match spec.valueFrom with
         | .fromEnv v  => Secrets.valueFromEnv v
         | .composed v => pure v
+      let marker := fleet.getD legacyMarkerValue
       let version ← match provider with
         | .gcp      =>
-          Gcp.SecretManager.create creds (← Gcp.requireProject creds) spec.name value
-        | .aws      => Secrets.Asm.create creds (asmFor creds) spec.name value
-        | .scaleway => Secrets.Scw.create creds spec.name value
+          Gcp.SecretManager.create creds (← Gcp.requireProject creds) spec.name value marker
+        | .aws      => Secrets.Asm.create creds (asmFor creds) spec.name value marker
+        | .scaleway => Secrets.Scw.create creds spec.name value marker
       return { handle := ⟨spec.name⟩, version }
     | .compute, spec => do
+      let marker := fleet.getD legacyMarkerValue
       match provider with
       | .gcp =>
         Gcp.CloudRun.create creds (← Gcp.requireProject creds) creds.region
-          spec.name spec.image spec.memoryMb spec.timeoutSec spec.env
+          spec.name spec.image marker spec.memoryMb spec.timeoutSec spec.env
           spec.executionRole
       | .aws => Compute.Lambda.create creds (lambdaFor creds) spec.name spec.image
-                  spec.executionRole spec.memoryMb spec.timeoutSec spec.env
+                  spec.executionRole marker spec.memoryMb spec.timeoutSec spec.env
       | .scaleway => Compute.Containers.create creds spec.name spec.image
-                       spec.namespace' spec.memoryMb spec.timeoutSec spec.env
+                       spec.namespace' marker spec.memoryMb spec.timeoutSec spec.env
       return { handle := ⟨spec.name⟩, status := "creating" }
     | .iam, spec => do
       match provider with
       | .gcp =>
+        -- GCP service accounts cannot be tagged at all — see the permanent
+        -- exception documented on `Gcp.Iam`.
         let email ← Gcp.Iam.create creds (← Gcp.requireProject creds) spec.name spec.policies
         return { handle := ⟨spec.name⟩, arn := email }
       | .aws =>
-        let arn ← Iam.Aws'.create creds spec.name spec.policies
+        let arn ← Iam.Aws'.create creds spec.name (fleet.getD legacyMarkerValue) spec.policies
         return { handle := ⟨spec.name⟩, arn }
       | .scaleway =>
+        -- Scaleway IAM applications cannot be tagged at all — see the
+        -- permanent exception documented on `Iam.Scw`.
         discard <| Iam.Scw.create creds spec.name
         return { handle := ⟨spec.name⟩, arn := "" }
     | .postgres, spec => do
       -- The one place a secret value is read; see `Kinds.Postgres`.
       let password ← Postgres.fetchMasterPassword provider creds spec.masterPasswordSecret
+      let marker := fleet.getD legacyMarkerValue
       -- Routed on `instanceClass` being set, not on a separate spec flag: `Fillable`'s `""`
       -- sentinel is what `PostgresSpec.serverless` leaves behind, same convention as every
       -- other "said: nothing" default in this codebase.
@@ -636,28 +649,33 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
           | .gcp => Gcp.CloudSql.createServerless spec.name
           | .aws => throw (IO.userError
               "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
+          -- Scaleway Serverless SQL Database cannot be tagged at all — see the
+          -- permanent exception documented on `Kinds.Postgres.ServerlessSql`.
           | .scaleway => Postgres.ServerlessSql.create creds spec.name spec.masterUsername
                            password spec.version spec.minCapacity spec.maxCapacity
         else
           match provider with
           | .gcp =>
             Gcp.CloudSql.create creds (← Gcp.requireProject creds) creds.region
-              spec.name spec.instanceClass password spec.version spec.storageGb
+              spec.name spec.instanceClass password marker spec.version spec.storageGb
           | .aws => Postgres.Rds.create creds (rdsFor creds) spec.name spec.instanceClass
-                      spec.masterUsername password spec.version spec.storageGb
+                      spec.masterUsername password spec.version marker spec.storageGb
           | .scaleway => Postgres.Rdb.create creds spec.name spec.instanceClass
-                           spec.masterUsername password spec.version spec.storageGb
+                           spec.masterUsername password spec.version marker spec.storageGb
       return { handle := ⟨spec.name⟩, endpoint := host }
     | .scalewayFunctionNamespace, spec => do
-      let (i, _) ← Compute.Functions.createNamespace creds spec.name spec.description
+      let marker := fleet.getD legacyMarkerValue
+      let (i, _) ← Compute.Functions.createNamespace creds spec.name spec.description marker
       return { handle := ⟨spec.name⟩, namespaceId := i }
     | .scalewayContainerNamespace, spec => do
+      let marker := fleet.getD legacyMarkerValue
       -- The registry endpoint comes back from the create call: making a
       -- containers namespace implicitly makes a Container Registry namespace,
       -- and that is where its images have to be pushed.
-      let (i, reg) ← Compute.Containers.createNamespace creds spec.name spec.description
+      let (i, reg) ← Compute.Containers.createNamespace creds spec.name spec.description marker
       return { handle := ⟨spec.name⟩, namespaceId := i, registryEndpoint := reg }
     | .scalewayFunction, spec => do
+      let marker := fleet.getD legacyMarkerValue
       let ns : Handle .scalewayFunctionNamespace := spec.namespace'
       -- Refused here rather than deployed empty. Serverless Functions will
       -- accept a function with no code and then fail every invocation, which
@@ -671,7 +689,7 @@ invocation, which is a worse failure than this one")
       -- reads `<file>.<function>`, so `handler.handle` means `handler.py`.
       let file := ((spec.handler.splitOn ".").headD "handler") ++ ".py"
       let url ← Compute.Functions.create creds spec.name spec.runtime ns.raw
-                  spec.handler spec.sourceBucket
+                  spec.handler marker spec.sourceBucket
       -- Create, then upload, then deploy. A function that exists with no code
       -- deployed is the state this leaves behind if the upload fails, and
       -- that is why the error above prefers to refuse first.
@@ -679,12 +697,13 @@ invocation, which is a worse failure than this one")
         (Infra.Providers.Zip.archive [⟨file, spec.code.toUTF8⟩])
       return { handle := ⟨spec.name⟩, url }
     | .scalewayContainer, spec => do
+      let marker := fleet.getD legacyMarkerValue
       -- The one place a `.scalewayContainer` reads a secret's value; see
       -- `Kinds.Secrets.fetchValue`.
       let secretVals ← spec.secretEnv.mapM fun (name, h) => do
         return (name, ← Secrets.fetchValue .scaleway creds h.raw)
       let ns : Handle .scalewayContainerNamespace := spec.namespace'
-      let url ← Compute.Containers.createFull creds spec.name spec.image ns.raw
+      let url ← Compute.Containers.createFull creds spec.name spec.image ns.raw marker
                   spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
                   spec.timeoutSec spec.env secretVals
       return { handle := ⟨spec.name⟩, url }
@@ -767,7 +786,7 @@ invocation, which is a worse failure than this one")
       match provider with
       | .gcp =>
         Gcp.CloudRun.update creds (← Gcp.requireProject creds) creds.region
-          h.raw spec.image spec.memoryMb spec.timeoutSec spec.env
+          h.raw spec.image (fleet.getD legacyMarkerValue) spec.memoryMb spec.timeoutSec spec.env
           spec.executionRole
       | .aws => Compute.Lambda.update creds (lambdaFor creds) h.raw spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
@@ -898,6 +917,45 @@ invocation, which is a worse failure than this one")
       | .aws | .scaleway =>
         return some ((← ObjectStore.readTags creds (s3For provider creds) h.raw).getD [], none)
     | .awsInstance, h => Ec2.Instance'.readOwnership creds (ec2For creds) h.raw
+    | .secrets, h => do
+      match provider with
+      | .gcp      => Gcp.SecretManager.readOwnership creds (← Gcp.requireProject creds) h.raw
+      | .aws      => Secrets.Asm.readOwnership creds (asmFor creds) h.raw
+      | .scaleway => Secrets.Scw.readOwnership creds h.raw
+    | .compute, h => do
+      match provider with
+      | .gcp      =>
+        Gcp.CloudRun.readOwnership creds (← Gcp.requireProject creds) creds.region h.raw
+      | .aws      => Compute.Lambda.readOwnership creds (lambdaFor creds) h.raw
+      | .scaleway => Compute.Containers.readOwnership creds h.raw
+    | .scalewayContainer, h => Compute.Containers.readOwnership creds h.raw
+    | .scalewayContainerNamespace, h => Compute.Containers.readNamespaceOwnership creds h.raw
+    | .scalewayFunction, h => Compute.Functions.readOwnership creds h.raw
+    | .scalewayFunctionNamespace, h => Compute.Functions.readNamespaceOwnership creds h.raw
+    | .postgres, h => do
+      match provider with
+      -- Covers Cloud SQL only: a `PostgresSpec.serverless` target on GCP
+      -- always raises at create (see `Gcp.CloudSql.createServerless`), so no
+      -- GCP postgres resource is ever the untaggable kind.
+      | .gcp      => Gcp.CloudSql.readOwnership creds (← Gcp.requireProject creds) h.raw
+      | .aws      => Postgres.Rds.readOwnership creds (rdsFor creds) h.raw
+      -- Scaleway Managed Database is tag-capable; Serverless SQL Database is
+      -- not and there is no way to tell which one a bare `Handle` names here,
+      -- so this arm covers `rdb` only — `ServerlessSql`'s permanent exception
+      -- means a serverless target simply never becomes ownership-verifiable.
+      | .scaleway => Postgres.Rdb.readOwnership creds h.raw
+    | .iam, h =>
+      -- GCP and Scaleway `.iam` are permanent tag-capability exceptions —
+      -- see the doc notes on `Gcp.Iam` and `Iam.Scw` — so only AWS reports.
+      match provider with
+      | .gcp      => pure none
+      | .aws      => Iam.Aws'.readOwnership creds h.raw
+      | .scaleway => pure none
+    | .queues, h => do
+      match provider with
+      | .gcp      => Gcp.PubSub.readOwnership creds (← Gcp.requireProject creds) h.raw
+      | .aws      => Queues.readOwnership creds (sqsFor provider creds) h.raw
+      | .scaleway => pure none
     | _, _ => pure none
 
 /-- Every cloud, live, using each one's own credentials.

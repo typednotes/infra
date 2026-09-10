@@ -48,6 +48,19 @@ import Infra.Core.Stage
   That way a declared policy is visible in `plan` as a divergence and refused
   loudly at apply, rather than being quietly dropped — which is the failure
   this codebase treats as worse than not supporting the field at all.
+
+  ## Permanent exception: this resource cannot be tagged
+
+  A GCP service account has no `labels` field — labels on this API surface
+  live on the *project*, not on individual service accounts, and the only
+  alternative (Resource Manager TagBindings) is a different API and
+  permission model, out of scope here. There is no marker to write and none
+  to read back, so `Backend.ownershipInfo` returns `none` for `.iam` on GCP
+  unconditionally (see `Live.lean`), and the engine's fail-safe
+  (`Engine.lean`, the 2026-09-10 incident) refuses to adopt or
+  delete-as-orphan a service account on the ledger's say-so alone. This is a
+  permanent, intentional gap, not a half-implemented feature: see
+  `AGENTS.md`'s "no half-implemented features" rule.
 -/
 
 namespace Infra.Providers.Gcp.Iam

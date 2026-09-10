@@ -1,5 +1,6 @@
 import Infra.Providers.Gcp.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
 import Linen.Data.Base64
 
 /-
@@ -92,10 +93,12 @@ def addVersion (creds : Credentials) (project name value : String) : IO String :
     something the portable spec has a field for; a project with an org policy
     forbidding automatic replication will get a clear error from Google here
     rather than a wrong guess from us. -/
-def create (creds : Credentials) (project name value : String) : IO String := do
+def create (creds : Credentials) (project name value markerValue : String) : IO String := do
   discard <| Gcp.call creds "POST" host s!"/v1/projects/{project}/secrets"
     [("secretId", some name)]
-    (payload := some (.object [("replication", .object [("automatic", .object [])])]))
+    (payload := some (.object
+      [ ("replication", .object [("automatic", .object [])])
+      , ("labels", .object [(markerKey, .string markerValue)]) ]))
   match ← (addVersion creds project name value).toBaseIO with
   | .ok v => return v
   | .error e =>
@@ -103,6 +106,24 @@ def create (creds : Credentials) (project name value : String) : IO String := do
 not add its value\n  The secret now EXISTS AND IS EMPTY, so a retry will fail \
 with ALREADY_EXISTS while the value is still missing. Either add a version by \
 hand or delete the secret and re-apply.\n  {e}")
+
+/-- Tags, for `Ownership.ownershipOf`. Labels come back on the secret object
+    itself, so `GET` is enough — no second call, unlike AWS/RDS/IAM.
+    `createdAt` is left `none`, matching every other kind's first tranche,
+    though `createTime` is available if a later pass wants it. -/
+def readOwnership (creds : Credentials) (project name : String) :
+    IO (Option (List (String × String) × Option String)) := do
+  let attempt ← (Gcp.call creds "GET" host (secretPath project name)).toBaseIO
+  match attempt with
+  | .error _ => return none
+  | .ok reply =>
+    let tags := match field reply "labels" with
+      | some (.object fields) => fields.filterMap fun (k, v) =>
+          match v with
+          | .string s => some (k, s)
+          | _         => none
+      | _ => []
+    return some (tags, none)
 
 /-- Give an existing secret a new value. Returns the version identifier.
 

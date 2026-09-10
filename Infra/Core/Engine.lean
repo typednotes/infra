@@ -477,13 +477,15 @@ private structure Progress (κ : Keys) where
 /-- Run one action and record what it did. -/
 private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (store : Store κ)
     (opts : PushOptions) (st : Progress κ) (a : Action κ) : IO (Progress κ) := do
-  -- Belt and suspenders on the one action that deletes purely on the
-  -- ledger's say-so: a `deleteOrphan` fires because a line left the
-  -- declaration, not because anything was just read as ours. Where the
-  -- backend can report tags, re-check the marker immediately before
-  -- deleting rather than trusting a ledger row that might be stale or
-  -- wrong. An unmigrated backend (`none`) keeps the old ledger-only
-  -- behaviour — this is strictly additional caution, not a new gate.
+  -- The ledger is a cache, never authority — see the 2026-09-10 incident in
+  -- `AGENTS.md`. A `deleteOrphan` fires because a line left the declaration;
+  -- before deleting anything, re-check the marker tag rather than trusting a
+  -- ledger row that might be stale, wrong, or (for a kind this backend was
+  -- never taught to tag) was never actually verified in the first place. A
+  -- backend that cannot report tags (`none`) refuses the deletion rather
+  -- than falling back to the ledger's say-so, for the same reason the
+  -- adoption loop above refuses to *claim* such a resource: trusting the
+  -- ledger alone is exactly the naming-only rule that caused the incident.
   match a with
   | .deleteOrphan p k nm region =>
     match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
@@ -492,7 +494,11 @@ private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (store : Store κ)
         throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but \
 it no longer carries the marker tag; refusing to delete a resource that might not be. If it \
 really is gone, or was never mine, `forget` it instead of applying.")
-    | none => pure ()
+    | none =>
+      throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but this \
+backend cannot yet read tags to verify it; refusing to delete on the ledger's say-so alone. \
+If it really is gone, or was never mine, `forget` it instead of applying — see AGENTS.md's \
+\"no half-implemented features\" rule.")
   | _ => pure ()
   let entries ← runAction bs T st.entries a
   -- Written after *every* action, not once at the end. An apply that fails
@@ -588,14 +594,21 @@ Declare the cloud, or point the ledger elsewhere")
   -- failed run had left standing, eight of the eleven needed no action, and
   -- the teardown then deleted only the three that had.
   --
-  -- Claiming a resource because the declaration names it and it exists is the
-  -- same rule the planner already applies to decide it is converged. Where a
-  -- backend can report tags and a creation date (`ownershipInfo`), that rule
-  -- is now checked against `ownershipOf` first: a resource without
-  -- the marker is left alone rather than claimed, which is what distinguishes
-  -- "mine" from "someone else's, identically named". A backend that cannot
-  -- yet report this (`none`) falls back to the old naming-only rule exactly
-  -- as before, so an unmigrated kind is not regressed by this check.
+  -- Claiming a resource because the declaration names it and it exists is
+  -- NOT the rule any more: ownership is decided by the realm (which account
+  -- these credentials are for) and the marker tag (`Infra.Core.Ownership`),
+  -- never by name/ledger matching alone — see the 2026-09-10 incident in
+  -- `AGENTS.md`, where a naming-only adoption of a Scaleway container
+  -- namespace led `destroy` to cascade-delete an unmanaged sibling container.
+  -- The ledger is purely a cache of resources already verified this way; it
+  -- must never itself be read as evidence of ownership.
+  --
+  -- So: a backend that CAN report tags (`ownershipInfo` returns `some`) is
+  -- checked against `ownershipOf`, exactly as before. A backend that cannot
+  -- yet report tags (`none`) is now refused, not adopted — the safe default,
+  -- since claiming it wrongly can delete someone else's resource, while
+  -- refusing it only means this fleet manages less than it declares (loudly
+  -- warned, and fixable by adding tag support to that kind's backend).
   let mut rows := store.rows
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
@@ -606,7 +619,13 @@ Declare the cloud, or point the ledger elsewhere")
           unless rows.any (Ledger.Row.isAt · p k nm) do
             let handle := observedHandle k sighting.observed
             let claim ← match ← (bs.backendFor p k nm).ownershipInfo k handle with
-              | none => pure true
+              | none =>
+                IO.eprintln s!"warning: {Ledger.slotId p k nm} is declared and exists, \
+but this backend cannot yet read tags to verify ownership of it. It will not be created, \
+changed or destroyed by this fleet, which therefore manages less than it declares, until \
+tag support is added for this kind — see AGENTS.md's \"no half-implemented features\" rule \
+and docs/persistence.md. It is never adopted by name alone."
+                pure false
               | some (tags, createdAt) =>
                 let verdict := ownershipOf store.boundary p k nm tags createdAt
                 -- Said out loud, because the alternative is the quietest bad
