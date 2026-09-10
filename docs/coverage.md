@@ -1,7 +1,7 @@
-# Coverage in 0.9.1
+# Coverage in 0.9.3
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-07.
+been exercised. Everything below is the state on 2026-09-10.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.

@@ -65,6 +65,19 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   third-party dependency, what the test for "belongs in `linen`" is, and that
   pending moves are written down rather than left implicit.
 
+## [0.9.3] — 2026-09-10
+
+### Changed
+
+- **`linen` is now pinned to a tag, not `main`.** `linen` cuts real releases
+  now (`v0.16.0` is current, and matches what `main` already built against),
+  so tracking its tip had the same downside `typednotes-infra`'s own comment
+  on pinning `infra` already describes: the next breaking change there would
+  have arrived here unannounced. `lakefile.lean` now requires `v0.16.0`
+  explicitly — a no-op today, since that tag and `main` are the same commit,
+  but the point is the next bump becomes a deliberate `lake update linen`
+  rather than a silent one.
+
 ## [0.9.1] — 2026-09-10
 
 ### Fixed
