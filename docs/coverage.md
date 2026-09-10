@@ -1,4 +1,4 @@
-# Coverage in 0.9.0
+# Coverage in 0.9.1
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-07.
@@ -615,7 +615,17 @@ function — it is a number, so it tells the code the response was parsed at all
   (`/serverless-sqldb/v1alpha1/regions/fr-par/databases` answers `401`
   unauthenticated where `serverless_sqldb`, `v1beta1` and a bogus route all
   answer `404`), and the field names come from Scaleway's own CLI reference for
-  `scw sdb sql`. No account has run it.
+  `scw sdb sql`.
+
+  `create` was run against a live account (a consumer's `secrets-db`, a
+  `minCapacity`/`maxCapacity` declaration) and reached the API correctly —
+  but `Live.lean`'s `read`, `list` and `delete` had not been updated to know
+  this product existed, and unconditionally called the classic Managed
+  Database client instead. `read` runs right after every `create` to record
+  what was made, so the very first live apply of this shape failed on that,
+  not on `create` itself. Fixed in 0.9.1; see its `CHANGELOG.md` entry. A full
+  apply → plan (no drift) → destroy cycle against a live account is still
+  outstanding.
 
   Note what the portable spec cannot say here: a Serverless SQL Database has no
   root user, so `masterUsername` and `masterPasswordSecret` have no

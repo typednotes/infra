@@ -297,12 +297,26 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
     let (cls, user, ver, storage) ← match provider with
       | .gcp      => Gcp.CloudSql.read creds (← Gcp.requireProject creds) h.raw
       | .aws      => Postgres.Rds.read creds (rdsFor creds) h.raw
-      | .scaleway => Postgres.Rdb.read creds h.raw
+      -- Scaleway has no single endpoint for "a postgres named X": classic
+      -- managed instances and Serverless SQL Databases are two different
+      -- products with two different id spaces, and a `Handle` does not say
+      -- which one this name belongs to. So both are tried; `ServerlessSql`
+      -- first, since a resource this backend created is more likely to be
+      -- the product `Fleet.lean` actually declared (`instanceClass` unset).
+      -- Both throw "no X named ..." on a miss, matching `requireId`, so a
+      -- miss on both — not one — is what "not found" here.
+      | .scaleway =>
+        match ← (Postgres.ServerlessSql.read creds h.raw).toBaseIO with
+        | .ok r    => pure r
+        | .error _ =>
+          match ← (Postgres.Rdb.read creds h.raw).toBaseIO with
+          | .ok r    => pure r
+          | .error _ => pure ("", "", .unknown, .unknown)
     -- `masterPasswordSecret` is our bookkeeping, not the database's: it is
     -- never reported and never compared. `cls` is `""` both for "not found"
     -- and for a genuinely classless (serverless) instance — neither Rds.read
-    -- nor Rdb.read distinguish them, so both read as `unknown` here, same as
-    -- every other field this backend cannot see.
+    -- nor either Scaleway read distinguishes them, so both read as `unknown`
+    -- here, same as every other field this backend cannot see.
     let instanceClass : Partial String := if cls.isEmpty then .unknown else .known cls
     return { name := h.raw, instanceClass, masterUsername := user
              masterPasswordSecret := "", version := ver, storageGb := storage
@@ -458,7 +472,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
       let entries ← match provider with
         | .gcp      => Gcp.CloudSql.list creds (← Gcp.requireProject creds)
         | .aws      => Postgres.Rds.list creds (rdsFor creds)
-        | .scaleway => Postgres.Rdb.list creds
+        -- Two products, two listings — see the `.postgres, h => do` case of
+        -- `read` above for why one call cannot cover both. Missing either
+        -- half here would make that half's databases read as orphans no
+        -- target ever mentions, and `push` would propose to destroy them.
+        | .scaleway => (· ++ ·) <$> Postgres.Rdb.list creds <*> Postgres.ServerlessSql.list creds
       return entries.map fun (n, host) => { handle := ⟨n⟩, endpoint := host }
     | .scalewayFunctionNamespace => do
       match provider with
@@ -850,7 +868,15 @@ invocation, which is a worse failure than this one")
       match provider with
       | .gcp      => do Gcp.CloudSql.delete creds (← Gcp.requireProject creds) h.raw
       | .aws      => Postgres.Rds.delete creds (rdsFor creds) h.raw
-      | .scaleway => Postgres.Rdb.delete creds h.raw
+      -- `delete` addresses by name alone (see the comment above this `match`
+      -- on why), and by the time a target says "gone" there is no spec left
+      -- to say which Scaleway product this name was. Try the product this
+      -- backend is more likely to have created first; a miss there falls
+      -- through to the other rather than failing the delete outright.
+      | .scaleway => do
+        match ← (Postgres.ServerlessSql.delete creds h.raw).toBaseIO with
+        | .ok ()   => pure ()
+        | .error _ => Postgres.Rdb.delete creds h.raw
     | .scalewayFunctionNamespace, h => Compute.Functions.deleteNamespace creds h.raw
     | .scalewayContainerNamespace, h => Compute.Containers.deleteNamespace creds h.raw
     | .scalewayFunction, h => Compute.Functions.delete creds h.raw

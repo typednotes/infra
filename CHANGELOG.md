@@ -8,6 +8,30 @@ break the Lean API — and before a first tagged release, several will.
 `docs/coverage.md` is the standing statement of what exists and how far it has
 been exercised; this file is what changed and when.
 
+## [0.9.1] — 2026-09-10
+
+### Fixed
+
+- **Scaleway `postgres` `read`, `list` and `delete` never looked at Serverless
+  SQL Database.** All three unconditionally called the classic Managed
+  Database (`Rdb`) client, so a fleet declaring a *serverless* `postgres`
+  (`minCapacity`/`maxCapacity`, no `instanceClass` — the shape `Fleet.lean`'s
+  `secrets-db` example uses) would `create` correctly and then fail the very
+  same apply: `push` calls `read` right after `create` to record what it
+  made, `Rdb.read` looked for the name among classic instances, found none,
+  and raised — surfacing as `CREATE scaleway/postgres/<name> failed: scaleway
+  rdb: no instance named '<name>'` even though the database now existed.
+  `list` had the matching gap the other direction: a live serverless database
+  was invisible to drift/orphan detection, since it never appeared in what
+  Scaleway's classic-instance listing returned. `delete` would have failed
+  the same way `read` did, the one time a real teardown reached it.
+
+  Fixed by trying both Scaleway products at each of the three call sites
+  (`ServerlessSql` first, since it is the shape this backend is more likely
+  to have created, falling back to `Rdb`) rather than assuming classic.
+  `docs/coverage.md`'s "Implemented, never exercised" entry for Serverless
+  SQL Database is updated with what a live account surfaced.
+
 ## [0.9.0] — 2026-09-09
 
 ### Changed
