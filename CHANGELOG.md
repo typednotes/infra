@@ -65,6 +65,48 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   third-party dependency, what the test for "belongs in `linen`" is, and that
   pending moves are written down rather than left implicit.
 
+### Fixed
+
+- **The AWS CI policy did not cover the ownership marker, and the live leg
+  failed on it.** `Iam.Aws'.create` writes the marker tag as part of
+  `CreateUser`, which AWS authorises as a separate `iam:TagUser` action, and
+  the policy granted `iam:CreateUser` alone:
+
+      CREATE aws/iam/ci-tests-infra-user failed: … is not authorized to
+      perform: iam:TagUser on resource: …:user/ci-tests-infra-user
+
+  `ci/aws-permissions-policy.json` now grants `iam:TagUser`. Auditing the rest
+  of the document against what the AWS leg actually calls turned up three more
+  gaps, all from kinds and calls added after it was last written:
+
+  - `iam:ListUserTags` and `sqs:ListQueueTags` — the *read* half of the same
+    marker. These fail quietly rather than loudly: `readOwnership` reports
+    `none` when its call fails, the engine reads that as "this cloud cannot
+    answer" and falls back to the ledger, so the ownership perimeter stops
+    being enforced for that kind without saying so.
+  - `ec2:RunInstances`, `ec2:TerminateInstances`, `ec2:ModifyInstanceAttribute`,
+    `ec2:DescribeInstances`, `ec2:DescribeImages` — the `awsInstance` kind
+    joined the live fleet and the policy never followed it.
+
+  The document is the least-privilege alternative to `PowerUserAccess` and is
+  documented as "what the live test actually needs", so a stale one is a trap
+  rather than a spare.
+
+### Documentation
+
+- `docs/ci-auth.md` no longer inlines a copy of the permissions policy. Its
+  copy still described a two-statement, SQS-only role from when the live fleet
+  was one kind; the document has eight statements. It points at
+  `ci/aws-permissions-policy.json` and `ci/README.md` instead.
+- `ci/README.md`'s per-cloud table of live-fleet kinds was missing
+  `awsInstance` (and described Scaleway's by difference from a stale AWS row).
+  It is now spelled out per cloud, read off the `#guard`s in `test/Live.lean`
+  that pin it, and it names the ownership marker's tag permissions as the
+  thing that is easy to forget.
+- `docs/ci-auth.md` now says that `PowerUserAccess` is not merely broader than
+  needed but *insufficient*: it excludes IAM, and the live fleet declares
+  `resource iam`, so the least-privilege document has to be attached alongside.
+
 ## [0.9.4] — 2026-09-10
 
 ### Fixed

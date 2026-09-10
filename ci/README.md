@@ -87,7 +87,7 @@ aws iam create-policy-version \
 If `PowerUserAccess` is attached instead, note what it does **not** cover:
 `PowerUserAccess` explicitly denies almost all of IAM, so the `iam` resource in
 the live fleet will fail under it. Either attach the policy above alongside it,
-or drop `resource iam` from `awsLive` in `test/Live.lean`.
+or drop `resource iam` from `awsFull` in `test/Live.lean`.
 
 To check what is actually attached:
 
@@ -323,7 +323,7 @@ scw iam api-key create application-id="$APP" \
   default-project-id="$CI"
 
 # Product permissions, confined to the CI project. No IAM permission sets:
-# `resource iam` is dropped from `scalewayLive`, so CI needs no
+# `resource iam` is dropped from `scalewayFull`, so CI needs no
 # organization-level rights at all.
 scw iam policy create name=infra-ci-live-tests application-id="$APP" \
   rules.0.project-ids.0="$CI" rules.0.permission-set-names.0=MessagingAndQueuingFullAccess \
@@ -343,7 +343,7 @@ Then three repository secrets:
 | `SCW_DEFAULT_PROJECT_ID` | `93e968f6-3d1e-4f28-ac82-b7ed6b4b6658` |
 
 `SCW_DEFAULT_ORGANIZATION_ID` is **not** required. Only `Iam.Scw` reads it, and
-`resource iam` is out of `scalewayLive`. The workflow still passes it, so that
+`resource iam` is out of `scalewayFull`. The workflow still passes it, so that
 re-adding the kind does not also mean remembering this line.
 
 `project-ids` rather than `organization-id` is the point: with the former, a
@@ -355,7 +355,7 @@ covering the `iam` kind would have meant granting CI org-wide IAM — which the
 isolated project cannot contain, and which is the one grant that could reach
 production identities.
 
-So `resource iam` was **dropped from `scalewayLive`**. CI's Scaleway credential
+So `resource iam` was **dropped from `scalewayFull`**. CI's Scaleway credential
 now holds project-scoped product permissions and nothing else. A `#guard` in
 `test/Live.lean` pins the absence, because adding the resource back would
 silently re-introduce the requirement.
@@ -404,7 +404,7 @@ operation on the Queues product, which is why the reclaim path in
 `IAMManager` is the coarse one, and there *is* a narrower set:
 `IAMApplicationManager` covers applications alone, where `IAMManager` also
 carries ProjectManager. Prefer the narrower one — or drop `resource iam` from
-`scalewayLive` and grant no organization-level rights at all.
+`scalewayFull` and grant no organization-level rights at all.
 
 **A trap worth naming**, because it cost a round of debugging: a policy
 attached to the wrong *application* is indistinguishable from no policy. The
