@@ -207,42 +207,22 @@ anyone who can push and an environment gate cannot.
 
 ### 3. The permissions policy
 
-Only what the live test does: create a queue, read it, delete it. Scoped to the
-`ci-tests-infra-` prefix, so this role cannot touch a real queue.
+Only what the live test does, scoped to the `ci-tests-infra-` prefix wherever
+the API lets a permission name a resource, so this role cannot touch a real
+resource. The document is **`ci/aws-permissions-policy.json`**, and it is not
+reproduced here: it grew from two statements to eight as the live fleet went
+from one kind to eight, and a copy in this file would be a copy that goes
+stale. Read the file, and read
+[`../ci/README.md`](../ci/README.md#aws) for what each statement is for —
+including the tag permissions the ownership marker needs, which are the ones
+that get forgotten.
 
-`ci/aws-permissions-policy.json`:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ManageTestQueuesOnly",
-      "Effect": "Allow",
-      "Action": [
-        "sqs:CreateQueue",
-        "sqs:DeleteQueue",
-        "sqs:GetQueueUrl",
-        "sqs:GetQueueAttributes",
-        "sqs:SetQueueAttributes",
-        "sqs:TagQueue"
-      ],
-      "Resource": "arn:aws:sqs:eu-west-1:616568506952:ci-tests-infra-*"
-    },
-    {
-      "Sid": "ListingCannotBeScoped",
-      "Effect": "Allow",
-      "Action": "sqs:ListQueues",
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-`ListQueues` is not a resource-level action, so it cannot be narrowed — the
-role can *see* every queue name in the account and modify none but its own.
-That is the tightest this gets, and it is worth knowing rather than assuming
-the prefix confines everything.
+What the file cannot narrow is the last statement. The *listing* actions
+(`sqs:ListQueues`, `s3:ListAllMyBuckets`, `iam:ListUsers`, EC2's `Describe*`,
+…) are not resource-level actions, so the role can *see* every queue, bucket,
+instance and user name in the account and modify none but its own. That is the
+tightest this gets, and it is worth knowing rather than assuming the prefix
+confines everything.
 
 ### 4. Create the role and attach
 
@@ -273,10 +253,10 @@ aws iam attach-role-policy --role-name infra-ci \
 ```
 
 The reasoning, so the trade is visible rather than implied. The live test needs
-six SQS calls; `PowerUserAccess` is far more than that, and the reason to take
-it anyway is that the next backend to be exercised live will need something
-else, and widening a policy per product is friction that ends with someone
-reaching for `AdministratorAccess` instead.
+a few dozen calls across eight products; `PowerUserAccess` is far more than
+that, and the reason to take it anyway is that the next backend to be exercised
+live will need something else, and widening a policy per product is friction
+that ends with someone reaching for `AdministratorAccess` instead.
 
 What it buys over `AdministratorAccess` is the thing that matters most:
 **`PowerUserAccess` excludes IAM.** A compromised run can create and destroy
@@ -288,6 +268,14 @@ recoverable; with admin it is neither.
 What it does not buy: a run that can still delete production data. So the
 compensating control is on the *other* side of the trust boundary — restrict
 who can assume the role, rather than what the role can do.
+
+And because it excludes IAM, `PowerUserAccess` is not *sufficient* either: the
+live fleet declares `resource iam`, so the least-privilege document has to be
+attached **alongside** it — its `IamUser` statement, scoped to
+`user/ci-tests-infra-*`, is the only thing granting the `iam` kind. Which also
+means that statement is the one that has to keep up with the code: it was
+missing `iam:TagUser` when the ownership marker started being written at
+create, and the leg failed on it.
 
 ### Gating on an environment — this is what the workflow does
 

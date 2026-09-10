@@ -12,11 +12,11 @@ illustrative, and so a change to them shows up in a diff.
   environment can require reviewers and a branch cannot. Needs
   `environment: production` on the job as well; the policy alone rejects
   every run.
-- `aws-permissions-policy.json` — **what the role may do.** Only the SQS calls
-  the live test makes, and only against queues named `ci-tests-infra-*`. The
-  one exception is `ListQueues`, which AWS does not allow to be
-  resource-scoped, so the role can see every queue name in the account and
-  modify none but its own.
+- `aws-permissions-policy.json` — **what the role may do.** Only the calls the
+  live test makes, and only against resources named `ci-tests-infra-*`. The
+  exceptions are the *listing* actions, which AWS does not allow to be
+  resource-scoped, so the role can see every queue, bucket, instance and user
+  name in the account and modify none but its own.
 
 **Note this project attaches `PowerUserAccess` rather than the least-privilege
 policy above.** The reasoning is in the guide: it excludes IAM, so a
@@ -198,13 +198,41 @@ first live run said so:
     resource 'projects/typednotes/locations/europe-west9/services'
 
 Adding a kind to a live fleet means adding its permission here. The kinds each
-fleet declares, as of 0.4.0:
+fleet declares, as of 0.10.0 — read off the `#guard`s at the foot of
+`test/Live.lean`, which are what pin them:
 
 | Cloud | Kinds in the live fleet |
 |---|---|
-| AWS | `iam`, `imageRegistry`, `objectStore`, `queues`, `s3Bucket`, `secrets`, `securityGroup` |
-| Scaleway | the same minus `s3Bucket`/`securityGroup`, plus `scalewayContainer`, `scalewayContainerNamespace`, `scalewayFunctionNamespace` |
+| AWS | `awsInstance`, `iam`, `imageRegistry`, `objectStore`, `queues`, `s3Bucket`, `secrets`, `securityGroup` |
+| Scaleway | `imageRegistry`, `objectStore`, `queues`, `scalewayContainer`, `scalewayContainerNamespace`, `scalewayFunction`, `scalewayFunctionNamespace`, `secrets` |
 | GCP | `compute`, `iam`, `imageRegistry`, `objectStore`, `queues`, `secrets` |
+
+`awsInstance` is the one that arrived after this table was first written, and
+the policy did not follow it: `ec2:RunInstances`, `ec2:TerminateInstances`,
+`ec2:ModifyInstanceAttribute` and the two describes (`ec2:DescribeInstances`
+for the lister, `ec2:DescribeImages` for `imageId := "latest"`) are in the
+document now.
+
+A second one is easy to miss because it is not in any declaration at all: the
+**ownership marker**. Every AWS kind that can carry a tag has it written at
+create and read back on the next `push` (`Infra/Core/Ownership.lean`), so each
+one needs *two* permissions beyond the create and the delete — one to tag, one
+to read tags. On AWS that is `sqs:TagQueue`/`sqs:ListQueueTags`,
+`secretsmanager:TagResource` (`DescribeSecret` carries the tags back),
+`s3:PutBucketTagging`/`s3:GetBucketTagging`, `ec2:CreateTags`
+(`DescribeSecurityGroups`/`DescribeInstances` carry them back) and
+`iam:TagUser`/`iam:ListUserTags`.
+
+Missing the *write* half fails loudly, which is how `iam:TagUser` was found:
+
+    CREATE aws/iam/ci-tests-infra-user failed: iam POST iam.amazonaws.com/:
+    HTTP 403 AccessDenied: … is not authorized to perform: iam:TagUser …
+
+Missing the *read* half is worse, because it is quiet. `readOwnership` reports
+`none` when the call fails, which the engine reads as "this cloud cannot answer"
+and falls back to the ledger — so the ownership perimeter silently stops being
+enforced for that kind rather than failing. `sqs:ListQueueTags` and
+`iam:ListUserTags` were both absent for that reason.
 
 One permission is easy to miss because no resource names it: the fleets contain
 two **composed** secrets, whose values are built from a base secret's value at

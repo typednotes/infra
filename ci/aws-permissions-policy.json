@@ -10,7 +10,8 @@
         "sqs:GetQueueUrl",
         "sqs:GetQueueAttributes",
         "sqs:SetQueueAttributes",
-        "sqs:TagQueue"
+        "sqs:TagQueue",
+        "sqs:ListQueueTags"
       ],
       "Resource": "arn:aws:sqs:eu-west-1:616568506952:ci-tests-infra-*"
     },
@@ -72,12 +73,29 @@
       }
     },
     {
+      "Sid": "Instances",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Region": "eu-west-1"
+        }
+      }
+    },
+    {
       "Sid": "IamUser",
       "Effect": "Allow",
       "Action": [
         "iam:CreateUser",
         "iam:DeleteUser",
         "iam:GetUser",
+        "iam:TagUser",
+        "iam:ListUserTags",
         "iam:ListAttachedUserPolicies",
         "iam:AttachUserPolicy",
         "iam:DetachUserPolicy"
@@ -93,6 +111,8 @@
         "ecr:DescribeRepositories",
         "s3:ListAllMyBuckets",
         "ec2:DescribeSecurityGroups",
+        "ec2:DescribeInstances",
+        "ec2:DescribeImages",
         "iam:ListUsers"
       ],
       "Resource": "*"
