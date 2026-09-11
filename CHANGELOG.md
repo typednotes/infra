@@ -11,7 +11,6 @@ been exercised; this file is what changed and when.
 ## [Unreleased]
 
 ### Pending: delete the code that has moved to `linen`
-
 `linen` 0.16.0 adds `Linen.Cloud`, a cloud-services layer that includes the
 building blocks this project has been carrying:
 
@@ -63,40 +62,33 @@ It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
 credential holding that name — defensible for a tool that owns its fleet,
 unacceptable in a library, so `linen` reads a dedicated credential instead.
 
+## [0.10.0] — 2026-09-11
+
+### Added
+
+- **`docs/permissions.md` — what a credential must be allowed to do**, which
+  nothing stated before. The AWS actions each of the ten AWS-capable kinds
+  calls, read off the call sites in `Infra/Providers/Kinds/`; why the ownership
+  marker costs *two* grants per kind rather than one, and why the missing read
+  half is the dangerous one (it fails silently, falling back to the ledger,
+  where the missing write half fails loudly at create); and pointers to the
+  GCP roles and Scaleway permission sets, which are documents nowhere because
+  neither cloud takes a policy document.
+- **`docs/aws-operator-policy.json` — that table as an adaptable IAM
+  document**, with `ACCOUNT`/`REGION`/`PREFIX` placeholders and one statement
+  per kind, so a fleet declaring three kinds keeps three statements. It covers
+  `compute` (Lambda) and `postgres` (RDS) too, and says so in the Sids —
+  `LambdaNotExercisedByCi`, `RdsNotExercisedByCi` — because neither kind is in
+  any live fleet, so those two rows are read from the code and have never been
+  checked against a real 403, unlike the other seven.
+- `ci/check-aws-policy.py` now grammar-checks both documents rather than one.
+
 ### Changed
 
 - `AGENTS.md` now records that `linen` is a first-party sibling rather than a
   third-party dependency, what the test for "belongs in `linen`" is, and that
   pending moves are written down rather than left implicit.
 
-### Fixed
-
-- **The AWS CI policy did not cover the ownership marker, and the live leg
-  failed on it.** `Iam.Aws'.create` writes the marker tag as part of
-  `CreateUser`, which AWS authorises as a separate `iam:TagUser` action, and
-  the policy granted `iam:CreateUser` alone:
-
-      CREATE aws/iam/ci-tests-infra-user failed: … is not authorized to
-      perform: iam:TagUser on resource: …:user/ci-tests-infra-user
-
-  `ci/aws-permissions-policy.json` now grants `iam:TagUser`. Auditing the rest
-  of the document against what the AWS leg actually calls turned up three more
-  gaps, all from kinds and calls added after it was last written:
-
-  - `iam:ListUserTags` and `sqs:ListQueueTags` — the *read* half of the same
-    marker. These fail quietly rather than loudly: `readOwnership` reports
-    `none` when its call fails, the engine reads that as "this cloud cannot
-    answer" and falls back to the ledger, so the ownership perimeter stops
-    being enforced for that kind without saying so.
-  - `ec2:RunInstances`, `ec2:TerminateInstances`, `ec2:ModifyInstanceAttribute`,
-    `ec2:DescribeInstances`, `ec2:DescribeImages` — the `awsInstance` kind
-    joined the live fleet and the policy never followed it.
-
-  The document is the least-privilege alternative to `PowerUserAccess` and is
-  documented as "what the live test actually needs", so a stale one is a trap
-  rather than a spare.
-
-### Changed
 
 - **`linen` is pinned to `v0.19.1`** (was `v0.16.0` in `lake-manifest.json`;
   `lakefile.lean` said `v0.17.0`, so the two had drifted — the pin had been
@@ -141,26 +133,6 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
     Fixed in `linen` v0.19.1 rather than worked around here: a consumer cannot
     influence the link of a dependency's own target. The pin is v0.19.1.
 
-### Added
-
-- **`docs/permissions.md` — what a credential must be allowed to do**, which
-  nothing stated before. The AWS actions each of the ten AWS-capable kinds
-  calls, read off the call sites in `Infra/Providers/Kinds/`; why the ownership
-  marker costs *two* grants per kind rather than one, and why the missing read
-  half is the dangerous one (it fails silently, falling back to the ledger,
-  where the missing write half fails loudly at create); and pointers to the
-  GCP roles and Scaleway permission sets, which are documents nowhere because
-  neither cloud takes a policy document.
-- **`docs/aws-operator-policy.json` — that table as an adaptable IAM
-  document**, with `ACCOUNT`/`REGION`/`PREFIX` placeholders and one statement
-  per kind, so a fleet declaring three kinds keeps three statements. It covers
-  `compute` (Lambda) and `postgres` (RDS) too, and says so in the Sids —
-  `LambdaNotExercisedByCi`, `RdsNotExercisedByCi` — because neither kind is in
-  any live fleet, so those two rows are read from the code and have never been
-  checked against a real 403, unlike the other seven.
-- `ci/check-aws-policy.py` now grammar-checks both documents rather than one.
-
-### Changed
 
 - **Both AWS policies are now wide per product and narrow per resource** —
   `sqs:*`, `s3:*`, `secretsmanager:*`, `lambda:*`, `rds:*`, `ecr:*`, each
@@ -198,6 +170,33 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   Inline is the right shape for this one: it is a single role's grant, not
   something to reuse, and inline cannot be attached to a second principal by
   accident.
+
+### Fixed
+
+- **The AWS CI policy did not cover the ownership marker, and the live leg
+  failed on it.** `Iam.Aws'.create` writes the marker tag as part of
+  `CreateUser`, which AWS authorises as a separate `iam:TagUser` action, and
+  the policy granted `iam:CreateUser` alone:
+
+      CREATE aws/iam/ci-tests-infra-user failed: … is not authorized to
+      perform: iam:TagUser on resource: …:user/ci-tests-infra-user
+
+  `ci/aws-permissions-policy.json` now grants `iam:TagUser`. Auditing the rest
+  of the document against what the AWS leg actually calls turned up three more
+  gaps, all from kinds and calls added after it was last written:
+
+  - `iam:ListUserTags` and `sqs:ListQueueTags` — the *read* half of the same
+    marker. These fail quietly rather than loudly: `readOwnership` reports
+    `none` when its call fails, the engine reads that as "this cloud cannot
+    answer" and falls back to the ledger, so the ownership perimeter stops
+    being enforced for that kind without saying so.
+  - `ec2:RunInstances`, `ec2:TerminateInstances`, `ec2:ModifyInstanceAttribute`,
+    `ec2:DescribeInstances`, `ec2:DescribeImages` — the `awsInstance` kind
+    joined the live fleet and the policy never followed it.
+
+  The document is the least-privilege alternative to `PowerUserAccess` and is
+  documented as "what the live test actually needs", so a stale one is a trap
+  rather than a spare.
 
 ### Documentation
 

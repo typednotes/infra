@@ -129,13 +129,14 @@ jobs:
           # locally was killed by the OOM killer (`Lean exited with code 137`)
           # part-way through `Linen.PostgREST.App`.
           #
-          # Reproducibility: `lake update` would resolve `linen` at `main`,
-          # because that is what this repo's own lakefile asks for. A consumer
-          # would then get whatever linen happens to be at HEAD rather than the
-          # revision infra was tested against, so this check could fail — or
-          # pass — for reasons that have nothing to do with the commit under
-          # test. Pointing at the packages this checkout already resolved uses
-          # the pinned revision from its manifest.
+          # Reproducibility: `lake update` resolves `linen` afresh from the
+          # lakefile's `require`. That is a pinned tag now rather than `main`,
+          # so the risk is smaller than it was when this comment was written —
+          # but it is not gone: a re-resolve still ignores `lake-manifest.json`,
+          # which is the file recording the revision this commit was actually
+          # tested against, and an annotated tag resolves through a tag object
+          # rather than to the commit the manifest names. Pointing at the
+          # packages this checkout already resolved uses that exact revision.
           export LAKE_PACKAGES_DIR="$GITHUB_WORKSPACE/.lake/packages"
           lake build
           ./.lake/build/bin/scaffold_check
