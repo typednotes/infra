@@ -29,7 +29,7 @@ send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
 deliberately excluded ("bucket-level operations only: no object CRUD").
 
 **Not done here yet, and why.** That first blocker is gone: the pin is
-`v0.19.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
+`v0.19.1`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
 "cannot yet be built" reason no longer applies and should not be reached for
 again. What remains is the part that was never mechanical: `ProviderId` and
 `Credentials` thread through most of `Infra/`, and `Region` is indexed by
@@ -98,7 +98,7 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
 
 ### Changed
 
-- **`linen` is pinned to `v0.19.0`** (was `v0.16.0` in `lake-manifest.json`;
+- **`linen` is pinned to `v0.19.1`** (was `v0.16.0` in `lake-manifest.json`;
   `lakefile.lean` said `v0.17.0`, so the two had drifted — the pin had been
   bumped without a `lake update`, and the manifest is what the build reads).
   `lake build`, the offline self-check suite and all four offline examples pass
@@ -123,19 +123,23 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
     non-standard port would be quietly misrouted.
   - **`System.Keychain` on Linux** no longer truncates a secret at an embedded
     NUL, which `Infra/Core/Credentials.lean` gets for free.
-  - **DuckDB now links sealed on Linux**, and this *does* reach here — the
-    opposite of what an earlier draft of this entry said. `infra` names no
-    DuckDB flags of its own, but building this package fetches DuckDB into
-    `<repo>/.lake/duckdb` and builds `linen`'s `liblinenffi.so`, whose link
-    line carries `-lduckdb_sealed`. On Linux that link fails: `linen` writes
-    the sealed library to its own `pkg.buildDir/ffi` while the `-L` flag
-    resolves `.lake/build/ffi` against the *current directory*, which for a
-    dependency is the consumer's root, not `linen`'s. The two agree only when
-    `linen` is built standalone, which is why its own CI never saw it.
+  - **DuckDB links sealed on Linux, and this repository is what found the bug
+    in it.** `infra` names no DuckDB flags of its own, but building this
+    package fetches DuckDB into `<repo>/.lake/duckdb` and builds `linen`'s
+    `liblinenffi.so`, whose link line carries `-lduckdb_sealed` — so an
+    earlier draft of this entry, which said DuckDB does not reach here, was
+    wrong. On Linux the link failed:
 
-    Consequence: **`linen` v0.17.0 through v0.19.0 cannot be built by a Linux
-    consumer**, and this repository's Linux CI leg fails on them. See the
-    entry for the pin below for which version this repository is on.
+        ld.lld: error: unable to find library -lduckdb_sealed
+
+    `linen` wrote the sealed library to its own `pkg.buildDir/ffi` while the
+    `-L` resolved `.lake/build/ffi` against the *working directory*, which for
+    a dependency is the consumer's root. The two coincide only when `linen` is
+    built standalone — which is every build its own CI does, so v0.17.0,
+    v0.18.0 and v0.19.0 all shipped unbuildable for Linux consumers.
+
+    Fixed in `linen` v0.19.1 rather than worked around here: a consumer cannot
+    influence the link of a dependency's own target. The pin is v0.19.1.
 
 ### Added
 
