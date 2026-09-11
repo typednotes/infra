@@ -28,14 +28,18 @@ building blocks this project has been carrying:
 send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
 deliberately excluded ("bucket-level operations only: no object CRUD").
 
-**Not done here yet, and why.** This project pins `linen` from git, so the
-deletion needs `linen` 0.16.0 published and `lake update linen` first. It is
-also not mechanical: `ProviderId` and `Credentials` thread through most of
-`Infra/`, and `Region` is indexed by `ProviderId`, so switching to
-`Cloud.Provider` and `Cloud.Credentials` touches the engine as well as the
-providers. Doing that blind against a dependency that cannot yet be built
-would be worse than doing it late, so it is written down rather than
+**Not done here yet, and why.** That first blocker is gone: the pin is
+`v0.18.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
+"cannot yet be built" reason no longer applies and should not be reached for
+again. What remains is the part that was never mechanical: `ProviderId` and
+`Credentials` thread through most of `Infra/`, and `Region` is indexed by
+`ProviderId`, so switching to `Cloud.Provider` and `Cloud.Credentials` touches
+the engine as well as the providers. It is written down rather than
 half-applied.
+
+Note that `infra` still imports none of `Linen.Cloud` — only the general
+modules (`Crypto`, `Data`, `Network`, `System.Keychain`, `Text`) — so every
+duplicate listed above is still live in both repositories.
 
 Three corrections to take at the same time, all of which `linen`'s versions
 already carry:
@@ -91,6 +95,30 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   The document is the least-privilege alternative to `PowerUserAccess` and is
   documented as "what the live test actually needs", so a stale one is a trap
   rather than a spare.
+
+### Changed
+
+- **`linen` is pinned to `v0.18.0`** (was `v0.16.0` in `lake-manifest.json`;
+  `lakefile.lean` said `v0.17.0`, so the two had drifted — the pin had been
+  bumped without a `lake update`, and the manifest is what the build reads).
+  `lake build`, the offline self-check suite and all four offline examples pass
+  against it.
+
+  Nothing `infra` calls changed behaviour: 0.18.0's fixes are all in
+  `Linen.Cloud`, which this project does not import yet. Two things from
+  0.17.0 are worth knowing anyway — `System.Keychain` on Linux no longer
+  truncates a secret at an embedded NUL byte, which `Infra/Core/Credentials.lean`
+  benefits from for any credential that is not plain text; and DuckDB now links
+  sealed on Linux, needing `g++` and a static `libstdc++`. The second does not
+  reach here: `infra` links no DuckDB (a static archive contributes only
+  referenced members, as `lakefile.lean` says), and no `.lake/duckdb` is
+  fetched when building this package, so the native link-flag block and its
+  copy in `Infra/Cli/New.lean` are unchanged.
+
+  Three warnings still come from inside `linen` on every build and are worth
+  fixing upstream: a deprecated `String.mk` in `Cloud/Binding.lean`, a
+  deprecated `String.Slice.dropRight` in `Cloud/Protocol/S3.lean`, and an
+  unreferenced `sa` binding in `Cloud/Credentials/Gcp.lean`.
 
 ### Added
 
