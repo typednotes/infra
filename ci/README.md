@@ -65,24 +65,36 @@ cannot carry a comment.** The grammar admits only `Version`, `Id` and
 naming neither the cause nor the file. `ci/check-aws-policy.py` runs in CI to
 stop that recurring.
 
-Apply it as a managed policy on `infra-ci`:
+Apply it **inline** on `infra-ci`. One command, and the same command updates
+it — there is no version to set as default and nothing to attach:
 
 ```sh
-# As a managed policy (recommended: versioned, and detachable in one step)
-aws iam create-policy \
+aws iam put-role-policy --role-name infra-ci \
   --policy-name infra-ci-live-tests \
   --policy-document file://ci/aws-permissions-policy.json
-
-aws iam attach-role-policy \
-  --role-name infra-ci \
-  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests
-
-# Later, to update it in place
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests \
-  --policy-document file://ci/aws-permissions-policy.json \
-  --set-as-default
 ```
+
+Inline rather than managed, deliberately, and this file used to say the
+opposite. A managed policy is the better shape for something reused — it has
+an ARN, five versions and a one-step rollback. This is not reused: it is one
+role's grant, scoped to one prefix in one account, and it exists to be as
+narrow as possible. Inline gives it exactly that: it belongs to `infra-ci`, it
+is deleted with `infra-ci`, and it cannot be attached to a second principal by
+accident, which for a document naming `iam:CreateUser` is the property worth
+having.
+
+What the two spellings cost, concretely — this repository ran with **both** for
+a while, a managed policy and an inline policy of the same name, because
+`ci/README.md` documented one route and `docs/ci-auth.md` the other. IAM unions
+their Allows, so nothing failed; it just meant two copies of one document, one
+of which was a release behind, and no way to tell from the role which was in
+force. The managed copy has been deleted. If you find it back, something
+re-followed the old instructions.
+
+The general, adaptable version of this policy — every kind, your account, your
+prefix — is a different document: [`../docs/permissions.md`](../docs/permissions.md)
+and [`../docs/aws-operator-policy.json`](../docs/aws-operator-policy.json).
+Do not start from this one; every ARN in it names the live test's own prefix.
 
 If `PowerUserAccess` is attached instead, note what it does **not** cover:
 `PowerUserAccess` explicitly denies almost all of IAM, so the `iam` resource in
@@ -109,13 +121,19 @@ aws accessanalyzer validate-policy \
   --policy-type IDENTITY_POLICY              # AWS's own validator
 ```
 
-An alternative to the managed policy, which avoids the two-step entirely: put
-it inline on the role, where there is nothing to attach afterwards.
+If a managed copy ever does come back, this is how to see it and remove it —
+`delete-policy` refuses while any version other than the default remains, and
+refuses again while it is still attached:
 
 ```sh
-aws iam put-role-policy --role-name infra-ci \
-  --policy-name infra-ci-live-tests \
-  --policy-document file://ci/aws-permissions-policy.json
+aws iam detach-role-policy --role-name infra-ci \
+  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests
+aws iam list-policy-versions \
+  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests
+aws iam delete-policy-version --version-id v1 \
+  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests
+aws iam delete-policy \
+  --policy-arn arn:aws:iam::616568506952:policy/infra-ci-live-tests
 ```
 
 ### Google Cloud

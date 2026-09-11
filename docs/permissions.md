@@ -1,0 +1,130 @@
+# What `infra` needs to be allowed to do
+
+Two different questions live here, and conflating them is how this repository
+ended up with one document trying to be both:
+
+| | Document | Scope |
+|---|---|---|
+| **What a real fleet needs** | [`aws-operator-policy.json`](aws-operator-policy.json), this page's tables | every kind the library implements, adapted to *your* account, region and naming |
+| **What this repository's CI needs** | [`../ci/aws-permissions-policy.json`](../ci/aws-permissions-policy.json) | the eight kinds the live test declares, confined to `ci-tests-infra-*` in one account and one region |
+
+The second is deliberately narrower and is **not** a starting point for the
+first: every ARN in it names the live test's own prefix, which is the only
+thing stopping a credential assumable from GitHub Actions from touching a real
+queue. See [`ci-auth.md`](ci-auth.md) for that side.
+
+## The rule that catches people out: the ownership marker needs two grants
+
+Every resource `infra` creates carries an ownership tag
+(`Infra/Core/Ownership.lean`), and every kind that can carry one has it
+**written at create and read back on the next `push`**. So each kind needs a
+tagging permission *and* a tag-reading permission beyond its create and delete.
+
+The two halves fail very differently:
+
+- Missing the **write** half fails loudly, at create, naming the action —
+  `is not authorized to perform: iam:TagUser`.
+- Missing the **read** half fails **silently**. `readOwnership` reports `none`
+  when its call fails, the engine reads that as "this cloud cannot answer"
+  and falls back to the ledger, so the ownership perimeter quietly stops being
+  enforced for that kind. Nothing in the output says so.
+
+That asymmetry is why the read grants are listed here rather than left to be
+discovered: a run that is missing them looks like a run that is working.
+
+## AWS, per kind
+
+Read off the call sites in `Infra/Providers/Kinds/` — the API each function
+calls is named in the source, so this table is derivable rather than
+remembered. Last checked against the code on 2026-09-11.
+
+| Kind | Actions | Tag write / read |
+|---|---|---|
+| `queues` | `sqs:CreateQueue`, `DeleteQueue`, `GetQueueUrl`, `GetQueueAttributes`, `SetQueueAttributes`, `ListQueues` | `sqs:TagQueue` / `sqs:ListQueueTags` |
+| `secrets` | `secretsmanager:CreateSecret`, `DeleteSecret`, `DescribeSecret`, `PutSecretValue`, `GetSecretValue`, `ListSecrets` | `secretsmanager:TagResource` / `DescribeSecret` carries them |
+| `imageRegistry` | `ecr:CreateRepository`, `DeleteRepository`, `DescribeRepositories`, `PutImageTagMutability` | *none — ECR repositories are not marked* |
+| `objectStore`, `s3Bucket` | `s3:CreateBucket`, `DeleteBucket`, `PutBucketVersioning`, `GetBucketVersioning`, `PutBucketObjectLockConfiguration`, `GetBucketObjectLockConfiguration`, `ListAllMyBuckets` | `s3:PutBucketTagging` / `s3:GetBucketTagging` |
+| `securityGroup` | `ec2:CreateSecurityGroup`, `DeleteSecurityGroup`, `AuthorizeSecurityGroupIngress`, `DescribeSecurityGroups` | `ec2:CreateTags` / `DescribeSecurityGroups` carries them |
+| `awsInstance` | `ec2:RunInstances`, `TerminateInstances`, `ModifyInstanceAttribute`, `DescribeInstances`, `DescribeImages` | `ec2:CreateTags` / `DescribeInstances` carries them |
+| `iam` | `iam:CreateUser`, `DeleteUser`, `ListUsers`, `ListAttachedUserPolicies`, `AttachUserPolicy`, `DetachUserPolicy` | `iam:TagUser` / `iam:ListUserTags` |
+| `compute` | `lambda:CreateFunction`, `DeleteFunction`, `GetFunction`, `ListFunctions`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, **plus `iam:PassRole`** on the execution role | `lambda:TagResource` / `GetFunction` carries them |
+| `postgres` | `rds:CreateDBInstance`, `DeleteDBInstance`, `ModifyDBInstance`, `DescribeDBInstances` | `rds:AddTagsToResource` / `rds:ListTagsForResource` |
+
+`sts:GetCallerIdentity` is called before anything else, to refuse to act
+against the wrong account (`Infra/Providers/Kinds/Identity.lean`). It needs no
+permission — AWS always allows it — which is precisely why that call was chosen
+for the check.
+
+`iam:PassRole` on the `compute` row is the one that is not a Lambda permission
+at all. Creating a function hands it an execution role, and AWS treats that as
+passing a role, so a policy with every `lambda:*` action and no `PassRole`
+still cannot create a function. Scope it to the execution role you actually
+use, with an `iam:PassedToService` condition — the template does.
+
+### Two rows nothing verifies
+
+**`compute` (Lambda) and `postgres` (RDS) are not in any live test.** Lambda
+needs an ECR image to exist first, and RDS takes longer to create than the
+workflow's step timeout, so both are deliberately out of `test/Live.lean`'s
+fleets. Their rows above are read from the code and have **never been checked
+against a real 403**, unlike the other seven, which a live run exercises every
+time it passes.
+
+Treat them as a good first guess rather than as verified fact, and expect one
+more permission to surface the first time someone runs them for real —
+container-image Lambdas in particular may need ECR read actions on the calling
+side, which no code path in this repository has yet proven either way. If you
+find out, correct this table; that is what it is for.
+
+The statement Sids in the template say the same thing —
+`LambdaNotExercisedByCi`, `RdsNotExercisedByCi` — so the caveat travels with
+the document rather than staying on this page.
+
+## Using the template
+
+[`aws-operator-policy.json`](aws-operator-policy.json) is the table above as an
+IAM document, with three placeholders to replace and nothing else:
+
+| Placeholder | Meaning |
+|---|---|
+| `ACCOUNT` | your twelve-digit account id |
+| `REGION` | the region your fleet is placed in — the one `Infra/Core/Region.lean` maps your locality to |
+| `PREFIX` | the name prefix your resources share, so the grant cannot reach anything else. Drop the `PREFIX*` and leave `*` if your fleet's names have nothing in common — but then the policy confines nothing |
+
+```sh
+sed -e 's/ACCOUNT/123456789012/g' \
+    -e 's/REGION/eu-west-1/g' \
+    -e 's/PREFIX/my-fleet-/g' \
+    -e 's/EXECUTION-ROLE-NAME/my-lambda-role/g' \
+    docs/aws-operator-policy.json > /tmp/infra-operator.json
+
+./ci/check-aws-policy.py            # grammar, offline — checks both documents
+
+aws accessanalyzer validate-policy \
+  --policy-document file:///tmp/infra-operator.json \
+  --policy-type IDENTITY_POLICY     # AWS's own validator
+```
+
+A fleet that declares only some kinds needs only those statements. Deleting the
+ones you do not use is the point of them being separate statements with names.
+
+## GCP and Scaleway
+
+Neither cloud takes a policy *document*, so there is no equivalent file: GCP
+grants predefined roles and Scaleway grants permission sets, both as CLI
+arguments. Both are far coarser than the AWS table — a role like
+`roles/storage.admin` is project-wide, and Scaleway's sets are one per product
+family — so there is no per-kind scoping to write down, only a per-kind role.
+
+The mapping for both, along with the GCP services that must be *enabled* before
+any role matters, is in [`../ci/README.md`](../ci/README.md). It is written
+there for CI's identity, but the role and permission-set names are the same
+ones a real fleet needs; only the scope (`--project`, `project-ids`) differs.
+
+Two GCP facts worth repeating here because they cost time:
+
+- **Enabling an API and granting a role are separate acts**, and a disabled API
+  fails with `PERMISSION_DENIED … has not been used in project … or it is
+  disabled`, which reads exactly like a missing role and is not one.
+- **Deploying Cloud Run as an identity needs `iam.serviceAccounts.actAs` on
+  that identity**, which `roles/run.admin` does not imply.

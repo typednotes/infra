@@ -240,7 +240,15 @@ aws iam put-role-policy \
 ```
 
 An inline policy rather than a managed one: it belongs to this role, is deleted
-with it, and cannot be attached to something else by accident.
+with it, and cannot be attached to something else by accident. That is the
+single documented route — `ci/README.md` used to give the managed spelling
+instead, the role ended up carrying both, and the two copies drifted a release
+apart before anyone looked. The same `put-role-policy` also *updates* it.
+
+A managed policy is the better shape for a document meant to be reused across
+principals, and this one is the opposite of that. The reusable one is
+[`permissions.md`](permissions.md) — every kind the library implements, with
+your account and prefix substituted in.
 
 ### What this project actually grants
 
@@ -270,12 +278,13 @@ compensating control is on the *other* side of the trust boundary — restrict
 who can assume the role, rather than what the role can do.
 
 And because it excludes IAM, `PowerUserAccess` is not *sufficient* either: the
-live fleet declares `resource iam`, so the least-privilege document has to be
-attached **alongside** it — its `IamUser` statement, scoped to
+live fleet declares `resource iam`, so the least-privilege document sits inline
+on the role **alongside** it — its `IamUser` statement, scoped to
 `user/ci-tests-infra-*`, is the only thing granting the `iam` kind. Which also
 means that statement is the one that has to keep up with the code: it was
 missing `iam:TagUser` when the ownership marker started being written at
-create, and the leg failed on it.
+create, and the leg failed on it. What each kind calls, and which grants the
+marker needs, is [`permissions.md`](permissions.md).
 
 ### Gating on an environment — this is what the workflow does
 

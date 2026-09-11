@@ -388,6 +388,9 @@ extending anything:
   from source to API call, the type stack, the scheduler, and the membership
   mechanism, with diagrams. The one to read before changing the engine
 - [`docs/authentication.md`](docs/authentication.md) — where credentials come from
+- [`docs/permissions.md`](docs/permissions.md) — **what those credentials must
+  be allowed to do**: the AWS actions each kind calls, an adaptable operator
+  policy, and why the ownership marker needs two grants per kind rather than one
 - [`docs/persistence.md`](docs/persistence.md) — the two local records, and
   why membership is not intent
 - [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the

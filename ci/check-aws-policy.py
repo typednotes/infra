@@ -22,16 +22,22 @@ import json
 import re
 import sys
 
-PATH = "ci/aws-permissions-policy.json"
+# Both AWS policy documents in the repository: the CI role's inline grant, and
+# the operator template `docs/permissions.md` tells a real user to adapt. The
+# template carries REGION/ACCOUNT/PREFIX placeholders, which live in `Resource`
+# strings and so do not affect the grammar — but its actions and Sids are
+# checked exactly like the real one's, because a template that IAM would reject
+# is worse than no template.
+PATHS = ["ci/aws-permissions-policy.json", "docs/aws-operator-policy.json"]
 TOP = {"Version", "Id", "Statement"}
 STMT = {"Sid", "Effect", "Action", "NotAction", "Resource", "NotResource",
         "Condition", "Principal", "NotPrincipal"}
 
-def main() -> int:
+def check(path: str) -> int:
     try:
-        doc = json.load(open(PATH))
+        doc = json.load(open(path))
     except json.JSONDecodeError as e:
-        print(f"error: {PATH} is not valid JSON: {e}", file=sys.stderr)
+        print(f"error: {path} is not valid JSON: {e}", file=sys.stderr)
         return 1
 
     bad = []
@@ -73,14 +79,17 @@ def main() -> int:
                 bad.append(f"{where}: {action!r} is not a service:Action pair")
 
     if bad:
-        print(f"error: {PATH} would be rejected by IAM:", file=sys.stderr)
+        print(f"error: {path} would be rejected by IAM:", file=sys.stderr)
         for b in bad:
             print(f"  - {b}", file=sys.stderr)
         return 1
 
-    print(f"{PATH}: conforms to IAM's policy grammar "
+    print(f"{path}: conforms to IAM's policy grammar "
           f"({len(statements)} statements)")
     return 0
+
+def main() -> int:
+    return max(check(p) for p in PATHS)
 
 if __name__ == "__main__":
     sys.exit(main())

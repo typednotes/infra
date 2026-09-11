@@ -92,6 +92,42 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   documented as "what the live test actually needs", so a stale one is a trap
   rather than a spare.
 
+### Added
+
+- **`docs/permissions.md` — what a credential must be allowed to do**, which
+  nothing stated before. The AWS actions each of the ten AWS-capable kinds
+  calls, read off the call sites in `Infra/Providers/Kinds/`; why the ownership
+  marker costs *two* grants per kind rather than one, and why the missing read
+  half is the dangerous one (it fails silently, falling back to the ledger,
+  where the missing write half fails loudly at create); and pointers to the
+  GCP roles and Scaleway permission sets, which are documents nowhere because
+  neither cloud takes a policy document.
+- **`docs/aws-operator-policy.json` — that table as an adaptable IAM
+  document**, with `ACCOUNT`/`REGION`/`PREFIX` placeholders and one statement
+  per kind, so a fleet declaring three kinds keeps three statements. It covers
+  `compute` (Lambda) and `postgres` (RDS) too, and says so in the Sids —
+  `LambdaNotExercisedByCi`, `RdsNotExercisedByCi` — because neither kind is in
+  any live fleet, so those two rows are read from the code and have never been
+  checked against a real 403, unlike the other seven.
+- `ci/check-aws-policy.py` now grammar-checks both documents rather than one.
+
+### Changed
+
+- **The CI policy is inline on `infra-ci`, and that is now the only documented
+  route.** `ci/README.md` gave the managed spelling and `docs/ci-auth.md` the
+  inline one, so the role ended up carrying *both* — a managed policy and an
+  inline policy of the same name, one of them a release behind. IAM unions
+  their Allows so nothing failed; it just meant no way to tell from the role
+  which document was in force. The managed copy and its versions are deleted.
+  Inline is the right shape for this one: it is a single role's grant, not
+  something to reuse, and inline cannot be attached to a second principal by
+  accident.
+- Three grants no code path calls are gone from
+  `ci/aws-permissions-policy.json`: `iam:GetUser`,
+  `ec2:RevokeSecurityGroupIngress` and `s3:GetBucketLocation`. The first two
+  were never wired; the third is not the API that `CreateBucket`'s
+  `LocationConstraint` element goes through.
+
 ### Documentation
 
 - `docs/ci-auth.md` no longer inlines a copy of the permissions policy. Its
