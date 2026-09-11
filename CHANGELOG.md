@@ -113,6 +113,33 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
 
 ### Changed
 
+- **Both AWS policies are now wide per product and narrow per resource** —
+  `sqs:*`, `s3:*`, `secretsmanager:*`, `lambda:*`, `rds:*`, `ecr:*`, each
+  confined to `PREFIX*` ARNs — instead of an enumerated action list. The
+  enumeration protected almost nothing (the prefix is what confines the
+  credential) and rotted on every change: `iam:TagUser` was found as a 403 in
+  the middle of a live run, and the same audit found four more gaps. Adding a
+  kind of an existing product now needs no policy change at all; adding a
+  product needs one statement. `lambda` and `rds` are included ahead of any
+  fleet declaring them, for the same reason.
+
+  Three carve-outs, all named in the documents. EC2 stays enumerated because
+  its resources are ids rather than names, so there is no prefix to scope by
+  and the action list is the only limit that exists. `iam:*` on `PREFIX*` users
+  is paired with an explicit `Deny` on every action that mints a usable
+  credential, because create-user → attach-admin → create-key is a path to
+  full admin that the prefix does nothing to stop. And `iam:PassRole` stays
+  pinned to one role with an `iam:PassedToService` condition.
+
+- **Recorded what `PowerUserAccess` actually is**, since it is attached to
+  `infra-ci` alongside the above: `Allow NotAction: iam:*` on `Resource: "*"`
+  — an allow of everything except IAM, not a deny. While it is attached the
+  role already holds every non-IAM permission account-wide with no prefix, so
+  the scoping in `ci/aws-permissions-policy.json` is inert and only its IAM
+  statements grant anything new. `ci/README.md` now says so, and gives the
+  detach command, rather than leaving the document looking like the effective
+  grant.
+
 - **The CI policy is inline on `infra-ci`, and that is now the only documented
   route.** `ci/README.md` gave the managed spelling and `docs/ci-auth.md` the
   inline one, so the role ended up carrying *both* — a managed policy and an
@@ -122,11 +149,6 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
   Inline is the right shape for this one: it is a single role's grant, not
   something to reuse, and inline cannot be attached to a second principal by
   accident.
-- Three grants no code path calls are gone from
-  `ci/aws-permissions-policy.json`: `iam:GetUser`,
-  `ec2:RevokeSecurityGroupIngress` and `s3:GetBucketLocation`. The first two
-  were never wired; the third is not the API that `CreateBucket`'s
-  `LocationConstraint` element goes through.
 
 ### Documentation
 

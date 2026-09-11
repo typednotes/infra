@@ -12,19 +12,45 @@ illustrative, and so a change to them shows up in a diff.
   environment can require reviewers and a branch cannot. Needs
   `environment: production` on the job as well; the policy alone rejects
   every run.
-- `aws-permissions-policy.json` — **what the role may do.** Only the calls the
-  live test makes, and only against resources named `ci-tests-infra-*`. The
-  exceptions are the *listing* actions, which AWS does not allow to be
-  resource-scoped, so the role can see every queue, bucket, instance and user
-  name in the account and modify none but its own.
+- `aws-permissions-policy.json` — **what the role may do.** Full access to each
+  product (`sqs:*`, `s3:*`, …) confined to resources named `ci-tests-infra-*`.
+  Wide in verbs, narrow in resources: the prefix is what protects the account,
+  and enumerating verbs only meant a 403 mid-run every time a test grew. Two
+  exceptions, both explained in
+  [`../docs/permissions.md`](../docs/permissions.md): EC2, whose resources have
+  no names to scope by, and IAM, where `iam:*` is paired with a `Deny` on
+  minting usable credentials.
 
-**Note this project attaches `PowerUserAccess` rather than the least-privilege
-policy above.** The reasoning is in the guide: it excludes IAM, so a
-compromised run cannot grant itself persistence or widen its own access, and
-the compensating control for the rest is restricting *who may assume the role*
-rather than what it can do. `aws-permissions-policy.json` remains here as the
-least-privilege alternative, and as documentation of what the live test
-actually needs.
+**Note this project attaches `PowerUserAccess` *as well*, and that makes most
+of this document inert.** `PowerUserAccess` is
+
+```json
+{ "Effect": "Allow", "NotAction": ["iam:*", "organizations:*", "account:*"],
+  "Resource": "*" }
+```
+
+— an *allow* of everything except IAM, not a deny of IAM. So while it is
+attached, `infra-ci` already holds `sqs:*`, `s3:*`, `ec2:*`, `lambda:*` and the
+rest across the **whole account, with no prefix**, and the only statements in
+`aws-permissions-policy.json` that grant anything the role did not already have
+are the IAM ones. That is why the `iam:TagUser` failure was the *first* thing
+to fail rather than the tenth.
+
+Which means the prefix scoping here buys nothing until `PowerUserAccess` comes
+off:
+
+```sh
+aws iam detach-role-policy --role-name infra-ci \
+  --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+```
+
+That is worth doing — the document now covers every product the live fleets
+touch, including `lambda` and `rds`, which no fleet declares yet — but it
+should be done deliberately, with a live run straight after, because a gap in
+it stops being theoretical the moment the safety net is gone. The reasoning
+for taking `PowerUserAccess` in the first place is in the guide: it excludes
+IAM, so a compromised run cannot grant itself persistence, and the compensating
+control for the rest is restricting *who may assume the role*.
 
 Both subjects carry **immutable owner and repository IDs**
 (`typednotes@192230886/infra@1342807595`) rather than plain names, because that

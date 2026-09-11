@@ -4,117 +4,38 @@
     {
       "Sid": "Queues",
       "Effect": "Allow",
-      "Action": [
-        "sqs:CreateQueue",
-        "sqs:DeleteQueue",
-        "sqs:GetQueueUrl",
-        "sqs:GetQueueAttributes",
-        "sqs:SetQueueAttributes",
-        "sqs:TagQueue",
-        "sqs:ListQueueTags"
-      ],
+      "Action": "sqs:*",
       "Resource": "arn:aws:sqs:REGION:ACCOUNT:PREFIX*"
     },
     {
       "Sid": "Secrets",
       "Effect": "Allow",
-      "Action": [
-        "secretsmanager:CreateSecret",
-        "secretsmanager:DeleteSecret",
-        "secretsmanager:DescribeSecret",
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:PutSecretValue",
-        "secretsmanager:TagResource"
-      ],
+      "Action": "secretsmanager:*",
       "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:PREFIX*"
     },
     {
       "Sid": "ImageRegistry",
       "Effect": "Allow",
-      "Action": [
-        "ecr:CreateRepository",
-        "ecr:DeleteRepository",
-        "ecr:DescribeRepositories",
-        "ecr:PutImageTagMutability"
-      ],
+      "Action": "ecr:*",
       "Resource": "arn:aws:ecr:REGION:ACCOUNT:repository/PREFIX*"
     },
     {
       "Sid": "Buckets",
       "Effect": "Allow",
-      "Action": [
-        "s3:CreateBucket",
-        "s3:DeleteBucket",
-        "s3:PutBucketVersioning",
-        "s3:GetBucketVersioning",
-        "s3:PutBucketTagging",
-        "s3:GetBucketTagging",
-        "s3:PutBucketObjectLockConfiguration",
-        "s3:GetBucketObjectLockConfiguration"
-      ],
-      "Resource": "arn:aws:s3:::PREFIX*"
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::PREFIX*",
+        "arn:aws:s3:::PREFIX*/*"
+      ]
     },
     {
-      "Sid": "SecurityGroups",
+      "Sid": "FunctionsNotExercisedByCi",
       "Effect": "Allow",
-      "Action": [
-        "ec2:CreateSecurityGroup",
-        "ec2:DeleteSecurityGroup",
-        "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:CreateTags"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "ec2:Region": "REGION"
-        }
-      }
-    },
-    {
-      "Sid": "Instances",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:RunInstances",
-        "ec2:TerminateInstances",
-        "ec2:ModifyInstanceAttribute"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "ec2:Region": "REGION"
-        }
-      }
-    },
-    {
-      "Sid": "IamUser",
-      "Effect": "Allow",
-      "Action": [
-        "iam:CreateUser",
-        "iam:DeleteUser",
-        "iam:TagUser",
-        "iam:ListUserTags",
-        "iam:ListAttachedUserPolicies",
-        "iam:AttachUserPolicy",
-        "iam:DetachUserPolicy"
-      ],
-      "Resource": "arn:aws:iam::ACCOUNT:user/PREFIX*"
-    },
-    {
-      "Sid": "LambdaNotExercisedByCi",
-      "Effect": "Allow",
-      "Action": [
-        "lambda:CreateFunction",
-        "lambda:DeleteFunction",
-        "lambda:GetFunction",
-        "lambda:ListFunctions",
-        "lambda:UpdateFunctionCode",
-        "lambda:UpdateFunctionConfiguration",
-        "lambda:TagResource"
-      ],
+      "Action": "lambda:*",
       "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:PREFIX*"
     },
     {
-      "Sid": "LambdaExecutionRoleNotExercisedByCi",
+      "Sid": "FunctionExecutionRoleNotExercisedByCi",
       "Effect": "Allow",
       "Action": "iam:PassRole",
       "Resource": "arn:aws:iam::ACCOUNT:role/EXECUTION-ROLE-NAME",
@@ -125,32 +46,73 @@
       }
     },
     {
-      "Sid": "RdsNotExercisedByCi",
+      "Sid": "DatabasesNotExercisedByCi",
       "Effect": "Allow",
-      "Action": [
-        "rds:CreateDBInstance",
-        "rds:DeleteDBInstance",
-        "rds:DescribeDBInstances",
-        "rds:ModifyDBInstance",
-        "rds:AddTagsToResource",
-        "rds:ListTagsForResource"
-      ],
-      "Resource": "arn:aws:rds:REGION:ACCOUNT:db:PREFIX*"
+      "Action": "rds:*",
+      "Resource": [
+        "arn:aws:rds:REGION:ACCOUNT:db:PREFIX*",
+        "arn:aws:rds:REGION:ACCOUNT:subgrp:PREFIX*",
+        "arn:aws:rds:REGION:ACCOUNT:pg:PREFIX*"
+      ]
     },
     {
-      "Sid": "ListingCannotBeScoped",
+      "Sid": "Ec2MutationsCannotBeNameScoped",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup",
+        "ec2:DeleteSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Region": "REGION"
+        }
+      }
+    },
+    {
+      "Sid": "IamUsers",
+      "Effect": "Allow",
+      "Action": "iam:*",
+      "Resource": "arn:aws:iam::ACCOUNT:user/PREFIX*"
+    },
+    {
+      "Sid": "NeverMintUsableCredentials",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateAccessKey",
+        "iam:UpdateAccessKey",
+        "iam:CreateLoginProfile",
+        "iam:UpdateLoginProfile",
+        "iam:CreateServiceSpecificCredential",
+        "iam:ResetServiceSpecificCredential",
+        "iam:UploadSSHPublicKey",
+        "iam:CreateVirtualMFADevice",
+        "iam:EnableMFADevice"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadOnlyAndUnscopable",
       "Effect": "Allow",
       "Action": [
         "sqs:ListQueues",
         "secretsmanager:ListSecrets",
         "ecr:DescribeRepositories",
+        "ecr:GetAuthorizationToken",
         "s3:ListAllMyBuckets",
-        "ec2:DescribeSecurityGroups",
-        "ec2:DescribeInstances",
-        "ec2:DescribeImages",
-        "iam:ListUsers",
+        "ec2:Describe*",
         "lambda:ListFunctions",
-        "rds:DescribeDBInstances"
+        "rds:Describe*",
+        "iam:ListUsers"
       ],
       "Resource": "*"
     }

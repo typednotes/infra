@@ -13,6 +13,56 @@ first: every ARN in it names the live test's own prefix, which is the only
 thing stopping a credential assumable from GitHub Actions from touching a real
 queue. See [`ci-auth.md`](ci-auth.md) for that side.
 
+## The shape: wide per product, narrow per resource
+
+Both documents grant `sqs:*`, `s3:*`, `secretsmanager:*` and so on — **not** an
+enumerated action list — and then confine each to `PREFIX*` ARNs. That is a
+deliberate reversal of an earlier design, and the reasoning is worth keeping:
+
+- **The resource scoping is what protects anything.** A credential holding
+  `sqs:*` on `my-fleet-*` cannot touch a queue it does not own. That property
+  is unchanged by widening the verbs.
+- **The action enumeration protected almost nothing, and rotted constantly.**
+  Every kind added to a fleet, and every new call inside a kind, meant another
+  policy edit — discovered as a 403 in the middle of a run. `iam:TagUser` was
+  exactly that: the ownership marker started being written at create, and a
+  policy naming six IAM verbs did not include the seventh.
+
+So the rule for adding to a fleet is now: **a new kind of an existing product
+needs no policy change; a new product needs one statement.** The table below is
+still the record of what is actually called — for debugging a 403, for anyone
+who does want to enumerate, and because it is the only place that says
+`iam:PassRole` is part of deploying a Lambda.
+
+### Where the wildcard is not safe, and why
+
+Three carve-outs, all visible in the documents:
+
+- **EC2 cannot be name-scoped at all.** Its resources are ids, not names, so
+  there is no `PREFIX*` to write and the grant falls back to a region
+  condition. `ec2:*` in a region therefore means *every* instance, volume,
+  VPC and security group in it — including production. So EC2 stays
+  enumerated: it is the one product where the action list is the only limit
+  there is. The statement is named `Ec2MutationsCannotBeNameScoped` to keep
+  that from being tidied away later.
+- **`iam:*` on a user is a path to full admin**, in three steps: create a user
+  under the prefix, attach `AdministratorAccess` to it, mint an access key.
+  The prefix does not help — the new user is inside it. The documents grant
+  `iam:*` on `PREFIX*` users but pair it with an explicit `Deny` on every
+  action that mints a usable credential (`CreateAccessKey`,
+  `CreateLoginProfile`, service-specific credentials, MFA, SSH keys), on
+  `Resource: "*"` so it cannot be worked around. An explicit `Deny` beats any
+  `Allow`, so the escalation is closed while ordinary user management stays
+  wide. The residue: the role can still attach a powerful policy to a
+  credential-less user, which is untidy but not usable.
+- **`iam:PassRole` stays pinned to one role**, with an `iam:PassedToService`
+  condition. Passing an arbitrary role to Lambda is running code as that role,
+  so this is the one grant that must never be widened to `*`.
+
+Read-only breadth has one limit too: `ReadOnlyAndUnscopable` lists *listing*
+actions, never `Get*` wildcards. `secretsmanager:Get*` or `s3:Get*` on `"*"`
+would be account-wide data access, which is not what "read-only" should buy.
+
 ## The rule that catches people out: the ownership marker needs two grants
 
 Every resource `infra` creates carries an ownership tag
@@ -77,8 +127,14 @@ side, which no code path in this repository has yet proven either way. If you
 find out, correct this table; that is what it is for.
 
 The statement Sids in the template say the same thing —
-`LambdaNotExercisedByCi`, `RdsNotExercisedByCi` — so the caveat travels with
-the document rather than staying on this page.
+`FunctionsNotExercisedByCi`, `DatabasesNotExercisedByCi`,
+`FunctionExecutionRoleNotExercisedByCi` — so the caveat travels with the
+document rather than staying on this page.
+
+The per-product wildcards blunt this: `lambda:*` covers whatever Lambda call
+the first real run turns out to need, so the likely surprise is a permission
+in a *different* product — ECR reads for a container image, KMS for an
+encrypted database — rather than a missing Lambda verb.
 
 ## Using the template
 
@@ -106,7 +162,9 @@ aws accessanalyzer validate-policy \
 ```
 
 A fleet that declares only some kinds needs only those statements. Deleting the
-ones you do not use is the point of them being separate statements with names.
+ones you do not use is the point of them being separate statements with names —
+and with the per-product shape, that is now the *only* editing a fleet's
+evolution should ever need.
 
 ## GCP and Scaleway
 
