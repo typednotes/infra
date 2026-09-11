@@ -123,12 +123,19 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
     non-standard port would be quietly misrouted.
   - **`System.Keychain` on Linux** no longer truncates a secret at an embedded
     NUL, which `Infra/Core/Credentials.lean` gets for free.
-  - **DuckDB now links sealed on Linux**, needing `g++` and a static
-    `libstdc++`. That one does not reach here: `infra` links no DuckDB (a
-    static archive contributes only referenced members, as `lakefile.lean`
-    says), no `.lake/duckdb` is fetched when building this package, and
-    `ci/check-lakefile-sync.sh` still passes — so the native link-flag block
-    and its copy in `Infra/Cli/New.lean` are unchanged.
+  - **DuckDB now links sealed on Linux**, and this *does* reach here — the
+    opposite of what an earlier draft of this entry said. `infra` names no
+    DuckDB flags of its own, but building this package fetches DuckDB into
+    `<repo>/.lake/duckdb` and builds `linen`'s `liblinenffi.so`, whose link
+    line carries `-lduckdb_sealed`. On Linux that link fails: `linen` writes
+    the sealed library to its own `pkg.buildDir/ffi` while the `-L` flag
+    resolves `.lake/build/ffi` against the *current directory*, which for a
+    dependency is the consumer's root, not `linen`'s. The two agree only when
+    `linen` is built standalone, which is why its own CI never saw it.
+
+    Consequence: **`linen` v0.17.0 through v0.19.0 cannot be built by a Linux
+    consumer**, and this repository's Linux CI leg fails on them. See the
+    entry for the pin below for which version this repository is on.
 
 ### Added
 
