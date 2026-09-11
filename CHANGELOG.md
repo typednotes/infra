@@ -29,7 +29,7 @@ send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
 deliberately excluded ("bucket-level operations only: no object CRUD").
 
 **Not done here yet, and why.** That first blocker is gone: the pin is
-`v0.18.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
+`v0.19.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
 "cannot yet be built" reason no longer applies and should not be reached for
 again. What remains is the part that was never mechanical: `ProviderId` and
 `Credentials` thread through most of `Infra/`, and `Region` is indexed by
@@ -98,27 +98,37 @@ unacceptable in a library, so `linen` reads a dedicated credential instead.
 
 ### Changed
 
-- **`linen` is pinned to `v0.18.0`** (was `v0.16.0` in `lake-manifest.json`;
+- **`linen` is pinned to `v0.19.0`** (was `v0.16.0` in `lake-manifest.json`;
   `lakefile.lean` said `v0.17.0`, so the two had drifted — the pin had been
   bumped without a `lake update`, and the manifest is what the build reads).
   `lake build`, the offline self-check suite and all four offline examples pass
-  against it.
+  against it, and the build is warning-free again: the three deprecation and
+  unused-binding warnings `linen` emitted here are fixed upstream in 0.19.0.
 
-  Nothing `infra` calls changed behaviour: 0.18.0's fixes are all in
-  `Linen.Cloud`, which this project does not import yet. Two things from
-  0.17.0 are worth knowing anyway — `System.Keychain` on Linux no longer
-  truncates a secret at an embedded NUL byte, which `Infra/Core/Credentials.lean`
-  benefits from for any credential that is not plain text; and DuckDB now links
-  sealed on Linux, needing `g++` and a static `libstdc++`. The second does not
-  reach here: `infra` links no DuckDB (a static archive contributes only
-  referenced members, as `lakefile.lean` says), and no `.lake/duckdb` is
-  fetched when building this package, so the native link-flag block and its
-  copy in `Infra/Cli/New.lean` are unchanged.
+  Nothing `infra` calls changed behaviour — 0.18.0 and 0.19.0 both work on
+  `Linen.Cloud`, which this project does not import yet. Three things from
+  those releases were checked against this repository rather than assumed:
 
-  Three warnings still come from inside `linen` on every build and are worth
-  fixing upstream: a deprecated `String.mk` in `Cloud/Binding.lean`, a
-  deprecated `String.Slice.dropRight` in `Cloud/Protocol/S3.lean`, and an
-  unreferenced `sa` binding in `Cloud/Credentials/Gcp.lean`.
+  - **0.19.0's GCP token-exchange bug is not shared here.** `linen`'s
+    `exchange` used the key file's `token_uri` as the assertion's `aud` and
+    posted to a hardcoded host, so a key file naming another endpoint signed
+    for one host and posted to a different one. `Infra/Core/GcpAuth.lean` reads
+    `sa.tokenUri` for *both* — the `aud` claim and the POST target — so the two
+    agree by construction. It is more permissive about the value than `linen`
+    now is: a non-`https` `token_uri` is accepted rather than refused, and a
+    query string folds into the path. Neither can leak the assertion, because
+    `Infra/Providers/Http.lean` hardcodes `port := 443` and `isSecure := true`,
+    so a plaintext `token_uri` is silently upgraded rather than honoured. Worth
+    knowing that it coerces instead of refusing; a `token_uri` naming a
+    non-standard port would be quietly misrouted.
+  - **`System.Keychain` on Linux** no longer truncates a secret at an embedded
+    NUL, which `Infra/Core/Credentials.lean` gets for free.
+  - **DuckDB now links sealed on Linux**, needing `g++` and a static
+    `libstdc++`. That one does not reach here: `infra` links no DuckDB (a
+    static archive contributes only referenced members, as `lakefile.lean`
+    says), no `.lake/duckdb` is fetched when building this package, and
+    `ci/check-lakefile-sync.sh` still passes — so the native link-flag block
+    and its copy in `Infra/Cli/New.lean` are unchanged.
 
 ### Added
 

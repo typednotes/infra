@@ -149,7 +149,7 @@ target is a compile error"
 -- `linen` cuts real releases now, so tracking its tip has the same downside
 -- `typednotes-infra`'s own comment on pinning `infra` describes — the next
 -- breaking change arrives unannounced. Bump deliberately, the same way.
-require linen from git "https://github.com/typednotes/linen" @ "v0.18.0"
+require linen from git "https://github.com/typednotes/linen" @ "v0.19.0"
 
 @[default_target]
 lean_lib Infra
