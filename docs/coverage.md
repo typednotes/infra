@@ -1,7 +1,7 @@
-# Coverage in 0.10.0
+# Coverage in 0.10.1
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-11.
+been exercised. Everything below is the state on 2026-09-14.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
@@ -650,6 +650,17 @@ function — it is a number, so it tells the code the response was parsed at all
   nothing. `version` is the exception: `create` now sends it (see above),
   though `read` still reports none back, since the `GET` response carries no
   such field.
+
+  A fourth bug surfaced once a consumer composed a secret from this kind's
+  endpoint (`Compose.endpointOf`, which every other backend's client
+  satisfies with a bare `host:port`): Scaleway's `endpoint` field here is a
+  full connection URI (`postgres://user@host:port/db?sslmode=require`), not
+  `host:port`, so the composed secret nested a second scheme, path and query
+  inside the first and produced a value nothing could parse as a URL — surfaced
+  downstream as `sqlx`'s "invalid port number" against the resulting
+  Postgres connection string. Fixed in 0.10.1 by stripping the scheme,
+  userinfo and path/query in `listRaw` and `create` before the endpoint is
+  ever returned.
 
   **AWS's serverless shape is still not implemented** — Aurora Serverless v2
   raises a named error — and **GCP's cannot be**: Cloud SQL has no capacity

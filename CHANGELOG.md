@@ -62,6 +62,22 @@ It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
 credential holding that name — defensible for a tool that owns its fleet,
 unacceptable in a library, so `linen` reads a dedicated credential instead.
 
+## [0.10.1] — 2026-09-14
+
+### Fixed
+
+- **Scaleway Serverless SQL Database's `endpoint` was a full connection URI**,
+  not the bare `host:port` every other backend's `.endpoint` carries and
+  `Compose.endpointOf` assumes. A secret composed from it —
+  `postgres://user:{secretValueOf pw}@{endpointOf db}/name`, the documented
+  pattern — nested a second scheme, path and query inside the first and
+  produced a value nothing could parse as a URL, surfacing downstream as
+  `sqlx`'s "invalid port number" against the resulting connection string.
+  `listRaw` and `create` now strip the scheme, userinfo and path/query before
+  the endpoint is ever returned. See `docs/coverage.md`'s "Implemented, never
+  exercised" section for the full account; this is the fourth bug this
+  product's client has needed since 0.9.1.
+
 ## [0.10.0] — 2026-09-11
 
 ### Added
