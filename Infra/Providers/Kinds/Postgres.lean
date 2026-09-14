@@ -338,6 +338,22 @@ namespace ServerlessSql
 private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "serverless-sqldb" "v1alpha1" region
 
+/-- Scaleway's `endpoint` field, for this product, is a full connection URI
+    (`postgres://user@host:port/db?sslmode=require`), not the bare `host:port`
+    every other backend's `.endpoint` carries and `Compose.endpointOf` assumes.
+    Strip the scheme, any userinfo, and everything from the path or query
+    onward, leaving just `host:port` — or the input unchanged if it does not
+    look like a URI, so a future API shape that already returns `host:port`
+    is not mangled. -/
+private def hostPortOfEndpoint (s : String) : String :=
+  let afterScheme := match s.splitOn "://" with
+    | [_, rest] => rest
+    | _ => s
+  let afterUserinfo := match afterScheme.splitOn "@" with
+    | [] => afterScheme
+    | parts => parts.getLast!
+  (afterUserinfo.splitOn "/").head!.splitOn "?" |>.head!
+
 /-- Databases in the project, as `(name, id, endpoint)`.
 
     Scoped to the project explicitly: unlike `rdb`, the list is not implicitly
@@ -348,7 +364,8 @@ private def listRaw (creds : Credentials) : IO (List (String × String × String
     (query := [("project_id", project)])
   return (arrayField reply "databases").filterMap fun d =>
     match stringField d "name", stringField d "id" with
-    | some n, some id => some (n, id, (stringField d "endpoint").getD "")
+    | some n, some id =>
+        some (n, id, hostPortOfEndpoint ((stringField d "endpoint").getD ""))
     | _, _ => none
 
 def list (creds : Credentials) : IO (List (String × String)) := do
@@ -399,7 +416,7 @@ def create (creds : Credentials) (name _masterUsername _password engineVersion :
       , ("version", .string version)
       , ("cpu_min", .number (Float.ofNat minCapacity))
       , ("cpu_max", .number (Float.ofNat maxCapacity)) ]))
-  return (stringField reply "endpoint").getD ""
+  return hostPortOfEndpoint ((stringField reply "endpoint").getD "")
 
 /-- Change the capacity range. -/
 def modify (creds : Credentials) (name : String) (minCapacity maxCapacity : Nat) : IO Unit := do
