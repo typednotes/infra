@@ -20,6 +20,47 @@ part of a feature, stop and get explicit agreement from the user on the
 partial scope before shipping it, rather than deciding unilaterally that
 "the common case" is good enough.
 
+**Ownership falls back down a ladder, and never off the end.** When a feature
+needs to mark a resource — ownership being the one that matters — not every
+cloud offers the same place to put the mark, and "this object has no tags" is
+not a reason to leave the feature unimplemented for that kind. Take the
+strongest rung the object supports, and say in the code which rung it is on:
+
+1. **tags or labels**, where they exist;
+2. **the object's one writable free-text field** — a `description`, a
+   `displayName` — with the marker serialised into it
+   (`Ownership.encodeMarkerText`). Identical semantics to a tag; only the
+   address differs;
+3. **the resource's own name**, checked against a prefix the declaration
+   configures (`Boundary.namePrefix`), for the objects that have neither.
+
+Rung 3 is weaker than the other two and must stay opt-in and *verifying*: the
+evidence is something the declaration wrote rather than something this tool
+did, and renaming a resource to fit is not infra's to do — a fleet key is the
+cloud-side name. Unset, such a resource is `foreign`: never adopted, never
+deleted as an orphan. Never treat an empty prefix as matching everything.
+
+Two rules that come out of the 2026-09-19 pass over this:
+
+- **"Cannot be tagged" is a provider fact, so check it, do not recall it.**
+  Three files said a Scaleway IAM application could not be tagged. It always
+  could. The claim had been copied between code, `docs/providers.md` and
+  `docs/coverage.md` until it looked well established. Check the provider's
+  *generated SDK or discovery document* — not its prose documentation, which
+  is where the wrong reading came from — and write down the date and the
+  source, as `Region.lean` already requires for its tables.
+- **A kind that answers "I cannot tell you" is a hole, not a design.** Before
+  that pass, eight `(cloud, kind)` pairs reported no ownership evidence — plus
+  one within-pair gap, Scaleway's Serverless SQL half of `postgres`. Four of
+  the nine had a stated permanent reason (one of them false) and five had
+  none; `imageRegistry` was not mentioned in the dispatch at all, so all three
+  of its clouds fell to a catch-all. From the outside a carefully argued
+  exception and a case nobody had got to were indistinguishable — both
+  answered `none`, both refused — so the documented ones made the
+  undocumented ones look deliberate. Either every pair answers, or the ones
+  that cannot are enumerated: in the code, in `docs/coverage.md`, and to the
+  user.
+
 ## Documentation
 
 The code should stay in sync with the documentation in `docs/`.
@@ -93,6 +134,7 @@ executable:
     lake exe paris-instances    # bare invocation: offline, free
     lake exe cross-cloud        # bare invocation: offline, free
     lake exe multi-region       # bare invocation: offline, free
+    lake exe serverless-sql-iam # bare invocation: offline, free
     lake exe scaleway-pull      # reads a real Scaleway account
 
 All but the last are offline, credential-free and free of charge, so there is

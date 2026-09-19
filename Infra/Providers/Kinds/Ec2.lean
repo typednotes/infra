@@ -59,6 +59,15 @@ private def version : String := "2016-11-15"
 private def items (parent : Text.XML.Element) (name : String) : List Text.XML.Element :=
   Query.listItems parent name "item"
 
+/-- Every tag on an EC2 object, as key/value pairs. Both the instance and the
+    security group need it, and they are in different namespaces, so it lives
+    at file scope rather than being written twice. -/
+private def allTags (i : Text.XML.Element) : List (String × String) :=
+  (items i "tagSet").filterMap fun t =>
+    match t.childText "key", t.childText "value" with
+    | some k, some v => some (k, v)
+    | _, _           => none
+
 -- ══════════════════════════════════════════════════════════════
 -- Images
 -- ══════════════════════════════════════════════════════════════
@@ -197,14 +206,32 @@ Description was: {description}")
     is not reported by this call, and the caller says so rather than having a
     blank threaded back through here. -/
 def create (creds : Credentials) (ep : Endpoint)
-    (name description : String) (ingress : List (Nat × String)) : IO String := do
+    (name description markerValue : String) (ingress : List (Nat × String)) : IO String := do
   checkDescription description
   let root ← Query.call creds ep "CreateSecurityGroup" version
-    [("GroupName", name), ("GroupDescription", description)]
+    [ ("GroupName", name), ("GroupDescription", description)
+    -- Tagged at creation, the same way `Instance'.create` does it. This was
+    -- missing, and the consequence was not cosmetic: with no marker to read,
+    -- a security group could never be adopted or deleted as an orphan, so a
+    -- fleet declaring one managed less than it said it did.
+    , ("TagSpecification.1.ResourceType", "security-group")
+    , ("TagSpecification.1.Tag.1.Key", markerKey)
+    , ("TagSpecification.1.Tag.1.Value", markerValue) ]
   let groupId := (root.childText "groupId").getD ""
   for (port, cidr) in ingress do
     authorize creds ep groupId port cidr
   return groupId
+
+/-- Tags, for `Ownership.ownershipOf`. `DescribeSecurityGroups` embeds them,
+    so this is one call. `createdAt` is `none`: EC2 does not report a creation
+    time for a security group at all. -/
+def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) : IO Evidence := do
+  match ← (Query.call creds ep "DescribeSecurityGroups" version [("GroupName.1", name)]).toBaseIO with
+  | .error _ => return .unreadable
+  | .ok root =>
+    match (items root "securityGroupInfo").head? with
+    | none   => return .unreadable
+    | some g => return .tags (allTags g) none
 
 /-- Authorize any rule in the target that the cloud does not already have.
 
@@ -263,14 +290,6 @@ namespace Instance'
 private def nameTag (i : Text.XML.Element) : Option String :=
   (items i "tagSet").findSome? fun t =>
     if t.childText "key" == some "Name" then t.childText "value" else none
-
-/-- Every tag on an instance, key and value both — the evidence
-    `Ownership.ownershipOf` needs, as opposed to `nameTag`'s single field. -/
-private def allTags (i : Text.XML.Element) : List (String × String) :=
-  (items i "tagSet").filterMap fun t =>
-    match t.childText "key", t.childText "value" with
-    | some k, some v => some (k, v)
-    | _, _           => none
 
 /-- Every instance with a `Name` tag, as `(name, id, privateIp, state)`.
 
@@ -343,7 +362,7 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
     `Backend.ownershipInfo`'s doc comment for why the two are kept distinct
     at the `Live.lean` call site instead of collapsed here. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   let root ← Query.call creds ep "DescribeInstances" version
     [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
   let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
@@ -351,7 +370,9 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
     match i.child "instanceState" with
     | some st => (st.childText "name").getD "" != "terminated"
     | none    => true
-  return live.head?.map fun i => (allTags i, i.childText "launchTime")
+  return match live.head? with
+    | some i => .tags (allTags i) (i.childText "launchTime")
+    | none   => .unreadable
 
 /-- Launch one instance and tag it.
 

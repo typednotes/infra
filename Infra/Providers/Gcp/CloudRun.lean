@@ -221,10 +221,10 @@ def update (creds : Credentials) (project location name image markerValue : Stri
     service object, so the existing `GET` (as in `read`) is enough.
     `createdAt` is left `none`, matching every other kind's first tranche. -/
 def readOwnership (creds : Credentials) (project location name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   let attempt ← (Gcp.call creds "GET" host (servicePath project location name)).toBaseIO
   match attempt with
-  | .error _ => return none
+  | .error _ => return .unreadable
   | .ok svc =>
     let tags := match field svc "labels" with
       | some (.object fields) => fields.filterMap fun (k, v) =>
@@ -232,7 +232,7 @@ def readOwnership (creds : Credentials) (project location name : String) :
           | .string s => some (k, s)
           | _         => none
       | _ => []
-    return some (tags, none)
+    return .tags tags none
 
 /-- Delete the service and wait for it. Already gone is not an error. -/
 def delete (creds : Credentials) (project location name : String) : IO Unit := do

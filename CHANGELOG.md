@@ -10,6 +10,134 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Added
+
+- **`iam` works on all three clouds, `policies` included.** `policies` used to
+  be documented as "AWS managed-policy ARNs", reported `unknown` on Scaleway
+  and refused on write by GCP — so on two clouds out of three a declared
+  permission was quietly never granted. It now means *the cloud's own name for
+  a set of permissions*, granted at that cloud's natural scope, and all three
+  read it back and reconcile it: a managed-policy ARN on AWS, a permission-set
+  name scoped to the project on Scaleway (one infra-owned `Policy` per
+  application, rules overwritten with `PUT /rules`), a role name on GCP.
+
+  Nothing translates between the three spellings, on purpose. Two refusals
+  rather than silent divergence: Scaleway raises if somebody else's policy is
+  attached to the same application, and GCP raises on a conditional binding
+  — both naming what to do instead, and both still *reporting* the grant so it
+  is visible in `plan` rather than hidden.
+
+  GCP's write is the one that needed care, and its three properties are worth
+  restating: the policy object is edited with `JsonRead.setField` rather than
+  rebuilt (so `etag`, `auditConfigs` and unknown fields survive), the `etag`
+  travels back with it (so a concurrent edit fails the call), and conditional
+  bindings are never touched.
+
+- **`SecretSource.apiKeyFor` — a credential minted straight into a secret.**
+  A cloud API key's secret half is returned once, at creation, and never
+  again, so it can be neither declared (it does not exist yet) nor observed
+  (observed state is cached and printed). Creating a secret is already
+  write-only, so that is where the key is minted: `valueFrom := apiKeyFor
+  "my-app"` creates an AWS access key, a Scaleway API key or a GCP
+  service-account key for that identity and writes the secret half in.
+
+  The two halves that are *not* secret — `accessKey`, and the `principal` the
+  key authenticates as — come back in `SecretsObserved`, reachable from
+  `expr!` as `accessKeyOf` and `principalOf`. `SecretsObserved`'s `FromJson`
+  is hand-written for this: Lean's derived decoder does not fall back to a
+  field's default, so a derived one would fail to load an existing `.infra/`
+  cache.
+
+  Create-only, and refused on update rather than re-minted: a second key would
+  be as live as the first and referenced by nothing. Deleting the secret
+  deletes the key, found through two tags written on the secret beside the
+  ownership marker — the only thing still standing when `Backend.delete` is
+  handed a bare `Handle`.
+
+  This is what makes Scaleway's Serverless SQL Database declarable at all. It
+  has no master user: the PostgreSQL user name is an IAM application's **id**
+  and the password is its API secret key. `example/ServerlessSqlIam.lean` is
+  the whole fleet — identity, key, database, URL — in one apply, where it used
+  to be three `scw` commands and a secret pasted in by hand.
+
+- **A new example and a new self-check.** `lake exe serverless-sql-iam` is
+  offline and credential-free like the other three; `checkMintedKey` in the
+  offline suite pins the ordering, the teardown order, the create-only
+  property and that no value leaks.
+
+### Changed
+
+- **Ownership decides for every `(cloud, kind)` pair.** Eight pairs reported
+  no evidence at all — plus one within-pair gap, Scaleway's Serverless SQL
+  half of `postgres` — which the engine treats as "refuse": never adopted,
+  never deleted as an orphan. `Backend.ownershipInfo` now returns an
+  `Evidence` rather than `Option (tags × createdAt)`, with three informative
+  rungs — real tags, a marker serialised into the object's one writable
+  free-text field, and the resource's own name against the new
+  `Boundary.namePrefix` — plus `.unreadable`, which grants nothing.
+  `docs/coverage.md` has the table of which pair sits where.
+
+  The name rung is opt-in and *verifying*: infra does not rename anything,
+  because a fleet key is the cloud-side name. Unset, a name-only resource
+  behaves exactly as it did before. An empty prefix claims nothing rather than
+  everything.
+
+  Four of the nine had a stated permanent reason and five had none. Of the
+  four reasons, **one was simply false**: a Scaleway IAM application has
+  always carried `tags`, and the claim had been copied between the code,
+  `docs/providers.md` and `docs/coverage.md` until it looked settled. GCP
+  service accounts and Scaleway registry namespaces have a `description`,
+  which is a marker. Only Scaleway's Serverless SQL Database and its mnq
+  queues genuinely have neither. The rule that comes out of this is now in
+  `AGENTS.md`.
+
+  The five with no reason at all — `s3Bucket` and `securityGroup` on AWS, and
+  `imageRegistry` on all three clouds, which was not mentioned in the dispatch
+  at all — now write a marker at create and read it back. The S3 bucket is the
+  plainest: the code to tag one already existed for `objectStore` and this
+  kind simply never called it.
+
+- **`push` says which rung refused, and how to fix it.** `Ownership.describe`
+  is replaced by `describeVerdict`, which takes the evidence: "retag it", "set
+  a `namePrefix` and name it accordingly" and "the marker cannot be read here"
+  are three different instructions, and the single sentence that covered all
+  three named none of them.
+
+### Fixed
+
+- **Two dependency edges existed only by accident of the `Kind` enum.**
+  `PostgresSpec.masterPasswordSecret` and `SecretSource.apiKeyFor` name a
+  resource rather than referencing it — a reference would name a provider and
+  break portability — so `HasDeps` reported no edge, and the order that came
+  out was right only because `.iam` precedes `.secrets` precedes `.postgres`
+  in the enum and ties break by enumeration order. Reordering the enum would
+  have broken both. `Engine.impliedByName` builds the edge from the name and
+  the kind it must name, which is all the scheduler needs; an edge to a slot
+  no action touches is ignored, so naming an unmanaged identity stays legal.
+
+  It matters most on teardown: an AWS IAM user holding an access key cannot be
+  deleted, so the secret that owns the key has to go first.
+
+- **An AWS IAM user holding an access key could not be torn down.**
+  `Iam.Aws'.delete` detached policies and called `DeleteUser`, which answers
+  `DeleteConflict` while a key exists. It strips access keys too now.
+
+- **`iam:CreateAccessKey` is denied by this repo's own operator policy**, and
+  that is correct — it is step three of a privilege escalation the
+  `NeverMintUsableCredentials` statement exists to close. The template keeps
+  the `Deny`; `docs/permissions.md` gains a section on the narrow way to allow
+  it for a fleet that uses `apiKeyFor`, and what allowing it costs. The error
+  raised on the 403 names that section, so it reads as the policy working
+  rather than as a misconfiguration.
+
+### Pending: `JsonRead.setField` belongs in `linen`
+
+"Rewrite one field of a JSON object, leaving every other field and their order
+alone" is a `Data.Json.Value` operation, not an infrastructure-as-code one. It
+lives in `Infra/Providers/JsonRead.lean` because GCP's `setIamPolicy` needs it
+and nothing in `linen`'s `Data.Json` offers it yet. Listed here rather than
+left implicit, for the reason the moves below are.
+
 ### Pending: delete the code that has moved to `linen`
 `linen` 0.16.0 adds `Linen.Cloud`, a cloud-services layer that includes the
 building blocks this project has been carrying:

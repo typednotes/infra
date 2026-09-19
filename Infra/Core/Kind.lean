@@ -11,7 +11,7 @@ import Lean.Data.Json
 
 namespace Infra.Core
 
-open Lean (ToJson FromJson)
+open Lean (ToJson FromJson fromJson?)
 
 /-- Which cloud. A fleet is indexed by this as well as by `Kind`, so one `Plan` can hold
     resources in several clouds at once — see `Infra.Core.Keys`. -/
@@ -116,10 +116,61 @@ structure QueuesObserved where
   url    : String
   deriving Repr, DecidableEq, ToJson, FromJson
 
+/-- A secret, plus — when its value is a freshly minted API key — the two
+    halves of that key that are *not* secret.
+
+    Both default to `""`, which is what every secret whose value came from an
+    environment variable or a composed expression reports. They exist because
+    `SecretSource.apiKeyFor` mints a credential whose secret half can never be
+    read back, so the pieces needed to *use* it have to come out somewhere,
+    and observed state is where post-apply values belong.
+
+    Nothing secret is here, and that is worth being explicit about, because
+    this structure is written to `.infra/` and printed in plans:
+
+    * `accessKey` is the public half — an AWS access key id, a Scaleway
+      access key, a GCP key id. Scaleway's own documentation calls the access
+      key "like a unique ID or username", and "not sensitive"; AWS access key
+      ids appear in CloudTrail. It identifies a credential; it does not
+      authenticate one.
+    * `principal` is the identity the key authenticates *as*, spelled the way
+      the cloud wants it at the point of use: a Scaleway **application id**,
+      an AWS user name, a GCP service-account email. For Scaleway this is the
+      field that matters most and the one easiest to get wrong — a Serverless
+      SQL Database takes the application id as its PostgreSQL user name, not
+      the access key, which looks far more like a username than a UUID does.
+
+    The secret half goes into the secret and nowhere else. -/
 structure SecretsObserved where
   handle  : Handle .secrets
   version : String
-  deriving Repr, DecidableEq, ToJson, FromJson
+  /-- The public half of a minted API key; `""` for every other secret. -/
+  accessKey : String := ""
+  /-- The identity a minted key authenticates as; `""` for every other
+      secret. See the note above for its spelling per cloud. -/
+  principal : String := ""
+  deriving Repr, DecidableEq, ToJson
+
+/-- Hand-written, unlike every other `FromJson` here, because of a cache
+    written before `accessKey` and `principal` existed.
+
+    Lean's derived decoder does **not** fall back to a field's default when the
+    key is absent — it fails, naming the field. `.infra/` is a cache of
+    observed state that survives across upgrades of this library, so a derived
+    instance would make the first run after this change fail to load it and
+    re-observe the world from scratch. Recoverable, but it would look like data
+    loss, and the fix is four lines. Any field added here later needs the same
+    treatment. -/
+instance : FromJson SecretsObserved where
+  fromJson? j := do
+    let orEmpty (k : String) : String :=
+      match j.getObjVal? k >>= fromJson? with
+      | .ok (v : String) => v
+      | .error _         => ""
+    return { handle    := ← fromJson? (← j.getObjVal? "handle")
+             version   := ← fromJson? (← j.getObjVal? "version")
+             accessKey := orEmpty "accessKey"
+             principal := orEmpty "principal" }
 
 structure ImageRegistryObserved where
   handle        : Handle .imageRegistry
@@ -291,6 +342,17 @@ section Guards
 #guard card Kind = 14
 #guard card ProviderId = 3
 #guard card Nothing = 0
+
+/- A cache written before `accessKey`/`principal` existed must still load, with
+   the two new fields at their defaults. This is the assertion that fails if
+   `SecretsObserved`'s hand-written `FromJson` is ever replaced by a derived
+   one — which compiles fine and breaks only at the next upgrade. -/
+private def legacySecretJson : Lean.Json :=
+  .mkObj [("handle", .mkObj [("raw", .str "s")]), ("version", .str "1")]
+
+#guard (match (Lean.fromJson? legacySecretJson : Except String SecretsObserved) with
+        | .ok o => o.accessKey == "" && o.principal == "" && o.handle.raw == "s"
+        | .error _ => false)
 
 -- A handle is kind-indexed: this is the same raw string at two kinds, and the types differ.
 private def h1 : Handle .objectStore := { raw := "b-1" }

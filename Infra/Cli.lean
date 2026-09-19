@@ -215,7 +215,7 @@ def usage (exe : String) : String := String.intercalate "\n"
   , "  check            run the offline self-checks (default)"
   , "  refresh          observe the declared clouds and cache what is there"
   , "  discover         rebuild the ledger from real ownership evidence, for"
-  , "                   the kinds a backend can report tags for"
+  , "                   the kinds a backend can report a marker for"
   , "  plan             show what would change, without changing anything"
   , "  plan --destroy   show what tearing the fleet down would delete"
   , "  apply            actually reconcile"
@@ -262,15 +262,18 @@ def usage (exe : String) : String := String.intercalate "\n"
     wrong, and CI is where it showed. `Infra.Core.Ownership`'s marker-and-
     boundary model is what actually decides membership now — the adoption
     loop and the orphan-delete check in `Engine.push` both consult it — for
-    the kinds a backend can report tags for (`Backend.ownershipInfo`); the
-    ledger itself is the cache of that decision, rebuildable with `discover`.
-    A kind not yet migrated keeps the old naming-only rule unchanged.
+    every kind a backend can report a marker for (`Backend.ownershipInfo`);
+    the ledger itself is the cache of that decision, rebuildable with
+    `discover`. A kind whose marker cannot be read is refused rather than
+    claimed.
 
     `boundary` is the realm and exclusion legs of the ownership model
     (`Infra.Core.Ownership.Boundary`): exclusions, an optional cutoff date
     below which an unmarked-but-old resource is treated as pre-dating `infra`
     rather than foreign, and `fleetName` — this fleet's own name, which is written
-    into the marker's value and required back out of it. Empty by default,
+    into the marker's value and required back out of it, and `namePrefix` —
+    the marker of last resort, for the kinds a cloud offers no writable field
+    to tag (`Infra.Core.Ownership`'s ladder). Empty by default,
     which is the same as not having the model at all for a fleet that never
     sets it.
 
@@ -330,10 +333,10 @@ def run (exe : String) (F : Fleet)
       let outstanding := (plan F.plan world rows F.forgets).length
       IO.println s!"refreshed; {rows.length} managed; {outstanding} action(s) outstanding"
   -- Rebuilds the ledger as what it is documented to be: a cache of ownership,
-  -- not the record of it. Only kinds a backend has been taught to read tags
-  -- for (`Backend.ownershipInfo`) are actually re-derived; every other kind's
-  -- rows are carried over untouched, so a fleet with un-migrated kinds does
-  -- not lose what it already knew about them.
+  -- not the record of it. Only kinds whose marker a backend can actually read
+  -- (`Backend.ownershipInfo`) are re-derived; every other kind's rows are
+  -- carried over untouched, so a fleet holding one does not lose what it
+  -- already knew about it.
   | ["discover"] =>
     reporting <| withLive fun bs => do
       let before ← Ledger.load cacheRoot

@@ -20,7 +20,14 @@ def placeholderObserved : (k : Kind) → String → ObservedOf k
   | .objectStore,      id => { handle := ⟨id⟩, url := "https://placeholder.invalid" }
   | .compute,          id => { handle := ⟨id⟩, status := "pending" }
   | .queues,           id => { handle := ⟨id⟩, url := "https://placeholder.invalid/queue" }
-  | .secrets,          id => { handle := ⟨id⟩, version := "1" }
+  -- The two API-key fields are populated, not left blank. A secret whose
+  -- value is a minted key reports them, and a fleet composing a connection
+  -- string out of `principalOf`/`accessKeyOf` would otherwise settle to a URL
+  -- with two empty holes in it offline — which reads as working and is not.
+  -- Neither is a secret; see `SecretsObserved`.
+  | .secrets,          id => { handle := ⟨id⟩, version := "1"
+                               accessKey := "PLACEHOLDERACCESSKEY"
+                               principal := "placeholder-principal-id" }
   | .imageRegistry,    id => { handle := ⟨id⟩, repositoryUri := "placeholder.invalid/repo" }
   | .postgres,         id => { handle := ⟨id⟩, endpoint := "placeholder.invalid:5432" }
   | .s3Bucket,         id => { handle := ⟨id⟩, arn := "arn:placeholder", region := "eu-west-1" }

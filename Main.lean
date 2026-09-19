@@ -114,7 +114,7 @@ private def composedMarkedBackends : Backends where
     | .aws      => Infra.Providers.placeholderBackend "aws"
     | .scaleway =>
       { Infra.Providers.placeholderBackend "scaleway" with
-          ownershipInfo := fun _ _ => pure (some ([(markerKey, legacyMarkerValue)], none)) }
+          ownershipInfo := fun _ _ => pure (.tags [(markerKey, legacyMarkerValue)] none) }
     | .gcp      => Infra.Providers.placeholderBackend "gcp"
 
 /-- An apply records what it claims, even when it has nothing to do.
@@ -159,17 +159,31 @@ resources; a resource that needs no action is still managed")
     IO.FS.removeDirAll tmp
 
 /-- A `Backends` whose `.aws` backend answers `ownershipInfo` with a fixed
-    verdict, rather than the placeholder default of `none`. This is what lets
-    the checks below exercise `Ownership.ownershipOf` itself — the placeholder
-    backends alone can only ever exercise the "not migrated" fallback, since
-    their `ownershipInfo` never answers `some`. -/
+    verdict, rather than the placeholder default of `.unreadable`. This is what
+    lets the checks below exercise `Ownership.ownershipOf` itself — the
+    placeholder backends alone can only ever exercise the refusal path, since
+    their `ownershipInfo` never reports any evidence. -/
 private def gatedBackends (marked : Bool) (value : String := legacyMarkerValue) :
     Backends where
   backend
     | .aws =>
       { Infra.Providers.placeholderBackend "aws" with
           ownershipInfo := fun _ _ =>
-            pure (some ((if marked then [(markerKey, value)] else []), none)) }
+            pure (.tags (if marked then [(markerKey, value)] else []) none) }
+    | .scaleway => Infra.Providers.placeholderBackend "scaleway"
+    | .gcp      => Infra.Providers.placeholderBackend "gcp"
+
+/-- The same, on the **name** rung: a backend for a kind that cannot carry a
+    marker at all, which reports only the resource's name.
+
+    Separate from `gatedBackends` because the interesting property is that the
+    two rungs reach the same verdicts by different evidence, and a double that
+    could only produce tags could not show that. -/
+private def namedBackends (nm : String) : Backends where
+  backend
+    | .aws =>
+      { Infra.Providers.placeholderBackend "aws" with
+          ownershipInfo := fun _ _ => pure (.named nm none) }
     | .scaleway => Infra.Providers.placeholderBackend "scaleway"
     | .gcp      => Infra.Providers.placeholderBackend "gcp"
 
@@ -266,7 +280,7 @@ def checkOrphanRecheck : IO Unit := do
     match ← (push (gatedBackends false) demoPlan emptyWorld { apply := true }
         (store := unmarked)).toBaseIO with
     | .error e =>
-      unless mentions (toString e) "no longer carries the marker tag" do
+      unless mentions (toString e) "not carrying the 'managed-by-infra' tag" do
         throw (IO.userError s!"orphan recheck failed for the wrong reason: {toString e}")
     | .ok lines => throw (IO.userError s!"expected the recheck to refuse the delete, got: {lines}")
     unless (← Ledger.load tmp).any (·.name == "old-bucket") do
@@ -277,7 +291,48 @@ def checkOrphanRecheck : IO Unit := do
     if (← Ledger.load tmp).any (·.name == "old-bucket") then
       throw (IO.userError "a marked orphan was not deleted")
 
+    -- ── The same two halves on the *name* rung ──
+    --
+    -- A kind the cloud cannot tag reports only its name, and
+    -- `Boundary.namePrefix` is then the whole of the marker. These pin that
+    -- the rung reaches the same two verdicts as the tag rung above, through
+    -- `Engine.push` rather than only in `Ownership`'s own `#guard`s — and, in
+    -- the first case, that a fleet which has *not* set a prefix refuses the
+    -- delete rather than falling through to the ledger's say-so, which is the
+    -- 2026-09-10 incident's rule applied to the weakest evidence there is.
+    let noPrefix : Store demoKeys := { root := some tmp, rows := [staleRow] }
+    match ← (push (namedBackends "old-bucket") demoPlan emptyWorld { apply := true }
+        (store := noPrefix)).toBaseIO with
+    | .error e =>
+      unless mentions (toString e) "no `namePrefix` is set" do
+        throw (IO.userError s!"name-rung recheck failed for the wrong reason: {toString e}")
+    | .ok lines =>
+      throw (IO.userError s!"a name-only orphan was deleted with no prefix configured: {lines}")
+
+    -- A prefix that does not match is equally a refusal, and says so by name.
+    let wrongPrefix : Store demoKeys :=
+      { root := some tmp, rows := [staleRow], boundary := { namePrefix := some "mine-" } }
+    match ← (push (namedBackends "old-bucket") demoPlan emptyWorld { apply := true }
+        (store := wrongPrefix)).toBaseIO with
+    | .error e =>
+      unless mentions (toString e) "does not start with this fleet's" do
+        throw (IO.userError s!"a mismatched prefix refused for the wrong reason: {toString e}")
+    | .ok lines =>
+      throw (IO.userError s!"a name-only orphan outside the prefix was deleted: {lines}")
+    unless (← Ledger.load tmp).any (·.name == "old-bucket") do
+      throw (IO.userError "a refused name-rung delete still dropped the ledger row")
+
+    -- And a matching prefix lets it through, which is the half that makes the
+    -- rung worth having rather than merely safe.
+    let rightPrefix : Store demoKeys :=
+      { root := some tmp, rows := [staleRow], boundary := { namePrefix := some "old-" } }
+    let _ ← push (namedBackends "old-bucket") demoPlan emptyWorld { apply := true }
+      (store := rightPrefix)
+    if (← Ledger.load tmp).any (·.name == "old-bucket") then
+      throw (IO.userError "a name-only orphan inside the prefix was not deleted")
+
     IO.println "orphan recheck: ok (a stripped marker refuses the delete; present, it proceeds)"
+    IO.println "name rung: ok (no prefix and a wrong prefix both refuse; a matching one deletes)"
   finally
     IO.FS.removeDirAll tmp
 
@@ -315,7 +370,7 @@ def checkOrphanRetry : IO Unit := do
                       -- Both ledger rows here are meant to be deleted, so both
                       -- must report the marker.
                       ownershipInfo := fun _ _ =>
-                        pure (some ([(markerKey, legacyMarkerValue)], none))
+                        pure (.tags [(markerKey, legacyMarkerValue)] none)
                       delete := fun _ h => do
                         if h.raw == "blocked" && (← tries.get) < limit then
                           tries.modify (· + 1)
@@ -409,7 +464,7 @@ def checkUnreachableRefusal : IO Unit := do
       { backend := fun p =>
           { Infra.Providers.placeholderBackend p.name with
               ownershipInfo := fun _ _ =>
-                pure (some ([(markerKey, legacyMarkerValue)], none)) } }
+                pure (.tags [(markerKey, legacyMarkerValue)] none) } }
     let _ ← push reachable (Plan.absent demoKeys) emptyWorld { apply := true }
       (store := { root := some tmp, rows := [staleRow] })
     unless (← Ledger.load tmp).isEmpty do
@@ -430,7 +485,7 @@ def checkDiscover : IO Unit := do
           | .objectStore => pure [Infra.Providers.placeholderObserved .objectStore "assets"]
           | _            => pure []
         ownershipInfo := fun _ _ =>
-          pure (some ((if marked then [(markerKey, "true")] else []), none)) }
+          pure (.tags (if marked then [(markerKey, "true")] else []) none) }
   let bs (marked : Bool) : Backends :=
     { backend := fun p =>
         match p with
@@ -807,6 +862,61 @@ def checkSecretComposition : IO Unit := do
 
   IO.println "composed secrets: ok (one apply, ordered, no leak, converges)"
 
+/-- The minted-key fleet: one apply, right order, create-only, and the URL it
+    settles to is the one Scaleway will accept.
+
+    `Infra.Demo`'s `#guard`s already pin the composition and the implied edge.
+    What they cannot reach is the engine: this runs the plan through `push`,
+    which is where the ordering, the create-only property and the redaction of
+    a settled value actually happen. -/
+def checkMintedKey : IO Unit := do
+  let bs := Infra.Providers.all
+  let canary := "placeholder-secret-value"
+
+  let dry ← push bs identityPlan identityEmptyWorld {}
+  let creates := dry.filter (·.startsWith "would CREATE")
+  unless creates.length == 4 do
+    throw (IO.userError s!"expected 4 creates in one apply, got {creates.length}: {dry}")
+
+  -- The identity before the key that belongs to it. This is the edge
+  -- `Engine.impliedByName` supplies out of `apiKeyFor`'s name, seen through
+  -- the scheduler rather than in isolation.
+  let idx (needle : String) : Option Nat := dry.findIdx? (fun l => mentions l needle)
+  match idx "iam/reports-app", idx "secrets/app-key", idx "secrets/app-db-url",
+        idx "postgres/reports" with
+  | some app, some key, some url, some db =>
+    unless app < key do
+      throw (IO.userError s!"the application must be created before its key: {dry}")
+    unless key < url && db < url do
+      throw (IO.userError s!"the composed URL must be created last: {dry}")
+  | _, _, _, _ => throw (IO.userError s!"expected all four slots in the plan: {dry}")
+
+  -- Teardown is the transpose, and this is the half that matters on AWS: an
+  -- IAM user holding an access key cannot be deleted, so the secret that owns
+  -- the key has to go first.
+  let down ← push bs (Plan.absent identityKeys) identityAppliedWorld
+    { apply := true } (edges := identityPlan)
+  match down.findIdx? (fun l => mentions l "secrets/app-key"),
+        down.findIdx? (fun l => mentions l "iam/reports-app") with
+  | some key, some app =>
+    unless key < app do
+      throw (IO.userError s!"the key's secret must be deleted before its identity: {down}")
+  | _, _ => throw (IO.userError s!"expected both slots in the teardown: {down}")
+
+  -- A minted key is a secret like any other: it must not reach a log.
+  let applied ← push bs identityPlan identityEmptyWorld { apply := true }
+  for line in dry ++ applied do
+    if mentions line canary then
+      throw (IO.userError s!"the minted-key fleet leaked a secret value: {line}")
+
+  -- Create-only. Re-minting on a second apply would leave the previous key
+  -- live and unreferenced, which is the leak `apiKeyFor` is careful about.
+  let again ← push bs identityPlan identityAppliedWorld {}
+  unless again == ["nothing to do"] do
+    throw (IO.userError s!"second apply should be a no-op, got: {again}")
+
+  IO.println "minted keys: ok (identity first, key before URL, teardown reversed, converges)"
+
 /-- Checks the empty declaration: what `destroy` reconciles against.
 
     Two claims worth pinning. First, `Plan.absent` deletes what exists and
@@ -986,6 +1096,7 @@ def selfCheck : IO Unit := do
   checkPush
   checkTeardown
   checkSecretComposition
+  checkMintedKey
   checkGcpAssertion
   checkVanishingResource
   checkSecretsRequestToken

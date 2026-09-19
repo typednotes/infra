@@ -89,25 +89,57 @@ structure QueuesSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     — the same reasoning that makes `PostgresSpec.classic`/`serverless` smart
     constructors preferable to `hasCapacityChoice` alone.
 
-    Neither constructor is meant to hold a plaintext secret from the committed
-    target. `fromEnv` names a variable read at apply time. `composed` carries a
-    value *computed* at apply time from post-apply state — the point being that
-    the target holds the function, not the result. A plaintext constant
-    smuggled in as `composed "hunter2"` is representable but caught by
-    `SecretsSpec.sourceIsSound`; see `docs/diff-semantics.md`'s ledger. -/
+    None of the constructors is meant to hold a plaintext secret from the
+    committed target. `fromEnv` names a variable read at apply time. `composed`
+    carries a value *computed* at apply time from post-apply state — the point
+    being that the target holds the function, not the result. A plaintext
+    constant smuggled in as `composed "hunter2"` is representable but caught by
+    `SecretsSpec.sourceIsSound`; see `docs/diff-semantics.md`'s ledger.
+
+    `apiKeyFor` is the third, and it exists because of a shape the first two
+    cannot express. A cloud credential — an AWS access key, a Scaleway API key,
+    a GCP service-account key — has a secret half that the provider returns
+    **once, at creation, and never again**. So it cannot come from the
+    environment (nobody has it yet) and it cannot be `composed` from observed
+    state (observed state is cached and printed, and this must never be). The
+    only place it can go is straight into a secret at the instant it is minted,
+    which is exactly what creating a secret already is: a write-only operation
+    whose value is never read back or compared.
+
+    So this is not a new mechanism so much as the existing one pointed at a
+    different source. The two halves that are *not* secret — the access key and
+    the principal the key authenticates as — come back in `SecretsObserved`,
+    where post-apply values belong, and `expr!` can compose a connection string
+    out of them. -/
 inductive SecretSource
   | fromEnv  (varName : String)
   | composed (value   : String)
+  /-- Mint a fresh API key, at apply time, for the identity of this name in
+      this cloud — an `.iam` resource's name, spelled exactly as the fleet
+      declares it. The secret is the key's secret half.
+
+      A plain `String` rather than a typed reference for the same reason
+      `PostgresSpec.masterPasswordSecret` is one: `SecretsSpec` is a portable
+      spec, and a reference has type `K p k`, which names a provider and would
+      tie the kind to one cloud. See `SecretsSpec`'s own note on what that
+      costs in ordering. -/
+  | apiKeyFor (identity : String)
   deriving DecidableEq, BEq
   -- Deliberately NOT deriving `Repr`/`ToJson`/`FromJson`: see the `Repr`
   -- instance below, and `Kind.lean` for why nothing serialises this.
 
 /-- Redacting, exactly as `Credentials`' own `Repr` does — so a stray trace or
-    error message cannot print a composed value. -/
+    error message cannot print a composed value.
+
+    `apiKeyFor` prints its identity in full: it names a resource in the
+    declaration, which is public by construction, and hiding it would make the
+    commonest error with this constructor — naming an identity that does not
+    exist — unreadable. -/
 instance : Repr SecretSource where
   reprPrec
-    | .fromEnv v,  _ => f!"SecretSource.fromEnv {repr v}"
-    | .composed _, _ => f!"SecretSource.composed <redacted>"
+    | .fromEnv v,   _ => f!"SecretSource.fromEnv {repr v}"
+    | .composed _,  _ => f!"SecretSource.composed <redacted>"
+    | .apiKeyFor i, _ => f!"SecretSource.apiKeyFor {repr i}"
 
 /-- A secret.
 
@@ -125,7 +157,23 @@ instance : Repr SecretSource where
 
     That same limitation is what makes a `composed` secret **create-only**: its
     value cannot be compared, so it is never drift, and a second apply asks for
-    nothing. Rotating one is an explicit action, not a reconciliation. -/
+    nothing. Rotating one is an explicit action, not a reconciliation. The same
+    goes, more emphatically, for `apiKeyFor`: an update that re-minted the key
+    on every apply would leave a trail of live credentials behind it, so the
+    backend refuses one outright rather than doing something defensible-looking.
+
+    ## What `apiKeyFor` does not do: order itself after the identity
+
+    `identity` is a name, not a reference, so it contributes no edge to the
+    dependency graph and the scheduler does not know to create the identity
+    first. This is the same gap `PostgresSpec.masterPasswordSecret` has, for
+    the same reason (portability: a reference would name a provider), and it is
+    in `docs/diff-semantics.md`'s ledger as one defect rather than two.
+
+    In practice a create that runs too early fails loudly — the cloud says
+    there is no such application/user/service account, naming it — and a second
+    apply succeeds. That is a bad experience, not a silent wrong answer, which
+    is why it is a ledger entry and not a blocker. -/
 structure SecretsSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
   name      : Field .required o f String
@@ -189,6 +237,14 @@ def fromEnv {K : ProviderId → Kind → Type} (varName : String) : Expr K Secre
 def composed {K : ProviderId → Kind → Type} (e : Expr K String) : Expr K SecretSource :=
   .map SecretSource.composed e
 
+/-- `valueFrom := apiKeyFor "my-app"`.
+
+    A helper for the same reason `fromEnv` is one: dot-notation resolves
+    against `Expr`, not `SecretSource`, so a bare `.apiKeyFor` does not
+    elaborate under the wrapper. -/
+def apiKeyFor {K : ProviderId → Kind → Type} (identity : String) : Expr K SecretSource :=
+  .lit (.apiKeyFor identity)
+
 /-- Whether this secret's source is honest about where its value comes from.
 
     An env-var name is a literal and references nothing. A composed value must
@@ -205,9 +261,13 @@ def SecretsSpec.sourceIsSound {K : ProviderId → Kind → Type}
   -- `deps` is `[]` by construction, so the cases that pair the two up cannot
   -- both be informative.
   match s.valueFrom.asLit with
-  | some (.fromEnv _)  => true
-  | some (.composed _) => false                     -- plaintext, written directly
-  | none               => !s.valueFrom.deps.isEmpty -- `map`-wrapped: needs a reference
+  | some (.fromEnv _)   => true
+  | some (.composed _)  => false                     -- plaintext, written directly
+  -- An identity's *name* is not a secret, and there is nothing else in this
+  -- constructor: the value it stands for does not exist until apply, so a
+  -- literal one cannot be smuggled in the way `composed` invites.
+  | some (.apiKeyFor _) => true
+  | none                => !s.valueFrom.deps.isEmpty -- `map`-wrapped: needs a reference
 
 /-- Whether an authored postgres target picked one of the two capacity shapes: a fixed
     `instanceClass`, or both `minCapacity` and `maxCapacity`. Neither being set makes the target

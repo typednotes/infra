@@ -121,14 +121,16 @@ def plan {κ : Keys} (T : Plan κ) (W : World κ)
 
 /-- Rebuild the ledger from what the account itself says is ours, for every
     `(provider, kind)` this fleet's key family names and whose backend can
-    report tags (`Backend.ownershipInfo`).
+    report a marker for (`Backend.ownershipInfo`).
 
     This is the ledger's cache nature made concrete: `discover` throws away no
     information that cannot be recomputed, because everything it writes was
-    read straight back off the resource's own marker tag. A kind whose
-    backend has not been migrated (`ownershipInfo` answers `none` for it) is
-    left exactly as `existing` already had it — `discover` only replaces rows
-    it can actually verify, it never guesses for the rest. Scoped to the
+    read straight back off the resource's own marker. A kind whose backend
+    cannot read one (`ownershipInfo` answers `.unreadable`) is left exactly as
+    `existing` already had it — `discover` only replaces rows it can actually
+    verify, it never guesses for the rest. A kind on the *name* rung is
+    rebuilt like any other: `Boundary.namePrefix` is the marker there, and
+    `ownershipOf` weighs it the same way. Scoped to the
     regions `listers` already knows about, the same limitation `pullEntries`
     accepts: a fleet cannot discover resources placed somewhere it declares
     nothing. -/
@@ -147,10 +149,10 @@ def discover {κ : Keys} (bs : Backends) (boundary : Boundary)
           let nm := handle.raw
           if here nm then
             match ← b.ownershipInfo k handle with
-            | none => pure ()
-            | some (tags, createdAt) =>
+            | .unreadable => pure ()
+            | evidence =>
               rows := rows.filter fun r => !Ledger.Row.isAt r p k nm
-              if (ownershipOf boundary p k nm tags createdAt).isOurs then
+              if (ownershipOf boundary p k nm evidence).isOurs then
                 rows := { cloud := p, kind := k, name := nm
                           region := regionOf p k nm } :: rows
   return rows
@@ -203,6 +205,47 @@ def Action.colour {κ : Keys} : Action κ → String
 def Action.renderStyled {κ : Keys} (colour : Bool) (a : Action κ) : String :=
   s!"{Ansi.style colour a.colour a.verb} {a.slot}"
 
+/-- The slots a spec depends on by **naming** one, rather than by holding a
+    typed reference to it.
+
+    Two portable specs do this, and both for the same reason: a reference has
+    type `K p k`, which names a provider, and a portable spec that named a
+    provider would not be portable. So they carry a plain `String` —
+    `PostgresSpec.masterPasswordSecret`, and `SecretSource.apiKeyFor` — and
+    `HasDeps`, which can only produce edges out of real references, reports
+    nothing for either.
+
+    The consequence was an ordering that happened to be right. Nothing said a
+    secret must exist before the database whose password it holds; it did,
+    because `.secrets` precedes `.postgres` in the `Kind` enum and ties are
+    broken by enumeration order. Exactly the same accident put `.iam` before
+    `.secrets`, which is what would have made `apiKeyFor` appear to work.
+    Reordering the enum — a change nobody would expect to matter — would have
+    broken both, and the failure would have been a create against a resource
+    that does not exist yet: intermittent-looking, and blamed on the cloud.
+
+    A name is not a reference and never will be one here, but the *scheduler*
+    does not need a reference: it orders `String` slot ids, and a name plus
+    the kind it must name is enough to build one. An edge to a slot no action
+    touches is ignored by `schedule`, so naming an identity this fleet does
+    not manage stays legal and simply constrains nothing.
+
+    Both edges are same-cloud, which is right: a secret's value is read
+    through the cloud's own secret manager, and an API key is minted by the
+    cloud's own IAM. Neither has a cross-cloud reading. -/
+def impliedByName {κ : Keys} (p : ProviderId) :
+    (k : Kind) → Infra.Specs.SpecOf.{1} k κ.Key Partial (Expr κ.Key) → List String
+  | .secrets, s =>
+    match s.valueFrom.asLit with
+    | some (.apiKeyFor identity) =>
+      if identity.isEmpty then [] else [Ledger.slotId p .iam identity]
+    | _ => []
+  | .postgres, s =>
+    match s.masterPasswordSecret.asLit with
+    | some nm => if nm.isEmpty then [] else [Ledger.slotId p .secrets nm]
+    | none    => []
+  | _, _ => []
+
 /-- The slots a resource's spec references, if the plan wants it present. -/
 private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
     (key : κ.Key p k) : List String :=
@@ -210,8 +253,9 @@ private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
   | .present authored =>
     -- The `Need` tag is ignored here: a handle and a value are the same edge
     -- as far as ordering goes.
-    ((hasDepsOf k).deps authored).map fun d =>
-      Ledger.slotId d.provider d.kind (κ.name d.provider d.kind d.key)
+    (((hasDepsOf k).deps authored).map fun d =>
+      Ledger.slotId d.provider d.kind (κ.name d.provider d.kind d.key))
+    ++ impliedByName p k authored
   | _ => []
 
 /-- One scheduling step. -/
@@ -479,26 +523,27 @@ private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (store : Store κ)
     (opts : PushOptions) (st : Progress κ) (a : Action κ) : IO (Progress κ) := do
   -- The ledger is a cache, never authority — see the 2026-09-10 incident in
   -- `AGENTS.md`. A `deleteOrphan` fires because a line left the declaration;
-  -- before deleting anything, re-check the marker tag rather than trusting a
+  -- before deleting anything, re-check the marker rather than trusting a
   -- ledger row that might be stale, wrong, or (for a kind this backend was
-  -- never taught to tag) was never actually verified in the first place. A
-  -- backend that cannot report tags (`none`) refuses the deletion rather
+  -- never taught to mark) was never actually verified in the first place. A
+  -- backend that cannot read one (`.unreadable`) refuses the deletion rather
   -- than falling back to the ledger's say-so, for the same reason the
   -- adoption loop above refuses to *claim* such a resource: trusting the
   -- ledger alone is exactly the naming-only rule that caused the incident.
   match a with
   | .deleteOrphan p k nm region =>
     match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
-    | some (tags, createdAt) =>
-      unless (ownershipOf store.boundary p k nm tags createdAt).isOurs do
-        throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but \
-it no longer carries the marker tag; refusing to delete a resource that might not be. If it \
-really is gone, or was never mine, `forget` it instead of applying.")
-    | none =>
+    | .unreadable =>
       throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but this \
-backend cannot yet read tags to verify it; refusing to delete on the ledger's say-so alone. \
-If it really is gone, or was never mine, `forget` it instead of applying — see AGENTS.md's \
-\"no half-implemented features\" rule.")
+backend cannot read a marker for this kind to verify it; refusing to delete on the ledger's \
+say-so alone. If it really is gone, or was never mine, `forget` it instead of applying — see \
+AGENTS.md's \"no half-implemented features\" rule.")
+    | evidence =>
+      let verdict := ownershipOf store.boundary p k nm evidence
+      unless verdict.isOurs do
+        throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but it is \
+{describeVerdict store.boundary evidence verdict}; refusing to delete a resource that might not \
+be mine. If it really is gone, or was never mine, `forget` it instead of applying.")
   | _ => pure ()
   let entries ← runAction bs T st.entries a
   -- Written after *every* action, not once at the end. An apply that fails
@@ -550,8 +595,10 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
   -- Narrow by construction: it fires only on a backend that says it is
   -- unreachable, which is only ever `Infra.Cli.liveFor`'s substitution for a
   -- cloud it loaded no credentials for. A placeholder used deliberately as a
-  -- test double answers `none` and is unaffected, which is what keeps the
-  -- offline suite — which is placeholders throughout — working.
+  -- test double answers `none` to *this* field and is unaffected, which is
+  -- what keeps the
+  -- offline suite — which is placeholders throughout — working. (Not to be
+  -- confused with `ownershipInfo`, whose "cannot tell you" is `.unreadable`.)
   for r in store.rows do
     if let some why := (bs.backendAt r.cloud r.region).unreachable then
       throw (IO.userError s!"the ledger records \
@@ -603,12 +650,14 @@ Declare the cloud, or point the ledger elsewhere")
   -- The ledger is purely a cache of resources already verified this way; it
   -- must never itself be read as evidence of ownership.
   --
-  -- So: a backend that CAN report tags (`ownershipInfo` returns `some`) is
-  -- checked against `ownershipOf`, exactly as before. A backend that cannot
-  -- yet report tags (`none`) is now refused, not adopted — the safe default,
-  -- since claiming it wrongly can delete someone else's resource, while
-  -- refusing it only means this fleet manages less than it declares (loudly
-  -- warned, and fixable by adding tag support to that kind's backend).
+  -- So: a backend that CAN report a marker — tags, a marker decoded out of a
+  -- description, or the name on the rung where that is all there is — is
+  -- checked against `ownershipOf`. A backend that cannot (`.unreadable`) is
+  -- refused, not adopted — the safe default, since claiming it wrongly can
+  -- delete someone else's resource, while refusing it only means this fleet
+  -- manages less than it declares (loudly warned, and fixable by adding
+  -- marker support to that kind's backend, or by setting
+  -- `Boundary.namePrefix` for a kind the cloud simply cannot tag).
   let mut rows := store.rows
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
@@ -619,15 +668,15 @@ Declare the cloud, or point the ledger elsewhere")
           unless rows.any (Ledger.Row.isAt · p k nm) do
             let handle := observedHandle k sighting.observed
             let claim ← match ← (bs.backendFor p k nm).ownershipInfo k handle with
-              | none =>
+              | .unreadable =>
                 IO.eprintln s!"warning: {Ledger.slotId p k nm} is declared and exists, \
-but this backend cannot yet read tags to verify ownership of it. It will not be created, \
-changed or destroyed by this fleet, which therefore manages less than it declares, until \
-tag support is added for this kind — see AGENTS.md's \"no half-implemented features\" rule \
-and docs/persistence.md. It is never adopted by name alone."
+but this backend cannot read a marker for this kind to verify ownership of it. It will not be \
+created, changed or destroyed by this fleet, which therefore manages less than it declares, \
+until marker support is added for this kind — see AGENTS.md's \"no half-implemented features\" \
+rule and docs/persistence.md. It is never adopted by name alone."
                 pure false
-              | some (tags, createdAt) =>
-                let verdict := ownershipOf store.boundary p k nm tags createdAt
+              | evidence =>
+                let verdict := ownershipOf store.boundary p k nm evidence
                 -- Said out loud, because the alternative is the quietest bad
                 -- state this tool can be in: the declaration names it, it
                 -- exists, it matches — so there is no action, no plan line and
@@ -638,8 +687,9 @@ and docs/persistence.md. It is never adopted by name alone."
                 -- rebuilt it would forget it had already mentioned this.
                 unless verdict.isOurs do
                   IO.eprintln s!"warning: {Ledger.slotId p k nm} is declared and exists, \
-but is {verdict.describe}. It will not be created, changed or destroyed by this fleet, \
-which therefore manages less than it declares. Either exclude it deliberately, or delete \
+but is {describeVerdict store.boundary evidence verdict}. It will not be created, changed or \
+destroyed by this fleet, which therefore manages less than it declares. Either exclude it \
+deliberately, or delete \
 it and let this fleet create it — see docs/persistence.md"
                 pure verdict.isOurs
             if claim then

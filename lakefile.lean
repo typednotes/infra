@@ -203,6 +203,15 @@ lean_exe «live-test» where
   srcDir := "test"
   root := `Live
 
+/-- `example/ServerlessSqlIam.lean`: an IAM application, an API key minted
+    into a secret, and a Serverless SQL Database that only IAM can open —
+    the fleet `SecretSource.apiKeyFor` exists for. Placeholder-backed on a
+    bare invocation, so it needs no credentials. -/
+@[default_target]
+lean_exe «serverless-sql-iam» where
+  srcDir := "example"
+  root := `ServerlessSqlIam
+
 /-- `example/MultiRegion.lean`: one fleet in four regions, placed with nested
     `provider`/`in` blocks. Placeholder-backed like `cross-cloud`, so a bare
     invocation needs no credentials. -/

@@ -53,14 +53,21 @@ says what each run showed. All three
 dependency patterns are exercised live: a
 chain, a fan-out, and a fan-in through both key and expression references.
 
-Two GCP limits are stated rather than papered over. A serverless `postgres`
+One GCP limit is stated rather than papered over: a serverless `postgres`
 declaration **raises**, because Cloud SQL has no capacity range that scales to
 a floor and picking a tier from `minCapacity` would invent a bill you did not
-write down. And `iam` reads the roles bound to a service account but refuses to
-write them: granting a role on GCP is a read-modify-write of the whole
-project's IAM policy, and getting that wrong removes other identities' access,
-so a declared policy shows up in `plan` and is refused at apply with the
-`gcloud` command that would bind it.
+write down.
+
+`iam` used to be a second such limit — it read the roles bound to a service
+account and refused to write them, because granting a role on GCP is a
+read-modify-write of the whole project's IAM policy and getting that wrong
+removes other identities' access. It writes them now, and the care is in the
+method rather than in a refusal: the policy object is *edited* rather than
+rebuilt, so `etag`, `auditConfigs` and anything unrecognised pass through
+untouched; the `etag` travelling with it makes a concurrent edit fail the call
+instead of clobbering it; and a binding carrying an IAM `condition` is left
+strictly alone, reported by `plan` and refused at apply, because `policies`
+cannot express the condition and rewriting it would change what it means.
 
 Verification varies by kind, and it is worth knowing which before you rely on
 any one of them:
@@ -194,13 +201,15 @@ lake exe infra destroy          # delete everything the fleet declares
 ```
 
 **Deleting a resource from the declaration destroys it.** A resource is yours
-if it carries the marker tag this tool writes on everything it creates, it is
+if it carries the marker this tool writes on everything it creates, it is
 inside the realm your declaration names, and it is not on the exclusion list —
-and if two fleets share an account, each can put its own name in that tag
+and if two fleets share an account, each can put its own name in that marker
 (`boundary := { fleetName := some "…" }`) so the other's resources read as
-foreign and are left alone —
-for the kinds a backend can read tags for; a kind that cannot yet falls back
-to a row in the local ledger under `.infra/`. Either way, a resource whose line
+foreign and are left alone. Every cloud and kind reports that evidence, on one
+of three rungs: a tag, or — where the object has no tags but one writable
+free-text field — a marker written into its `description`, or, for the two
+Scaleway products with neither, the resource's own name against a prefix you
+configure (`namePrefix`). A resource whose line
 you deleted can still be named after the fact — the declaration no longer
 mentions it, so nothing else can, until the ledger or the marker does. Saying
 `.absent` within the declaration does the same thing; `destroy` is `apply`
@@ -212,10 +221,10 @@ Nothing about that needs committing, which is deliberate: membership is a
 consequence of applying, not a statement of intent, so CI never has to write
 back to your branch. `Infra/Core/Ownership.lean` records the reasoning, and
 which way each rule fails. The ledger is a local cache of the decision, not the
-decision itself, for a kind the marker covers — `lake exe infra discover`
-rebuilds it straight from the account if it is ever lost. For a kind not yet
-taught to read tags, the ledger is still the only thing that can name an
-orphan, so losing it strands one.
+decision itself — `lake exe infra discover` rebuilds it straight from the
+account if it is ever lost. The one case that still strands an orphan is a
+resource on the name rung in a fleet that has set no `namePrefix`: there is no
+marker on it to rebuild from, which is exactly what the prefix is for.
 
 To stop managing something *without* destroying it, say so:
 

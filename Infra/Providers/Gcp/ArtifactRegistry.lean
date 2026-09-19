@@ -1,5 +1,6 @@
 import Infra.Providers.Gcp.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
 
 /-
   Container image repositories on GCP: Artifact Registry.
@@ -87,11 +88,28 @@ def readImmutable (creds : Credentials) (project location name : String) :
     | some b => return .known b
     | none   => return .unknown
 
+/-- Labels, for `Ownership.ownershipOf`. A repository carries them on the
+    object itself, so `GET` is enough — the tag rung, like Cloud Storage and
+    Secret Manager. `createTime` is reported but left unread, matching the
+    other GCP kinds. -/
+def readOwnership (creds : Credentials) (project location name : String) :
+    IO Evidence := do
+  match ← (Gcp.call creds "GET" host (repoPath project location name)).toBaseIO with
+  | .error _ => return .unreadable
+  | .ok r    =>
+    return .tags (match field r "labels" with
+      | some (.object fields) => fields.filterMap fun (k, v) =>
+          match v with
+          | .string t => some (k, t)
+          | _         => none
+      | _ => []) none
+
 /-- Create a Docker repository and wait for it. Returns its URI. -/
-def create (creds : Credentials) (project location name : String)
+def create (creds : Credentials) (project location name markerValue : String)
     (immutableTags : Bool) : IO String := do
   let payload : Value := .object
     [ ("format", .string "DOCKER")
+    , ("labels", .object [(markerKey, .string markerValue)])
     , ("dockerConfig", .object [("immutableTags", .bool immutableTags)]) ]
   let started ← Gcp.call creds "POST" host (parent project location)
     [("repositoryId", some name)] (payload := some payload)

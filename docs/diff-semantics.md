@@ -335,7 +335,7 @@ pair a live pull actually produces — and `Live.lean`'s `#guard`s on
 | Unknown-dependent shape | `Expr` has no `bind`, so cardinality can never depend on a post-apply value |
 | Unhandled kind | `SpecOf`, `ObservedOf`, `fillableOf`, `hasDepsOf`, `divergentOf`, `settleableOf` and `Live.lean` are all total over `Kind` |
 | Using a kind a provider lacks | that `(provider, kind)` pair's `Key` is `Nothing`, so there is no key to write down |
-| A secret's *source* being ambiguous | `SecretSource` has two constructors, so "an env var name" and "a composed value" cannot both be given, nor neither |
+| A secret's *source* being ambiguous | `SecretSource` has three constructors, so "an env var name", "a composed value" and "a freshly minted API key" cannot be given together, nor none of them |
 | A region reaching the wrong cloud | `Region` is indexed by `ProviderId`, so `Region .aws` is not `Region .scaleway` |
 
 **Decidable**, dischargeable with `(h : Assert … := by decide)`: acyclicity,
@@ -523,22 +523,48 @@ outside the fleet.
   declaration. A caller that forgets gets the old behaviour rather than a
   wrong answer loudly, which is the remaining sharp edge here.
 
+  A second ordering gap sat next to this one and is also closed. Two portable
+  specs depend on a resource by **naming** it rather than by referencing it —
+  `PostgresSpec.masterPasswordSecret`, and `SecretSource.apiKeyFor` — because
+  a reference has type `K p k`, which names a provider, and a portable spec
+  that named a provider would not be portable. `HasDeps` can only make edges
+  out of real references, so it reported none for either, and the order that
+  came out was right *by accident*: `.secrets` precedes `.postgres` in the
+  `Kind` enum and `.iam` precedes `.secrets`, and ties break by enumeration
+  order. Reordering the enum — a change nobody would expect to matter — would
+  have broken both, with a create against a resource that does not exist yet.
+
+  `Engine.impliedByName` closes it without making a name into a reference: the
+  scheduler orders `String` slot ids, and a name plus the kind it must name is
+  enough to build one. An edge to a slot no action touches is ignored, so
+  naming an identity this fleet does not manage stays legal and constrains
+  nothing. It is asserted directly rather than end-to-end, because an
+  end-to-end ordering check would still pass if the function returned nothing.
+
   `Infra/Demo.lean`'s `DagGuards` is what holds this: a sixteen-resource graph
   with a diamond, a fan-in of three, a redundant edge, a four-deep chain, edges
   through three kinds and one crossing clouds, checked by an `isTopological`
   that recomputes every edge from `HasDeps` rather than trusting the scheduler.
   It asserts both directions, and that the teardown is exactly the build order
   reversed.
-- **Membership is decided by ownership evidence where a backend has it, cached
-  in the ledger.** `Plan.outside` used to head this list, declared and never consumed, so a
+- **Membership is decided by ownership evidence, cached in the ledger.**
+  `Plan.outside` used to head this list, declared and never consumed, so a
   resource deleted from a declaration was silently abandoned. It is gone,
-  replaced by `Infra.Core.Ownership` (a marker tag plus a human-authored realm
-  and exclusion list) for the kinds a backend can read tags for, with
-  `Infra.Core.Ledger` — a local, gitignored *cache* of `(cloud, kind, name,
-  region)` rows, rebuildable with `infra discover` — as what survives a
-  resource's line being deleted, which is what makes deleting that line
-  destroy the resource. A kind without tag support yet still relies on the
-  ledger alone. `forget` releases a row without deleting.
+  replaced by `Infra.Core.Ownership` (a marker plus a human-authored realm
+  and exclusion list), with `Infra.Core.Ledger` — a local, gitignored *cache*
+  of `(cloud, kind, name, region)` rows, rebuildable with `infra discover` —
+  as what survives a resource's line being deleted, which is what makes
+  deleting that line destroy the resource. `forget` releases a row without
+  deleting.
+
+  Every `(cloud, kind)` pair reports evidence now, on one of three rungs —
+  tags, a marker in the object's one writable free-text field, or the
+  resource's own name against `Boundary.namePrefix` for the two Scaleway
+  products with neither. `docs/coverage.md` has the table. What is left is the
+  name rung's honest weakness: it is the one rung whose evidence the
+  declaration wrote rather than this tool, so a stranger using the same prefix
+  in the same project is indistinguishable from us, and a fleet that sets no
+  prefix gets no evidence there at all.
 
   What the replacement does *not* record is references, and that is a choice
   rather than an omission. A ledger row has a name and a region, not a
@@ -569,6 +595,15 @@ outside the fleet.
   a composed one is create-only: once it exists there is nothing to diff, and
   a second apply asks for nothing. Rotating one is therefore an explicit act,
   not a reconciliation, and there is no `--rotate-secrets` yet.
+
+  `SecretSource.apiKeyFor` is create-only for a stronger reason than "cannot
+  be compared": re-minting on every apply would leave a trail of live
+  credentials, each as usable as the last. So the backend *refuses* an update
+  of one rather than doing something defensible-looking, and says that
+  rotation means deleting the secret — which deletes its key — and applying
+  again. The key is found at teardown through two tags written on the secret
+  beside the marker, because `Backend.delete` is handed a `Handle` and an
+  orphan has no declaration left to consult.
 - **Parallel execution.** The scheduler orders; it does not fan out.
 - **Field-level constraints richer than "exact value or nothing"** — `AtLeast
   4`, a region set, a version range: targets a provider could satisfy several

@@ -56,18 +56,19 @@ structure Backend where
       returned outward — the same discipline as
       `Infra.Providers.Kinds.Postgres.fetchMasterPassword`. -/
   secretValue : Handle .secrets → IO String
-  /-- Tags and creation time for one resource, as evidence for
-      `Ownership.ownershipOf`.
+  /-- What this backend can find out about one resource's ownership, as
+      evidence for `Ownership.ownershipOf`.
 
-      `none` means this `(cloud, kind)` has not been taught to read this —
-      the honest "not implemented", which defers entirely to ledger
-      membership the way the rest of the engine already behaves. `some (tags,
-      createdAt)` means real evidence, and from that point ownership is
-      decided by the marker and the boundary, not by ledger membership alone.
-      The default answers `none` so that a backend which never overrides this
-      field is unaffected. -/
-  ownershipInfo : (k : Kind) → Handle k → IO (Option (List (String × String) × Option String)) :=
-    fun _ _ => pure none
+      An `Evidence` rather than tags alone, because a `(cloud, kind)` that
+      *cannot* carry a marker and one that nobody has taught to read one are
+      different situations: the first is permanent and has a remedy
+      (`Boundary.namePrefix`), the second is a gap to close. See the ladder in
+      `Infra.Core.Ownership`'s module note for which rung each pair is on.
+
+      The default answers `.unreadable` so that a backend which never
+      overrides this field is unaffected — and so that a kind added later is
+      refused rather than silently claimed. -/
+  ownershipInfo : (k : Kind) → Handle k → IO Evidence := fun _ _ => pure .unreadable
   /-- Why this backend cannot reach its cloud, if it cannot.
 
       `none` is the normal answer, and it is also the right answer for a test

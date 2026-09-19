@@ -93,10 +93,10 @@ def createTopic (creds : Credentials) (project name markerValue : String) : IO S
     `createdAt` is left `none`, matching every other kind's first tranche —
     Pub/Sub topics report none anyway. -/
 def readOwnership (creds : Credentials) (project name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   let attempt ← (Gcp.call creds "GET" host (topicPath project name)).toBaseIO
   match attempt with
-  | .error _ => return none
+  | .error _ => return .unreadable
   | .ok reply =>
     let tags := match field reply "labels" with
       | some (.object fields) => fields.filterMap fun (k, v) =>
@@ -104,7 +104,7 @@ def readOwnership (creds : Credentials) (project name : String) :
           | .string s => some (k, s)
           | _         => none
       | _ => []
-    return some (tags, none)
+    return .tags tags none
 
 /-- A topic's resource name, or a failure if it is not there.
 

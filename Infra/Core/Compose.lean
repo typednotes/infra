@@ -63,6 +63,27 @@ def observedOf {p : ProviderId} {k : Kind} (key : K p k) : Expr K (ObservedOf k)
 def endpointOf {p : ProviderId} (key : K p .postgres) : Expr K String :=
   (observedOf key).map (·.endpoint)
 
+/-- The **public** half of an API key minted by a `SecretSource.apiKeyFor`
+    secret — an AWS access key id, a Scaleway access key, a GCP key id.
+
+    Not a secret, and safe in a plan: see `SecretsObserved`. It is the half you
+    put in a `?access_key=` parameter or an `AWS_ACCESS_KEY_ID`; the other half
+    is `secretValueOf` on the same key. `""` for a secret whose value came from
+    anywhere else. -/
+def accessKeyOf {p : ProviderId} (key : K p .secrets) : Expr K String :=
+  (observedOf key).map (·.accessKey)
+
+/-- The identity a minted key authenticates *as*, spelled the way the cloud
+    wants it where the key is used.
+
+    The one to reach for when composing a connection string: Scaleway's
+    Serverless SQL Database takes the **application id** as its PostgreSQL user
+    name, and `accessKeyOf` — which looks much more like a username — is the
+    wrong answer there. `""` for a secret whose value came from anywhere
+    else. -/
+def principalOf {p : ProviderId} (key : K p .secrets) : Expr K String :=
+  (observedOf key).map (·.principal)
+
 /-- A plan-time string built from literals and post-apply values.
 
     Reads like `s!`, elaborates to `map`/`ap`. A hole may hold any

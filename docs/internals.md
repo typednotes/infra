@@ -409,14 +409,17 @@ The five-stage live test is this mechanism as a sequence (AWS's counts; see
 ```
 
 *What the ledger is not.* It is local and gitignored, so it does not survive a
-CI job. `Infra.Core.Ownership` is what actually decides membership now — a
-marker tag written on create for the kinds `Backend.ownershipInfo` covers
-(`.objectStore` on all three clouds, `.awsInstance` on AWS), plus a realm and
-an exclusion list — so the ledger for those kinds is a rebuildable cache
-(`infra discover`) rather than the sole record. A kind `ownershipInfo` cannot
-yet read tags for still falls back to ledger membership alone, so
-`lake test -- <cloud> sweep` remains what finds debris a ledger cannot name
-for those: it asks the account, matching on the `ci-tests-infra-` prefix. The
+CI job. `Infra.Core.Ownership` is what actually decides membership — a marker
+written on create, plus a realm and an exclusion list — so the ledger is a
+rebuildable cache (`infra discover`) rather than the sole record. Every
+`(cloud, kind)` pair reports evidence now, on one of three rungs: real tags,
+a marker serialised into the object's one writable free-text field, or — for
+the two Scaleway products with neither — the resource's own name, checked
+against `Boundary.namePrefix`. `docs/coverage.md` has the table of which pair
+is on which rung. A fleet that has not set a `namePrefix` still gets nothing
+from the third rung, which is why `lake test -- <cloud> sweep` remains what
+finds debris a ledger cannot name: it asks the account, matching on the
+`ci-tests-infra-` prefix. The
 procedure — that verb versus `destroy`, the Cleanup workflow and its review
 gate, and the three things a sweep structurally cannot reach — is in
 [`../ci/README.md`](../ci/README.md).
@@ -480,8 +483,9 @@ them. Declare the cloud, or point the ledger elsewhere
 ```
 
 The field, rather than a test for "is this the placeholder", is what keeps the
-rule narrow: a placeholder used *deliberately* as a test double answers `none`
-and is unaffected, so the offline suite — which is placeholders throughout,
+rule narrow: a placeholder used *deliberately* as a test double leaves
+`unreachable` at `none` and is unaffected, so the offline suite — which is
+placeholders throughout,
 including its own teardown checks — keeps working. `Main.lean`'s
 `checkUnreachableRefusal` pins both halves, since neither is visible any other
 way offline.

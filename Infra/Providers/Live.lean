@@ -134,6 +134,18 @@ private def rdsFor (creds : Credentials) : Endpoint := Query.rdsEndpoint creds.r
 /-- The S3 endpoint this cloud uses for a bucket-shaped kind. -/
 private def ec2For (creds : Credentials) : Endpoint := Query.ec2Endpoint creds.region
 
+/-- One secret's marker and tags, whichever cloud it is on.
+
+    Extracted because two places need it and a field of a structure literal
+    cannot refer to a sibling: `ownershipInfo`, and `delete`, which reads the
+    same tags to find the API key a minted secret points at. -/
+private def secretOwnership (provider : ProviderId) (creds : Credentials) (name : String) :
+    IO Evidence := do
+  match provider with
+  | .gcp      => Gcp.SecretManager.readOwnership creds (← Gcp.requireProject creds) name
+  | .aws      => Secrets.Asm.readOwnership creds (Json.secretsEndpoint creds.region) name
+  | .scaleway => Secrets.Scw.readOwnership creds name
+
 /-- A tag list with the ownership marker added, unless it is already there.
     Additive rather than a fixed pair, so a declaration's own tags survive
     untouched — the marker is bookkeeping, not part of what was declared.
@@ -234,7 +246,11 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
     let policies ← match provider with
       | .gcp      => Gcp.Iam.readPolicies creds (← Gcp.requireProject creds) h.raw
       | .aws      => Iam.Aws'.readPolicies creds h.raw
-      | .scaleway => Iam.Scw.readPolicies
+      -- Reported for real now, as permission-set names scoped to the
+      -- project. It used to be `unknown` on this cloud, which meant a
+      -- declared policy list was never compared against anything and a
+      -- permission removed from a declaration stayed granted.
+      | .scaleway => Iam.Scw.readPolicies creds h.raw
     return { name := h.raw, policies }
   | .compute, h => do
     match provider with
@@ -467,7 +483,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
       | .aws =>
         return (← Iam.Aws'.list creds).map fun (n, arn) => { handle := ⟨n⟩, arn }
       | .scaleway =>
-        return (← Iam.Scw.list creds).map fun n => { handle := ⟨n⟩, arn := "" }
+        -- The application's UUID goes where the ARN goes, because it is the
+        -- same thing: the cloud-assigned identifier other resources name it
+        -- by. A Serverless SQL Database wants exactly this as its PostgreSQL
+        -- user. It used to be `""`, which made it unreachable from `expr!`.
+        return (← Iam.Scw.listWithIds creds).map fun (n, id) => { handle := ⟨n⟩, arn := id }
     | .postgres => do
       let entries ← match provider with
         | .gcp      => Gcp.CloudSql.list creds (← Gcp.requireProject creds)
@@ -529,7 +549,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
       -- `CreateSecurityGroup` does not report the VPC, so that stays blank
       -- until the next `pull` observes it.
       let groupId ← Ec2.SecurityGroup.create creds (ec2For creds)
-        spec.name spec.description spec.ingress
+        spec.name spec.description (fleet.getD legacyMarkerValue) spec.ingress
       return { handle := ⟨spec.name⟩, groupId, vpcId := "" }
     | .awsInstance, spec => do
       -- `spec.securityGroup` is a settled `Handle .securityGroup`, i.e. the
@@ -567,6 +587,11 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
       -- Object Lock is a creation-time header: it cannot be turned on later.
       ObjectStore.createBucket creds ep spec.name (objectLock := spec.objectLock)
       ObjectStore.putVersioning creds ep spec.name spec.versioning
+      -- The marker, which this kind was not writing at all. Unlike
+      -- `.objectStore` there is no `tags` field on the spec to merge with, so
+      -- the whole tag set is the marker — and, for the same reason, nothing
+      -- compares tags here, so writing it cannot create drift.
+      ObjectStore.putTags creds ep spec.name [(markerKey, fleet.getD legacyMarkerValue)]
       return { handle := ⟨spec.name⟩, arn := s!"arn:aws:s3:::{spec.name}", region := ep.region }
     | .queues, spec => do
       match provider with
@@ -578,35 +603,69 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
       | .aws | .scaleway =>
         let ep := sqsFor provider creds
         let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
-        -- Scaleway's mnq queues cannot be tagged at all — see the permanent
-        -- exception documented on `Queues.readOwnership`.
+        -- Scaleway's mnq queues cannot be tagged at all, so there is nothing
+        -- to send there; ownership for them is on the name rung instead —
+        -- see `Queues.readOwnershipByName`.
         let tags := match provider with
           | .aws => [(markerKey, fleet.getD legacyMarkerValue)]
           | _    => []
         let url ← Queues.createQueue sqsCreds ep spec.name spec.visibilityTimeoutSec tags
         return { handle := ⟨spec.name⟩, url }
     | .imageRegistry, spec => do
+      let marker := fleet.getD legacyMarkerValue
       let uri ← match provider with
         | .gcp      =>
           Gcp.ArtifactRegistry.create creds (← Gcp.requireProject creds) creds.region
-            spec.name spec.immutableTags
-        | .aws      => ImageRegistry.Ecr.create creds (ecrFor creds) spec.name spec.immutableTags
-        | .scaleway => ImageRegistry.Scw.create creds spec.name
+            spec.name marker spec.immutableTags
+        | .aws      =>
+          ImageRegistry.Ecr.create creds (ecrFor creds) spec.name marker spec.immutableTags
+        -- The marker goes in the namespace's description here: Scaleway's
+        -- registry has no tags. Second rung of the ladder.
+        | .scaleway => ImageRegistry.Scw.create creds spec.name marker
       return { handle := ⟨spec.name⟩, repositoryUri := uri }
     | .secrets, spec => do
-      -- `fromEnv` reads the operator's environment; `composed` was already
-      -- evaluated at settle time from post-apply state. Either way the value
-      -- goes straight into the one create call and is never stored.
-      let value ← match spec.valueFrom with
-        | .fromEnv v  => Secrets.valueFromEnv v
-        | .composed v => pure v
+      -- Three sources, three moments. `fromEnv` reads the operator's
+      -- environment; `composed` was already evaluated at settle time from
+      -- post-apply state; `apiKeyFor` mints a credential *here*, because here
+      -- is the only place its secret half will ever exist. Either way the
+      -- value goes straight into the one create call and is never stored.
+      --
+      -- A minted key leaves two things behind besides the secret: the public
+      -- half and the principal, which go into `ObservedOf` for `expr!` to
+      -- compose with; and a back-reference in the secret's own tags, which is
+      -- how `delete` finds the credential again once the declaration naming
+      -- it is gone. See `Kinds.Secrets`' module note.
       let marker := fleet.getD legacyMarkerValue
+      let (value, accessKey, principal, extra) ← match spec.valueFrom with
+        | .fromEnv v  => do pure (← Secrets.valueFromEnv v, "", "", [])
+        | .composed v => pure (v, "", "", [])
+        | .apiKeyFor identity => do
+          if identity.isEmpty then
+            throw (IO.userError s!"secret '{spec.name}': `apiKeyFor` names no identity")
+          match provider with
+          | .aws =>
+            let (access, secret) ← Iam.Aws'.createAccessKey creds identity
+            pure (secret, access, identity, Secrets.apiKeyTags identity access)
+          | .scaleway =>
+            -- The application's *id* is the principal, not its name and not
+            -- the access key: that is what Serverless SQL Database wants as
+            -- a PostgreSQL user name.
+            let appId ← Iam.Scw.requireId creds identity
+            let (access, secret) ← Iam.Scw.createApiKey creds appId
+              (Infra.Core.encodeMarkerText marker)
+            pure (secret, access, appId, Secrets.apiKeyTags identity access)
+          | .gcp =>
+            let project ← Gcp.requireProject creds
+            let (keyId, keyFile) ← Gcp.Iam.createKey creds project identity
+            pure (keyFile, keyId, Gcp.Iam.emailOf project identity,
+                  Secrets.apiKeyTags identity keyId)
       let version ← match provider with
         | .gcp      =>
-          Gcp.SecretManager.create creds (← Gcp.requireProject creds) spec.name value marker
-        | .aws      => Secrets.Asm.create creds (asmFor creds) spec.name value marker
-        | .scaleway => Secrets.Scw.create creds spec.name value marker
-      return { handle := ⟨spec.name⟩, version }
+          Gcp.SecretManager.create creds (← Gcp.requireProject creds) spec.name value
+            marker extra
+        | .aws      => Secrets.Asm.create creds (asmFor creds) spec.name value marker extra
+        | .scaleway => Secrets.Scw.create creds spec.name value marker extra
+      return { handle := ⟨spec.name⟩, version, accessKey, principal }
     | .compute, spec => do
       let marker := fleet.getD legacyMarkerValue
       match provider with
@@ -620,20 +679,20 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
                        spec.namespace' marker spec.memoryMb spec.timeoutSec spec.env
       return { handle := ⟨spec.name⟩, status := "creating" }
     | .iam, spec => do
+      let marker := fleet.getD legacyMarkerValue
       match provider with
       | .gcp =>
-        -- GCP service accounts cannot be tagged at all — see the permanent
-        -- exception documented on `Gcp.Iam`.
-        let email ← Gcp.Iam.create creds (← Gcp.requireProject creds) spec.name spec.policies
+        -- The marker goes in the service account's `description`: no labels
+        -- on this object, one writable string, second rung of the ladder.
+        let email ← Gcp.Iam.create creds (← Gcp.requireProject creds) spec.name marker
+                      spec.policies
         return { handle := ⟨spec.name⟩, arn := email }
       | .aws =>
-        let arn ← Iam.Aws'.create creds spec.name (fleet.getD legacyMarkerValue) spec.policies
+        let arn ← Iam.Aws'.create creds spec.name marker spec.policies
         return { handle := ⟨spec.name⟩, arn }
       | .scaleway =>
-        -- Scaleway IAM applications cannot be tagged at all — see the
-        -- permanent exception documented on `Iam.Scw`.
-        discard <| Iam.Scw.create creds spec.name
-        return { handle := ⟨spec.name⟩, arn := "" }
+        let id ← Iam.Scw.create creds spec.name marker spec.policies
+        return { handle := ⟨spec.name⟩, arn := id }
     | .postgres, spec => do
       -- The one place a secret value is read; see `Kinds.Postgres`.
       let password ← Postgres.fetchMasterPassword provider creds spec.masterPasswordSecret
@@ -649,8 +708,9 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
           | .gcp => Gcp.CloudSql.createServerless spec.name
           | .aws => throw (IO.userError
               "postgres: AWS Aurora Serverless v2 is not implemented; set instanceClass for a classic instance")
-          -- Scaleway Serverless SQL Database cannot be tagged at all — see the
-          -- permanent exception documented on `Kinds.Postgres.ServerlessSql`.
+          -- Scaleway Serverless SQL Database cannot be tagged at all, so
+          -- nothing is sent; ownership for it is on the name rung — see
+          -- `Kinds.Postgres.ServerlessSql`.
           | .scaleway => Postgres.ServerlessSql.create creds spec.name spec.masterUsername
                            password spec.version spec.minCapacity spec.maxCapacity
         else
@@ -769,13 +829,26 @@ invocation, which is a worse failure than this one")
         return { handle := h, repositoryUri := "" }
       | .scaleway =>
         -- Nothing in the portable spec is mutable on a Scaleway namespace, so
-        -- there is nothing to send. Reporting success is honest: the target is
-        -- already as closely realised as this cloud allows.
+        -- there is nothing of the *declaration* to send. The marker is a
+        -- different matter: it lives in the description, and re-asserting it
+        -- is what stops a description cleared by hand from un-managing the
+        -- namespace for ever.
+        ImageRegistry.Scw.putMarker creds h.raw (fleet.getD legacyMarkerValue)
         return { handle := h, repositoryUri := "" }
     | .secrets, h, spec => do
       let value ← match spec.valueFrom with
         | .fromEnv v  => Secrets.valueFromEnv v
         | .composed v => pure v
+        -- Refused rather than re-minted. An update that produced a second
+        -- credential every time it ran would leave a trail of live keys
+        -- behind it, each as usable as the last and none of them recorded —
+        -- the exact leak `apiKeyFor` writes a back-reference to avoid. And
+        -- nothing should reach here: `.secrets` compares no field of its
+        -- spec, so an existing secret never diverges. Rotation is an explicit
+        -- act, and this says what it is.
+        | .apiKeyFor identity => throw (IO.userError s!"secret '{h.raw}': refusing to \
+mint a second API key for '{identity}' on update — the existing one would stay live and \
+unreferenced. To rotate, delete this secret (which deletes its key) and apply again.")
       let version ← match provider with
         | .gcp      =>
           Gcp.SecretManager.putValue creds (← Gcp.requireProject creds) h.raw value
@@ -794,17 +867,22 @@ invocation, which is a worse failure than this one")
                        spec.memoryMb spec.timeoutSec spec.env
       return { handle := h, status := "updating" }
     | .iam, h, spec => do
+      let marker := fleet.getD legacyMarkerValue
       match provider with
       | .gcp =>
-        Gcp.Iam.setPolicies (← Gcp.requireProject creds) h.raw spec.policies
-        return { handle := h, arn := Gcp.Iam.emailOf (← Gcp.requireProject creds) h.raw }
+        let project ← Gcp.requireProject creds
+        Gcp.Iam.setPolicies creds project h.raw spec.policies
+        -- Re-asserted on every update, for the reason S3's tags are: a marker
+        -- only creation writes is a marker that decays the first time someone
+        -- edits the description by hand.
+        Gcp.Iam.putMarker creds project h.raw marker
+        return { handle := h, arn := Gcp.Iam.emailOf project h.raw }
       | .aws =>
         Iam.Aws'.setPolicies creds h.raw spec.policies
         return { handle := h, arn := "" }
       | .scaleway =>
-        -- Policy rules have no portable representation here, so there is
-        -- nothing to send: see the module note in `Kinds.Iam`.
-        return { handle := h, arn := "" }
+        Iam.Scw.setPolicies creds h.raw marker spec.policies
+        return { handle := h, arn := ← Iam.Scw.requireId creds h.raw }
     | .postgres, h, spec => do
       if spec.instanceClass.isEmpty then
         match provider with
@@ -866,10 +944,24 @@ invocation, which is a worse failure than this one")
         Gcp.ArtifactRegistry.delete creds (← Gcp.requireProject creds) creds.region h.raw
       | .aws      => ImageRegistry.Ecr.delete creds (ecrFor creds) h.raw
       | .scaleway => ImageRegistry.Scw.delete creds h.raw
-    | .secrets, h =>
+    -- A secret that holds a minted API key takes the key with it. The
+    -- back-reference is in the secret's own tags because that is the only
+    -- thing still standing at this point: `delete` is handed a `Handle` and
+    -- an orphan has no declaration left to consult. See `Kinds.Secrets`.
+    --
+    -- Key first, then the secret. The other order loses the back-reference
+    -- if the second call fails, and a key nothing points at is exactly what
+    -- this is for.
+    | .secrets, h => do
+      match Secrets.apiKeyRefOf (← secretOwnership provider creds h.raw) with
+      | none => pure ()
+      | some (identity, keyId) =>
+        match provider with
+        | .aws      => Iam.Aws'.deleteAccessKey creds identity keyId
+        | .scaleway => Iam.Scw.deleteApiKey creds keyId
+        | .gcp      => Gcp.Iam.deleteKey creds (← Gcp.requireProject creds) identity keyId
       match provider with
-      | .gcp      => do
-        Gcp.SecretManager.delete creds (← Gcp.requireProject creds) h.raw
+      | .gcp      => Gcp.SecretManager.delete creds (← Gcp.requireProject creds) h.raw
       | .aws      => Secrets.Asm.delete creds (asmFor creds) h.raw
       | .scaleway => Secrets.Scw.delete creds h.raw
     | .compute, h =>
@@ -882,7 +974,9 @@ invocation, which is a worse failure than this one")
       match provider with
       | .gcp      => do Gcp.Iam.delete creds (← Gcp.requireProject creds) h.raw
       | .aws      => Iam.Aws'.delete creds h.raw
-      | .scaleway => Iam.Scw.delete creds h.raw
+      -- Takes the marker because it also removes the policy this tool
+      -- attached, and only that one: see `Iam.Scw.delete`.
+      | .scaleway => Iam.Scw.delete creds h.raw (fleet.getD legacyMarkerValue)
     | .postgres, h =>
       match provider with
       | .gcp      => do Gcp.CloudSql.delete creds (← Gcp.requireProject creds) h.raw
@@ -903,25 +997,37 @@ invocation, which is a worse failure than this one")
   -- The one inbound plaintext path; see `Backend.secretValue`. `fetchValue`
   -- already exists and is already the narrowly-scoped reader for both clouds.
   secretValue h := Secrets.fetchValue provider creds h.raw
-  -- The first tranche of `Ownership.ownershipOf` evidence: kinds whose tags
-  -- were already read for the divergence table (`liveRead`'s `.objectStore`
-  -- clause) or whose tagging call already existed (`Ec2.Instance'`). Every
-  -- other kind answers `none` — untouched by this change, deferring entirely
-  -- to the ledger exactly as before. `createdAt` is left `none` even where
-  -- it is answered, to keep this tranche to tags alone; `Ownership.ownershipOf`
-  -- treats that as "no cutoff check", which is a documented, safe state.
+  -- ── Ownership evidence, one rung per `(cloud, kind)` ──
+  --
+  -- `Infra.Core.Ownership`'s ladder, made concrete. Most pairs are on the tag
+  -- rung. Two are on the description rung, because the object has no tags and
+  -- one writable string. Two are on the name rung, because the object has
+  -- neither. Nothing here answers `.unreadable` for a pair that really exists
+  -- on its cloud any more, which is the property `AGENTS.md`'s
+  -- "no half-implemented features" rule asks for and which this did not have:
+  -- four kinds used to be permanently unadoptable and undeletable-as-orphan.
+  --
+  -- `createdAt` is still mostly `none` — most of these listings do not report
+  -- one, and `ownershipOf` treats that as "no cutoff check", a documented and
+  -- safe state. Serverless SQL is the exception and reports it, which matters
+  -- most precisely there: it is on the weakest rung.
   ownershipInfo
     | .objectStore, h => do
       match provider with
-      | .gcp => return some ((← Gcp.Storage.readLabels creds h.raw).getD [], none)
+      | .gcp => return .tags ((← Gcp.Storage.readLabels creds h.raw).getD []) none
       | .aws | .scaleway =>
-        return some ((← ObjectStore.readTags creds (s3For provider creds) h.raw).getD [], none)
-    | .awsInstance, h => Ec2.Instance'.readOwnership creds (ec2For creds) h.raw
-    | .secrets, h => do
+        return .tags ((← ObjectStore.readTags creds (s3For provider creds) h.raw).getD []) none
+    -- Same call as `.objectStore`: an S3 bucket is a bucket, and the
+    -- provider-local kind was simply never wired up. It is one line, and
+    -- without it this kind was unmanageable for no reason at all.
+    | .s3Bucket, h => do
+      return .tags ((← ObjectStore.readTags creds (s3For provider creds) h.raw).getD []) none
+    | .securityGroup, h => do
       match provider with
-      | .gcp      => Gcp.SecretManager.readOwnership creds (← Gcp.requireProject creds) h.raw
-      | .aws      => Secrets.Asm.readOwnership creds (asmFor creds) h.raw
-      | .scaleway => Secrets.Scw.readOwnership creds h.raw
+      | .gcp | .scaleway => return .unreadable   -- AWS-only kind; nothing to ask
+      | .aws => Ec2.SecurityGroup.readOwnership creds (ec2For creds) h.raw
+    | .awsInstance, h => Ec2.Instance'.readOwnership creds (ec2For creds) h.raw
+    | .secrets, h => secretOwnership provider creds h.raw
     | .compute, h => do
       match provider with
       | .gcp      =>
@@ -932,6 +1038,13 @@ invocation, which is a worse failure than this one")
     | .scalewayContainerNamespace, h => Compute.Containers.readNamespaceOwnership creds h.raw
     | .scalewayFunction, h => Compute.Functions.readOwnership creds h.raw
     | .scalewayFunctionNamespace, h => Compute.Functions.readNamespaceOwnership creds h.raw
+    | .imageRegistry, h => do
+      match provider with
+      | .gcp      =>
+        Gcp.ArtifactRegistry.readOwnership creds (← Gcp.requireProject creds)
+          creds.region h.raw
+      | .aws      => ImageRegistry.Ecr.readOwnership creds (ecrFor creds) h.raw
+      | .scaleway => ImageRegistry.Scw.readOwnership creds h.raw
     | .postgres, h => do
       match provider with
       -- Covers Cloud SQL only: a `PostgresSpec.serverless` target on GCP
@@ -939,24 +1052,36 @@ invocation, which is a worse failure than this one")
       -- GCP postgres resource is ever the untaggable kind.
       | .gcp      => Gcp.CloudSql.readOwnership creds (← Gcp.requireProject creds) h.raw
       | .aws      => Postgres.Rds.readOwnership creds (rdsFor creds) h.raw
-      -- Scaleway Managed Database is tag-capable; Serverless SQL Database is
-      -- not and there is no way to tell which one a bare `Handle` names here,
-      -- so this arm covers `rdb` only — `ServerlessSql`'s permanent exception
-      -- means a serverless target simply never becomes ownership-verifiable.
-      | .scaleway => Postgres.Rdb.readOwnership creds h.raw
-    | .iam, h =>
-      -- GCP and Scaleway `.iam` are permanent tag-capability exceptions —
-      -- see the doc notes on `Gcp.Iam` and `Iam.Scw` — so only AWS reports.
+      -- Two products behind one `Handle`, and they are on different rungs:
+      -- Managed Database is tag-capable, Serverless SQL Database has no
+      -- writable field but its name. Managed Database is tried first and, on
+      -- a miss, the name rung answers for the other — the same
+      -- try-then-fall-through `read` and `delete` already use for this pair,
+      -- and for the same reason: a bare `Handle` does not say which product
+      -- a name belongs to.
+      | .scaleway =>
+        match ← Postgres.Rdb.readOwnership creds h.raw with
+        | .unreadable => Postgres.ServerlessSql.readOwnership creds h.raw
+        | evidence    => pure evidence
+    | .iam, h => do
       match provider with
-      | .gcp      => pure none
+      -- The description rung: no labels on a service account, one writable
+      -- string, and the marker goes in it. This answered `none` until the
+      -- description was found to be settable.
+      | .gcp      => Gcp.Iam.readOwnership creds (← Gcp.requireProject creds) h.raw
       | .aws      => Iam.Aws'.readOwnership creds h.raw
-      | .scaleway => pure none
+      -- The tag rung. This answered `none` on the strength of a documented
+      -- "permanent exception" that was simply not true — Scaleway IAM
+      -- applications have carried `tags` all along. See `Kinds.Iam`.
+      | .scaleway => Iam.Scw.readOwnership creds h.raw
     | .queues, h => do
       match provider with
       | .gcp      => Gcp.PubSub.readOwnership creds (← Gcp.requireProject creds) h.raw
       | .aws      => Queues.readOwnership creds (sqsFor provider creds) h.raw
-      | .scaleway => pure none
-    | _, _ => pure none
+      -- The name rung: Scaleway's SQS shim implements no tagging at all.
+      | .scaleway =>
+        Queues.readOwnershipByName (← Scaleway.Sqs.credentialsFor provider creds)
+          (sqsFor provider creds) h.raw
 
 /-- Every cloud, live, using each one's own credentials.
 

@@ -308,10 +308,17 @@ def main (args : List String) : IO UInt32 :=
   Infra.Cli.run \"" ++ name ++ "\" " ++ name ++ "
     (accounts := accounts)
     -- Uncomment if this account holds more than one fleet. The name is
-    -- written into the marker tag on everything this fleet creates and
-    -- required back out of it, so another fleet's resources read as foreign
-    -- and are left alone. Resources tagged before you set it stay yours.
-    -- (boundary := { fleetName := some \"" ++ name ++ "\" })
+    -- written into the marker on everything this fleet creates and required
+    -- back out of it, so another fleet's resources read as foreign and are
+    -- left alone. Resources marked before you set it stay yours.
+    --
+    -- `namePrefix` is for the kinds a cloud offers nowhere to write a marker
+    -- — today, Scaleway's Serverless SQL Database and its mnq queues. Such a
+    -- resource is claimed only if its name starts with this, and is left
+    -- strictly alone otherwise. It is checked, never applied: name those
+    -- resources with the prefix yourself.
+    -- (boundary := { fleetName := some \"" ++ name ++ "\"
+    --                namePrefix := some \"" ++ name ++ "-\" })
     (args := args)
 "
 

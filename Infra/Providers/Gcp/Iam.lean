@@ -1,5 +1,7 @@
 import Infra.Providers.Gcp.Rest
 import Infra.Core.Stage
+import Infra.Core.Ownership
+import Linen.Data.Base64
 
 /-
   IAM on GCP: service accounts.
@@ -24,43 +26,70 @@ import Infra.Core.Stage
   The email — `{id}@{project}.iam.gserviceaccount.com` — is what everything
   else refers to, so it goes in `ObservedOf` where the ARN goes for AWS.
 
-  ## Policies are read and not written, deliberately
+  ## Policies are roles, bound on the project
 
-  This is the one field that is not fully implemented, and the reason is worth
-  stating rather than hiding behind an `unknown`.
+  An element of `policies` is a role name — `roles/storage.objectViewer`,
+  `roles/cloudsql.client` — granted to this service account on the project the
+  credentials name. That is GCP's column of the table in
+  `Infra.Providers.Kinds.Iam`'s module note.
 
-  On GCP, granting a role to a service account is not an operation on the
-  service account. It is a **read-modify-write of the whole project's IAM
-  policy** (`getIamPolicy`, edit, `setIamPolicy`), and a write that sends back
-  a policy assembled incorrectly removes every binding it failed to include —
-  for the entire project, not just for this identity.
+  ### Why this was refused for so long, and what changed
 
-  Google's own guidance is that this is safe when done with the returned
-  `etag`, and it is. But it is code whose failure mode is *silently deleting
-  other people's access*, and there is no way to rehearse it against anything
-  but a real project. So:
+  Granting a role to a service account is not an operation on the service
+  account. It is a **read-modify-write of the whole project's IAM policy**
+  (`getIamPolicy`, edit, `setIamPolicy`), and a write that sends back a policy
+  assembled incorrectly removes every binding it failed to include — for the
+  entire project, not just for this identity. So `create` and `update` used to
+  raise, printing the `gcloud` command that would do it, on the reasoning that
+  a loud refusal beats code whose failure mode is silently deleting other
+  people's access.
 
-  - `read` reports the roles actually bound to this service account, from the
-    project policy. Real information, and read-only.
-  - `create` and `update` **raise** if the declaration names any policies,
-    with the `gcloud` command that would bind them.
+  It is implemented now, and the three things that make it safe are worth
+  naming, because each one is a way the obvious implementation gets it wrong:
 
-  That way a declared policy is visible in `plan` as a divergence and refused
-  loudly at apply, rather than being quietly dropped — which is the failure
-  this codebase treats as worse than not supporting the field at all.
+  1. **The policy object is edited, not rebuilt.** `setIamPolicy` takes back
+     the whole object, and a reconstruction from the fields this library knows
+     about would drop `auditConfigs` and anything Google adds later.
+     `JsonRead.setField` replaces the `bindings` key and copies the rest
+     through untouched; each binding is edited the same way, so a field on a
+     binding that is not `members` survives too.
+  2. **The `etag` is sent back.** It is inside the policy object and therefore
+     travels for free with (1). It is what makes this optimistic-concurrency
+     rather than last-writer-wins: a policy edited by somebody else between
+     the read and the write makes the write *fail*, which is the outcome to
+     want.
+  3. **Conditional bindings are left alone entirely.** A binding with a
+     `condition` is a different grant from an unconditional one of the same
+     role, so matching on the role alone would merge two things that are not
+     the same. This code reads and writes only unconditional bindings; a
+     conditional binding mentioning this service account is reported by
+     `readPolicies` (it is a real grant) and refused by `setPolicies` (it is
+     not one this declaration can express), rather than silently rewritten.
 
-  ## Permanent exception: this resource cannot be tagged
+  What is still true: this touches the project's IAM policy, and the identity
+  running it needs `resourcemanager.projects.setIamPolicy`. A CI identity that
+  has only the read half gets `readPolicies`' `unknown` and a clear failure
+  from the write.
+
+  ## The marker goes in `description`
 
   A GCP service account has no `labels` field — labels on this API surface
   live on the *project*, not on individual service accounts, and the only
-  alternative (Resource Manager TagBindings) is a different API and
-  permission model, out of scope here. There is no marker to write and none
-  to read back, so `Backend.ownershipInfo` returns `none` for `.iam` on GCP
-  unconditionally (see `Live.lean`), and the engine's fail-safe
-  (`Engine.lean`, the 2026-09-10 incident) refuses to adopt or
-  delete-as-orphan a service account on the ledger's say-so alone. This is a
-  permanent, intentional gap, not a half-implemented feature: see
-  `AGENTS.md`'s "no half-implemented features" rule.
+  alternative (Resource Manager TagBindings) is a different API and permission
+  model, out of scope here. But it does have a settable, patchable
+  `description` (confirmed in the IAM v1 discovery document, 2026-09-19), and
+  that is a place to write a marker.
+
+  So this kind sits on the **second rung** of `Ownership`'s ladder: the
+  marker is serialised with `encodeMarkerText`, read back with
+  `decodeMarkerText`, and reaches `ownershipOf` as the same tag list a tagged
+  resource produces. It is a real inclusion marker, not a fallback to naming,
+  and `Backend.ownershipInfo` no longer answers `.unreadable` for `.iam` on
+  GCP — which is what used to make a service account unadoptable and
+  undeletable-as-orphan.
+
+  `displayName` is left to the account id, as before; `description` is this
+  tool's, and a declaration has no field that competes for it.
 -/
 
 namespace Infra.Providers.Gcp.Iam
@@ -123,15 +152,37 @@ pages; the list may be incomplete"
       | none      => return acc
   go 50 "" []
 
+/-! ### The project's IAM policy
+
+  Three functions share one shape: fetch the policy, look at its `bindings`,
+  and — for the writer — hand the whole object back with only that key
+  changed. See the module note for why the object is edited rather than
+  rebuilt. -/
+
+/-- Fetch the project's IAM policy as the opaque object it has to be handed
+    back as. -/
+private def getPolicy (creds : Credentials) (project : String) : IO Value :=
+  Gcp.call creds "POST" crmHost s!"/v1/projects/{project}:getIamPolicy"
+    (payload := some (.object []))
+
+/-- Whether a binding carries an IAM condition.
+
+    Load-bearing: a conditional binding is a *different grant* from an
+    unconditional one naming the same role, so the two must never be merged.
+    Everything below either skips these or refuses because of them. -/
+private def isConditional (b : Value) : Bool := (field b "condition").isSome
+
 /-- The roles bound to this service account in the project's IAM policy.
 
-    Read-only, and the only half of `policies` that is implemented — see the
-    module note for why the other half raises instead. -/
+    Read-only, and reports **every** binding that names this member,
+    conditional ones included: a conditional grant is a grant, and a `plan`
+    that hid it would understate what the identity can do. `setPolicies`
+    refuses rather than rewriting those, so the pair stays honest in both
+    directions. -/
 def readPolicies (creds : Credentials) (project accountId : String) :
     IO (Partial (List String)) := do
   let member := s!"serviceAccount:{emailOf project accountId}"
-  match ← (Gcp.call creds "POST" crmHost s!"/v1/projects/{project}:getIamPolicy"
-      (payload := some (.object []))).toBaseIO with
+  match ← (getPolicy creds project).toBaseIO with
   | .error _ =>
     -- Reading the project policy needs `resourcemanager.projects.getIamPolicy`,
     -- which a narrowly-scoped CI identity may well not have. That is not a
@@ -141,37 +192,158 @@ def readPolicies (creds : Credentials) (project accountId : String) :
   | .ok policy =>
     let roles := (arrayField policy "bindings").filterMap fun b =>
       if (stringArrayField b "members").contains member then stringField b "role" else none
-    return .known roles
+    return .known roles.eraseDups
 
-/-- Create the service account. Returns its email. -/
-def create (creds : Credentials) (project accountId : String)
+/-- Make this service account's project-level roles be exactly `wanted`.
+
+    The read-modify-write the module note describes, and the three safety
+    properties it names are each one line of this:
+
+    * the policy object arrives from `getPolicy` and leaves through
+      `setField "bindings"`, so `etag`, `version`, `auditConfigs` and anything
+      unknown pass through untouched;
+    * each surviving binding is likewise edited with `setField "members"`
+      rather than rebuilt;
+    * `isConditional` bindings are skipped by the editor and refused up front,
+      so no conditional grant is ever silently rewritten.
+
+    A binding this identity is removed from and which then has no members left
+    is dropped: an empty `members` is rejected by `setIamPolicy`. A binding
+    that still holds other members keeps them, which is the whole point.
+
+    Writes nothing when nothing changes. That is not only an optimisation:
+    `setIamPolicy` on an unchanged policy still bumps the etag and shows up in
+    the project's audit log, and a fleet whose every apply rewrote the
+    project's IAM policy would be indistinguishable, in that log, from one
+    that was actually changing it. -/
+def setPolicies (creds : Credentials) (project accountId : String)
+    (wanted : List String) : IO Unit := do
+  let member := s!"serviceAccount:{emailOf project accountId}"
+  let policy ← getPolicy creds project
+  let bindings := arrayField policy "bindings"
+  let conditional := bindings.filter fun b =>
+    isConditional b && (stringArrayField b "members").contains member
+  unless conditional.isEmpty do
+    throw (IO.userError s!"gcp iam: '{accountId}' appears in {conditional.length} conditional role binding(s) on project '{project}' — {String.intercalate ", " (conditional.filterMap (stringField · "role"))}. A conditional binding is a different grant from an unconditional one of the same role, and `policies` cannot express the condition, so rewriting it here would change what it means. Remove the condition, or take this identity out of those bindings, and `plan` will converge.")
+  -- Edit in place: each binding keeps every field it had, minus this member
+  -- where it is no longer wanted and plus it where it now is.
+  let edited := bindings.filterMap fun b =>
+    if isConditional b then some b else
+    match stringField b "role" with
+    | none      => some b
+    | some role =>
+      let ms := stringArrayField b "members"
+      let ms' :=
+        if wanted.contains role then (if ms.contains member then ms else ms ++ [member])
+        else ms.filter (· != member)
+      if ms'.isEmpty then none
+      else some (setField b "members" (.array (ms'.map Value.string).toArray))
+  -- Roles asked for that no unconditional binding covers yet.
+  let covered := bindings.filterMap fun b =>
+    if isConditional b then none else stringField b "role"
+  let added := (wanted.filter (!covered.contains ·)).eraseDups.map fun role =>
+    Value.object [("role", .string role), ("members", .array #[.string member])]
+  let bindings' := edited ++ added
+  if bindings' == bindings then
+    return ()
+  let policy' := setField policy "bindings" (.array bindings'.toArray)
+  discard <| Gcp.call creds "POST" crmHost s!"/v1/projects/{project}:setIamPolicy"
+    (payload := some (.object [("policy", policy')]))
+
+/-- Create the service account, with the ownership marker in its description.
+    Returns its email.
+
+    Policies are bound afterwards rather than in the create call: there is no
+    way to ask for them here, because a role binding is an edit to the
+    *project*, not a field of the account. -/
+def create (creds : Credentials) (project accountId markerValue : String)
     (policies : List String) : IO String := do
   checkAccountId accountId
-  unless policies.isEmpty do
-    throw (IO.userError s!"gcp iam: '{accountId}' declares {policies.length} \
-policy/policies, and binding a role on GCP is a read-modify-write of the \
-WHOLE project's IAM policy — which this does not do, because getting it wrong \
-removes other identities' access. The service account was not created.\n  \
-Bind them yourself, then remove `policies` from the declaration:\n\
-{String.intercalate "\n" (policies.map fun r =>
-  s!"    gcloud projects add-iam-policy-binding {project} \\\\\n      \
---member=serviceAccount:{emailOf project accountId} --role={r}")}")
   let payload : Value := .object
     [ ("accountId", .string accountId)
-    , ("serviceAccount", .object [("displayName", .string accountId)]) ]
+    , ("serviceAccount", .object
+        [ ("displayName", .string accountId)
+        , ("description", .string (encodeMarkerText markerValue)) ]) ]
   let reply ← Gcp.call creds "POST" host s!"/v1/projects/{project}/serviceAccounts"
     (payload := some payload)
-  return (stringField reply "email").getD (emailOf project accountId)
-
-/-- Refuse to change policies, for the reason in the module note. -/
-def setPolicies (project accountId : String) (policies : List String) : IO Unit := do
+  let email := (stringField reply "email").getD (emailOf project accountId)
   unless policies.isEmpty do
-    throw (IO.userError s!"gcp iam: cannot set policies on '{accountId}' — \
-binding a role on GCP rewrites the whole project's IAM policy, which this \
-does not do. `plan` shows the difference so it is not hidden; bind it with \
-`gcloud projects add-iam-policy-binding {project} \
---member=serviceAccount:{emailOf project accountId} --role=…` and the \
-difference goes away.")
+    setPolicies creds project accountId policies
+  return email
+
+/-- The marker, for `Ownership.ownershipOf`, out of the account's description.
+
+    The second rung of the ladder: no tags on this object, one writable string,
+    and `decodeMarkerText` turns it back into the tag list the rule speaks in.
+    A description a human wrote decodes to a tag whose key is that text, which
+    correctly reads as "not ours" without being mistaken for "never touched".
+
+    `createdAt` is `none`: a service account has no creation timestamp on this
+    API surface at all, so there is nothing to age out against
+    `Boundary.since`. -/
+def readOwnership (creds : Credentials) (project accountId : String) : IO Evidence := do
+  match ← (Gcp.call creds "GET" host (saPath project accountId)).toBaseIO with
+  | .error _ => return .unreadable
+  | .ok sa   => return .tags (decodeMarkerText ((stringField sa "description").getD "")) none
+
+/-- Re-assert the marker on an existing account.
+
+    `update` has to write it as well as `create`, for the reason S3's tag
+    handling does: an account whose description was cleared by hand would
+    otherwise stay unmarked for ever, and a marker that only creation writes
+    is a marker that decays. -/
+def putMarker (creds : Credentials) (project accountId markerValue : String) : IO Unit := do
+  discard <| Gcp.call creds "PATCH" host (saPath project accountId)
+    (query := [])
+    (payload := some (.object
+      [ ("serviceAccount", .object
+          [("description", .string (encodeMarkerText markerValue))])
+      , ("updateMask", .string "description") ]))
+
+/-! ### Service-account keys
+
+  A key's private half is returned by `create` and by nothing else — the
+  discovery document says so in as many words of `privateKeyData`: "Only
+  provided in `CreateServiceAccountKey` responses." Same one-shot shape as
+  AWS's and Scaleway's, and the same reason `SecretSource.apiKeyFor` has to
+  mint straight into a secret. -/
+
+/-- Mint a key for a service account. Returns `(keyId, the key file's JSON)`.
+
+    The "secret" for GCP is a whole credentials **file**, not a password: what
+    comes back is base64 of the JSON that `GOOGLE_APPLICATION_CREDENTIALS`
+    would point at, so it is decoded here and stored as the file's own text.
+    Anything else would make the secret unusable without a decoding step
+    nobody would guess at.
+
+    The key id is the last segment of the resource name, and is the only part
+    safe to record: `Live.lean` puts it in `SecretsObserved.accessKey`, which
+    is cached and printed. -/
+def createKey (creds : Credentials) (project accountId : String) :
+    IO (String × String) := do
+  let reply ← Gcp.call creds "POST" host (saPath project accountId ++ "/keys")
+    (payload := some (.object
+      [ ("privateKeyType", .string "TYPE_GOOGLE_CREDENTIALS_FILE")
+      , ("keyAlgorithm", .string "KEY_ALG_RSA_2048") ]))
+  let keyId := ((stringField reply "name").getD "").splitOn "/" |>.getLast!
+  match stringField reply "privateKeyData" with
+  | none => throw (IO.userError s!"gcp iam: the key for '{accountId}' was created but carried no privateKeyData, and Google will not return it again. Delete the key and retry.")
+  | some encoded =>
+    match Data.Base64.decode encoded with
+    | some bytes => return (keyId, String.fromUTF8! bytes)
+    | none       => throw (IO.userError
+        s!"gcp iam: the key for '{accountId}' is not valid base64")
+
+/-- Delete one key. Already gone is not an error, and neither is a
+    Google-managed key refusing to be deleted — those are not ours to remove
+    and exist on every service account. -/
+def deleteKey (creds : Credentials) (project accountId keyId : String) : IO Unit := do
+  match ← (Gcp.call creds "DELETE" host (saPath project accountId ++ s!"/keys/{keyId}")).toBaseIO with
+  | .ok _ => pure ()
+  | .error e =>
+    let msg := toString e
+    unless (msg.splitOn "HTTP 404").length > 1 || (msg.splitOn "NOT_FOUND").length > 1 do
+      throw e
 
 /-- Delete the service account. Already gone is not an error. -/
 def delete (creds : Credentials) (project accountId : String) : IO Unit := do

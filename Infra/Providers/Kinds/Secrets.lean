@@ -27,6 +27,25 @@ import Linen.Data.Time.Clock
   A missing environment variable is an error naming the variable, not an empty
   secret: silently writing `""` as a password is the kind of failure that is
   discovered much later and much more expensively.
+
+  ## The back-reference to a minted API key
+
+  A `SecretSource.apiKeyFor` secret holds the secret half of a credential this
+  tool created. Deleting the secret and leaving the credential alive would be
+  a leak — a working key to a real identity, with nothing left pointing at it.
+
+  Finding it again at teardown is harder than it looks. `Backend.delete` is
+  handed a `Handle` and nothing else: an orphaned secret's declaration is gone
+  by definition, so there is no spec to consult and no key in the fleet to look
+  observed state up by. The only thing still standing is the secret itself.
+
+  So the secret carries the answer, in two ordinary tags written beside the
+  ownership marker at creation: which identity the key belongs to, and which
+  key it is. Both are public identifiers, neither is the credential, and every
+  cloud here can hold them — including GCP, whose label values allow only
+  lowercase letters, digits, `_` and `-`, which is why this is two tags rather
+  than one with a separator and why the identity is the fleet's own name for it
+  rather than, say, a service-account email.
 -/
 
 namespace Infra.Providers.Kinds.Secrets
@@ -43,6 +62,47 @@ def valueFromEnv (varName : String) : IO String := do
   | some v => return v
   | none   => throw (IO.userError
       s!"secret value not available: environment variable '{varName}' is not set")
+
+/-! ## The API-key back-reference
+
+  See the module note. Two tags, written at create and read at delete. -/
+
+/-- Which identity a minted key belongs to — the `.iam` resource's name,
+    spelled as the declaration spells it, which is also what every cloud's
+    delete call wants (an AWS user name, a Scaleway application name, a GCP
+    service-account id). -/
+def apiKeyIdentityTag : String := "infra-api-key-identity"
+
+/-- Which key it is: an AWS access key id, a Scaleway access key, a GCP key
+    id. The public half, never the secret one. -/
+def apiKeyIdTag : String := "infra-api-key-id"
+
+/-- The two tags a minted-key secret is created with. -/
+def apiKeyTags (identity keyId : String) : List (String × String) :=
+  [(apiKeyIdentityTag, identity), (apiKeyIdTag, keyId)]
+
+/-- Read the back-reference out of what `readOwnership` already fetched.
+
+    Deliberately reuses the ownership read rather than adding a fourth
+    per-cloud call: `delete` has to establish the secret is ours before
+    touching it anyway, and the tags it looks at are the same ones. `none`
+    means this secret is not a minted key — which is the common case, and must
+    stay cheap and silent. -/
+def apiKeyRefOf : Evidence → Option (String × String)
+  | .tags ts _ =>
+    match ts.find? (·.1 == apiKeyIdentityTag), ts.find? (·.1 == apiKeyIdTag) with
+    | some (_, identity), some (_, keyId) =>
+      if identity.isEmpty || keyId.isEmpty then none else some (identity, keyId)
+    | _, _ => none
+  | _ => none
+
+/- A minted secret round-trips its back-reference; an ordinary one has none,
+   and neither has a secret whose tags carry only half a pair. -/
+#guard apiKeyRefOf (.tags (apiKeyTags "my-app" "SCWABC") none) = some ("my-app", "SCWABC")
+#guard apiKeyRefOf (.tags [(markerKey, "fleet")] none) = none
+#guard apiKeyRefOf (.tags [(apiKeyIdentityTag, "my-app")] none) = none
+#guard apiKeyRefOf (.named "x" none) = none
+#guard apiKeyRefOf .unreadable = none
 
 /-- Read a secret's value directly, for binding it into another resource's environment (see
     `Kinds.Compute`'s `.scalewayContainer` support). Narrowly scoped exactly like
@@ -165,12 +225,14 @@ private def requestToken : IO String := do
     tag at creation, the same way `Ec2.Instance'.create` does it, so a later
     `push` can tell this fleet's secret apart from one that merely happens to
     share the name (see the 2026-09-10 incident in `AGENTS.md`). -/
-def create (creds : Credentials) (ep : Endpoint) (name value markerValue : String) :
-    IO String := do
+def create (creds : Credentials) (ep : Endpoint) (name value markerValue : String)
+    (extraTags : List (String × String) := []) : IO String := do
+  let tags := (markerKey, markerValue) :: extraTags
   let reply ← Json.call creds ep (target "CreateSecret")
     (.object [ ("Name", .string name), ("SecretString", .string value)
              , ("ClientRequestToken", .string (← requestToken))
-             , ("Tags", .array #[.object [("Key", .string markerKey), ("Value", .string markerValue)]]) ])
+             , ("Tags", .array (tags.map fun (k, v) =>
+                 Value.object [("Key", .string k), ("Value", .string v)]).toArray) ])
   return (stringField reply "VersionId").getD ""
 
 /-- Tags, for `Ownership.ownershipOf`. `DescribeSecret` embeds them directly,
@@ -179,14 +241,21 @@ def create (creds : Credentials) (ep : Endpoint) (name value markerValue : Strin
     this tranche sticks to tags alone, matching every other kind wired so
     far — see `Live.lean`'s `ownershipInfo` doc comment. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
-  let reply ← Json.call creds ep (target "DescribeSecret")
-    (.object [("SecretId", .string name)])
-  let tags := (arrayField reply "Tags").filterMap fun t =>
-    match stringField t "Key", stringField t "Value" with
-    | some k, some v => some (k, v)
-    | _,      _      => none
-  return some (tags, none)
+    IO Evidence := do
+  -- Tolerant of a secret that is not there, which the other two clouds'
+  -- versions already were. It matters because `delete` reads this first — to
+  -- find the API key a minted secret points at — so a teardown that runs
+  -- twice, or a secret somebody removed by hand, would otherwise fail on the
+  -- read instead of treating "already gone" as done.
+  match ← (Json.call creds ep (target "DescribeSecret")
+      (.object [("SecretId", .string name)])).toBaseIO with
+  | .error _  => return .unreadable
+  | .ok reply =>
+    let tags := (arrayField reply "Tags").filterMap fun t =>
+      match stringField t "Key", stringField t "Value" with
+      | some k, some v => some (k, v)
+      | _,      _      => none
+    return .tags tags none
 
 def putValue (creds : Credentials) (ep : Endpoint) (name value : String) : IO String := do
   let reply ← Json.call creds ep (target "PutSecretValue")
@@ -243,10 +312,10 @@ private def requireId (creds : Credentials) (name : String) : IO String := do
     secret's flat `tags: []string`, so this is the same call as `list`,
     decoded rather than an extra round trip — see `Scaleway.decodeTag`. -/
 def readOwnership (creds : Credentials) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
-  | none               => return none
+  | some (_, _, tags) => return .tags (tags.map Scaleway.decodeTag) none
+  | none              => return .unreadable
 
 /-- The number of versions, as a stand-in for "which contents". Metadata only:
     the value itself is never fetched. -/
@@ -265,12 +334,14 @@ private def addVersion (creds : Credentials) (id value : String) : IO String := 
 /-- `markerValue` is written as a flat tag, encoded via `Scaleway.encodeTag`
     — see that function's doc comment for the serialisation convention, and
     the 2026-09-10 AGENTS.md incident for why this cannot be left `none`. -/
-def create (creds : Credentials) (name value markerValue : String) : IO String := do
+def create (creds : Credentials) (name value markerValue : String)
+    (extraTags : List (String × String) := []) : IO String := do
   let project ← creds.requireProject
+  let tags := (markerKey, markerValue) :: extraTags
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/secrets")
     (payload := some (.object
       [ ("name", .string name), ("project_id", .string project)
-      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
+      , ("tags", .array (tags.map (Value.string <| Scaleway.encodeTag ·)).toArray) ]))
   match stringField reply "id" with
   | some id => addVersion creds id value
   | none    => throw (IO.userError s!"scaleway secrets: create returned no id for '{name}'")

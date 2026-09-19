@@ -126,10 +126,10 @@ def create (creds : Credentials)
     trap this file's create already documents. `createdAt` is left `none`,
     matching every other kind's first tranche. -/
 def readOwnership (creds : Credentials) (project name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   let attempt ← (Gcp.call creds "GET" host (instancePath project name)).toBaseIO
   match attempt with
-  | .error _ => return none
+  | .error _ => return .unreadable
   | .ok i =>
     let tags := match (field i "settings").bind (field · "userLabels") with
       | some (.object fields) => fields.filterMap fun (k, v) =>
@@ -137,7 +137,7 @@ def readOwnership (creds : Credentials) (project name : String) :
           | .string s => some (k, s)
           | _         => none
       | _ => []
-    return some (tags, none)
+    return .tags tags none
 
 /-- Refuse a serverless declaration, and say what to write instead. -/
 def createServerless (name : String) : IO String := do

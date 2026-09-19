@@ -662,10 +662,13 @@ would CREATE scaleway/secrets/db-url
       what is absent, so it is safe to re-run and safe on a project with work
       in it. Your declaration is a Lean program, so
       <code>lake exe my_infra</code> <em>is</em> the CLI: nothing to keep in
-      step with your code. What it manages is decided by a marker tag on each
-      resource, not a committed file &#8212; and a fleet sharing an account can
-      write its own name into that tag, so the other fleet&#8217;s resources
-      read as foreign and are left alone. The local ledger is a disposable
+      step with your code. What it manages is decided by a marker on each
+      resource, not a committed file &#8212; a tag where the cloud has tags, a
+      marker written into the object&#8217;s <code>description</code> where it
+      has not, and the resource&#8217;s own name against a prefix you configure
+      for the two products with neither. A fleet sharing an account can write
+      its own name into that marker, so the other fleet&#8217;s resources read
+      as foreign and are left alone. The local ledger is a disposable
       cache of that decision, rebuildable with <code>discover</code>. What it last saw
       is a disposable cache too. Neither holds a secret.
     </p>

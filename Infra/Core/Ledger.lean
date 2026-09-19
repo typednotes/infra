@@ -31,13 +31,12 @@ import Lean.Data.Json
   pure, with no way to reach a live cloud — but the two IO call sites around
   it in `Engine.push` (the adoption loop, and the recheck immediately before
   a `deleteOrphan` runs) now consult `Infra.Core.Ownership.ownershipOf`
-  first, for every `(cloud, kind)` whose backend answers
-  `Backend.ownershipInfo` with real tags. That makes this file the *cache* of
-  what those two checks would say, not the authority: `Infra.Cli.discover`
-  rebuilds it straight from the marker tag, so a lost ledger for a migrated
-  kind is a `discover` away from repair rather than a permanent orphan. A
-  kind whose backend has not been taught to read tags still falls back to
-  ledger membership alone, exactly as before.
+  first, for every `(cloud, kind)` whose backend can report a marker at all
+  (`Backend.ownershipInfo`). That makes this file the *cache* of what those
+  two checks would say, not the authority: `Infra.Cli.discover` rebuilds it
+  straight from the marker, so a lost ledger is a `discover` away from repair
+  rather than a permanent orphan. A kind whose backend answers `.unreadable`
+  is refused rather than adopted, and never deleted on this file's say-so.
 -/
 
 namespace Infra.Core.Ledger

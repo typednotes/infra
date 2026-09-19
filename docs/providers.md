@@ -180,12 +180,42 @@ is the point; a mapping that looked like it worked would be worse.
 | Field | Unenforced on | Why |
 |---|---|---|
 | `imageRegistry.immutableTags` | Scaleway | no tag-immutability concept |
-| `iam.policies` | Scaleway | AWS policy ARNs have no Scaleway equivalent; its policies are rule sets over permission sets and scopes |
 | `compute.runtime` | both | vestigial under container images — baked into the image, reported by neither |
 | `secrets.valueFrom` | both | names an environment variable the cloud has never heard of |
 | `scalewayFunction.namespace'` | Scaleway | placement, not configuration: the API does not report which namespace a function is in, so it can never diverge — moving one between namespaces is not detected |
 | `scalewayContainer.namespace'` | Scaleway | same |
 | `postgres.masterPasswordSecret` | both | bookkeeping, never reported by the database |
+
+`iam.policies` used to head that table, on the grounds that AWS policy ARNs
+have no Scaleway equivalent. That was a statement about the *spelling*, and it
+was answered by changing what the field means rather than by leaving it
+unenforced: an element is **the cloud's own name for a set of permissions** —
+a managed-policy ARN on AWS, a permission-set name on Scaleway, a role name on
+GCP — granted at that cloud's natural scope for an identity. All three now
+read it back and reconcile it.
+
+| Cloud | An element is | Scope | Reconciliation |
+|---|---|---|---|
+| AWS | a managed-policy ARN | the account | attach/detach to match |
+| Scaleway | a permission-set name | the credentials' **project** | one infra-owned policy per application, rules overwritten |
+| GCP | a role name (`roles/…`) | the project | etag-guarded edit of the project IAM policy, unconditional bindings only |
+
+Nothing translates between the three spellings. A translation that looked
+right and granted the wrong thing would be worse than three explicit lists.
+
+Two refusals rather than silent divergence, both in the house style of raising
+and naming the fix:
+
+- **Scaleway** reconciles only the policy it created (the marker-tagged one).
+  A policy somebody else attached to the same application makes `setPolicies`
+  raise, naming it — `readPolicies` reports its permission sets too, so the
+  divergence is visible rather than hidden, and deleting another tool's policy
+  is not something infra will do on its own.
+- **GCP** leaves conditional bindings entirely alone. A binding with a
+  `condition` is a different grant from an unconditional one of the same role,
+  and `policies` cannot express the condition, so rewriting it would change
+  what it means. `readPolicies` reports the role (it is a real grant);
+  `setPolicies` raises, naming it.
 
 Two fields point the opposite way — required by one cloud, meaningless to the
 other. Both are optional in the spec, and the backend that needs one raises a

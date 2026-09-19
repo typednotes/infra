@@ -245,6 +245,236 @@ def composedAppliedWorld : World composedKeys :=
                         version := .unknown, storageGb := .unknown
                         minCapacity := .unknown, maxCapacity := .unknown } }⟩ ]
 
+/-! ## A third fleet: an identity, its key, and a database that only IAM opens
+
+  The two fleets above compose a secret out of a password somebody supplied.
+  This one has no password to supply, and that is the point.
+
+  Scaleway's Serverless SQL Database has **no master user**. There is nothing
+  to set a password on: authentication is IAM, the PostgreSQL user name is an
+  IAM application's *id*, and the password is that application's API secret
+  key. So a fleet that wants an application to reach its own database needs
+  three things created in order, two of which cannot be written down in
+  advance:
+
+  1. an IAM application, granted `ServerlessSQLDatabaseDataReadWrite` over
+     this project — `.iam` with `policies`;
+  2. an API key for it, whose secret half Scaleway returns **once, at
+     creation, and never again** — `SecretSource.apiKeyFor`;
+  3. a connection URL built from the application id, that secret, and an
+     endpoint the database does not have until it exists — a `composed`
+     secret, as in the fleet above.
+
+  Before `apiKeyFor` existed this was three manual `scw` commands and a
+  secret pasted in by hand, because the one value that has to travel — the
+  key's secret half — can be neither declared (it does not exist yet) nor
+  observed (observed state is cached and printed). Minting it *into* a secret
+  is the only place it can go, and creating a secret is already write-only.
+
+  Three details here are ones a real deployment got wrong first, and each is
+  pinned by a guard below:
+
+  * the user name is `principalOf`, the application **id**, not `accessKeyOf`.
+    The access key looks far more like a username, and is the wrong answer;
+    the failure is `password authentication failed`, which points at the
+    password.
+  * the database name is the resource's name. It is not some other name the
+    declaration also mentions; a wrong guess fails with
+    `database "…" does not exist` long after apply reports success.
+  * `?sslmode=require` is mandatory, and `endpointOf` does not carry it —
+    `ServerlessSql` strips the query string off the endpoint it reports, so
+    that `.endpoint` means `host:port` here as it does everywhere else.
+
+  This fleet is offline like the others: nothing below contacts a cloud. -/
+
+def identityNames : List String := ["app-key", "app-db-url"]
+
+def identityKeys : Keys := Keys.build fun
+  | .scaleway, .iam      => .named ["reports-app"]
+  | .scaleway, .secrets  => .named identityNames
+  | .scaleway, .postgres => .named ["reports"]
+  | _,         _         => .unused
+
+def reportsAppKey : identityKeys.Key .scaleway .iam :=
+  NamedKey.of ["reports-app"] "reports-app"
+def appKeySecret : identityKeys.Key .scaleway .secrets :=
+  NamedKey.of identityNames "app-key"
+def appDbUrlKey : identityKeys.Key .scaleway .secrets :=
+  NamedKey.of identityNames "app-db-url"
+def reportsDbKey : identityKeys.Key .scaleway .postgres :=
+  NamedKey.of ["reports"] "reports"
+
+/-- The permission set that grants *data-plane* access — connecting and
+    running SQL.
+
+    Not to be confused with `ServerlessSQLDatabaseReadWrite`, which is the
+    management plane: creating and configuring databases. An identity holding
+    only the management one can create this database and then not connect to
+    it, and the error when it tries says `principal … does not have permission
+    to access database …` rather than anything about permission sets. They also
+    map to different PostgreSQL roles, which matters if row-level security is
+    ever turned on. -/
+def dataPlaneAccess : String := "ServerlessSQLDatabaseDataReadWrite"
+
+/-- The URL, composed from three things that do not exist when it is written.
+
+    `principalOf` — not `accessKeyOf` — is the PostgreSQL user: see the header.
+    The secret key is a UUID, so it needs no percent-encoding; `expr!` does no
+    escaping of its own, and a source whose value could contain `/` or `@`
+    would have to be encoded before it got here. -/
+def appDbUrlExpr : Expr identityKeys.Key String :=
+  expr!"postgres://{principalOf appKeySecret}:{secretValueOf appKeySecret}\
+@{endpointOf reportsDbKey}/reports?sslmode=require"
+
+def identitySecretsAssign :=
+  Keys.assignFromNamed (κ := identityKeys) .scaleway .secrets
+    [ ("app-key",    .present { name := "app-key"
+                                valueFrom := apiKeyFor "reports-app" })
+    , ("app-db-url", .present { name := "app-db-url"
+                                valueFrom := composed appDbUrlExpr }) ]
+
+def identityIamAssign :=
+  Keys.assignFromNamed (κ := identityKeys) .scaleway .iam
+    [ ("reports-app", .present { name := "reports-app"
+                                 policies := [dataPlaneAccess] }) ]
+
+def identityPostgresAssign :=
+  Keys.assignFromNamed (κ := identityKeys) .scaleway .postgres
+    [ ("reports", .present (PostgresSpec.serverless "reports" "unused" "unused" 0 8)) ]
+
+def identityPlan : Plan identityKeys where
+  assign
+    | .scaleway, .iam,      key => identityIamAssign key
+    | .scaleway, .secrets,  key => identitySecretsAssign key
+    | .scaleway, .postgres, key => identityPostgresAssign key
+    | _,         _,         _   => .unmanaged
+
+def identityEmptyWorld : World identityKeys := worldOf []
+
+/-- The same fleet, already applied. Everything here must be create-only: the
+    key cannot be re-minted and the URL cannot be compared, so a second apply
+    has to ask for nothing. -/
+def identityAppliedWorld : World identityKeys :=
+  worldOf
+    [ ⟨.scaleway, .iam, reportsAppKey,
+        { observed := { handle := ⟨"reports-app"⟩
+                        arn := "b77ecf48-3340-4419-bbbd-098f972832fd" }
+          reported := { name := "reports-app", policies := .known [dataPlaneAccess] } }⟩
+    , ⟨.scaleway, .secrets, appKeySecret,
+        { observed := { handle := ⟨"app-key"⟩, version := "1"
+                        accessKey := "SCWEXAMPLEACCESSKEY"
+                        principal := "b77ecf48-3340-4419-bbbd-098f972832fd" }
+          reported := { name := "app-key", valueFrom := .fromEnv "" } }⟩
+    , ⟨.scaleway, .secrets, appDbUrlKey,
+        { observed := { handle := ⟨"app-db-url"⟩, version := "1" }
+          reported := { name := "app-db-url", valueFrom := .fromEnv "" } }⟩
+    , ⟨.scaleway, .postgres, reportsDbKey,
+        { observed := { handle := ⟨"reports"⟩, endpoint := "reports.sdb.invalid:5432" }
+          reported := { name := "reports", instanceClass := .unknown
+                        masterUsername := "", masterPasswordSecret := ""
+                        version := .unknown, storageGb := .unknown
+                        minCapacity := .unknown, maxCapacity := .unknown } }⟩ ]
+
+section IdentityGuards
+
+/- Four resources, one apply. Nothing here is a manual step. -/
+#guard (actions identityPlan identityEmptyWorld).length = 4
+
+/- Ordered, and ordered for a reason rather than by luck. The scheduler reads
+   `apiKeyFor`'s identity as an edge (`Engine.impliedByName`), so the
+   application is created before the key that belongs to it — and the URL,
+   which references both the key and the database, comes last.
+
+   Teardown runs this in reverse, which is the half that matters most on AWS:
+   a user holding an access key cannot be deleted, so the secret must go
+   first. -/
+private def identityOrder : List String :=
+  match orderActions identityPlan (actions identityPlan identityEmptyWorld) with
+  | .ok ordered => ordered.map Action.slot
+  | .error _    => []
+
+/-- `a` runs before `b`, and both are in the plan. A missing slot answers
+    `false` rather than vacuously true, so a renamed resource fails the
+    assertion instead of quietly satisfying it. -/
+private def runsBefore (a b : String) : Bool :=
+  match identityOrder.idxOf? a, identityOrder.idxOf? b with
+  | some i, some j => i < j
+  | _,      _      => false
+
+#guard runsBefore "scaleway/iam/reports-app" "scaleway/secrets/app-key"
+#guard runsBefore "scaleway/secrets/app-key" "scaleway/secrets/app-db-url"
+#guard runsBefore "scaleway/postgres/reports" "scaleway/secrets/app-db-url"
+
+/- …and the edge is real, not the enum's doing.
+
+   The three assertions above would all still pass if `impliedByName` returned
+   nothing at all: `.iam` comes before `.secrets` in the `Kind` enum, ties are
+   broken by enumeration order, and so the right answer would come out by
+   accident. That is precisely the arrangement this edge exists to stop being
+   load-bearing, so it is asserted directly. -/
+#guard Infra.Core.impliedByName (κ := identityKeys) .scaleway .secrets
+         { name := "app-key", valueFrom := apiKeyFor "reports-app" }
+     = ["scaleway/iam/reports-app"]
+
+/- The same for the edge this fixed in passing: a database's master-password
+   secret, named rather than referenced for the same portability reason. -/
+#guard Infra.Core.impliedByName (κ := composedKeys) .scaleway .postgres mainDbSpec
+     = ["scaleway/secrets/db-password"]
+
+/- An identity this fleet does not manage is still legal: the edge points at a
+   slot no action touches, and `schedule` ignores those rather than deadlocking
+   on them. What must *not* happen is an edge to nowhere-at-all. -/
+#guard Infra.Core.impliedByName (κ := identityKeys) .scaleway .secrets
+         { name := "k", valueFrom := apiKeyFor "" } = []
+#guard Infra.Core.impliedByName (κ := identityKeys) .scaleway .secrets
+         { name := "k", valueFrom := fromEnv "TOKEN" } = []
+
+/- No plaintext: `apiKeyFor` names an identity, which is public, and the URL
+   is a recipe rather than a value. -/
+#guard identityPlan.secretsAreSound
+
+/- The URL depends on the key *for its value* and on the database *for its
+   handle* — and on the key twice, once for each half, which is what lets one
+   minted credential supply both the user name and the password. -/
+#guard appDbUrlExpr.deps.any (fun d => d.need == Need.secretValue)
+#guard appDbUrlExpr.deps.any (fun d => d.kind == Kind.postgres)
+#guard appDbUrlExpr.deps.length = 3
+
+/- And it composes to the URL Scaleway actually wants. This is the assertion
+   that pins the three details the header lists: the **application id** as the
+   user, the resource's own name as the database, and `sslmode=require`. Each
+   was got wrong against a real account before being written down here. -/
+private def identityProbe : Env identityKeys.Key where
+  observed p k _key :=
+    match p, k with
+    | .scaleway, .postgres =>
+      some { handle := ⟨"reports"⟩, endpoint := "reports.sdb.invalid:5432" }
+    | .scaleway, .secrets =>
+      some { handle := ⟨"app-key"⟩, version := "1"
+             accessKey := "SCWEXAMPLEACCESSKEY"
+             principal := "b77ecf48-3340-4419-bbbd-098f972832fd" }
+    | _, _ => none
+  secretValue _ _ := some "11111111-2222-3333-4444-555555555555"
+
+#guard appDbUrlExpr.eval? identityProbe
+     = some "postgres://b77ecf48-3340-4419-bbbd-098f972832fd\
+:11111111-2222-3333-4444-555555555555@reports.sdb.invalid:5432/reports?sslmode=require"
+
+/- The trap, stated as an assertion: the access key is *not* the user name.
+   A URL built with `accessKeyOf` is a different string, and the one that
+   fails against a real database. -/
+private def wrongUser : Expr identityKeys.Key String :=
+  expr!"postgres://{accessKeyOf appKeySecret}:{secretValueOf appKeySecret}\
+@{endpointOf reportsDbKey}/reports?sslmode=require"
+
+#guard appDbUrlExpr.eval? identityProbe != wrongUser.eval? identityProbe
+
+/- Create-only, both of them. A second apply must ask for nothing: re-minting
+   the key would leave the old one live, and the URL cannot be compared. -/
+#guard (actions identityPlan identityAppliedWorld).length = 0
+
+end IdentityGuards
+
 /-! ## The same fleet again, via `fleet`
 
   `composedKeys`/`composedPlan` above are written by hand with the

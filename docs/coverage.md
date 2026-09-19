@@ -1,7 +1,11 @@
-# Coverage in 0.10.1
+# Coverage in 0.10.1, plus unreleased work on `main`
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-14.
+been exercised. Everything below is the state on 2026-09-19.
+
+The ownership, IAM and `apiKeyFor` sections describe work that is on `main`
+and **not in the 0.10.1 tag** — a project pinned to that tag does not have it.
+`CHANGELOG.md`'s `[Unreleased]` is the list.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
@@ -12,7 +16,7 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| **GCP** | **all seven portable kinds have live clients** — Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL. Two stated limits: a serverless `postgres` declaration raises (Cloud SQL has no such tier), and `iam` reads policies but refuses to write them. Provider-local kinds report no counterpart rather than a missing client |
+| **GCP** | **all seven portable kinds have live clients** — Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL. One stated limit: a serverless `postgres` declaration raises, since Cloud SQL has no such tier. `iam` now writes roles as well as reading them — an etag-guarded, member-scoped edit of the project IAM policy that leaves conditional bindings alone. Provider-local kinds report no counterpart rather than a missing client |
 | Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
@@ -847,18 +851,46 @@ accounts for all fourteen kinds. Membership stays the ledger's. The two
 questions were conflated before this change; separating them was right, and
 answering the second one per resource was not.
 
-## Ownership: which kinds it actually decides for
+## Ownership: which kinds it decides for, and on what evidence
 
 `Infra.Core.Ownership.ownershipOf` was pure and fully guard-checked from the
 start, but for a while nothing called it: `Engine.push`'s adoption loop
 claimed anything named right that existed, and `actionsOrphaned` trusted the
-ledger alone. Both now consult `Backend.ownershipInfo` first, and it answers
-with real evidence for:
+ledger alone. Both consult `Backend.ownershipInfo` first, and **every
+`(cloud, kind)` pair now answers it with real evidence**. There is no
+"not migrated" state left.
 
-| Kind | Cloud | Marker written on create | Read back for the check |
+Getting there meant admitting that not every cloud lets every kind carry tags,
+and that "this backend has not been taught" and "this object has nothing to
+write a marker on" are different problems. So evidence comes in three rungs,
+strongest first, and a backend picks the strongest its object supports:
+
+| Rung | `Evidence` | Where the marker lives |
+|---|---|---|
+| 1 | `.tags` | real key/value tags or labels |
+| 2 | `.tags`, via `encodeMarkerText` | the object's one writable free-text field, as `managed-by-infra=<fleet>` |
+| 3 | `.named` | nowhere — the resource's own name, checked against `Boundary.namePrefix` |
+
+Rungs 1 and 2 are indistinguishable to `ownershipOf` on purpose: a marker is a
+marker, and only the bytes' address differs. Rung 3 is genuinely weaker and is
+opt-in, because it is the one rung whose evidence infra does not write — see
+below.
+
+### Every pair, and its rung
+
+| Kind | AWS | Scaleway | GCP |
 |---|---|---|---|
-| `.objectStore` | AWS, Scaleway, GCP | yes, merged into the declared tags on create *and* update (S3's tag PUT is a full replace, so update has to re-merge it too) | tags (`ObjectStore.readTags` / `Gcp.Storage.readLabels`) |
-| `.awsInstance` | AWS | yes, alongside the `Name` tag, re-asserted on update | tags (`Ec2.Instance'.readOwnership`) |
+| `objectStore` | tags | tags | labels |
+| `s3Bucket` | tags | — | — |
+| `securityGroup` | tags | — | — |
+| `awsInstance` | tags | — | — |
+| `queues` | tags | **name** | labels |
+| `secrets` | tags | tags | labels |
+| `imageRegistry` | tags | **description** | labels |
+| `compute` | tags | tags | labels |
+| `postgres` | tags | tags (Managed DB) / **name** (Serverless SQL) | labels |
+| `iam` | tags | tags | **description** |
+| `scalewayFunction`, `scalewayContainer`, and both namespaces | — | tags | — |
 
 The tag's **value** is the fleet's own name where the declaration sets one
 (`Boundary.fleetName`) and `"true"` where it does not, which is what lets two
@@ -867,52 +899,104 @@ the old `"true"` matches every fleet permanently so that naming a fleet cannot
 orphan an estate tagged before the name existed — `docs/persistence.md` has the
 three limits of the scheme.
 
-Every other kind's `ownershipInfo` answers `none`, which is the documented
-"not migrated" state: the adoption loop and the orphan-delete recheck both
-fall back to naming-only membership for it, unchanged from before this
-section existed. Widening the table to the remaining kinds is tracked, not
-silently dropped:
+### What changed, and what was simply wrong
 
-- `.s3Bucket`, `.securityGroup`, `.queues`, `.imageRegistry`, `.postgres` have
-  tagging APIs on at least one cloud and are the natural next tranche.
-- `.iam`, `.compute`, `.secrets`, the Scaleway-only function/container kinds do
-  not have an obvious tag surface on every cloud they support and need a
-  per-kind look before they can join the table.
+**Eight `(cloud, kind)` pairs used to answer `none`**, plus one within-pair
+gap: Scaleway's `postgres` reported for Managed Database and not for
+Serverless SQL, which share the kind. All nine were therefore permanently
+unadoptable and undeletable-as-orphan.
 
-A marker written into a field the diff compares is a fleet that cannot
-converge, and `objectStore`'s tags are exactly that field: `Live.withoutMarker`
-strips it back out as the tags are read, so the comparison only ever sees
-declared state, while `ownershipInfo` still reads the raw set. The `#guard`s on
-that pair are in `Infra/Providers/Live.lean`, next to the code, because nothing
-in the offline suite can reach it — see round four above.
+Four of the nine had a stated permanent reason, and **one of those reasons was
+false**:
 
-The verdict is also **said out loud** when it goes against a resource the
+- **Scaleway `iam` was not a tag exception at all.** The code, `docs/providers.md`
+  and this page each said a Scaleway IAM application could not be tagged. It
+  can: `CreateApplicationRequest` and `Application` both carry `tags []string`,
+  checked against Scaleway's own generated SDK on 2026-09-19. The exception was
+  documented confidently, in three places, and was never true — the clearest
+  case yet for `AGENTS.md`'s rule that provider facts are checked, not recalled.
+- **GCP `iam` has a `description`.** Service accounts have no labels, which was
+  the stated reason, and that part is right. But `description` is settable on
+  create and patchable afterwards (IAM v1 discovery document, 2026-09-19), so
+  there is a writable field and the marker goes in it.
+- **Scaleway `imageRegistry` likewise.** A registry namespace has no `tags` and
+  does have a `description`.
+- **Scaleway Serverless SQL and mnq queues really have nothing.** Re-checked
+  against the generated SDKs: a Serverless SQL `Database` is id, name, status,
+  endpoint, ids, region, timestamps and capacity, and its create and update
+  requests carry no tags and no description; Scaleway's SQS shim implements no
+  tagging at all. These two are the name rung, and the reason it exists.
+
+The other five answered `none` for no stated reason at all — nobody had
+written them, and `imageRegistry` was not even mentioned in the dispatch, so
+all three of its clouds fell to the catch-all. `s3Bucket` (AWS),
+`securityGroup` (AWS) and `imageRegistry` (all three) now write a marker at
+create and read it back. The S3 bucket's case is the starkest: the code to tag
+one already existed for `objectStore`, and this kind simply never called it.
+
+That five-versus-four split is the point of the `AGENTS.md` rule this pass
+produced. From the outside, a pair with a carefully argued permanent exception
+and a pair nobody had got to looked identical — both answered `none`, both
+refused — so the four documented ones made the five undocumented ones look
+deliberate too.
+
+### The name rung, and why it is opt-in
+
+`Boundary.namePrefix` is unset by default. Unset, a name-only resource is
+`foreign`: never adopted, never deleted as an orphan — exactly where those two
+kinds were before, so no existing fleet changes behaviour. Set, a resource of
+such a kind is ours when its name starts with the prefix.
+
+Two honest limits. infra **verifies, it does not rename**: a fleet key is the
+cloud-side name, so rewriting it would break that identity everywhere, and a
+resource named outside the prefix is reported rather than fixed. And the
+evidence is weaker than a tag, because the declaration wrote it rather than
+this tool — a stranger using the same prefix in the same project is
+indistinguishable from us. The realm check (`Infra.Cli.Accounts`) bounds that,
+exactly as it bounds an unnamed fleet. An **empty** prefix claims nothing
+rather than everything, which is pinned by a guard.
+
+### Said out loud
+
+The verdict is **said out loud** when it goes against a resource the
 declaration names. `foreign` or `excluded` on a declared, existing resource
 means the fleet manages less than it declares, and nothing else about that
-state is observable: there is no action, no plan line and no row. So
-`push` warns per resource and per apply, naming the verdict and the two ways
-out (exclude it deliberately, or delete it and let the fleet create it).
-Deliberate, not a stopgap: adopting it instead is the failure this model exists
-to prevent.
+state is observable: there is no action, no plan line and no row. So `push`
+warns per resource and per apply, naming the verdict and the way out — and the
+way out now differs by rung, which is why `describeVerdict` takes the evidence:
+"retag it", "set a `namePrefix` and name it accordingly", and "the marker
+cannot be read here" are three different instructions, and a single sentence
+covering all three named none of them.
 
-`createdAt` is `none` for every row above — the `since` cutoff in
-`Infra.Core.Ownership.Boundary` is unexercised outside the module's own
-guards, on real evidence. `Infra.Cli.discover` is the new command that rebuilds
-the ledger from this table for a fleet that already has one.
+`createdAt` is still `none` for most rows — `Boundary.since` has little real
+evidence to work on. Serverless SQL is the exception and reports `created_at`,
+which matters most precisely there: it is the weakest rung, and the cutoff is
+the one thing that strengthens it. `Infra.Cli.discover` rebuilds the ledger
+from this table for a fleet that already has one.
 
-All three of the offline suite's checks give a placeholder backend a fixed
-`ownershipInfo` answer, since the placeholder backends never say `some` on
-their own: `checkOwnershipGate` (`Main.lean`) asserts a matching-but-unmarked
-resource is not adopted, that the run *says* so — captured streams, since the
-warning is the only observable half — and that a marked one is adopted,
-`checkFleetIsolation` asserts that another fleet's marker value is refused,
-that this fleet's own is adopted, that the legacy `"true"` is adopted whatever
-the fleet is called, and that an unnamed fleet still ignores the value,
-`checkOrphanRecheck` asserts a
-`deleteOrphan` refuses when the marker has vanished and proceeds when it has
-not, and `checkDiscover` asserts `discover` rebuilds a row for a marked
-resource and nothing for an unmarked one. None of the three has run against a
-real account yet.
+### Checked offline
+
+The suite gives a placeholder backend a fixed `ownershipInfo` answer, since the
+placeholders report no evidence on their own:
+
+- `checkOwnershipGate` asserts a matching-but-unmarked resource is not adopted,
+  that the run *says* so — captured streams, since the warning is the only
+  observable half — and that a marked one is adopted.
+- `checkFleetIsolation` asserts another fleet's marker value is refused, that
+  this fleet's own is adopted, that the legacy `"true"` is adopted whatever the
+  fleet is called, and that an unnamed fleet still ignores the value.
+- `checkOrphanRecheck` asserts a stripped marker refuses an orphan delete and a
+  present one lets it proceed — then the same two verdicts on the **name** rung
+  through a `namedBackends` double: no prefix refuses, a mismatched prefix
+  refuses and says which prefix, and a matching one deletes.
+- `checkDiscover` rebuilds a lost ledger from the marker rather than from
+  naming.
+
+`Infra/Core/Ownership.lean`'s own `#guard`s carry the rest: the failure
+direction of each rung, that a prefix is a prefix and not a substring, that an
+empty one claims nothing, that the two rungs do not rescue one another, that
+`.unreadable` grants nothing however well configured the boundary is, and that
+the three `foreign` sentences differ from each other.
 
 ## Known defects
 

@@ -196,15 +196,25 @@ nobody.
 
 `checkAccounts` enforces the realm before anything is listed. The marker and
 the boundary are wired into `Engine.push` — the adoption loop and the recheck
-before a `deleteOrphan` both consult `ownershipOf` — for the kinds a backend
-has been taught to read tags for (`Backend.ownershipInfo`): object storage on
-all three clouds and AWS instances, as of this writing. A kind not yet taught
-this falls back to the older rule, a rule about names: a declaration adopts a
-resource because it names it and the cloud has it (`Infra/Core/Engine.lean`),
-unable to distinguish a resource of yours from a stranger's with the same
-name. `Action.actionsOrphaned` itself still only ever consults the ledger —
-it is pure, with no way to reach a live cloud — so it is the two call sites
-around it that do the asking now.
+before a `deleteOrphan` both consult `ownershipOf` — for **every**
+`(cloud, kind)` pair; `Backend.ownershipInfo` reports evidence on one of three
+rungs, and `docs/coverage.md` has the table of which pair is on which:
+
+1. **tags** — real key/value tags or labels, which most objects have;
+2. **a description** — the object has no tags but one writable free-text
+   field, and the marker is serialised into it. Identical semantics: what
+   reaches `ownershipOf` is the same tag list either way;
+3. **the name** — Scaleway's Serverless SQL Database and its mnq queues have
+   neither, so ownership rests on `Boundary.namePrefix`, and infra *verifies*
+   the name rather than writing it.
+
+There is no "not migrated" state left. A backend that cannot answer at all
+(`.unreadable`) is refused rather than falling back to the older rule, which
+was a rule about names: a declaration adopted a resource because it named it
+and the cloud had it, unable to distinguish a resource of yours from a
+stranger's with the same name. `Action.actionsOrphaned` itself still only ever
+consults the ledger — it is pure, with no way to reach a live cloud — so it is
+the two call sites around it that do the asking.
 
 | | Ledger | Cache |
 |---|---|---|
@@ -212,14 +222,16 @@ around it that do the asking now.
 | Path | `.infra/<exe>/infra.ledger.json` | `.infra/<exe>/<provider>/<kind>.json` |
 | Committed | no | no |
 | Written by | `apply` and `destroy`, never `refresh` | every `refresh` |
-| If lost | `infra discover` rebuilds what it can from the marker; a kind not yet migrated still leaves an orphan | nothing. One re-read restores it |
+| If lost | `infra discover` rebuilds it from the marker, for every kind — except one on the name rung in a fleet with no `namePrefix` set | nothing. One re-read restores it |
 
-Losing the ledger therefore has two answers depending on the kind. For one a
-backend can read tags for, `discover` sweeps the account, reads the marker
-back off each resource, and rebuilds the row — nothing is lost. For a kind
-that has not been migrated, a lost row still means a resource that exists and
-still costs money but that nothing can name: the declaration no longer
-mentions it, and there is no marker evidence yet to fall back on.
+Losing the ledger is therefore recoverable almost everywhere: `discover`
+sweeps the account, reads the marker back off each resource, and rebuilds the
+row. The one exception is a resource on the **name** rung in a fleet that has
+not set a `namePrefix` — a Scaleway Serverless SQL Database or mnq queue,
+which carry no marker of their own. There a lost row still means a resource
+that exists and still costs money but that nothing can name. Setting a prefix
+and naming those resources with it is what closes the gap; it is the whole
+reason the field exists.
 
 **A declared resource that exists without the marker is not managed, and is
 told to you.** This is the case the engine used to pass over in silence, and
@@ -238,6 +250,14 @@ adopt it, `destroy` only knows the ledger, and `discover` re-derives from the
 same marker and reaches the same verdict, so only a name-based sweep can see
 it at all (`lake test -- <cloud> sweep`; the procedure is in
 [`../ci/README.md`](../ci/README.md)).
+
+The sentence after the comma differs by rung, because the fix does. A tagged
+kind is told it is "not carrying the 'managed-by-infra' tag". A name-rung
+resource in a fleet with a prefix set is told its name "does not start with
+this fleet's `namePrefix`", and one in a fleet without is told there is no
+prefix set and to set one. Three remedies, three sentences — a reader told to
+retag a resource on a cloud that cannot tag it has been sent to fix the wrong
+thing.
 
 Refusing to claim it is deliberate — a marker is the *only* positive evidence
 of ownership, and adopting on a name match is how you delete a stranger's
@@ -285,10 +305,11 @@ shows up in a plan before it happens, and in a diff when it is reviewed.
 
 Nothing here locks. Two applies at once against one account can interleave, and
 the local ledger of each will disagree with the other. What keeps that from
-being silent, for the kinds the marker covers, is that neither local ledger is
-authoritative — the marker on the resource is, and `discover` reconciles both.
-For a kind not yet migrated, the two ledgers simply disagree and the loser's
-rows are orphans; this is inside the scope this document already assumes
+being silent is that neither local ledger is authoritative — the marker on the
+resource is, and `discover` reconciles both. The exception is a resource on the
+name rung in a fleet with no `namePrefix`, where there is no marker to be
+authoritative: there the two ledgers simply disagree and the loser's rows are
+orphans; this is inside the scope this document already assumes
 (single operator, not a team or CI fleet sharing state). Remote state with a
 lock remains available behind the same `load`/`save` interface as the DB
 option above, and is the answer if that scope grows.

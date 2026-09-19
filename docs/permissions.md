@@ -59,6 +59,45 @@ Three carve-outs, all visible in the documents:
   condition. Passing an arbitrary role to Lambda is running code as that role,
   so this is the one grant that must never be widened to `*`.
 
+### `SecretSource.apiKeyFor` on AWS needs the denied action
+
+`apiKeyFor` mints a credential for an identity and writes the secret half into
+a secret. On AWS that is `iam:CreateAccessKey` — step three of the escalation
+the `NeverMintUsableCredentials` statement exists to close. So under the
+template policy it is refused, with a 403 naming the action, and that is
+**correct rather than a bug in the template**: a role that can create a user,
+attach `AdministratorAccess` to it and mint its key is an administrator, and
+the prefix does not help because the new user is inside it.
+
+The template keeps the `Deny`, because most fleets do not mint keys and the
+ones that do should decide to. If yours does, the narrow way to allow it is a
+`Condition` on the existing `Deny` that exempts your own prefix, rather than
+deleting the statement:
+
+```json
+{
+  "Sid": "NeverMintUsableCredentials",
+  "Effect": "Deny",
+  "Action": ["iam:CreateAccessKey", "…"],
+  "Resource": "*",
+  "Condition": {
+    "ArnNotLike": { "iam:ResourceArn": "arn:aws:iam::ACCOUNT:user/PREFIX*" }
+  }
+}
+```
+
+Be clear about what that buys back: within the prefix, the escalation is open
+again, because this role can still attach a powerful policy to a user it then
+mints a key for. The mitigations that remain are the prefix itself and
+whatever the policies your declarations name actually grant — so an identity
+declared with `policies` should name the narrowest permission it needs, and
+the `iam` grant should be read as "as privileged as the most privileged policy
+this fleet attaches". On Scaleway and GCP the equivalent is the same trade
+under different names: `IAMManager` there, `iam.serviceAccountKeyAdmin` there.
+
+`Kinds.Iam.Aws'.createAccessKey`'s own error names this section, so a 403 in
+the middle of an apply is self-explaining rather than a puzzle.
+
 Read-only breadth has one limit too: `ReadOnlyAndUnscopable` lists *listing*
 actions, never `Get*` wildcards. `secretsmanager:Get*` or `s3:Get*` on `"*"`
 would be account-wide data access, which is not what "read-only" should buy.
@@ -86,17 +125,17 @@ discovered: a run that is missing them looks like a run that is working.
 
 Read off the call sites in `Infra/Providers/Kinds/` — the API each function
 calls is named in the source, so this table is derivable rather than
-remembered. Last checked against the code on 2026-09-11.
+remembered. Last checked against the code on 2026-09-19.
 
 | Kind | Actions | Tag write / read |
 |---|---|---|
 | `queues` | `sqs:CreateQueue`, `DeleteQueue`, `GetQueueUrl`, `GetQueueAttributes`, `SetQueueAttributes`, `ListQueues` | `sqs:TagQueue` / `sqs:ListQueueTags` |
 | `secrets` | `secretsmanager:CreateSecret`, `DeleteSecret`, `DescribeSecret`, `PutSecretValue`, `GetSecretValue`, `ListSecrets` | `secretsmanager:TagResource` / `DescribeSecret` carries them |
-| `imageRegistry` | `ecr:CreateRepository`, `DeleteRepository`, `DescribeRepositories`, `PutImageTagMutability` | *none — ECR repositories are not marked* |
+| `imageRegistry` | `ecr:CreateRepository`, `DeleteRepository`, `DescribeRepositories`, `PutImageTagMutability` | `ecr:TagResource` (at create) / `ecr:ListTagsForResource` |
 | `objectStore`, `s3Bucket` | `s3:CreateBucket`, `DeleteBucket`, `PutBucketVersioning`, `GetBucketVersioning`, `PutBucketObjectLockConfiguration`, `GetBucketObjectLockConfiguration`, `ListAllMyBuckets` | `s3:PutBucketTagging` / `s3:GetBucketTagging` |
 | `securityGroup` | `ec2:CreateSecurityGroup`, `DeleteSecurityGroup`, `AuthorizeSecurityGroupIngress`, `DescribeSecurityGroups` | `ec2:CreateTags` / `DescribeSecurityGroups` carries them |
 | `awsInstance` | `ec2:RunInstances`, `TerminateInstances`, `ModifyInstanceAttribute`, `DescribeInstances`, `DescribeImages` | `ec2:CreateTags` / `DescribeInstances` carries them |
-| `iam` | `iam:CreateUser`, `DeleteUser`, `ListUsers`, `ListAttachedUserPolicies`, `AttachUserPolicy`, `DetachUserPolicy` | `iam:TagUser` / `iam:ListUserTags` |
+| `iam` | `iam:CreateUser`, `DeleteUser`, `ListUsers`, `ListAttachedUserPolicies`, `AttachUserPolicy`, `DetachUserPolicy`, `ListAccessKeys`, `DeleteAccessKey` — **and `CreateAccessKey`, which the template denies**, for `apiKeyFor` only | `iam:TagUser` / `iam:ListUserTags` |
 | `compute` | `lambda:CreateFunction`, `DeleteFunction`, `GetFunction`, `ListFunctions`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, **plus `iam:PassRole`** on the execution role | `lambda:TagResource` / `GetFunction` carries them |
 | `postgres` | `rds:CreateDBInstance`, `DeleteDBInstance`, `ModifyDBInstance`, `DescribeDBInstances` | `rds:AddTagsToResource` / `rds:ListTagsForResource` |
 
@@ -104,6 +143,12 @@ remembered. Last checked against the code on 2026-09-11.
 against the wrong account (`Infra/Providers/Kinds/Identity.lean`). It needs no
 permission — AWS always allows it — which is precisely why that call was chosen
 for the check.
+
+`iam:ListAccessKeys` and `iam:DeleteAccessKey` are on the `iam` row because
+`DeleteUser` refuses while the user holds a key, so a teardown has to strip
+them first. Both are covered by the template's `iam:*` on `PREFIX*` users.
+`iam:CreateAccessKey` is the one that is **explicitly denied** — see the next
+section.
 
 `iam:PassRole` on the `compute` row is the one that is not a Lambda permission
 at all. Creating a function hands it an execution role, and AWS treats that as

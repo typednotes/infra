@@ -150,9 +150,9 @@ private def arnOf (creds : Credentials) (ep : Endpoint) (name : String) : IO (Op
     every other kind's first tranche, though `InstanceCreateTime` is available
     on the instance if a later pass wants it. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   match ← arnOf creds ep name with
-  | none => return none
+  | none => return .unreadable
   | some arn =>
     let root ← Query.call creds ep "ListTagsForResource" version [("ResourceName", arn)]
     let tags := match root.child "ListTagsForResourceResult" with
@@ -161,7 +161,7 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
           | some k, some v => some (k, v)
           | _, _           => none
       | none => []
-    return some (tags, none)
+    return .tags tags none
 
 /-- Only the settings RDS can change in place. Storage can grow but not shrink;
     `ApplyImmediately` avoids the change sitting in a maintenance window where
@@ -214,10 +214,10 @@ private def requireId (creds : Credentials) (name : String) : IO String := do
 
 /-- Tags, for `Ownership.ownershipOf`. -/
 def readOwnership (creds : Credentials) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, _, _, tags) => return some (tags.map Scaleway.decodeTag, none)
-  | none                  => return none
+  | some (_, _, _, tags) => return .tags (tags.map Scaleway.decodeTag) none
+  | none                 => return .unreadable
 
 def read (creds : Credentials) (name : String) :
     IO (String × String × Partial String × Partial Nat) := do
@@ -320,19 +320,26 @@ end Rdb
    PostgreSQL 16 is currently supported. Fixed by sending it, defaulting to
    `"16"`; see `docs/coverage.md` and `CHANGELOG.md`.
 
-   ## Permanent exception: this product cannot be tagged
+   ## Permanent exception: this product cannot be tagged, so the name is the
+   marker
 
-   Confirmed against Scaleway's own API reference (as above) — the
-   Create-Database payload has no `tags` field, and `/databases` and
-   `/databases/{id}` responses carry none either. There is no marker to write
-   and none to read back, so `Backend.ownershipInfo` returns `none` for this
-   kind unconditionally (see `Live.lean`'s `.postgres` arm) and the engine's
-   fail-safe (`Engine.lean`, the 2026-09-10 incident) refuses to adopt or
-   delete-as-orphan any Serverless SQL Database purely on the ledger's say-so.
-   A fleet that already has one from before this fix will see it reported as
-   unmanageable until Scaleway adds tag support — this is a permanent,
-   intentional gap, not a half-implemented feature: see `AGENTS.md`'s "no
-   half-implemented features" rule. -/
+   Re-checked 2026-09-19 against Scaleway's own SDK
+   (`scaleway-sdk-go/api/serverless_sqldb/v1alpha1`), which is generated from
+   the API definition: `CreateDatabaseRequest` is `project_id`, `name`,
+   `cpu_min`, `cpu_max`, `from_backup_id` and nothing else, `UpdateDatabaseRequest`
+   is the two capacity fields, and `Database` carries no `tags` and no
+   `description`. There is genuinely nothing writable on one of these but the
+   name it was created with.
+
+   So this kind sits on the **third rung** of `Ownership`'s ladder —
+   `Evidence.named`, decided by `Boundary.namePrefix` — rather than being
+   unverifiable outright, which is what it used to be. A fleet that sets a
+   prefix and names its databases with it manages them like anything else; a
+   fleet that does not is exactly where it was, and `push` now says which of
+   the two it is instead of only "cannot verify".
+
+   Unlike most kinds here, `created_at` **is** reported, so `Boundary.since`
+   works on this rung too. -/
 namespace ServerlessSql
 
 private def prefix' (region : String) : String :=
@@ -425,6 +432,20 @@ def modify (creds : Credentials) (name : String) (minCapacity maxCapacity : Nat)
     (payload := some (.object
       [ ("cpu_min", .number (Float.ofNat minCapacity))
       , ("cpu_max", .number (Float.ofNat maxCapacity)) ]))
+
+/-- Ownership, on the name rung. See the note above this namespace.
+
+    `listRaw` does not carry `created_at`, so this reads the database object
+    itself: the cutoff is worth a call here precisely because the name rung is
+    the weakest evidence in the system, and `since` is the one thing that can
+    strengthen it. -/
+def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
+  match ← (requireId creds name).toBaseIO with
+  | .error _ => return .unreadable
+  | .ok id   =>
+    match ← (Scaleway.call creds "GET" (prefix' creds.region ++ s!"/databases/{id}")).toBaseIO with
+    | .error _ => return .unreadable
+    | .ok d    => return .named name (stringField d "created_at")
 
 /-- Delete the database. -/
 def delete (creds : Credentials) (name : String) : IO Unit := do

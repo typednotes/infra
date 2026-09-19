@@ -112,7 +112,7 @@ def create (creds : Credentials) (ep : Endpoint) (name image role markerValue : 
     rather than a list of pairs. `createdAt` is left `none`, matching every
     other kind's first tranche. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
   let tags := match field whole "Tags" with
     | some (.object fields) => fields.filterMap fun (k, v) =>
@@ -120,7 +120,7 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
         | .string s => some (k, s)
         | _         => none
     | _ => []
-  return some (tags, none)
+  return .tags tags none
 
 /-- Configuration and code are separate endpoints, so an update is two calls. -/
 def update (creds : Credentials) (ep : Endpoint) (name image role : String)
@@ -167,10 +167,10 @@ private def requireId (creds : Credentials) (name : String) : IO String := do
 /-- Tags, for `Ownership.ownershipOf`. `list`'s reply already carries each
     container's flat `tags: []string` — see `Scaleway.decodeTag`. -/
 def readOwnership (creds : Credentials) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
-  | none               => return none
+  | some (_, _, tags) => return .tags (tags.map Scaleway.decodeTag) none
+  | none              => return .unreadable
 
 private def listNamespacesRaw (creds : Credentials) :
     IO (List (String × String × List String)) := do
@@ -196,10 +196,10 @@ private def namespaceId (creds : Credentials) (name : String) : IO String := do
     namespace holds, so a namespace claimed by name alone can take an
     unmanaged sibling container down with it. -/
 def readNamespaceOwnership (creds : Credentials) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   match (← listNamespacesRaw creds).find? (·.1 == name) with
-  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
-  | none               => return none
+  | some (_, _, tags) => return .tags (tags.map Scaleway.decodeTag) none
+  | none              => return .unreadable
 
 /-- Public alias of `namespaceId`, for the namespace kind's own operations. -/
 def namespaceIdOfName (creds : Credentials) (name : String) : IO String :=
@@ -445,10 +445,10 @@ private def requireId (creds : Credentials) (name : String) : IO String := do
 
 /-- Tags, for `Ownership.ownershipOf`. -/
 def readOwnership (creds : Credentials) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   match (← listRaw creds).find? (·.1 == name) with
-  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
-  | none               => return none
+  | some (_, _, tags) => return .tags (tags.map Scaleway.decodeTag) none
+  | none              => return .unreadable
 
 private def listNamespacesRaw (creds : Credentials) :
     IO (List (String × String × List String)) := do
@@ -477,10 +477,10 @@ def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
 
 /-- Tags, for `Ownership.ownershipOf`, on the namespace. -/
 def readNamespaceOwnership (creds : Credentials) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   match (← listNamespacesRaw creds).find? (·.1 == name) with
-  | some (_, _, tags) => return some (tags.map Scaleway.decodeTag, none)
-  | none               => return none
+  | some (_, _, tags) => return .tags (tags.map Scaleway.decodeTag) none
+  | none              => return .unreadable
 
 def read (creds : Credentials) (name : String) :
     IO (String × Partial (Option String) × String) := do

@@ -87,8 +87,18 @@ listed in `docs/providers.md`; the shapes are:
 
 - **A field one cloud cannot express.** Reported `unknown` there, and by the
   rule in `docs/diff-semantics.md` `unknown` is never drift — so the target is
-  accepted and the field quietly unenforced. `iam.policies` on Scaleway is the
-  clearest case: AWS policy ARNs have no counterpart.
+  accepted and the field quietly unenforced. `imageRegistry.immutableTags` on
+  Scaleway is the clearest case: there is no tag-immutability concept to map
+  to.
+
+  `iam.policies` used to be the example here, on the grounds that AWS policy
+  ARNs have no Scaleway counterpart. It is worth keeping as a *counter*-example:
+  that was a statement about the spelling, not about the concept, and all three
+  clouds do name bundles of permissions and grant them to a principal. Changing
+  what the field means — the cloud's own name for a permission set, at that
+  cloud's natural scope — made it portable, where reporting `unknown` had
+  quietly left a declared permission ungranted on one cloud out of three. An
+  exception worth re-reading occasionally rather than inheriting.
 - **A field one cloud requires and the other has no concept of.** Optional in
   the spec, with the backend that needs it raising a named error.
   `compute.executionRole` (Lambda) and `compute.namespace'` (Scaleway

@@ -8,12 +8,34 @@ import Infra.Core.Ledger
   both directions. It is the replacement for an earlier answer that could not
   work (see below). `Engine.push` calls `ownershipOf` from two places — the
   adoption loop, and the recheck immediately before a `deleteOrphan` runs —
-  for every `(cloud, kind)` whose backend can report a resource's tags
-  (`Backend.ownershipInfo`); `Infra.Providers.Live` writes the marker on
-  create for those same kinds. A kind not yet taught to report tags still
-  falls back to the ledger alone, unchanged from before this module existed.
-  The `#guard`s below pin the semantics this is meant to have, independent of
-  which kinds are wired up.
+  and `Infra.Providers.Live` writes the marker on create. The `#guard`s below
+  pin the semantics this is meant to have, independent of which kinds are
+  wired up.
+
+  ## Where the marker is written, when tags are not available
+
+  Not every cloud lets every kind carry tags, and a marker that cannot be
+  written is a marker that cannot be read back. So a backend picks the
+  strongest of three rungs for each `(cloud, kind)` it serves:
+
+  1. **Tags.** Real key/value tags, which most kinds have. `Evidence.tags`.
+  2. **A description.** No tags here, but one writable free-text field — GCP's
+     service-account `description`, Scaleway's API-key `description`. The
+     marker is serialised into it with `encodeMarkerText` and decoded back with
+     `decodeMarkerText`, so what reaches this module is *also* `Evidence.tags`:
+     the semantics are identical and only the bytes live somewhere else. This
+     module deliberately cannot tell the two apart, which is what keeps the
+     rule in one place.
+  3. **The name, and nothing else.** Scaleway's Serverless SQL Database and its
+     mnq queues offer no writable field at all beyond the name they were
+     created with. `Evidence.named` says so, and ownership then rests on
+     `Boundary.namePrefix`. Because infra never renames anything, that rung is
+     a *check on what the declaration already says* rather than a marker this
+     tool writes — which is weaker, and is why it is the last rung and why it
+     is opt-in.
+
+  `Evidence.unreadable` is not a rung: it means the backend could not find out,
+  which is refused rather than guessed.
 
   ## Why not a committed ledger
 
@@ -89,6 +111,66 @@ def markerKey : String := "managed-by-infra"
     unmanageable for having been created early. -/
 def legacyMarkerValue : String := "true"
 
+/-! ## The marker, written into a free-text field
+
+  The second rung of the ladder in the module note. Two clouds have a kind
+  with no tags and exactly one writable string on it, and `key=value` in that
+  string is a marker in every sense that matters: this tool writes it, reads
+  it back, and nothing else has a reason to produce it.
+
+  The serialisation is deliberately the same one `Scaleway.encodeTag` uses for
+  that cloud's flat `[]string` tags — same shape, same "first `=` splits key
+  from the rest" rule — because it is the same problem: a key/value pair that
+  has to travel inside a single string. It lives here rather than there
+  because GCP needs it too and must not depend on the Scaleway client. -/
+
+/-- The marker as one string, for a field that holds one string. -/
+def encodeMarkerText (value : String) : String := markerKey ++ "=" ++ value
+
+/-- Read a marker back out of such a field, as the tag list the rest of this
+    module speaks in.
+
+    A field holding something else entirely — a description a human wrote —
+    decodes to a single tag whose key is that text and whose value is empty,
+    which `markedBy` then correctly refuses. It is *not* dropped: a field that
+    silently decoded to `[]` would read the same as a field this tool had
+    never touched, and those two must stay distinguishable in a listing. -/
+def decodeMarkerText (s : String) : List (String × String) :=
+  if s.isEmpty then [] else
+  match s.splitOn "=" with
+  | k :: rest =>
+    if rest.isEmpty then [(k, "")] else [(k, String.intercalate "=" rest)]
+  | [] => [(s, "")]
+
+/-- What a backend was able to find out about one resource's ownership.
+
+    Four answers rather than `Option (tags × createdAt)`, because "this cloud
+    cannot tag this kind, here is the only thing it can tell you" and "this
+    backend could not find out" are different situations with different
+    remedies, and collapsing them is what lets a permanent gap masquerade as
+    an unfinished one. See the ladder in the module note.
+
+    `createdAt` rides along on the two informative constructors so that
+    `Boundary.since` applies to both rungs; it is ISO-8601 in UTC, or `none`
+    where the provider does not report one. -/
+inductive Evidence
+  /-- Real tags, or a marker decoded out of a description — see
+      `decodeMarkerText`. Indistinguishable here on purpose. -/
+  | tags (tags : List (String × String)) (createdAt : Option String)
+  /-- This `(cloud, kind)` has no writable marker field at all; the resource's
+      own name is the whole of the evidence. `Boundary.namePrefix` decides. -/
+  | named (name : String) (createdAt : Option String)
+  /-- Nothing could be read: a kind no backend has been taught, or a call that
+      failed. Never claimed and never destroyed on this answer. -/
+  | unreadable
+  deriving Repr, DecidableEq, BEq
+
+/-- When the provider says the resource was created, where it says so. -/
+def Evidence.createdAt : Evidence → Option String
+  | .tags _ t   => t
+  | .named _ t  => t
+  | .unreadable => none
+
 /-- Where a resource sits relative to this tool.
 
     Three states rather than two, because "not ours" has two causes that must
@@ -159,6 +241,33 @@ structure Boundary where
       same name, so this separates *fleets that agree to be separate*. The
       realm (`Infra.Cli.Accounts`) is still the hard container. -/
   fleetName  : Option String := none
+  /-- The prefix every resource of a kind that **cannot carry a marker** must
+      be named with, for this fleet to claim it.
+
+      The third rung of the ladder in the module note, and the only one where
+      the evidence is something the *declaration* wrote rather than something
+      this tool did. Two `(cloud, kind)` pairs need it today — Scaleway's
+      Serverless SQL Database and its mnq queues — because neither has tags,
+      labels, a description, or any other writable field to put a marker in.
+
+      **Verified, never applied.** infra does not rename anything and does not
+      add the prefix for you: a fleet key is the cloud-side name (see
+      `Keys.name`), and rewriting it would break that identity everywhere. So
+      this asks a question about the names already in the declaration, and
+      `push` warns by name about every one that fails to answer it.
+
+      `none` — the default — means there is no marker to check, so such a
+      resource is `foreign`: never adopted, and never deleted as an orphan.
+      That is exactly the behaviour these kinds had before this field existed,
+      which is what keeps an existing fleet unchanged until it opts in.
+
+      Weaker than a tag, and worth being plain about how. A tag is written by
+      this tool at create; a prefix is written by whoever typed the name, so a
+      stranger who happens to use the same prefix in the same project is
+      indistinguishable from us. The realm check (`Infra.Cli.Accounts`) is
+      what bounds that, exactly as it bounds `fleetName := none`. Prefer a
+      prefix nobody would pick by accident — a fleet name, not `db-`. -/
+  namePrefix : Option String := none
 
 /-- Whether the marker is present *and* claimed by this fleet, given the tags
     a listing reported.
@@ -176,6 +285,18 @@ def markedBy (fleet : Option String) (tags : List (String × String)) : Bool :=
       (match fleet with
        | none    => true
        | some me => t.2 == me || t.2 == legacyMarkerValue)
+
+/-- The same question for a resource whose name is the only evidence there is.
+
+    An **empty** prefix answers `false`, not `true`. It would otherwise match
+    every name in the account, turning the weakest rung of the ladder into a
+    blanket claim on everything — precisely the exclusion-shaped reasoning the
+    module note explains fails dangerous. A fleet that wants to claim by name
+    has to say which names. -/
+def markedByName (prefix' : Option String) (name : String) : Bool :=
+  match prefix' with
+  | none   => false
+  | some p => !p.isEmpty && name.startsWith p
 
 /-- The decision.
 
@@ -196,22 +317,30 @@ def markedBy (fleet : Option String) (tags : List (String × String)) : Bool :=
     "new" would silently claim. Neither is acceptable, so the cutoff simply
     does not apply and the marker decides. -/
 def ownershipOf (b : Boundary) (cloud : ProviderId) (k : Kind) (name : String)
-    (tags : List (String × String)) (createdAt : Option String) : Ownership :=
-  if b.exclusions.any (fun e => e.cloud == cloud && e.kind == k && e.name == name) then
+    (e : Evidence) : Ownership :=
+  if b.exclusions.any (fun x => x.cloud == cloud && x.kind == k && x.name == name) then
     .excluded
-  else if !markedBy b.fleetName tags then
-    .foreign
   else
-    match b.since, createdAt with
-    | some cutoff, some made => if made < cutoff then .excluded else .managed
-    | _,           _         => .managed
+    -- One line per rung of the ladder, and `unreadable` grants nothing. Which
+    -- rung a `(cloud, kind)` is on is the backend's business, not this rule's.
+    let claimed := match e with
+      | .tags ts _  => markedBy b.fleetName ts
+      | .named nm _ => markedByName b.namePrefix nm
+      | .unreadable => false
+    if !claimed then
+      .foreign
+    else
+      match b.since, e.createdAt with
+      | some cutoff, some made => if made < cutoff then .excluded else .managed
+      | _,           _         => .managed
 
 /-- Whether this tool may destroy the resource. The only caller that matters. -/
 def Ownership.isOurs : Ownership → Bool
   | .managed => true
   | _        => false
 
-/-- The verdict, as a warning line's worth of English.
+/-- The verdict, as a warning line's worth of English — and, when it is not
+    ours, which rung of the ladder said so.
 
     There is one place this is needed and it is the case that used to be
     silent: a declaration names a resource, the resource exists, and it is not
@@ -224,11 +353,28 @@ def Ownership.isOurs : Ownership → Bool
     every path: `push` will not adopt it, `destroy` only knows the ledger, and
     `discover` re-derives from the same marker and reaches the same verdict.
     Only a name-based sweep can see it. So the warning is the whole remedy the
-    tool offers, and it has to name the fix. -/
-def Ownership.describe : Ownership → String
+    tool offers, and it has to name the fix.
+
+    It takes the `Evidence` as well as the verdict because the three `foreign`
+    cases call for three different actions — retag it, rename it, or teach the
+    backend — and a single sentence covering all three would name none of
+    them. -/
+def describeVerdict (b : Boundary) (e : Evidence) : Ownership → String
   | .managed  => "managed"
   | .excluded => "excluded from management, by the boundary or a release"
-  | .foreign  => s!"not carrying the '{markerKey}' tag, so not ours"
+  | .foreign  =>
+    match e with
+    | .tags _ _   => s!"not carrying the '{markerKey}' tag, so not ours"
+    | .named nm _ =>
+      match b.namePrefix with
+      | some pre => s!"named '{nm}', which does not start with this fleet's \
+`namePrefix` '{pre}' — and this cloud cannot tag this kind, so the name is the \
+only marker there is"
+      | none     => s!"of a kind this cloud cannot tag, and no `namePrefix` is \
+set on this fleet's boundary, so there is no marker to check. Set one, and name \
+this resource with it"
+    | .unreadable => "of a kind whose marker this backend cannot read, so \
+unverifiable"
 
 /-! ## Guards
 
@@ -238,78 +384,182 @@ def Ownership.describe : Ownership → String
 
 private def anyKind : Kind := .queues
 
+/-- `Evidence.tags` with no creation time — what most of these assertions want
+    to say, written once so the rung under test is the visible part. -/
+private def tagged (ts : List (String × String)) : Evidence := .tags ts none
+
 /- The marker grants ownership, and its absence withholds it. -/
-#guard ownershipOf {} .aws anyKind "x" [(markerKey, "mine")] none = .managed
-#guard ownershipOf {} .aws anyKind "x" [] none = .foreign
-#guard ownershipOf {} .aws anyKind "x" [("team", "infra")] none = .foreign
+#guard ownershipOf {} .aws anyKind "x" (tagged [(markerKey, "mine")]) = .managed
+#guard ownershipOf {} .aws anyKind "x" (tagged []) = .foreign
+#guard ownershipOf {} .aws anyKind "x" (tagged [("team", "infra")]) = .foreign
 
 /- *The* safety property: something nobody mentioned is not ours. An empty
    boundary claims nothing, so a first run against a populated account proposes
    no deletions at all. -/
-#guard ownershipOf {} .aws anyKind "someone-elses-bucket" [] none = .foreign
+#guard ownershipOf {} .aws anyKind "someone-elses-bucket" (tagged []) = .foreign
 
 /- ### The fleet's own name, in the value
 
    Unset, the value is not read at all — which is the behaviour that existed
    before the field, and is what keeps this change from touching any fleet that
    does not ask for it. -/
-#guard ownershipOf {} .aws anyKind "x" [(markerKey, "some-other-fleet")] none = .managed
+#guard ownershipOf {} .aws anyKind "x" (tagged [(markerKey, "some-other-fleet")]) = .managed
 
 /- Set, a value that is not ours is `foreign`: the same verdict as no marker,
    and the same consequence — left alone. This is the isolation the field is
    for, and the direction it has to fail in. -/
 #guard ownershipOf { fleetName := some "mine" }
-         .aws anyKind "x" [(markerKey, "theirs")] none = .foreign
+         .aws anyKind "x" (tagged [(markerKey, "theirs")]) = .foreign
 #guard ownershipOf { fleetName := some "mine" }
-         .aws anyKind "x" [(markerKey, "mine")] none = .managed
+         .aws anyKind "x" (tagged [(markerKey, "mine")]) = .managed
 
 /- The legacy value matches every fleet, permanently: naming a fleet must not
    turn an estate tagged before the name existed into somebody else's. This is
    the assertion to read if `legacyMarkerValue` is ever tempting to remove. -/
 #guard ownershipOf { fleetName := some "mine" }
-         .aws anyKind "x" [(markerKey, legacyMarkerValue)] none = .managed
+         .aws anyKind "x" (tagged [(markerKey, legacyMarkerValue)]) = .managed
 
 /- And the value never *grants* what the key did not: a fleet's own name under
    some other key is not a marker. -/
 #guard ownershipOf { fleetName := some "mine" }
-         .aws anyKind "x" [("owner", "mine")] none = .foreign
+         .aws anyKind "x" (tagged [("owner", "mine")]) = .foreign
 
 /- An exclusion overrides the marker, not the other way round. This is what
    makes a released resource stay released even though this tool created it and
    tagged it. -/
 #guard ownershipOf { exclusions := [⟨.aws, anyKind, "x", "released 2026-09-06"⟩] }
-         .aws anyKind "x" [(markerKey, "mine")] none = .excluded
+         .aws anyKind "x" (tagged [(markerKey, "mine")]) = .excluded
 
 /- An exclusion is per cloud and per kind, not by name alone: two clouds can
    hold resources of the same name, and this example does. -/
 #guard ownershipOf { exclusions := [⟨.aws, anyKind, "x", "why"⟩] }
-         .scaleway anyKind "x" [(markerKey, "mine")] none = .managed
+         .scaleway anyKind "x" (tagged [(markerKey, "mine")]) = .managed
 
 /- The cutoff ages out a marked resource older than adoption. -/
 #guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
-         .aws anyKind "x" [(markerKey, "mine")] (some "2026-08-01T00:00:00Z") = .excluded
+         .aws anyKind "x" (.tags [(markerKey, "mine")] (some "2026-08-01T00:00:00Z")) = .excluded
 #guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
-         .aws anyKind "x" [(markerKey, "mine")] (some "2026-09-15T00:00:00Z") = .managed
+         .aws anyKind "x" (.tags [(markerKey, "mine")] (some "2026-09-15T00:00:00Z")) = .managed
 
 /- An unknown creation time does not age anything out, and does not claim
    anything either: the marker decides alone. Guessing in either direction
    would be a silent wrong answer. -/
 #guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
-         .aws anyKind "x" [(markerKey, "mine")] none = .managed
+         .aws anyKind "x" (tagged [(markerKey, "mine")]) = .managed
 #guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
-         .aws anyKind "x" [] none = .foreign
+         .aws anyKind "x" (tagged []) = .foreign
 
 /- And the cutoff never promotes: an unmarked resource created yesterday is
    still not ours. The cutoff is a backstop on the marker, never a substitute
    for it, which is the difference between this and "assume everything new is
    mine". -/
 #guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
-         .aws anyKind "x" [] (some "2026-09-15T00:00:00Z") = .foreign
+         .aws anyKind "x" (.tags [] (some "2026-09-15T00:00:00Z")) = .foreign
+
+/-! ### The description rung
+
+  A marker in a free-text field is the same marker, and these pin that: what
+  `encodeMarkerText` writes, `decodeMarkerText` reads back as the very tag list
+  the assertions above are written against. The two rungs are then
+  indistinguishable to `ownershipOf`, which is the property that keeps the rule
+  in one place. -/
+
+#guard decodeMarkerText (encodeMarkerText "my-fleet") = [(markerKey, "my-fleet")]
+#guard ownershipOf { fleetName := some "my-fleet" }
+         .gcp .iam "sa" (tagged (decodeMarkerText (encodeMarkerText "my-fleet"))) = .managed
+#guard ownershipOf { fleetName := some "my-fleet" }
+         .gcp .iam "sa" (tagged (decodeMarkerText (encodeMarkerText "other-fleet"))) = .foreign
+
+/- A description somebody wrote by hand is not a marker — and, importantly, it
+   does not decode to `[]` either, so a listing can still tell "described by a
+   human" from "never touched". -/
+#guard decodeMarkerText "the CI deploy identity" = [("the CI deploy identity", "")]
+#guard ownershipOf {} .gcp .iam "sa" (tagged (decodeMarkerText "the CI deploy identity"))
+     = .foreign
+#guard decodeMarkerText "" = []
+
+/-! ### The name rung
+
+  The weakest rung, and the one whose failure directions are worth the most
+  care: this is the only evidence infra does not itself write. -/
+
+/- With no prefix configured there is no marker to check, so nothing is ours.
+   This is the pre-existing behaviour of every untaggable kind, now stated as a
+   rule rather than left to the engine's `none` branch. -/
+#guard ownershipOf {} .scaleway .postgres "secrets-db" (.named "secrets-db" none) = .foreign
+
+/- With one configured, the prefix grants and its absence withholds — the same
+   inclusion-marker shape as the tag rung. -/
+#guard ownershipOf { namePrefix := some "typednotes-" }
+         .scaleway .postgres "typednotes-secrets-db"
+         (.named "typednotes-secrets-db" none) = .managed
+#guard ownershipOf { namePrefix := some "typednotes-" }
+         .scaleway .postgres "secrets-db" (.named "secrets-db" none) = .foreign
+
+/- A prefix is a *prefix*, not a substring: a stranger's resource that merely
+   contains the fleet's name somewhere is not ours. Matching anywhere in the
+   string would claim `staging-typednotes-db`, which belongs to somebody else. -/
+#guard ownershipOf { namePrefix := some "typednotes-" }
+         .scaleway .postgres "staging-typednotes-db"
+         (.named "staging-typednotes-db" none) = .foreign
+
+/- An empty prefix claims nothing. It would otherwise match every name in the
+   account — the one way this rung could turn into the exclusion-shaped rule
+   the module note explains must never decide ownership. -/
+#guard ownershipOf { namePrefix := some "" }
+         .scaleway .postgres "anything" (.named "anything" none) = .foreign
+
+/- The boundary's other two controls still apply on this rung. A prefix is
+   evidence like any other, so an exclusion still overrides it and the `since`
+   cutoff still ages it out; neither may be quietly tag-only. -/
+#guard ownershipOf { namePrefix := some "tn-"
+                     exclusions := [⟨.scaleway, .postgres, "tn-db", "released"⟩] }
+         .scaleway .postgres "tn-db" (.named "tn-db" none) = .excluded
+#guard ownershipOf { namePrefix := some "tn-", since := some "2026-09-01T00:00:00Z" }
+         .scaleway .postgres "tn-db" (.named "tn-db" (some "2026-08-01T00:00:00Z")) = .excluded
+#guard ownershipOf { namePrefix := some "tn-", since := some "2026-09-01T00:00:00Z" }
+         .scaleway .postgres "tn-db" (.named "tn-db" (some "2026-09-15T00:00:00Z")) = .managed
+
+/- The two rungs do not leak into one another. A prefix must not rescue a
+   resource whose tags say it is somebody else's, and a marker tag must not
+   rescue a name-only resource that is misnamed — otherwise the ladder would be
+   a disjunction of weak tests rather than one test per kind. -/
+#guard ownershipOf { fleetName := some "mine", namePrefix := some "mine-" }
+         .aws anyKind "mine-x" (tagged [(markerKey, "theirs")]) = .foreign
+#guard ownershipOf { fleetName := some "mine", namePrefix := some "mine-" }
+         .scaleway .postgres "theirs-x" (.named "theirs-x" none) = .foreign
+
+/-! ### Unreadable
+
+  Not a rung: it grants nothing, whatever else is configured. A fleet that
+  named itself and set a prefix still cannot claim a resource whose marker
+  nobody could read — which is what stops "we could not check" from decaying
+  into "assume yes" the moment a boundary is well configured. -/
+#guard ownershipOf { fleetName := some "mine", namePrefix := some "" } .aws anyKind "x"
+         .unreadable = .foreign
+#guard ownershipOf { fleetName := some "mine", namePrefix := some "x" } .aws anyKind "x"
+         .unreadable = .foreign
+#guard Evidence.unreadable.createdAt = none
+
+/-! ### The warnings
+
+  Three `foreign` cases with three different remedies, so three different
+  sentences. A reader who is told "not carrying the tag" about a resource on a
+  cloud that cannot tag it has been sent to fix the wrong thing. -/
+
+private def b0 : Boundary := {}
+private def bPre : Boundary := { namePrefix := some "tn-" }
+
+#guard describeVerdict b0 (tagged []) .foreign
+     != describeVerdict b0 (.named "x" none) .foreign
+#guard describeVerdict b0 (.named "x" none) .foreign
+     != describeVerdict bPre (.named "x" none) .foreign
+#guard describeVerdict b0 .unreadable .foreign != describeVerdict b0 (tagged []) .foreign
 
 /- The two unowned verdicts must not read the same: "nobody told us about
    this" and "we were told to leave it alone" call for different actions from
    whoever reads the warning. -/
-#guard Ownership.foreign.describe != Ownership.excluded.describe
+#guard describeVerdict b0 (tagged []) .foreign != describeVerdict b0 (tagged []) .excluded
 
 /- Only `managed` is destroyable. -/
 #guard Ownership.managed.isOurs = true

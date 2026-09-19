@@ -76,7 +76,7 @@ def readVisibilityTimeout (creds : Credentials) (ep : Endpoint) (name : String) 
 
     `tags` is a top-level `CreateQueue` field (distinct from `Attributes`),
     which real SQS accepts and Scaleway's mnq — SQS-*compatible*, not a full
-    reimplementation — does not: see the permanent exception below.
+    reimplementation — does not: see `readOwnershipByName` below.
     `Live.lean` passes the ownership marker here for AWS and an empty list
     for Scaleway, so this stays one shared function rather than forking on
     provider inside it. -/
@@ -97,23 +97,12 @@ def createQueue (creds : Credentials) (ep : Endpoint) (name : String)
     separate call keyed by `QueueUrl`, same gap as EC2/RDS/IAM.
     `createdAt` is left `none`, matching every other kind's first tranche.
 
-    ## Permanent exception: Scaleway mnq queues cannot be tagged
-
-    Scaleway's SQS-compatible endpoint does not implement `TagQueue`/
-    `ListQueueTags`/the `tags` field on `CreateQueue` — it is a compatibility
-    shim over a different underlying product, not a full SQS reimplementation.
-    There is no marker to write and none to read back on that cloud, so
-    `Backend.ownershipInfo` returns `none` for `.queues` there unconditionally
-    (see `Live.lean`), and the engine's fail-safe (`Engine.lean`, the
-    2026-09-10 incident) refuses to adopt or delete-as-orphan a Scaleway queue
-    on the ledger's say-so alone. This is a permanent, intentional gap, not a
-    half-implemented feature: see `AGENTS.md`'s "no half-implemented
-    features" rule. -/
+    Scaleway's queues go to `readOwnershipByName` below instead. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
-    IO (Option (List (String × String) × Option String)) := do
+    IO Evidence := do
   let attempt ← (queueUrl creds ep name).toBaseIO
   match attempt with
-  | .error _ => return none
+  | .error _ => return .unreadable
   | .ok url =>
     let reply ← Json.call creds ep (target "ListQueueTags")
       (.object [("QueueUrl", .string url)]) protocolVersion
@@ -123,7 +112,33 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
           | .string s => some (k, s)
           | _         => none
       | _ => []
-    return some (tags, none)
+    return .tags tags none
+
+/-- Ownership for a **Scaleway** queue, which has no marker to carry.
+
+    ## Permanent exception: Scaleway mnq queues cannot be tagged
+
+    Scaleway's SQS-compatible endpoint does not implement `TagQueue`/
+    `ListQueueTags`/the `tags` field on `CreateQueue` — it is a compatibility
+    shim over a different underlying product, not a full SQS reimplementation.
+    There is nothing writable on a queue but the name it was created with, so
+    this is the **third rung** of `Ownership`'s ladder: `Evidence.named`, and
+    `Boundary.namePrefix` decides.
+
+    That is a real improvement on what was here before, which was `none` —
+    "this backend cannot tell you", which made a Scaleway queue permanently
+    unadoptable and undeletable-as-orphan however the fleet was configured. A
+    fleet that sets `namePrefix` and names its queues with it now manages them
+    like anything else; a fleet that does not is exactly where it was.
+
+    The `queueUrl` call is what establishes the queue is really there: without
+    it this would happily report a name for a queue that does not exist, and
+    `discover` would write a ledger row for nothing. -/
+def readOwnershipByName (creds : Credentials) (ep : Endpoint) (name : String) :
+    IO Evidence := do
+  match ← (queueUrl creds ep name).toBaseIO with
+  | .error _ => return .unreadable
+  | .ok _    => return .named name none
 
 def setVisibilityTimeout (creds : Credentials) (ep : Endpoint) (name : String)
     (visibilityTimeoutSec : Nat) : IO Unit := do
