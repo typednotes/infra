@@ -219,7 +219,20 @@ def readPolicies (creds : Credentials) (project accountId : String) :
 def setPolicies (creds : Credentials) (project accountId : String)
     (wanted : List String) : IO Unit := do
   let member := s!"serviceAccount:{emailOf project accountId}"
-  let policy ← getPolicy creds project
+  -- Named, because this is the one call here that needs a project-level
+  -- permission rather than a service-account-level one, and a CI identity
+  -- holding `roles/iam.serviceAccountAdmin` and nothing else does not have
+  -- it. `readPolicies` answers `unknown` in that case and diverges from
+  -- nothing, so a fleet that declares no policies never reaches this; one
+  -- that does should be told which grant is missing rather than shown
+  -- Google's own message about a resource it did not know it was touching.
+  let policy ← match ← (getPolicy creds project).toBaseIO with
+    | .ok v    => pure v
+    | .error e => throw (IO.userError s!"gcp iam: cannot read project \
+'{project}''s IAM policy, which is where a role is bound — so the roles \
+declared for '{accountId}' cannot be reconciled.\n  This needs \
+`resourcemanager.projects.getIamPolicy` (and `setIamPolicy` to write), which \
+`roles/iam.serviceAccountAdmin` does not include.\n  {e}")
   let bindings := arrayField policy "bindings"
   let conditional := bindings.filter fun b =>
     isConditional b && (stringArrayField b "members").contains member
@@ -333,6 +346,23 @@ def createKey (creds : Credentials) (project accountId : String) :
     | some bytes => return (keyId, String.fromUTF8! bytes)
     | none       => throw (IO.userError
         s!"gcp iam: the key for '{accountId}' is not valid base64")
+
+/-- The **user-managed** keys of a service account, by key id.
+
+    Filtered on both sides — the `keyTypes` query parameter and the returned
+    `keyType` — because every service account also carries Google-managed
+    keys it rotates itself, which are not ours, cannot be deleted, and would
+    make "this account has no keys" impossible to assert.
+
+    Its only caller is the live test, which uses it to prove that deleting a
+    minted-key secret really deletes the key. -/
+def listUserKeys (creds : Credentials) (project accountId : String) :
+    IO (List String) := do
+  let reply ← Gcp.call creds "GET" host (saPath project accountId ++ "/keys")
+    [("keyTypes", some "USER_MANAGED")]
+  return (arrayField reply "keys").filterMap fun k =>
+    if stringField k "keyType" == some "SYSTEM_MANAGED" then none
+    else (stringField k "name").map fun n => (n.splitOn "/").getLast!
 
 /-- Delete one key. Already gone is not an error, and neither is a
     Google-managed key refusing to be deleted — those are not ours to remove

@@ -50,7 +50,7 @@ Three files:
 `lean-toolchain`
 
 ```
-leanprover/lean4:v4.33.1
+leanprover/lean4:v4.34.0
 ```
 
 `lakefile.lean`
@@ -64,7 +64,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.10.1"
+require infra from git "https://github.com/typednotes/infra" @ "v0.11.0"
 
 @[default_target]
 lean_exe «my-infra» where

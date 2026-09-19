@@ -4,15 +4,15 @@ import Infra
   # The test driver: offline by default, live on request
 
   `lake test` runs the offline checks and touches no cloud. `lake test -- aws`
-  (or `scaleway`, or `gcp`) creates eight or nine real resources, checks the
+  (or `scaleway`, or `gcp`) creates ten to twelve real resources, checks the
   fleet converged, and deletes them again.
 
   ## What a leg creates
 
-  Eleven of the fourteen kinds, on the clouds that have them, in three
+  Thirteen of the fourteen kinds, on the clouds that have them, in three
   dependency shapes — see the notes above the fleets and above the guards for
-  which three kinds are excluded, and why each is a real obstacle rather than
-  a to-do.
+  the one kind that is excluded, and why it is a real obstacle rather than a
+  to-do.
 
   This began as one queue per cloud, and the reasoning for that choice is
   still the reasoning behind every name here: region-scoped rather than
@@ -51,6 +51,40 @@ open Infra.Specs
 /-- The common prefix. Anything in an account with this name was created by a
     CI run of this repository and can be deleted. -/
 def ciPrefix : String := "ci-tests-infra-"
+
+/-- The boundary every live stage runs under.
+
+    `namePrefix` is the whole of it, and it is here because of one resource:
+    a Scaleway mnq queue has no tags, no description and no other writable
+    field, so the only marker it can carry is the name it was created with
+    (`Infra.Core.Ownership`'s third rung). Without a prefix to check that
+    against, the queue is `foreign` — never adopted, never deleted as an
+    orphan — and `ci-tests-infra-` is exactly the prefix every resource here
+    already has.
+
+    `fleetName` is deliberately **not** set. Setting it would make the marker
+    carry a name, which sounds like more coverage and is less: every resource
+    these legs touch is one they created moments earlier, so the value would
+    always match, and the interesting case — another fleet's value — is
+    already pinned offline by `checkFleetIsolation`. What is *not* pinnable
+    offline is whether a real cloud hands the marker back at all, and that is
+    what `assertOwnershipEvidence` below asks. -/
+def liveBoundary : Boundary := { namePrefix := some ciPrefix }
+
+/-- The managed policy the AWS ramp attaches and detaches.
+
+    `AWSDenyAll` is an AWS-managed policy that denies every action, which
+    makes it the only safe choice here: `policies` has to move between two
+    values for the ramp to exercise `AttachUserPolicy` and
+    `DetachUserPolicy`, and every *other* managed policy grants something to
+    a user this test creates in a real account. A test that widened an
+    identity's permissions in order to check that it can widen an identity's
+    permissions is not a trade worth making, even briefly.
+
+    Attaching it is also a no-op in effect — the user has no credentials and
+    could not use a grant if it had one — so the only thing this moves is the
+    attachment itself, which is exactly what is under test. -/
+def denyAllPolicy : String := "arn:aws:iam::aws:policy/AWSDenyAll"
 
 /-- The handler a `scalewayFunction` deploys, and the smallest thing that can
     prove the kind works end to end.
@@ -105,6 +139,11 @@ fleet awsFull in ireland where
       { imageId       := "latest"
       , instanceType  := InstanceType.of .t3 .nano
       , securityGroup := awsSg }
+    -- No policies at stage 1; the ramp attaches one and takes it off again.
+    -- `iam.policies` was the last field in the divergence tables that no live
+    -- leg had ever moved — it used to be reported `unknown` on Scaleway and
+    -- refused on write by GCP, so there was nowhere to exercise it. AWS is
+    -- where it is both writable and safe to write.
     resource iam "ci-tests-infra-user" {}
 
 /-! ### Ramp up, then back down
@@ -151,7 +190,10 @@ fleet awsRampUp in ireland where
       { imageId       := "latest"
       , instanceType  := InstanceType.of .t3 .nano
       , securityGroup := awsSgU }
-    resource iam "ci-tests-infra-user" {}
+    -- Up: one managed policy attached. `Iam.Aws'.setPolicies` reconciles the
+    -- attached set rather than sending it blindly, so this is an
+    -- `AttachUserPolicy` for a policy the user does not have.
+    resource iam "ci-tests-infra-user" { policies := [denyAllPolicy] }
 
 fleet awsRampDown in ireland where
   provider aws where
@@ -189,7 +231,10 @@ fleet awsRampDown in ireland where
       { imageId       := "latest"
       , instanceType  := InstanceType.of .t3 .nano
       , securityGroup := awsSgD }
-    resource iam "ci-tests-infra-user" {}
+    -- Down: back to none, which is the `DetachUserPolicy` half. Without this
+    -- the ramp would only ever have added, and `setPolicies`' removal branch
+    -- — the one that has to read the current set first — would be untested.
+    resource iam "ci-tests-infra-user" { policies := ([] : List String) }
 
 /-! ### Stage 2: two resources dropped, one changed, one added
 
@@ -599,31 +644,73 @@ fleet gcpRampUp in paris where
 
 /-! ## What the live fleets cover, and what they cannot
 
-  Eleven of the fourteen kinds, on the clouds that have them — eight or nine
-  resources per leg (AWS 9, Scaleway 9, GCP 8). Every one is created from nothing, checked, and deleted,
-  so a leg exercises `create`, `list`, `read`, the diff, `delete` and the
-  absence check across most of the library rather than one corner of it.
+  **Thirteen of the fourteen kinds**, on the clouds that have them — twelve
+  resources on AWS, twelve on Scaleway, ten on GCP. Every one is created from
+  nothing, checked, and deleted, so a leg exercises `create`, `list`, `read`,
+  the diff, `delete` and the absence check across most of the library rather
+  than one corner of it.
+
+  (Those numbers are counted, not remembered. The paragraph they replace said
+  "eleven of the fourteen" and "AWS 9, Scaleway 9, GCP 8", which was true
+  before `awsInstance` and `scalewayFunction` joined — two kinds the section
+  below still listed as impossible while the fleets above declared them.
+  `Stage.declared` is derived from the key family, so counting is a matter of
+  asking it rather than reading the declarations.)
 
   One resource could never tell a working scheduler from a lucky one: a set is
-  applied and torn down as a set, so `create` and `delete` each run eight or nine
-  times in a pass. The **shape** matters more than the count, and the three
-  dependency patterns are described above the guards below.
+  applied and torn down as a set, so `create` and `delete` each run ten or
+  twelve times in a pass. The **shape** matters more than the count, and the
+  three dependency patterns are described above the guards below.
 
-  ## The three that are not here, and why each is a real obstacle
+  ## What each leg checks beyond "it converged"
 
-  Not an oversight, and not a list that can be worked through by adding lines.
-  Each fails for a reason a test cannot arrange:
+  - **Ownership evidence**, after stage 1: every declared resource must report
+    a marker and read as `managed`. See `assertOwnershipEvidence` — the only
+    question in this library whose answer is a fact about a provider's API
+    rather than about this code, and the one where a confidently documented
+    claim turned out to be false.
+  - **`iam.policies`**, on AWS, through the ramp: attached on the way up and
+    detached on the way down. It was the last field in the divergence tables
+    that no live leg had ever moved.
+  - **The ownership perimeter**, as its own verb: a decoy nobody declared,
+    which must survive the whole sequence untouched.
+  - **`apiKeyFor`**, as its own opt-in verb on AWS and GCP, which CI does not
+    run — see the section above those fleets for the grant it needs and why
+    that is a posture decision rather than a coverage one.
 
-  - **`scalewayFunction`** needs deployable *code*, not merely an image, and
-    there is no public equivalent to point at the way there is for a container.
-  - **`awsInstance`** needs an AMI id, which is region-specific and goes stale.
-    Hard-coding one puts a rotting constant in a test whose failure would look
-    like a bug in this library. It also bills by the second and takes minutes
-    to terminate.
+  ## The one that is not here, and why it is a real obstacle
+
+  Not an oversight, and not something that can be worked through by adding a
+  line:
+
   - **`postgres`** takes five to fifteen minutes to create, and as long to
     delete, on every cloud — longer than the workflow's own step timeout. It
     would not be a slow test but a failing one, and it costs real money while
     it exists.
+
+  Scaleway's **Serverless SQL Database** is the exception inside that
+  exception: it creates in seconds and scales to zero, so cost and time are
+  not what keep it out. What keeps it out is that it is the only kind on
+  `Ownership`'s **name** rung that this test could exercise directly, and the
+  Scaleway mnq queue — already in every leg — is on the same rung and costs
+  nothing. `liveBoundary` exists for the queue, and covers the rung; a
+  database would add the product, not the mechanism.
+
+  ## Two kinds were on that list and are not any more
+
+  `scalewayFunction` and `awsInstance` were both excluded, for reasons that
+  read as permanent and were not:
+
+  - `scalewayFunction` was said to need deployable *code* with no public
+    equivalent to point at. It does need code — and the answer was to put the
+    code in the declaration, which is what `ScalewayFunctionSpec.code` is for.
+    `helloHandler` above is the whole of it.
+  - `awsInstance` was said to need an AMI id that would rot. It does — and the
+    answer was `imageId := "latest"`, resolved against the region at apply
+    time, so there is no constant in this file to go stale.
+
+  Worth keeping as a pair, because both exclusions were stated as facts about
+  the cloud when they were really facts about a missing feature.
 
   ## `compute` was on that list and should not have been
 
@@ -1017,6 +1104,11 @@ def runStage (name : String) (root : System.FilePath) (st : Stage) : IO Unit := 
   let entries ← observe (κ := st.κ) root bs
   let store : Store st.κ :=
     { root := some root, rows, forgets := st.forgets
+      -- Not the default `{}`: see `liveBoundary`. This is what the engine's
+      -- own adoption loop and its recheck before a `deleteOrphan` consult, so
+      -- passing it here is what makes the name rung load-bearing live rather
+      -- than only in `Ownership`'s guards.
+      boundary := liveBoundary
       regionOf := fun p k nm => (st.regions.codeFor p k nm).getD "" }
   discard <| push bs st.plan (worldOf entries) { apply := true }
     (edges := st.plan) (store := store) (seen := some entries)
@@ -1436,6 +1528,227 @@ def liveTeardown (name : String) (κ : Keys) (p : ProviderId) (regions : Regions
   -- And the account agrees, which the ledger on its own cannot say.
   assertAccountClean name κ p regions
 
+/-! ## `apiKeyFor`: a credential minted into a secret, and taken away with it
+
+  **Opt-in, and not part of any leg CI runs.** `lake test -- aws identity` or
+  `-- gcp identity`, deliberately, because of what it needs:
+
+  | cloud | grant | why CI does not have it |
+  |---|---|---|
+  | AWS | `iam:CreateAccessKey` | this repo's own operator policy **denies** it — see `docs/permissions.md`. Create a user, attach a powerful policy, mint its key is a three-step path to full admin, and a name prefix does not help because the new user is inside it |
+  | GCP | `roles/iam.serviceAccountKeyAdmin` | `roles/iam.serviceAccountAdmin`, which CI has, creates service accounts and does not create their keys |
+
+  Both are credential-minting grants, and giving one to an identity that runs
+  on every pull request is a decision about a repository's security posture,
+  not a decision about test coverage. So the test exists, is runnable by
+  somebody who has made that decision, and is wired into nothing.
+
+  Scaleway is absent for the reason its `iam` is absent from the main fleet:
+  applications live in the organization, not in a project, so exercising them
+  needs organization-level rights that cannot be confined to the isolated CI
+  project. It is also the cloud where `apiKeyFor` matters most, since a
+  Serverless SQL Database has no other way in — which is worth saying plainly
+  rather than leaving the coverage table to imply otherwise.
+
+  ## What it actually proves
+
+  The interesting assertion is not "a key was minted". It is **"deleting the
+  secret deleted the key, while the identity it belongs to was still
+  standing"** — because that is the leak `apiKeyFor` would otherwise be, and
+  because the mechanism is indirect enough to be worth checking against a
+  real account: `Backend.delete` is handed a bare `Handle`, so the key is
+  found through two tags on the secret itself, which is the only thing left
+  to ask by then.
+
+  So the three stages are: mint, then drop *only* the secret, then drop
+  everything. Dropping the identity as well in the middle stage would prove
+  nothing — deleting a user or a service account takes its keys with it on
+  every cloud, and the assertion would pass with the back-reference removed
+  entirely. -/
+
+fleet awsIdentity in ireland where
+  provider aws where
+    resource iam "ci-tests-infra-keyuser" {}
+    resource secrets "ci-tests-infra-keysecret"
+      { valueFrom := apiKeyFor "ci-tests-infra-keyuser" }
+
+/- The identity alone: the secret is dropped, so it becomes an orphan and its
+   delete has to find and remove the access key. -/
+fleet awsIdentityTrimmed in ireland where
+  provider aws where
+    resource iam "ci-tests-infra-keyuser" {}
+
+fleet gcpIdentity in paris where
+  provider gcp where
+    resource iam "ci-tests-infra-keysa" {}
+    resource secrets "ci-tests-infra-keysecret"
+      { valueFrom := apiKeyFor "ci-tests-infra-keysa" }
+
+fleet gcpIdentityTrimmed in paris where
+  provider gcp where
+    resource iam "ci-tests-infra-keysa" {}
+
+/- The middle stage drops the secret and keeps the identity. Asserted rather
+   than trusted, because the whole test turns on it: if it dropped both, the
+   identity's own deletion would take the key with it and the assertion below
+   would hold with the back-reference deleted from the library. -/
+#guard dropped (stage "a" awsIdentity) (stage "b" awsIdentityTrimmed)
+     = ["aws/secrets/ci-tests-infra-keysecret"]
+#guard dropped (stage "a" gcpIdentity) (stage "b" gcpIdentityTrimmed)
+     = ["gcp/secrets/ci-tests-infra-keysecret"]
+#guard (stage "b" awsIdentityTrimmed).declared = ["aws/iam/ci-tests-infra-keyuser"]
+#guard (stage "b" gcpIdentityTrimmed).declared = ["gcp/iam/ci-tests-infra-keysa"]
+
+/-- Run the three stages and assert the key's lifetime against the cloud
+    itself at each step.
+
+    `keysOf` is the provider's own listing, not anything this library caches:
+    the point is to ask the account, the same reason `assertAccountClean`
+    exists. Teardown is unconditional, and its failure is reported alongside
+    the original rather than replacing it. -/
+private def identityCheck (name : String) (κ : Keys) (p : ProviderId)
+    (regions : Regions) (stages : List Stage) (keysOf : IO (List String)) :
+    IO Unit := do
+  let root : System.FilePath := ".infra" / s!"live-{name}-identity"
+  let teardown : IO Unit := do
+    runStage s!"{name}-identity" root (at! stages 2)
+  match ← (do
+      runStage s!"{name}-identity" root (at! stages 0)
+      -- One key, and exactly one: a mint that ran twice would be a leak of
+      -- the same shape as one that never cleaned up.
+      let minted ← keysOf
+      unless minted.length == 1 do
+        throw (IO.userError s!"[{name}-identity] expected exactly one minted \
+key after the first stage, found {minted.length}: \
+{String.intercalate ", " minted}")
+      progress s!"[{name}-identity] minted one key into the secret"
+
+      -- Drop the secret alone. The identity stays, so nothing but the
+      -- secret's own teardown can remove the key.
+      runStage s!"{name}-identity" root (at! stages 1)
+      let after ← keysOf
+      unless after.isEmpty do
+        throw (IO.userError s!"[{name}-identity] the secret was deleted and \
+its key is still live: {String.intercalate ", " after}.\n  The identity is \
+still standing, so nothing else would have removed it — `Backend.delete` for \
+`.secrets` is meant to read the back-reference tags off the secret and delete \
+the key before deleting the secret itself. A live credential nothing points \
+at is exactly what `apiKeyFor` is supposed not to leave behind.")
+      progress s!"[{name}-identity] deleting the secret deleted its key, and \
+left the identity standing"
+
+      teardown
+      assertAccountClean s!"{name}-identity" κ p regions).toBaseIO with
+  | .ok _    => progress s!"[{name}-identity] ok"
+  | .error e =>
+    match ← teardown.toBaseIO with
+    | .ok _     => throw e
+    | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
+
+def awsIdentityCheck : IO Unit := do
+  let (_, credsOf) ← Infra.Cli.liveFor awsIdentity.keys awsIdentity.regions
+  let some creds := credsOf .aws
+    | throw (IO.userError "[aws-identity] no AWS credentials were loaded")
+  identityCheck "aws" awsIdentity.keys .aws awsIdentity.regions
+    [ stage "identity" awsIdentity
+    , stage "identity-trimmed" awsIdentityTrimmed
+    , emptyStage awsIdentity ]
+    (Infra.Providers.Kinds.Iam.Aws'.listAccessKeys creds "ci-tests-infra-keyuser")
+
+def gcpIdentityCheck : IO Unit := do
+  let (_, credsOf) ← Infra.Cli.liveFor gcpIdentity.keys gcpIdentity.regions
+  let some creds := credsOf .gcp
+    | throw (IO.userError "[gcp-identity] no GCP credentials were loaded")
+  let project ← Infra.Providers.Gcp.requireProject creds
+  identityCheck "gcp" gcpIdentity.keys .gcp gcpIdentity.regions
+    [ stage "identity" gcpIdentity
+    , stage "identity-trimmed" gcpIdentityTrimmed
+    , emptyStage gcpIdentity ]
+    (Infra.Providers.Gcp.Iam.listUserKeys creds project "ci-tests-infra-keysa")
+
+/-! ## Ownership evidence: does the cloud hand the marker back?
+
+  The perimeter check below proves a fleet leaves a *stranger's* resource
+  alone. This proves the other half — that it can recognise its own — and it
+  is the half nothing offline can reach.
+
+  `Backend.ownershipInfo` is the only question in this library whose answer is
+  a fact about a provider's API rather than about this code. Whether a
+  Scaleway IAM application accepts a `tags` field, whether a GCP service
+  account's `description` survives a round trip, whether an ECR repository
+  hands its tags back through `ListTagsForResource`: every one of those was a
+  claim read off documentation, and one of them — Scaleway IAM applications
+  being untaggable — was **wrong for months**, in the code and in two
+  documents, because nothing ever asked a real account.
+
+  So this asks. For every resource stage 1 declares, on whichever cloud is
+  being exercised: the backend must report evidence, and `ownershipOf` must
+  read it as `managed`. A pair that answers `.unreadable` fails the leg by
+  name.
+
+  It is the cheapest strong check in this file — one call per resource, on one
+  stage out of five — and it is the one that would have caught the marker
+  gaps directly rather than through their consequences. The consequences are
+  worth naming, because they are what "unverifiable" actually costs: such a
+  resource is never adopted, never deleted as an orphan, and `discover`
+  cannot rebuild its ledger row. -/
+
+/-- Which rung of `Ownership`'s ladder a piece of evidence came from, for the
+    progress line.
+
+    Tags and a marker-in-a-description are deliberately indistinguishable here
+    — that is the property that keeps the rule in one place — so this reports
+    "marker" for both and separates only the name rung, which is the one whose
+    strength genuinely differs. -/
+private def rungOf : Evidence → String
+  | .tags _ _   => "marker"
+  | .named _ _  => "name"
+  | .unreadable => "none"
+
+/-- Every resource this stage declares must report ownership evidence, and
+    that evidence must read as `managed`.
+
+    Two assertions, not one, and the second is not implied by the first. A
+    backend can hand back a tag list that simply does not contain the marker —
+    which is what a create that forgot to write one looks like, and is
+    indistinguishable from `.unreadable` in every consequence that matters. -/
+def assertOwnershipEvidence (name : String) (st : Stage) : IO Unit := do
+  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions
+  let mut seen : List String := []
+  let mut unreadable : List String := []
+  let mut unmanaged : List String := []
+  for p in Finite.elems (α := ProviderId) do
+    for k in Finite.elems (α := Kind) do
+      for key in Finite.elems (α := st.κ.Key p k) do
+        match st.plan.assign p k key with
+        | .present _ =>
+          let nm := st.κ.name p k key
+          let slot := Ledger.slotId p k nm
+          let ev ← (bs.backendFor p k nm).ownershipInfo k ⟨nm⟩
+          seen := seen ++ [s!"{k.name}:{rungOf ev}"]
+          match ev with
+          | .unreadable => unreadable := unreadable ++ [slot]
+          | _ =>
+            unless (ownershipOf liveBoundary p k nm ev).isOurs do
+              unmanaged := unmanaged ++
+                [s!"{slot} ({describeVerdict liveBoundary ev (ownershipOf liveBoundary p k nm ev)})"]
+        | _ => pure ()
+  unless unreadable.isEmpty do
+    throw (IO.userError s!"[{name}] ownership: {unreadable.length} resource(s) \
+report no marker at all — {String.intercalate ", " unreadable}.\n  \
+`Backend.ownershipInfo` answered `.unreadable` for them, so this fleet can \
+neither adopt them nor delete them as orphans, and `discover` cannot rebuild \
+their ledger rows. Either the backend was never taught to read a marker for \
+that kind, or the cloud does not hand back the one it was given. See \
+`docs/coverage.md`'s ladder.")
+  unless unmanaged.isEmpty do
+    throw (IO.userError s!"[{name}] ownership: {unmanaged.length} resource(s) \
+this run created do not read as ours — {String.intercalate "; " unmanaged}.\n  \
+The marker was readable but wrong or missing, which usually means `create` \
+did not write one: a marker only `read` knows about is not a marker.")
+  progress s!"[{name}] ownership: all {seen.length} declared resource(s) report \
+a marker and read as managed — {String.intercalate ", " seen.eraseDups}"
+
 /-! ## The ownership perimeter: a resource nobody told us about
 
   Everything above proves the fleet converges and cleans up after itself. None
@@ -1687,11 +2000,15 @@ def liveSequence (name : String) (κ : Keys) (p : ProviderId) (stages : List Sta
   -- same way, and print everything twice. The first live run of this test did
   -- exactly that on all three clouds — the same shape as the workflow backstop
   -- that used to re-run a create after a failed create.
-  let rec go : List Stage → IO Unit
-    | [] => pure ()
-    | st :: rest => do
-      match ← (runStage name root st).toBaseIO with
-      | .ok _ => go rest
+  --
+  -- `after` runs once the stage has converged, and is how the ownership check
+  -- gets to fail the leg the same way a stage does — teardown and all —
+  -- rather than needing its own copy of the recovery above.
+  let rec go : List Stage → (Stage → IO Unit) → IO Unit
+    | [],       _     => pure ()
+    | st :: rest, after => do
+      match ← (do runStage name root st; after st).toBaseIO with
+      | .ok _ => go rest (fun _ => pure ())
       | .error e =>
         if st.declared.isEmpty then
           -- The teardown is what failed. There is nothing else to try, and
@@ -1704,7 +2021,12 @@ def liveSequence (name : String) (κ : Keys) (p : ProviderId) (stages : List Sta
           match ← (liveTeardown name κ p regions).toBaseIO with
           | .ok _     => throw e
           | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
-  go stages
+  -- After stage 1 only, and not after every stage: the marker is written at
+  -- create, the ramps recreate nothing, so four more passes over the fleet
+  -- would ask a question whose answer cannot have changed. Stage 1 is where
+  -- everything is freshly created, and therefore where a `create` that forgot
+  -- to write a marker shows.
+  go stages (assertOwnershipEvidence name)
   -- The last stage already emptied it; this asserts that rather than assuming.
   let rows ← Ledger.load root
   unless rows.isEmpty do
@@ -1715,14 +2037,15 @@ def liveSequence (name : String) (κ : Keys) (p : ProviderId) (stages : List Sta
   assertAccountClean name κ p regions
 
 def usage : String :=
-  "usage: lake test [-- <aws|scaleway|gcp|all> [sweep [--prefix <p>]|destroy]]\n\n\
+  "usage: lake test [-- <aws|scaleway|gcp|all> \
+[sweep [--prefix <p>]|destroy|perimeter|identity]]\n\n\
   With no argument:     the offline checks. No cloud, no credentials, no cost.\n\
   With a provider:      runs five declarations in sequence against one\n\
                         ledger: the whole fleet, the same fleet scaled up,\n\
                         the same scaled back down, a trimmed version, then\n\
                         one that declares nothing. After each it checks that\n\
                         the account holds exactly what that stage declares.\n\
-                        Ten or eleven real resources, all named\n\
+                        Ten to twelve real resources, all named\n\
                         'ci-tests-infra-*'. The last stage destroys them.\n\
   …plus 'sweep':        deletes every resource in the account named\n\
                         'ci-tests-infra-*', whatever created it. Needs no\n\
@@ -1750,7 +2073,17 @@ def usage : String :=
                         stage that does not itself destroy it. The decoy and\n\
                         the managed fleet are both deleted no matter how it\n\
                         comes out. Re-enacts the 2026-09-10 incident: an\n\
-                        adopt-or-delete by name or listing rather than by tag.\n\n\
+                        adopt-or-delete by name or listing rather than by tag.\n\
+  …plus 'identity':     aws|gcp only, and **opt-in: CI never runs it**. Mints\n\
+                        a real API key into a secret with `apiKeyFor`, drops\n\
+                        the secret alone, and fails unless the key is gone\n\
+                        while its identity is still standing. Needs a\n\
+                        credential-minting grant the CI identities do not\n\
+                        have — `iam:CreateAccessKey`, which this repo's own\n\
+                        operator policy denies, or GCP's\n\
+                        roles/iam.serviceAccountKeyAdmin. Giving one of those\n\
+                        to an identity that runs on every pull request is a\n\
+                        decision about security posture, not about coverage.\n\n\
   The middle stage is the one that earns the sequence: it drops two resources,\n\
   so their lines are gone from the declaration entirely, and only the ledger\n\
   knows they exist. If membership came from the declaration they would be\n\
@@ -2008,6 +2341,22 @@ def main (args : List String) : IO UInt32 := do
     | .ok _    => return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | [p, "perimeter"] =>
+    IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"
+    return 1
+  -- Opt-in, and never run by CI: both clouds need a credential-minting grant
+  -- the CI identities deliberately lack. See the section above the fleets.
+  | ["aws", "identity"] =>
+    match ← awsIdentityCheck.toBaseIO with
+    | .ok _    => return 0
+    | .error e => IO.eprintln s!"error: {e}"; return 1
+  | ["gcp", "identity"] =>
+    match ← gcpIdentityCheck.toBaseIO with
+    | .ok _    => return 0
+    | .error e => IO.eprintln s!"error: {e}"; return 1
+  | ["scaleway", "identity"] =>
+    IO.eprintln "error: there is no Scaleway identity leg. Its IAM applications live in the organization rather than in a project, so exercising them needs organization-level rights that cannot be confined to the isolated CI project the rest of this test runs in — the same reason `iam` is absent from the Scaleway fleet. `example/ServerlessSqlIam.lean` is the declaration to run by hand against an account that has them."
+    return 1
+  | [p, "identity"] =>
     IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"
     return 1
   -- `sweep all` keeps going after a failure and reports at the end, rather

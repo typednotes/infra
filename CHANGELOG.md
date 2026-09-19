@@ -10,6 +10,93 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Pending: `linen` is still on Lean 4.33.1
+
+`infra` moved to `v4.34.0` in 0.11.0; `linen` `v0.19.1` — which is also its
+`main` — still pins `v4.33.1`. Lake builds a dependency's source with the root
+package's toolchain, so this works today and the whole suite passes under
+4.34.0 with no change to `linen`. It is still a divergence between two
+first-party repositories that should be pinned together, and the fix belongs
+in the sibling: bump its `lean-toolchain` and tag, then move the `require`
+here to that tag.
+
+### Pending: `JsonRead.setField` belongs in `linen`
+
+"Rewrite one field of a JSON object, leaving every other field and their order
+alone" is a `Data.Json.Value` operation, not an infrastructure-as-code one. It
+lives in `Infra/Providers/JsonRead.lean` because GCP's `setIamPolicy` needs it
+and nothing in `linen`'s `Data.Json` offers it yet. Listed here rather than
+left implicit, for the reason the moves below are.
+
+### Pending: delete the code that has moved to `linen`
+`linen` 0.16.0 adds `Linen.Cloud`, a cloud-services layer that includes the
+building blocks this project has been carrying:
+
+| moved to `linen` | was here |
+|---|---|
+| `Cloud.Provider` — the three clouds, `Locality`, per-cloud region codes, `Region p` | `Infra/Core/Kind.lean` (`ProviderId`), `Infra/Core/Region.lean` |
+| `Cloud.Credentials` (+ `.Keychain`, `.Gcp`) — the three-source chain, redacting `Repr`, `normalizeEnv`, `sourceDescriptions` | `Infra/Core/Credentials.lean`, `Infra/Core/GcpAuth.lean` |
+| `Cloud.Endpoint` — per-service hosts and signing scopes | `Infra/Providers/Aws/Protocols.lean`, `Infra/Providers/{Scaleway,Gcp}/Rest.lean` |
+| `Cloud.Auth`, `Cloud.Transport` — signing and the single egress point | `Infra/Providers/Aws/Sign.lean`, `Infra/Providers/Http.lean` |
+| `Cloud.Protocol.{S3,AwsJson,GoogleRest,ScalewayRest}` — the four wire dialects | `Infra/Providers/Aws/Protocols.lean`, `.../{Scaleway,Gcp}/Rest.lean` |
+| `Cloud.Error` — the classified taxonomy, including the not-found code list | `Infra/Core/Backend.lean`'s `readsAsAbsent` |
+
+`linen` also gained the **data plane** these never had — object CRUD, message
+send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
+deliberately excluded ("bucket-level operations only: no object CRUD").
+
+**Not done here yet, and why.** That first blocker is gone: the pin is
+`v0.19.1`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
+"cannot yet be built" reason no longer applies and should not be reached for
+again. What remains is the part that was never mechanical: `ProviderId` and
+`Credentials` thread through most of `Infra/`, and `Region` is indexed by
+`ProviderId`, so switching to `Cloud.Provider` and `Cloud.Credentials` touches
+the engine as well as the providers. It is written down rather than
+half-applied.
+
+Note that `infra` still imports none of `Linen.Cloud` — only the general
+modules (`Crypto`, `Data`, `Network`, `System.Keychain`, `Text`) — so every
+duplicate listed above is still live in both repositories.
+
+Three corrections to take at the same time, all of which `linen`'s versions
+already carry:
+
+- **Pagination that reports whether it finished.** `Gcp/Storage.lean` and
+  `Gcp/PubSub.lean` cap at 50 pages, warn on stderr, and return a `List`
+  indistinguishable from a complete one — which their own comments explain is
+  dangerous, since a truncated listing read as complete makes the planner
+  propose creating resources that already exist. `Cloud.Page.Listing` carries
+  `truncated` and derives `complete` from it.
+- **Unsupported operations as values rather than raises.**
+  `Scaleway/Sqs.lean:206` raises, and `Aws/Protocols.lean:199` signs against a
+  deliberately `.invalid` host; `Cloud.Error.Class.unsupported` is returned
+  instead.
+- **No panicking UTF-8 decode.** `Kinds/Secrets.lean` uses `String.fromUTF8!`
+  in two places; `linen` uses `String.fromUTF8?` and reports a `protocol`
+  error.
+
+One thing deliberately **not** moved: `Scaleway/Sqs.lean`'s credential minting.
+It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
+credential holding that name — defensible for a tool that owns its fleet,
+unacceptable in a library, so `linen` reads a dedicated credential instead.
+
+## [0.11.0] — 2026-09-19
+
+A minor bump rather than a patch, for the reason this file's header gives: it
+breaks the Lean API. `Backend.ownershipInfo` returns an `Evidence` instead of
+`Option (tags × createdAt)`, `ownershipOf` takes one, `Ownership.describe` is
+replaced by `describeVerdict`, and several provider `create` functions gained
+a `markerValue` parameter. A consumer pinned to `v0.10.1` is unaffected until
+it moves the pin.
+
+### Changed: Lean 4.34.0
+
+`lean-toolchain`, the README badge and `docs/tutorial.md`'s scaffold listing
+all move from `v4.33.1`. `linen` is still pinned at `v0.19.1`, whose own
+`lean-toolchain` says 4.33.1 — Lake builds a dependency's *source* with the
+root package's toolchain, so it compiles and the whole suite passes, but the
+sibling should follow. Noted under `[Unreleased]`.
+
 ### Added
 
 - **`iam` works on all three clouds, `policies` included.** `policies` used to
@@ -64,6 +151,41 @@ been exercised; this file is what changed and when.
   offline and credential-free like the other three; `checkMintedKey` in the
   offline suite pins the ordering, the teardown order, the create-only
   property and that no value leaks.
+
+- **Live coverage for all of the above.** `test/Live.lean` gains three things,
+  and the first is the one that matters:
+
+  - **`assertOwnershipEvidence`**, run after stage 1 on every live leg. Every
+    declared resource must report a marker and read as `managed`, or the leg
+    fails naming the pair. `Backend.ownershipInfo` is the only question in
+    this library whose answer is a fact about a provider's API rather than
+    about this code, and the Scaleway tagging claim was wrong for months
+    because nothing ever asked a real account. One call per resource, on one
+    stage out of five.
+  - **`iam.policies` in the AWS ramp**, attached on the way up and detached on
+    the way down, with `AWSDenyAll` — the only managed policy that is safe to
+    attach to a user in a real account, since it grants nothing. It was the
+    last field in the divergence tables that no live leg had ever moved.
+  - **`lake test -- <aws|gcp> identity`**, opt-in and run by no CI job: mints
+    a real key with `apiKeyFor`, drops *only* the secret, and fails unless the
+    key is gone while its identity still stands. That is the assertion worth
+    making — deleting the identity would take the key with it on every cloud,
+    so a test that dropped both would pass with the back-reference removed
+    from the library. It needs `iam:CreateAccessKey` (which this repo's own
+    operator policy denies) or `roles/iam.serviceAccountKeyAdmin`, and
+    granting either to an identity that runs on every pull request is a
+    decision about security posture rather than about coverage.
+
+  `Store.boundary` is now threaded through `runStage` as `liveBoundary`
+  (`namePrefix := "ci-tests-infra-"`), so the name rung is load-bearing in the
+  live legs rather than only in `Ownership`'s guards — a Scaleway mnq queue
+  has no other marker to carry.
+
+  Three numbers in that file's coverage note were also wrong and are now
+  counted rather than remembered: it claimed eleven of fourteen kinds and
+  "AWS 9, Scaleway 9, GCP 8", while the fleets declare **thirteen of
+  fourteen** and 12/12/10. The section listing `scalewayFunction` and
+  `awsInstance` as impossible had survived both of them being added.
 
 ### Changed
 
@@ -129,66 +251,6 @@ been exercised; this file is what changed and when.
   it for a fleet that uses `apiKeyFor`, and what allowing it costs. The error
   raised on the 403 names that section, so it reads as the policy working
   rather than as a misconfiguration.
-
-### Pending: `JsonRead.setField` belongs in `linen`
-
-"Rewrite one field of a JSON object, leaving every other field and their order
-alone" is a `Data.Json.Value` operation, not an infrastructure-as-code one. It
-lives in `Infra/Providers/JsonRead.lean` because GCP's `setIamPolicy` needs it
-and nothing in `linen`'s `Data.Json` offers it yet. Listed here rather than
-left implicit, for the reason the moves below are.
-
-### Pending: delete the code that has moved to `linen`
-`linen` 0.16.0 adds `Linen.Cloud`, a cloud-services layer that includes the
-building blocks this project has been carrying:
-
-| moved to `linen` | was here |
-|---|---|
-| `Cloud.Provider` — the three clouds, `Locality`, per-cloud region codes, `Region p` | `Infra/Core/Kind.lean` (`ProviderId`), `Infra/Core/Region.lean` |
-| `Cloud.Credentials` (+ `.Keychain`, `.Gcp`) — the three-source chain, redacting `Repr`, `normalizeEnv`, `sourceDescriptions` | `Infra/Core/Credentials.lean`, `Infra/Core/GcpAuth.lean` |
-| `Cloud.Endpoint` — per-service hosts and signing scopes | `Infra/Providers/Aws/Protocols.lean`, `Infra/Providers/{Scaleway,Gcp}/Rest.lean` |
-| `Cloud.Auth`, `Cloud.Transport` — signing and the single egress point | `Infra/Providers/Aws/Sign.lean`, `Infra/Providers/Http.lean` |
-| `Cloud.Protocol.{S3,AwsJson,GoogleRest,ScalewayRest}` — the four wire dialects | `Infra/Providers/Aws/Protocols.lean`, `.../{Scaleway,Gcp}/Rest.lean` |
-| `Cloud.Error` — the classified taxonomy, including the not-found code list | `Infra/Core/Backend.lean`'s `readsAsAbsent` |
-
-`linen` also gained the **data plane** these never had — object CRUD, message
-send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
-deliberately excluded ("bucket-level operations only: no object CRUD").
-
-**Not done here yet, and why.** That first blocker is gone: the pin is
-`v0.19.1`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
-"cannot yet be built" reason no longer applies and should not be reached for
-again. What remains is the part that was never mechanical: `ProviderId` and
-`Credentials` thread through most of `Infra/`, and `Region` is indexed by
-`ProviderId`, so switching to `Cloud.Provider` and `Cloud.Credentials` touches
-the engine as well as the providers. It is written down rather than
-half-applied.
-
-Note that `infra` still imports none of `Linen.Cloud` — only the general
-modules (`Crypto`, `Data`, `Network`, `System.Keychain`, `Text`) — so every
-duplicate listed above is still live in both repositories.
-
-Three corrections to take at the same time, all of which `linen`'s versions
-already carry:
-
-- **Pagination that reports whether it finished.** `Gcp/Storage.lean` and
-  `Gcp/PubSub.lean` cap at 50 pages, warn on stderr, and return a `List`
-  indistinguishable from a complete one — which their own comments explain is
-  dangerous, since a truncated listing read as complete makes the planner
-  propose creating resources that already exist. `Cloud.Page.Listing` carries
-  `truncated` and derives `complete` from it.
-- **Unsupported operations as values rather than raises.**
-  `Scaleway/Sqs.lean:206` raises, and `Aws/Protocols.lean:199` signs against a
-  deliberately `.invalid` host; `Cloud.Error.Class.unsupported` is returned
-  instead.
-- **No panicking UTF-8 decode.** `Kinds/Secrets.lean` uses `String.fromUTF8!`
-  in two places; `linen` uses `String.fromUTF8?` and reports a `protocol`
-  error.
-
-One thing deliberately **not** moved: `Scaleway/Sqs.lean`'s credential minting.
-It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
-credential holding that name — defensible for a tool that owns its fleet,
-unacceptable in a library, so `linen` reads a dedicated credential instead.
 
 ## [0.10.1] — 2026-09-14
 

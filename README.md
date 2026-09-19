@@ -10,7 +10,7 @@
 </p>
 
 [![CI](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml/badge.svg)](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml)
-[![Lean](https://img.shields.io/badge/Lean-v4.33.1-blue)](https://leanprover.github.io/)
+[![Lean](https://img.shields.io/badge/Lean-v4.34.0-blue)](https://leanprover.github.io/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 Terraform/OpenTofu-style infrastructure as code, defined in Lean instead of a
@@ -93,7 +93,7 @@ a first tagged release.
 
 - [`elan`](https://github.com/leanprover/elan) (Lean's toolchain manager) —
   `lean-toolchain` pins the exact version this project builds with
-  (`leanprover/lean4:v4.33.1`).
+  (`leanprover/lean4:v4.34.0`).
 - Linux or macOS. Native FFI dependencies for `libpq`, OpenSSL headers, and
   the OS keychain (`libsecret` on Linux, Keychain on macOS) — see the
   `lean_action_ci.yml` install steps for the exact packages if `lake build`
@@ -115,7 +115,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.10.1"
+rev = "v0.11.0"
 ```
 
 Then:
