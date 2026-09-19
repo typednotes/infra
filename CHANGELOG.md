@@ -10,16 +10,6 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Pending: `linen` is still on Lean 4.33.1
-
-`infra` moved to `v4.34.0` in 0.11.0; `linen` `v0.19.1` — which is also its
-`main` — still pins `v4.33.1`. Lake builds a dependency's source with the root
-package's toolchain, so this works today and the whole suite passes under
-4.34.0 with no change to `linen`. It is still a divergence between two
-first-party repositories that should be pinned together, and the fix belongs
-in the sibling: bump its `lean-toolchain` and tag, then move the `require`
-here to that tag.
-
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order
@@ -46,7 +36,7 @@ send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
 deliberately excluded ("bucket-level operations only: no object CRUD").
 
 **Not done here yet, and why.** That first blocker is gone: the pin is
-`v0.19.1`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
+`v0.20.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
 "cannot yet be built" reason no longer applies and should not be reached for
 again. What remains is the part that was never mechanical: `ProviderId` and
 `Credentials` thread through most of `Infra/`, and `Region` is indexed by
@@ -80,7 +70,7 @@ It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
 credential holding that name — defensible for a tool that owns its fleet,
 unacceptable in a library, so `linen` reads a dedicated credential instead.
 
-## [0.11.0] — 2026-09-19
+## [0.11.0] — 2026-09-20
 
 A minor bump rather than a patch, for the reason this file's header gives: it
 breaks the Lean API. `Backend.ownershipInfo` returns an `Evidence` instead of
@@ -89,13 +79,24 @@ replaced by `describeVerdict`, and several provider `create` functions gained
 a `markerValue` parameter. A consumer pinned to `v0.10.1` is unaffected until
 it moves the pin.
 
-### Changed: Lean 4.34.0
+### Changed: Lean 4.34.0, and `linen` v0.20.0
 
 `lean-toolchain`, the README badge and `docs/tutorial.md`'s scaffold listing
-all move from `v4.33.1`. `linen` is still pinned at `v0.19.1`, whose own
-`lean-toolchain` says 4.33.1 — Lake builds a dependency's *source* with the
-root package's toolchain, so it compiles and the whole suite passes, but the
-sibling should follow. Noted under `[Unreleased]`.
+all move from `v4.33.1`, and the `linen` pin moves from `v0.19.1` to
+`v0.20.0` — one commit, "Upgrade to Lean 4.34.0", with no API change, which
+is why nothing here needed adjusting for it.
+
+Worth pinning down *why* the pin had to move, since it is not what the
+failure would have looked like. Lake builds a dependency's **source** with
+the root package's toolchain, so `infra` on 4.34.0 against `linen` on 4.33.1
+compiled and passed the whole suite — the mismatch was invisible, not
+broken. What it actually cost was two first-party repositories disagreeing
+about their own pin, which is the state `AGENTS.md` calls out for duplicates
+and the same reasoning applies: a divergence nobody has written down is a
+divergence that will drift.
+
+`linen`'s three deprecation warnings under 4.34.0 (`if_neg`, `if_true`) are
+gone with it, so the build is clean again rather than clean-with-noise.
 
 ### Added
 
