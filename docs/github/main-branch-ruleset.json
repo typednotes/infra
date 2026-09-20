@@ -1,0 +1,54 @@
+{
+  "name": "Protect main",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [
+    {
+      "actor_id": 933932,
+      "actor_type": "User",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "build (ubuntu-latest)", "integration_id": 15368 },
+          { "context": "build (ubuntu-24.04-arm)", "integration_id": 15368 },
+          { "context": "build (macos-latest)", "integration_id": 15368 },
+          { "context": "Consumer build (ubuntu-latest)", "integration_id": 15368 },
+          { "context": "Consumer build (ubuntu-24.04-arm)", "integration_id": 15368 },
+          { "context": "Consumer build (macos-latest)", "integration_id": 15368 },
+          { "context": "A host that cannot seal DuckDB fails loudly", "integration_id": 15368 }
+        ]
+      }
+    }
+  ]
+}
