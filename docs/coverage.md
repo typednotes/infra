@@ -1,4 +1,4 @@
-# Coverage in 0.11.0
+# Coverage in 0.11.1
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-20.
@@ -969,6 +969,32 @@ evidence to work on. Serverless SQL is the exception and reports `created_at`,
 which matters most precisely there: it is the weakest rung, and the cutoff is
 the one thing that strengthens it. `Infra.Cli.discover` rebuilds the ledger
 from this table for a fleet that already has one.
+
+### Checked live, once, and it found something
+
+`assertOwnershipEvidence` ran against a real AWS account for the first time
+in 0.11.1 and failed, correctly:
+
+    [aws] ownership: 1 resource(s) this run created do not read as ours —
+    aws/iam/ci-tests-infra-user (not carrying the 'managed-by-infra' tag)
+
+`Iam.Aws'.readOwnership` had been unwrapping the `ListUserTags` reply twice,
+so it always read zero tags while `create` wrote the marker correctly. Every
+AWS IAM user this tool made was therefore `foreign` — unadoptable,
+undeletable-as-orphan, invisible to `discover`. Pre-existing, and older than
+the check that caught it.
+
+Two things worth taking from that. The check earns its place: nothing else in
+this repository asks a cloud whether the marker it was given comes back, and
+the consequence of the answer being "no" is silent. And the bug was
+*offline*-testable all along — a `ListUserTags` body is a wire format, not an
+account — so the guards now in `Kinds/Iam.lean` are where this class of
+defect belongs, with the live check as the thing that notices a class nobody
+has guarded yet.
+
+Scaleway and GCP have no `iam` in their live fleets, so the AWS leg is the
+only one that exercises this path; the other rungs are asserted live for
+every other kind those fleets declare.
 
 ### Checked offline
 

@@ -121,7 +121,7 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
-## [Unreleased-fix]
+## [0.11.1] — 2026-09-20
 
 ### Fixed: AWS IAM users read back as carrying no tags at all
 
