@@ -242,8 +242,11 @@ first live run said so:
     resource 'projects/typednotes/locations/europe-west9/services'
 
 Adding a kind to a live fleet means adding its permission here. The kinds each
-fleet declares, as of 0.10.0 — read off the `#guard`s at the foot of
-`test/Live.lean`, which are what pin them:
+fleet declares — read off the `#guard`s at the foot of `test/Live.lean`,
+which are what pin them. Last checked against them on 2026-09-20; a date
+rather than a release number on purpose, since this records when somebody
+looked rather than which version it belongs to, and a version here would
+quietly become one more thing a release has to remember:
 
 | Cloud | Kinds in the live fleet |
 |---|---|

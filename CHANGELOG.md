@@ -70,6 +70,26 @@ It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
 credential holding that name — defensible for a tool that owns its fleet,
 unacceptable in a library, so `linen` reads a dedicated credential instead.
 
+### Fixed: the page had been advertising 0.9.0 for two releases
+
+`site/index.html`'s "what's new" banner still read **0.9.0** — through 0.10.0,
+0.10.1 and into this release — and `README.md`'s "What 0.9.0 covers" heading
+with it. The README's *body* underneath it was accurate; only the heading was
+stale, which is the worst shape for this kind of drift, since nothing about
+reading the section suggests the number above it is wrong.
+
+Fixing the two strings is the small half. `ci/check-release-version.sh` did
+not know about either, because neither is a `rev = ` line — so the release
+workflow, which gates a tag on that script, passed v0.10.0 and v0.10.1 with
+the page announcing a release two behind. The script now checks **nine**
+places rather than seven, `AGENTS.md`'s checklist names them, and it says to
+read the list off the script rather than counting by hand.
+
+One marker moved the other way: `ci/README.md`'s "as of 0.10.0" on its live-
+fleet table is now a date. It records when somebody last checked the table,
+not which release it belongs to, and a version there would be one more thing
+every release has to remember for no benefit.
+
 ### Changed: `ci/` is bash, all of it
 
 `check-aws-policy.py` and `check-scaleway-scoping.py` are now `.sh`, and the

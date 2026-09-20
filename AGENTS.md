@@ -137,16 +137,29 @@ Concretely, when a change lands:
   `lakefile.lean` link flags or workflows change, the scaffolder's copies have
   to change with them. `lake exe infra new /tmp/x` and building the result is
   the check.
-- **A release bumps the version everywhere it is written down.**
-  `lakefile.lean`'s `version`,
-  `Infra/Cli/New.lean`'s `infraRev` (the tag a scaffolded project is pinned
-  to), the `rev`/`@` in `README.md`, `docs/tutorial.md` and `site/index.html`,
-  and the heading in `CHANGELOG.md` and `docs/coverage.md`. A consumer is
-  pinned to a tag rather than to `main` on purpose — the front end's shape is
-  part of what its `Main.lean` is written against — so a release that forgets
-  `infraRev` scaffolds projects against the previous one. Tag the commit, and
-  push the tag: a pinned `require` cannot resolve until the tag exists on the
-  remote.
+- **A release bumps the version everywhere it is written down.** Nine places:
+  `lakefile.lean`'s `version`, `Infra/Cli/New.lean`'s `infraRev` (the tag a
+  scaffolded project is pinned to), the `rev`/`@` in `README.md`,
+  `docs/tutorial.md` and `site/index.html`, the heading in `CHANGELOG.md` and
+  `docs/coverage.md`, **the page's "what's new" banner**
+  (`site/index.html`'s `<strong>`), and **`README.md`'s "What X covers"
+  heading**. Do not count them by hand —
+  `ci/check-release-version.sh <version>` is the list, and adding a tenth
+  place means adding it there in the same change.
+
+  A consumer is pinned to a tag rather than to `main` on purpose — the front
+  end's shape is part of what its `Main.lean` is written against — so a
+  release that forgets `infraRev` scaffolds projects against the previous
+  one. Tag the commit, and push the tag: a pinned `require` cannot resolve
+  until the tag exists on the remote.
+
+  The last two were added after they had advertised **0.9.0 for two
+  releases**. Neither is a `rev = ` line, so the checker did not know about
+  them, and a reader's first impression of this project is the banner. The
+  rule that follows: a place naming the *current* version belongs in the
+  checker, and a place recording *when something was last looked at* should
+  carry a date instead — `ci/README.md` does — so that it is not one more
+  thing a release has to remember.
 - **`docs/branding.md` governs the artwork.** Do not add a third-party logo
   without reading it first.
 

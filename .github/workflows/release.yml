@@ -38,12 +38,17 @@ jobs:
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       # AGENTS.md: "a release bumps the version everywhere it is written
-      # down" — lakefile.lean, Infra/Cli/New.lean's infraRev, README.md,
-      # docs/tutorial.md, site/index.html, CHANGELOG.md, docs/coverage.md.
-      # A tag pushed without updating all seven is exactly the failure this
+      # down". The script is the list — nine places as of 0.11.0 — rather
+      # than this comment, which is what let the last two drift: the page's
+      # "what's new" banner and README's "What X covers" heading were not in
+      # the script, so v0.10.0 and v0.10.1 both passed this gate while the
+      # page still advertised 0.9.0.
+      #
+      # A tag pushed without updating all of them is exactly the failure this
       # blocks: it must not turn into a GitHub Release that scaffolds
       # projects against the wrong `infraRev` or ships a page claiming a
-      # feature the tagged commit doesn't have.
+      # feature the tagged commit doesn't have — or, as it did, a page
+      # announcing a release two behind.
       - name: Check the tagged version is consistent everywhere
         run: ./ci/check-release-version.sh "${{ steps.version.outputs.version }}"
 
