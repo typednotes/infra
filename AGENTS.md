@@ -61,6 +61,35 @@ Two rules that come out of the 2026-09-19 pass over this:
   that cannot are enumerated: in the code, in `docs/coverage.md`, and to the
   user.
 
+## CI scripts are bash
+
+Everything under `ci/`, and every inline `run:` block in a workflow, is
+**bash**. One language, so that reading a check does not mean switching
+dialects, and so that a fix to one is not blocked on knowing another.
+
+The single exception is a check whose *subject* is Python — a script that
+exercises a Python program or SDK is properly written in it. Parsing JSON is
+not that exception: `jq` is pre-installed on both runner images this repo
+uses (ubuntu-24.04 ships 1.7, macos-15 ships 1.8.2), and
+`ci/check-aws-policy.sh` is the worked example.
+
+Two things that make a bash rewrite safe rather than merely shorter:
+
+- **A validator is rewritten against its failures, not its successes.** Both
+  versions passing on the current tree says almost nothing — a script that
+  silently matches nothing passes too, which is exactly what the first draft
+  of `check-scaleway-scoping.sh` did. Run old and new side by side over
+  deliberately broken inputs and diff the output. Doing that turned up a
+  wrong sort order and a crash on `Statement` being an object, neither of
+  which the happy path could show.
+- **No `sed -i`.** BSD sed reads the next argument as a backup suffix and GNU
+  sed does not, so a one-liner that works on the Linux runner fails on the
+  macOS one — half the matrix. Write to a temporary file and `mv` it over.
+
+If a check needs a tool beyond coreutils, test for it and say so
+(`command -v jq` … `exit 2`). A missing interpreter must not produce an empty
+report that reads as a pass.
+
 ## Documentation
 
 The code should stay in sync with the documentation in `docs/`.

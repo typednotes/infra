@@ -199,7 +199,7 @@ sed -e 's/ACCOUNT/123456789012/g' \
     -e 's/EXECUTION-ROLE-NAME/my-lambda-role/g' \
     docs/aws-operator-policy.json > /tmp/infra-operator.json
 
-./ci/check-aws-policy.py            # grammar, offline — checks both documents
+./ci/check-aws-policy.sh            # grammar, offline — checks both documents
 
 aws accessanalyzer validate-policy \
   --policy-document file:///tmp/infra-operator.json \

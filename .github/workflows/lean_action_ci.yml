@@ -72,14 +72,14 @@ jobs:
       # the attach step — naming neither the cause nor the file. Grammar is
       # cheap to check offline, so it is checked.
       - name: Check the AWS CI policy document is well-formed
-        run: ./ci/check-aws-policy.py
+        run: ./ci/check-aws-policy.sh
       # An unscoped Scaleway listing is evaluated against the whole
       # organization, so it both breaks a project-scoped credential and returns
       # other projects' resources — which `pullEntries` will match to a fleet
       # key by name, and `destroy` will then delete. Fourteen listings were
       # unscoped when this check was written.
       - name: Check Scaleway listings are scoped to a project
-        run: ./ci/check-scaleway-scoping.py
+        run: ./ci/check-scaleway-scoping.sh
       - name: Check the scaffolder's lakefile copy has not drifted
         run: ./ci/check-lakefile-sync.sh
       # `pages.yml` publishes `site/` alone, so the page carries its own copy
@@ -108,17 +108,21 @@ jobs:
           # Not `sed -i`: BSD sed reads the next argument as a backup suffix
           # and GNU sed does not, so the one-liner that worked on the Linux
           # runner failed on the macOS one — which is exactly the half of the
-          # matrix this step was added to protect. Python is on both runners
-          # and needs no such dialect.
-          python3 - "$PWD" <<'PY'
-          import re, sys
-          p = "/tmp/scaffold-check/lakefile.lean"
-          s = open(p).read()
-          s2 = re.sub(r'require infra from git "[^"]*" @ "[^"]*"',
-                      'require infra from "%s"' % sys.argv[1], s, count=1)
-          assert s2 != s, "the scaffolded lakefile did not carry the expected require line"
-          open(p, "w").write(s2)
-          PY
+          # matrix this step was added to protect. Writing to a temporary file
+          # and moving it over needs no dialect at all, and is what this used
+          # a Python here-doc for until `ci/` settled on one language.
+          #
+          # Checked before it is edited rather than after: "the line was not
+          # there" and "the edit did nothing" are the same outcome, and the
+          # first is the one worth naming.
+          lakefile=/tmp/scaffold-check/lakefile.lean
+          if ! grep -qE 'require infra from git "[^"]*" @ "[^"]*"' "$lakefile"; then
+            echo "error: the scaffolded lakefile did not carry the expected require line" >&2
+            exit 1
+          fi
+          sed -E "s|require infra from git \"[^\"]*\" @ \"[^\"]*\"|require infra from \"$PWD\"|" \
+            "$lakefile" > "$lakefile.tmp"
+          mv "$lakefile.tmp" "$lakefile"
           cp lean-toolchain /tmp/scaffold-check/
           cd /tmp/scaffold-check
           # Reuse this checkout's package directory rather than resolving a

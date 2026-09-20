@@ -70,6 +70,37 @@ It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
 credential holding that name — defensible for a tool that owns its fleet,
 unacceptable in a library, so `linen` reads a dedicated credential instead.
 
+### Changed: `ci/` is bash, all of it
+
+`check-aws-policy.py` and `check-scaleway-scoping.py` are now `.sh`, and the
+scaffold step's inline Python here-doc is bash too — so every check in this
+repository is one language, and `AGENTS.md` says so.
+
+JSON is not a reason to reach for Python: `jq` is pre-installed on both runner
+images (ubuntu-24.04 ships 1.7, macos-15 ships 1.8.2), and the script checks
+for it rather than assuming, since a missing interpreter must not produce an
+empty report that reads as a pass.
+
+Both rewrites were validated by running the old and new versions side by side
+over deliberately broken inputs and diffing, rather than by watching them both
+pass on the current tree — which proves nothing, as the first draft of the
+scoping check demonstrated by silently matching nothing and passing. That
+exercise found three defects that the happy path could not:
+
+- the scoping check sorted findings lexically, so line 196 was reported before
+  line 67;
+- the policy check crashed inside `jq` when `Statement` was an object rather
+  than a list, and reported the crash as "is not valid JSON";
+- and, in the process, that the **Python** version raised an uncaught
+  `AttributeError` on a `Statement` holding non-objects. The bash version
+  reports `statement 0: must be an object, found string`, so this is one
+  behaviour that is better rather than merely equivalent.
+
+The inline block loses `sed -i` along with Python: BSD sed reads the next
+argument as a backup suffix and GNU sed does not, which is the dialect split
+that put Python there in the first place. Writing to a temporary file and
+moving it over needs no dialect.
+
 ## [0.11.0] — 2026-09-20
 
 A minor bump rather than a patch, for the reason this file's header gives: it

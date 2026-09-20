@@ -88,7 +88,7 @@ cannot carry a comment.** The grammar admits only `Version`, `Id` and
 `Statement`, JSON has no comments, and a `"Comment"` key makes
 `create-policy` fail — which then surfaces one command later as
 `NoSuchEntity … does not exist or is not attachable` from the *attach* step,
-naming neither the cause nor the file. `ci/check-aws-policy.py` runs in CI to
+naming neither the cause nor the file. `ci/check-aws-policy.sh` runs in CI to
 stop that recurring.
 
 Apply it **inline** on `infra-ci`. One command, and the same command updates
@@ -140,7 +140,7 @@ create on its own and read its error; `MalformedPolicyDocument` means the
 document, not the role. Two ways to check the document before sending it:
 
 ```sh
-./ci/check-aws-policy.py                    # grammar, offline, no credentials
+./ci/check-aws-policy.sh                    # grammar, offline, no credentials
 
 aws accessanalyzer validate-policy \
   --policy-document file://ci/aws-permissions-policy.json \

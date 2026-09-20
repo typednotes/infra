@@ -115,7 +115,7 @@ another, diff it, and destroy it. This was measured rather than theorised: the
 organization used for testing had two container-registry namespaces, both in a
 different project from the fleet's, and an unscoped listing saw both.
 
-`ci/check-scaleway-scoping.py` enforces it, with two deliberate exceptions —
+`ci/check-scaleway-scoping.sh` enforces it, with two deliberate exceptions —
 `/runtimes` is a catalogue rather than a resource collection, and IAM
 `/applications` is organization-scoped by nature.
 
