@@ -113,6 +113,70 @@ def create (creds : Credentials) (name markerValue : String) (policies : List St
     | none => ""
   return arn
 
+/-- The tag pairs in a `ListUserTags` reply, as a pure function of the parsed
+    XML.
+
+    Extracted from `readOwnership` so that it can be checked against a real
+    reply body offline, which is the whole reason it exists as a name. The
+    version this replaces double-unwrapped the response: it took
+    `root.child "ListUserTagsResult"` and *then* called `members … "Tags"
+    "member"`, which unwraps again — so it looked for a `<member>` inside a
+    `<member>` and always found nothing.
+
+    Every AWS IAM user this tool created therefore read back as carrying no
+    tags at all, which `ownershipOf` correctly calls `foreign`. It survived
+    because nothing exercised it: the live sequence puts a resource in the
+    ledger as it creates it, so the adoption loop never asks; the trimmed
+    stage does not drop the user, so the orphan recheck never asks either;
+    and no offline test could reach an XML body. The live ownership check
+    added in 0.11.0 asks directly, and found it on its first real run.
+
+    The shape, which is what the guard below pins:
+
+        <ListUserTagsResponse><ListUserTagsResult>
+          <Tags><member><Key>k</Key><Value>v</Value></member></Tags>
+        </ListUserTagsResult></ListUserTagsResponse> -/
+def tagsOfListUserTags (root : Text.XML.Element) : List (String × String) :=
+  (members root "ListUserTagsResult" "Tags").filterMap fun t =>
+    match t.childText "Key", t.childText "Value" with
+    | some k, some v => some (k, v)
+    | _,      _      => none
+
+/- A real `ListUserTags` reply, parsed. This is the assertion that the fix
+   above is a fix, and it is the one that could have been written at any point
+   in the last two weeks: the body is a wire format, not an account, so there
+   was never anything stopping it being checked offline.
+
+   The failing version returned `[]` here. `ownershipOf` then reads `[]` as
+   `foreign`, so every IAM user this tool created on AWS was unadoptable and
+   undeletable-as-orphan while `create` was writing the tag perfectly well. -/
+private def listUserTagsReply : String :=
+  "<ListUserTagsResponse xmlns=\"https://iam.amazonaws.com/doc/2010-05-08/\">\
+<ListUserTagsResult><Tags>\
+<member><Key>managed-by-infra</Key><Value>true</Value></member>\
+<member><Key>team</Key><Value>infra</Value></member>\
+</Tags><IsTruncated>false</IsTruncated></ListUserTagsResult>\
+</ListUserTagsResponse>"
+
+#guard (match Text.XML.parse listUserTagsReply with
+        | .ok root => tagsOfListUserTags root
+        | .error _ => []) = [("managed-by-infra", "true"), ("team", "infra")]
+
+/- And the marker is then found in it, which is the question the engine
+   actually asks. Pinning the parse alone would not catch a future change that
+   parsed the tags and lost the key. -/
+#guard (match Text.XML.parse listUserTagsReply with
+        | .ok root => markedBy none (tagsOfListUserTags root)
+        | .error _ => false)
+
+/- A user with no tags parses to no tags, rather than to an error — which is a
+   real reply (`<Tags/>`) and must read as "not ours", not as "unreadable". -/
+#guard (match Text.XML.parse
+          "<ListUserTagsResponse><ListUserTagsResult><Tags/>\
+</ListUserTagsResult></ListUserTagsResponse>" with
+        | .ok root => tagsOfListUserTags root
+        | .error _ => [("parse", "failed")]) = []
+
 /-- Tags, for `Ownership.ownershipOf`. `ListUsers` does not report them
     (same gap as EC2/RDS), so this is a second call keyed by name. `createdAt`
     is left `none`, matching every other kind's first tranche, though
@@ -122,14 +186,7 @@ def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
     [("UserName", name)]).toBaseIO
   match attempt with
   | .error _ => return .unreadable
-  | .ok root =>
-    let tags := match root.child "ListUserTagsResult" with
-      | some r => (members r "Tags" "member").filterMap fun t =>
-          match t.childText "Key", t.childText "Value" with
-          | some k, some v => some (k, v)
-          | _, _           => none
-      | none => []
-    return .tags tags none
+  | .ok root => return .tags (tagsOfListUserTags root) none
 
 /-- Reconcile the attached set: detach what is no longer wanted, attach what is
     newly wanted. Sending the whole list blindly would fail on the ones already

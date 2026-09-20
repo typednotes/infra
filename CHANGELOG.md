@@ -121,6 +121,43 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [Unreleased-fix]
+
+### Fixed: AWS IAM users read back as carrying no tags at all
+
+The first live run of 0.11.0's new ownership check failed on AWS, and it was
+right to:
+
+    [aws] ownership: 1 resource(s) this run created do not read as ours —
+    aws/iam/ci-tests-infra-user (not carrying the 'managed-by-infra' tag)
+
+`Iam.Aws'.readOwnership` **double-unwrapped** the `ListUserTags` reply. It
+took `root.child "ListUserTagsResult"` and then called
+`members … "Tags" "member"` — but `members` unwraps a result element itself,
+so the second call looked for a `<member>` inside a `<member>` and always
+found nothing. Every other call site in the file passes the response root and
+the `…Result` name; this one passed an already-unwrapped element.
+
+So `create` was writing the marker tag perfectly well and `read` could never
+see it. Any AWS IAM user this tool created was `foreign`: never adopted,
+never deleted as an orphan, and invisible to `discover`.
+
+Pre-existing — introduced with the AWS IAM ownership read, not in 0.11.0,
+which only changed the surrounding signature. It survived because nothing
+asked: the live sequence records a resource in the ledger as it creates it,
+so the adoption loop never queries it; the trimmed stage does not drop the
+user, so the orphan recheck never queries it either; and no offline test
+could reach an XML body.
+
+The parse is now `tagsOfListUserTags`, a pure function of the parsed XML with
+three `#guard`s against a real reply body — including that the marker is
+found in it, and that `<Tags/>` reads as no tags rather than as an error.
+Checked by restoring the bug and watching the guards fail. That body is a
+wire format, not an account, so this could have been tested offline at any
+point; the value of the live check was in asking a question nobody had
+thought to ask, and the value of the guard is that it need not be asked
+live again.
+
 ## [0.11.0] — 2026-09-20
 
 A minor bump rather than a patch, for the reason this file's header gives: it
