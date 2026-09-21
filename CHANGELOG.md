@@ -36,7 +36,7 @@ send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
 deliberately excluded ("bucket-level operations only: no object CRUD").
 
 **Not done here yet, and why.** That first blocker is gone: the pin is
-`v0.20.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
+`v1.0.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
 "cannot yet be built" reason no longer applies and should not be reached for
 again. What remains is the part that was never mechanical: `ProviderId` and
 `Credentials` thread through most of `Infra/`, and `Region` is indexed by
@@ -120,6 +120,34 @@ The inline block loses `sed -i` along with Python: BSD sed reads the next
 argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
+
+## [0.12.0] — 2026-09-21
+
+### Changed: `linen` v1.0.0 — a consumer builds a tenth of what it used to
+
+The pin moves from `v0.20.0`, and the headline change in that release is
+`lean_lib Linen`'s `precompileModules := true` becoming `false`. Precompiling
+forces `Linen:shared`, a whole-library artifact, so nothing could link
+against one module until all ~770 were compiled — a dependent paid for the
+entire library whatever it imported.
+
+Measured here, not estimated:
+
+| | v0.20.0 | v1.0.0 |
+|---|---|---|
+| `lake build` in this repo | 2481 jobs | **265** |
+| a scaffolded consumer project | 2468 jobs | **252** |
+
+Nothing in `infra` needed changing for it: the toolchain is the same 4.34.0,
+no API moved, and a consumer does **not** need `precompileModules := true`
+on its own library — checked by scaffolding a project and building it the way
+CI does.
+
+A minor bump rather than a patch, even though `infra`'s own Lean API is
+untouched. What a consumer builds is part of what a release gives them, and
+this changes it by an order of magnitude; a patch number would say "nothing
+to think about here", which is the wrong thing to say about a build that goes
+from thousands of jobs to hundreds.
 
 ## [0.11.1] — 2026-09-20
 
