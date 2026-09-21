@@ -694,8 +694,6 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
         let id ← Iam.Scw.create creds spec.name marker spec.policies
         return { handle := ⟨spec.name⟩, arn := id }
     | .postgres, spec => do
-      -- The one place a secret value is read; see `Kinds.Postgres`.
-      let password ← Postgres.fetchMasterPassword provider creds spec.masterPasswordSecret
       let marker := fleet.getD legacyMarkerValue
       -- Routed on `instanceClass` being set, not on a separate spec flag: `Fillable`'s `""`
       -- sentinel is what `PostgresSpec.serverless` leaves behind, same convention as every
@@ -711,9 +709,19 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
           -- Scaleway Serverless SQL Database cannot be tagged at all, so
           -- nothing is sent; ownership for it is on the name rung — see
           -- `Kinds.Postgres.ServerlessSql`.
+          -- `""`, not a fetched password: this product has no master user, so
+          -- `create` takes it as `_password` and discards it. Reading one
+          -- here is what made `masterPasswordSecret` a *required* secret for
+          -- a backend that cannot use it — a serverless fleet had to point it
+          -- at some real secret and hope, or fail with `no secret named
+          -- 'unused-...'` at create, after the IAM identity was already made.
           | .scaleway => Postgres.ServerlessSql.create creds spec.name spec.masterUsername
-                           password spec.version spec.minCapacity spec.maxCapacity
+                           "" spec.version spec.minCapacity spec.maxCapacity
         else
+          -- The one place a secret value is read; see `Kinds.Postgres`. Inside
+          -- the classic branch, because only a classic instance has a master
+          -- user to set a password on.
+          let password ← Postgres.fetchMasterPassword provider creds spec.masterPasswordSecret
           match provider with
           | .gcp =>
             Gcp.CloudSql.create creds (← Gcp.requireProject creds) creds.region

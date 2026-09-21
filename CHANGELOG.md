@@ -10,6 +10,26 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A serverless Postgres target no longer demands a master password it
+  discards.** `Live.lean`'s `.postgres` create read
+  `masterPasswordSecret` *before* routing on `instanceClass`, so a Scaleway
+  Serverless SQL Database — a product with no master user, whose `create`
+  takes the password as `_password` and drops it — still had to name a secret
+  that really existed. `fetchMasterPassword` throws on a missing name and on
+  `""` alike, so there was no way to say "there isn't one".
+
+  The failure landed at create, after the IAM application had already been
+  made: `CREATE scaleway/postgres/… failed: scaleway secrets: no secret named
+  '…'`. The fetch now lives inside the classic branch, which is the only one
+  with a master user to set a password on.
+
+  `example/ServerlessSqlIam.lean` was written with
+  `masterPasswordSecret := "unused-serverless-sql-is-iam-only"` and could not
+  have been applied as written; it works now, unchanged. The example
+  compiling but never running is what hid this.
+
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order
