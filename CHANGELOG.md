@@ -10,26 +10,6 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Fixed
-
-- **A serverless Postgres target no longer demands a master password it
-  discards.** `Live.lean`'s `.postgres` create read
-  `masterPasswordSecret` *before* routing on `instanceClass`, so a Scaleway
-  Serverless SQL Database — a product with no master user, whose `create`
-  takes the password as `_password` and drops it — still had to name a secret
-  that really existed. `fetchMasterPassword` throws on a missing name and on
-  `""` alike, so there was no way to say "there isn't one".
-
-  The failure landed at create, after the IAM application had already been
-  made: `CREATE scaleway/postgres/… failed: scaleway secrets: no secret named
-  '…'`. The fetch now lives inside the classic branch, which is the only one
-  with a master user to set a password on.
-
-  `example/ServerlessSqlIam.lean` was written with
-  `masterPasswordSecret := "unused-serverless-sql-is-iam-only"` and could not
-  have been applied as written; it works now, unchanged. The example
-  compiling but never running is what hid this.
-
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order
@@ -140,6 +120,30 @@ The inline block loses `sed -i` along with Python: BSD sed reads the next
 argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
+
+## [0.12.1] — 2026-09-21
+
+### Fixed
+
+- **A serverless Postgres target no longer demands a master password it
+  discards.** `Live.lean`'s `.postgres` create read
+  `masterPasswordSecret` *before* routing on `instanceClass`, so a Scaleway
+  Serverless SQL Database — a product with no master user, whose `create`
+  takes the password as `_password` and drops it — still had to name a secret
+  that really existed. `fetchMasterPassword` throws on a missing name and on
+  `""` alike, so there was no way to say "there isn't one".
+
+  The failure landed at create, after the IAM application had already been
+  made: `CREATE scaleway/postgres/… failed: scaleway secrets: no secret named
+  '…'`. The fetch now lives inside the classic branch, which is the only one
+  with a master user to set a password on.
+
+  `example/ServerlessSqlIam.lean` was written with
+  `masterPasswordSecret := "unused-serverless-sql-is-iam-only"` and so could
+  not have been applied as written either. It now says `""`, which is the
+  spelling this release makes available for "there is no master password";
+  on a classic target `""` still fails, and loudly. An example that compiles
+  but is never run is what hid this.
 
 ## [0.12.0] — 2026-09-21
 

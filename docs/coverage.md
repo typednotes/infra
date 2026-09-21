@@ -1,7 +1,7 @@
-# Coverage in 0.12.0
+# Coverage in 0.12.1
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-20.
+been exercised. Everything below is the state on 2026-09-21.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
@@ -661,6 +661,23 @@ function — it is a number, so it tells the code the response was parsed at all
   Postgres connection string. Fixed in 0.10.1 by stripping the scheme,
   userinfo and path/query in `listRaw` and `create` before the endpoint is
   ever returned.
+
+  A fifth came from the first *consumer* to apply this shape, which is the
+  only way it could have been found: `Live.lean` read `masterPasswordSecret`
+  before it branched on `instanceClass`, so a product with no master user
+  still had to name a secret that really existed. `fetchMasterPassword`
+  rejects a missing name and `""` alike, so a serverless fleet had no way to
+  say "there isn't one" — it had to point the field at some unrelated real
+  secret and rely on that secret happening to be created first, since
+  `masterPasswordSecret` is a plain `String` and carries no dependency edge.
+  The create failed with `scaleway secrets: no secret named '…'` *after* the
+  IAM application and its policy had been created, leaving the fleet
+  half-applied over a value nothing was going to read. Fixed in 0.12.1 by
+  moving the fetch inside the classic branch; the serverless call is passed
+  `""` explicitly. `example/ServerlessSqlIam.lean` carried the same
+  placeholder secret name and so could not have been applied as written
+  either; it now says `""`, which is what a serverless target has to say.
+  An example that compiles but is never run is what hid this.
 
   **AWS's serverless shape is still not implemented** — Aurora Serverless v2
   raises a named error — and **GCP's cannot be**: Cloud SQL has no capacity

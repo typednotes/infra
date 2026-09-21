@@ -98,9 +98,20 @@ fleet reportsStack in paris where
   -- rather than naming a plausible `dbadmin` that is never created. Naming a
   -- plausible one is exactly what made an earlier version of this fleet look
   -- correct while provisioning no credentials whatsoever.
+  --
+  -- `masterPasswordSecret` is *empty*, which is how a serverless target says
+  -- "there is no master password". That only became sayable in 0.12.1: the
+  -- create used to fetch the secret before it branched on `instanceClass`,
+  -- and `fetchMasterPassword` rejects a missing name and `""` alike, so this
+  -- field had to name a secret that really existed even though nothing would
+  -- read it. This file named `unused-serverless-sql-is-iam-only` and so could
+  -- not be applied as written; a consumer that copied the line hit
+  -- `no secret named 'unused-…'` at create, after the IAM application had
+  -- already been made. On a classic target the empty string still fails, and
+  -- loudly, which is the right answer there.
   resource scaleway postgres "tn-reports-db" as reportsDb
     { masterUsername := "unused-serverless-sql-is-iam-only",
-      masterPasswordSecret := "unused-serverless-sql-is-iam-only",
+      masterPasswordSecret := "",
       minCapacity := 0,
       maxCapacity := 8 }
 

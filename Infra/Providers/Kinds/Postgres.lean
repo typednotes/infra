@@ -294,10 +294,13 @@ end Rdb
    keeps them out of the divergence table instead of proposing a change on
    every apply.
 
-   Worth knowing: `Live.lean` fetches the master password *before* it branches
-   on `instanceClass`, so a serverless declaration still reads the secret it
-   names. Harmless, and cheaper to leave than to restructure the branch, but it
-   means the secret must exist even though nothing consumes it.
+   So `Live.lean` fetches the master password *inside* the classic branch,
+   and this backend is handed `""`. Until 0.12.1 the fetch happened before the
+   branch on `instanceClass`, which made `masterPasswordSecret` name a secret
+   that had to really exist for a product that discards it —
+   `fetchMasterPassword` rejects a missing name and `""` alike, so there was
+   no way to say "there isn't one". It failed at create, after the IAM
+   identity this product's access depends on had already been made.
 
    `storageGb` has no counterpart — storage grows on its own. `version` does
    have one on `create` (see below), but `read` still reports none: the `GET`
