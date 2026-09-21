@@ -2,7 +2,18 @@
 
 ## Code
 
-Please commit code but do not push without approval.
+**Commit and tag freely; never push.** Pushing is the human's, always — not
+"unless approved", not "unless it seems expected", not "unless the previous
+step was approved and this is obviously the next one". Prepare the work so
+that a push is the only thing left: commit it, tag it, run the checks, say
+what is ready and what the push will trigger.
+
+Written this strongly because the weaker version ("do not push without
+approval") did not hold. Approval for one release was carried forward into
+the next on the reasoning that a version bump implies a release — which is
+plausible, and wrong, and exactly the kind of reasoning an explicit rule
+exists to stop. A tag under this repository's ruleset is immutable and a push
+to `main` is public; neither is the assistant's to decide the timing of.
 
 **No half-implemented features.** If a feature (a safety check, a tagging
 scheme, an ownership model, ...) is only wired up for some of the kinds/cases
