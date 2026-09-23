@@ -69,22 +69,6 @@ structure Backend where
       overrides this field is unaffected — and so that a kind added later is
       refused rather than silently claimed. -/
   ownershipInfo : (k : Kind) → Handle k → IO Evidence := fun _ _ => pure .unreadable
-  /-- Why this backend cannot reach its cloud, if it cannot.
-
-      `none` is the normal answer, and it is also the right answer for a test
-      double: a placeholder standing in for a cloud *on purpose* is reachable
-      as far as the engine is concerned, because the test is what decides what
-      it reports. `some why` marks the other case — a backend handed back
-      because the credentials for that cloud were never loaded, which
-      `Infra.Cli.liveFor` does for any provider the key family does not name.
-
-      It exists because the two are otherwise indistinguishable, and the
-      difference is money: a placeholder's `delete` returns `()` and its `list`
-      returns `[]`, so an apply routed through one destroys nothing and reports
-      that everything is gone. `Engine.push` refuses to act on a ledger row
-      through a backend that answers `some`. See `docs/internals.md`, "Which
-      clouds get authenticated, and the hole that leaves". -/
-  unreachable : Option String := none
 
 /-- Every cloud the engine can reach. Total over `ProviderId`, matching `Plan.assign`'s
     totality over the same index.
@@ -123,8 +107,8 @@ structure Backends where
       the slot name up in the fleet's placement table, and the whole premise of
       an orphan is that the declaration no longer names it — so the lookup
       misses and falls back to the credentials' region, which is the wrong
-      endpoint for anything placed anywhere else. The region comes from the
-      ledger row instead, which is why the row records one. -/
+      endpoint for anything placed anywhere else. The region comes from where
+      the orphan was found (`Orphan.region`). -/
   backendAt : ProviderId → String → Backend := fun p _ => backend p
   /-- Every region this fleet uses on a cloud, each with its code and backend:
       where to look for resources carrying this fleet's marker that the
@@ -143,27 +127,14 @@ structure Backends where
     sigma rather than a plain tuple: `ObservedOf k` genuinely varies with the kind. -/
 abbrev Entry (κ : Keys) := (p : ProviderId) × (k : Kind) × κ.Key p k × Sighting k
 
-/-- A cached entry: only the observed half.
-
-    Distinct from `Entry` on purpose. The on-disk cache records what was last
-    *seen*, and configuration is re-read on every pull, so a loaded entry
-    genuinely has no reported half to offer — giving it one would mean
-    inventing it. -/
-abbrev CachedEntry (κ : Keys) := (p : ProviderId) × (k : Kind) × κ.Key p k × ObservedOf k
-
-/-- Drop the reported half, for caching. -/
-def Entry.cached {κ : Keys} (e : Entry κ) : CachedEntry κ :=
-  ⟨e.1, e.2.1, e.2.2.1, e.2.2.2.observed⟩
-
 /-- Look one `(p, k, key)` up in a list of entries that each carry their own
     indices.
 
     The one dependent cast in the library, and it is here rather than written
     out per caller: an entry carries its own `(p, k)`, and answering a query at
     some other `(p, k)` requires knowing they coincide. Generalised over the
-    payload `β` so that `Entry` (payload `Sighting`) and `CachedEntry` (payload
-    `ObservedOf`) share it — `worldOf` and `Engine.pullEntries` are the two
-    callers, and writing the cast twice is how the two would drift. -/
+    payload `β` so that any per-resource payload can share it, and writing
+    the cast twice is how two copies would drift. -/
 def lookupAt {κ : Keys} {β : Kind → Type}
     (es : List ((p : ProviderId) × (k : Kind) × κ.Key p k × β k))
     (p : ProviderId) (k : Kind) (key : κ.Key p k) : Option (β k) :=

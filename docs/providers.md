@@ -349,7 +349,7 @@ Found by running `cross-cloud apply` against a real account.
 `secrets.valueFrom` is a `SecretSource`. `fromEnv` names an environment
 variable, read at apply time. `read` calls `DescribeSecret`, never
 `GetSecretValue`, and reports `valueFrom := .fromEnv ""`, so plaintext never
-enters a `Sighting` or the `.infra/` cache.
+enters a `Sighting` or a `dump`.
 
 There are exactly two inbound paths, both narrow, both apply-time only:
 
@@ -365,7 +365,7 @@ return or store what they read. The planning path cannot reach either:
 `Env.secretValue` defaults to knowing nothing and `actions` settles against a
 redacted environment, so a dry run has no value to leak. The placeholder
 backend returns a canary string, and `lake exe infra check` asserts it appears
-in neither plan output, apply logs, nor the on-disk cache.
+in neither plan output, apply logs, nor a `dump`.
 
 The consequence, in every case: **a value changed outside this tool is not
 detected as drift.** Detecting it would mean holding plaintext in the engine,
@@ -390,16 +390,15 @@ resource's handle against `Keys.name`. So the handle is always a *name*.
 
 ```
 infra check            # offline self-checks; the default
-infra refresh          # observe both clouds, cache to .infra/
 infra plan             # what would change
-infra push             # same as plan — a dry run
-infra apply     # actually reconcile
+infra apply            # actually reconcile
+infra dump [FILE]      # what this fleet manages, as JSON; nothing else is stored
 ```
 
 Dry run is the default and performs **no** backend IO — it returns before
-reaching one. `actions` derives deletions from the target, so a mistaken key
-type or stale fleet definition could otherwise destroy live resources on a
-first run.
+reaching one. `actions` derives deletions from the target and from the
+undeclared resources carrying this fleet's marker, so a mistaken key type or
+stale fleet definition could otherwise destroy live resources on a first run.
 
 Credentials come from the chain in `docs/authentication.md`. Scaleway
 additionally needs `default_project_id`, and `iam` needs
@@ -420,15 +419,15 @@ Verified offline, by `infra check`:
 - The credential chain, redaction, and the not-found message.
 - Composed secrets: three resources created in one apply, ordered so the
   composed secret comes after both the password it reads and the database
-  whose endpoint it needs; no secret value in plan output, apply log, or the
-  cache; and a second apply is a no-op, since a composed secret is create-only.
+  whose endpoint it needs; no secret value in plan output, apply log, or a
+  `dump`; and a second apply is a no-op, since a composed secret is create-only.
 - That the `fleet` command produces a fleet indistinguishable from the
   hand-written equivalent — same cardinalities, providers, names, and ordered
   action list.
 
 **Since verified against a real account, and this section said otherwise for
-too long**: EC2. `example/ParisInstances.lean` was applied, and the cache holds
-a real security group with its VPC and two instances with real ids and state
+too long**: EC2. `example/ParisInstances.lean` was applied, and the cache (since
+removed) held a real security group with its VPC and two instances with real ids and state
 `running` — so `CreateSecurityGroup`, `RunInstances`, `DescribeSecurityGroups`
 and `DescribeInstances` work as written. What is still unconfirmed is narrower:
 whether `AuthorizeSecurityGroupIngress` applied the rules, whether
@@ -484,6 +483,17 @@ things were wrong until this was exercised live:
 - Scaleway's SQS-compatible API refuses the main Scaleway API key outright.
   It needs a *dedicated* credential, minted after a one-time activation call
   and cached in the OS keychain — see `Infra.Providers.Scaleway.Sqs`.
+
+Since 0.16.0 queues are listed on every run, like every other kind, to find
+orphans. So that a `plan` never activates the product or mints a credential,
+listing first asks, read-only, whether Queues is enabled in the project
+(`Scaleway.Sqs.enabled`, `GET /mnq/v1beta1/regions/{region}/sqs-info`); if it
+is not, there are no queues. Only if it is does listing go through the
+dedicated credential (`credentialsFor`, which mints or reclaims the one named
+`infra`). Scaleway Queues supports no tags — no `TagQueue`, no
+`ListQueueTags`, and `CreateQueue`'s `Tag` is unsupported (Scaleway, "Queues -
+Supported Actions", reviewed 2025-11-19) — and no free-text attribute, so a
+queue's ownership rests on its name (`Boundary.namePrefix`).
 
 Both were plausible-looking and both failed hard against the real API, which
 is exactly the risk this whole section exists to name for the other fifteen

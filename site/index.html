@@ -281,10 +281,9 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.15.0</strong> — the marker decides what a fleet manages: a resource
-  you remove from the declaration is destroyed from any machine, a fresh CI runner
-  included, and nothing without the marker is ever changed or
-  destroyed.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.16.0</strong> — no local state: the ledger and cache are gone, and
+  every run reads the markers from the cloud. <code>dump</code> writes what a fleet
+  sees as a snapshot that replays as a test fixture.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -508,7 +507,7 @@ is false</pre></div>
         <p>
           A secret names an environment variable, or a <em>function</em> over state
           that does not exist yet. The value is never known to the file, the plan
-          output, or the on-disk cache. That a committed fleet holds no plaintext is
+          output, or a <code>dump</code> snapshot. That a committed fleet holds no plaintext is
           itself decidable — <code>#guard plan.secretsAreSound</code> — so it is
           checked at compile time rather than trusted.
         </p>
@@ -570,8 +569,8 @@ would CREATE scaleway/secrets/db-url
         <p>
           A secret names an environment variable or a composition — never a
           value. That a committed fleet holds no plaintext is itself decidable
-          and checked at compile time, and no value reaches plan output or the
-          on-disk cache.
+          and checked at compile time, and no value reaches plan output or a
+          <code>dump</code> snapshot.
         </p>
       </div>
       <div class="cov-card">
@@ -669,9 +668,9 @@ would CREATE scaleway/secrets/db-url
       has not, and the resource&#8217;s own name against a prefix you configure
       for the two products with neither. A fleet sharing an account can write
       its own name into that marker, so the other fleet&#8217;s resources read
-      as foreign and are left alone. The local ledger is a disposable
-      cache of that decision, rebuildable with <code>discover</code>. What it last saw
-      is a disposable cache too. Neither holds a secret.
+      as foreign and are left alone. The markers are read from the cloud on
+      every run and nothing is stored locally, so a fresh CI runner sees what
+      your laptop sees. <code>dump</code> writes that view as JSON, never a secret.
     </p>
     <div class="card" style="max-width:760px">
       <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>
@@ -681,7 +680,7 @@ would CREATE scaleway/secrets/db-url
 <span class="c">#   [[require]]</span>
 <span class="c">#   name = "infra"</span>
 <span class="c">#   git = "https://github.com/typednotes/infra"</span>
-<span class="c">#   rev = "v0.15.0"</span>
+<span class="c">#   rev = "v0.16.0"</span>
 
 lake update                <span class="c"># fetch infra</span>
 lake exe infra init        <span class="c"># turn this into an infra project</span>
@@ -692,8 +691,8 @@ lake exe my_infra apply    <span class="c"># make it so</span></pre>
     <p class="sub" style="margin:26px 0 12px">
       You get <code>Fleet.lean</code> (the whole declaration),
       <code>Main.lean</code> (the account ids, and one call handing the whole
-      declaration to <code>Infra.Cli.run</code>), a <code>.gitignore</code> that
-      excludes the state cache, <code>Catalogue.lean</code> with every resource
+      declaration to <code>Infra.Cli.run</code>), a <code>.gitignore</code> for
+      Lake&#8217;s build output, <code>Catalogue.lean</code> with every resource
       kind declared once to copy from, and pipelines for <strong>GitHub
       Actions, GitLab CI, CircleCI, Azure Pipelines and Jenkins</strong> — each
       planning on every push and applying only when a person presses the

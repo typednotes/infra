@@ -24,11 +24,11 @@ import Infra
                           ├──▶ secrets migrator-key ──▶ secrets migrator-url
       postgres svc-db ────┤    (read-write, for apply)
                           ├──▶ secrets observer-key ──▶ secrets observer-url
-                          └────                      (read-only, for refresh/plan)
+                          └────                      (read-only, for plan/dump)
 
   Two identities, because the two paths are different: **apply** reads the
   read-write URL (where `fetchMasterPassword` already reads one), while
-  **observation** — `refresh`, `plan`, every pull — reads the read-only one.
+  **observation** — `plan`, `dump`, every pull — reads the read-only one.
   That is the one widening of "the planning path holds no secret value" the
   kind costs, and the credential it can reach can `SELECT` on one table and
   nothing else (`docs/diff-semantics.md`'s ledger records it).
@@ -37,7 +37,7 @@ import Infra
 
   Deleting the `postgresMigrations` line releases the history from
   management and destroys nothing: the schema's lifetime is the database's.
-  The plan prints `FORGET` for it, and the ledger row goes. What actually
+  The plan prints `FORGET` for it, and nothing is called. What actually
   drops the tables is deleting the `postgres` line — the teardown deletes
   in reverse dependency order, so the database goes last.
 

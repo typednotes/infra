@@ -1,6 +1,6 @@
 import Infra.Core.Settle
 import Infra.Core.Fleet
-import Infra.Core.Ledger
+import Infra.Core.Slot
 
 /-
   What reconciling a `Plan` against a `World` asks the providers to do, and in what order.
@@ -17,27 +17,14 @@ inductive Action (κ : Keys) where
   | update  (p : ProviderId) (k : Kind) : κ.Key p k → Action κ
   | replace (p : ProviderId) (k : Kind) : κ.Key p k → Action κ   -- immutable field changed
   | delete  (p : ProviderId) (k : Kind) : κ.Key p k → Action κ
-  /-- Destroy a resource this fleet *used* to declare.
+  /-- Destroy a resource carrying this fleet's marker that the declaration
+      does not name (an `Orphan`, found by `Engine.claimUndeclared`).
 
       Addressed by name and region rather than by a key, because there is no
-      key: its line was deleted from the declaration, so `κ.Key p k` has no
-      inhabitant for it any more. That is the whole reason this constructor
-      exists and the reason the ledger stores strings — see
-      `Infra.Core.Ledger.Row`.
-
-      Everything needed to carry it out is here: `Backend.delete` takes a
-      `Handle k`, which wraps the name, and `region` is what routes the call. -/
+      key: the declaration does not name it, so `κ.Key p k` has no inhabitant
+      for it. `Backend.delete` takes a `Handle k`, which wraps the name, and
+      `region` — where it was found — routes the call. -/
   | deleteOrphan (p : ProviderId) (k : Kind) (name : String) (region : String) : Action κ
-  /-- Stop managing a resource without destroying it: drop its ledger row and
-      leave the cloud alone.
-
-      The counterpart of Terraform's `removed { … lifecycle { destroy = false }
-      }`. It is an action rather than a silent ledger edit so that it appears
-      in a plan before it happens, which is the reason HashiCorp gives for
-      preferring `removed` over `terraform state rm`.
-
-      No region, because nothing is called. -/
-  | forget (p : ProviderId) (k : Kind) (name : String) : Action κ
 
 /-- The resource an action points at, outside the key family.
 
@@ -47,7 +34,7 @@ inductive Action (κ : Keys) where
 def Action.address {κ : Keys} : Action κ → ProviderId × Kind × String
   | .create p k key | .update p k key | .replace p k key | .delete p k key =>
     (p, k, κ.name p k key)
-  | .deleteOrphan p k nm _ | .forget p k nm => (p, k, nm)
+  | .deleteOrphan p k nm _ => (p, k, nm)
 
 /-- The environment a plan's expressions resolve against: whatever already
     exists in the world.
@@ -94,37 +81,23 @@ def actionsDeclared {κ : Keys} (T : Plan κ) (W : World κ) : List (Action κ) 
             | some .mutable        => some (.update p k key)
             | some .forcesReplace  => some (.replace p k key)
 
-/-- What to do about resources the ledger records and the declaration no longer
-    names.
-
-    A row still claimed by a key is not an orphan and is handled by
-    `actionsDeclared`. A row named in `forgets` is released rather than
-    destroyed. Everything else the declaration has dropped gets destroyed,
-    which is what makes deleting a line mean what it reads like.
-
-    `forgets` cannot overlap the declared names: the `forget` declaration
-    discharges `Assert (!claimedByKey …)` at compile time, so a `forget` for
-    something still declared does not elaborate. -/
-def actionsOrphaned (κ : Keys) (ledger : List Ledger.Row)
-    (forgets : List (Released κ)) : List (Action κ) :=
-  ledger.filterMap fun r =>
-    if claimedByKey κ r.cloud r.kind r.name then
-      none
-    else if forgets.any (·.isAt r.cloud r.kind r.name) then
-      some (.forget r.cloud r.kind r.name)
-    else
-      some (.deleteOrphan r.cloud r.kind r.name r.region)
+/-- Destroy every orphan — a resource carrying this fleet's marker that the
+    declaration does not name. `Engine.claimUndeclared` finds them by asking
+    the cloud, already skipping anything declared or named in a `forget`; a
+    name some key still claims is dropped here too, so a caller building its
+    own list cannot turn a declared resource into a delete. -/
+def actionsOrphaned (κ : Keys) (orphans : List Orphan) : List (Action κ) :=
+  orphans.filterMap fun o =>
+    if claimedByKey κ o.cloud o.kind o.name then none
+    else some (.deleteOrphan o.cloud o.kind o.name o.region)
 
 /-- Everything reconciling this target asks for: the declared resources, then
-    the ones the declaration has dropped.
-
-    `ledger` and `forgets` default to empty so that a pure question about a
-    declaration alone — which is what every `#guard` in `example/` asks — needs
-    neither. The engine passes the real ones. -/
-def actions {κ : Keys} (T : Plan κ) (W : World κ)
-    (ledger : List Ledger.Row := []) (forgets : List (Released κ) := []) :
+    the orphans. `orphans` defaults to empty so that a pure question about a
+    declaration alone — which is what every `#guard` in `example/` asks —
+    needs none. -/
+def actions {κ : Keys} (T : Plan κ) (W : World κ) (orphans : List Orphan := []) :
     List (Action κ) :=
-  actionsDeclared T W ++ actionsOrphaned κ ledger forgets
+  actionsDeclared T W ++ actionsOrphaned κ orphans
 
 /-- The dependency edges of the creation graph.
 

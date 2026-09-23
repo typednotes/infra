@@ -21,8 +21,8 @@ import Linen.Data.Time.Clock
 
   That is a deliberate asymmetry, and it has a consequence worth stating: a
   secret changed outside this tool is not detected as drift. Detecting it would
-  mean pulling plaintext into the engine, the `Sighting`, and potentially the
-  `.infra/` cache — a far worse trade than missing a drift.
+  mean pulling plaintext into the engine, the `Sighting`, and potentially a
+  `dump` — a far worse trade than missing a drift.
 
   A missing environment variable is an error naming the variable, not an empty
   secret: silently writing `""` as a password is the kind of failure that is

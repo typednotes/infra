@@ -9,15 +9,15 @@ import Infra
        `docs/authentication.md` (no AWS credentials are read or needed);
     2. ask every `Kind` what Scaleway reports for it — a raw `Backend.list`,
        not `Infra.Core.pull`, because `pull` only keeps resources a
-       compile-time `Keys` fleet already declares by name (see
-       `docs/persistence.md`), and the point here is to show *everything* an
-       account reports without first having to name it;
+       compile-time `Keys` fleet already declares by name, and the point
+       here is to show *everything* an account reports without first having
+       to name it;
     3. write what came back to `out/scaleway/`, once as JSON and once as
        elaborable Lean source.
 
   The Lean file is a snapshot for a human to read next to the target
   definitions, in the spirit of the "persist as Lean source" option
-  `docs/persistence.md` considered and set aside for the on-disk cache
+  `docs/persistence.md` considered and set aside for the (then) on-disk cache
   specifically — nothing here re-elaborates it, and nothing in `Infra.Core`
   reads `out/`.
 
@@ -54,8 +54,8 @@ def declFor : Kind → String × String
   | .scalewayFunction => ("pulledScalewayFunction", "scalewayFunction")
   | .scalewayContainer => ("pulledScalewayContainer", "scalewayContainer")
 
-/-- One resource per array element, exactly what a `pull`-cached file would
-    hold for this kind (`Infra.Core.Persistence.rowsAt`). -/
+/-- One resource per array element, each encoded as `dump` encodes a
+    resource's observed state. -/
 def jsonOf {k : Kind} (observed : List (ObservedOf k)) : Json :=
   Json.arr (observed.map toJson).toArray
 

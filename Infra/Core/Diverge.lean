@@ -192,7 +192,7 @@ def migrationsConflict (applied target : List Migration) : Option String :=
     `SecretsSpec.valueFrom`'s reading. `name`, `database` and `schema` are
     `forcesReplace` because the rows live in exactly that database and
     schema: a different one is a different resource, and "replace" here is
-    `delete` — a ledger-only FORGET that touches no schema — followed by a
+    `delete` — a FORGET that does nothing and touches no schema — followed by a
     create against the new parent. -/
 instance : Divergent .postgresMigrations where
   divergence t r :=

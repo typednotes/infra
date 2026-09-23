@@ -13,110 +13,6 @@ private def mentions (haystack needle : String) : Bool :=
 private def slotIdx (lines : List String) (needle : String) : Option Nat :=
   lines.findIdx? fun l => mentions l needle
 
-/-- Round-trips observed state through the on-disk cache in a scratch directory, to check the
-    format is readable back and not merely writable. Exercises `Partial`'s JSON encoding
-    indirectly: what is cached is `ObservedOf`, which is never partial, but the path, key
-    naming and per-`(provider, kind)` layout are all new. -/
-def checkPersistenceRoundTrip : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    -- The cache stores the observed half only, so this uses `CachedEntry`.
-    let saved : List (CachedEntry demoKeys) :=
-      [⟨.aws, .objectStore, .assets, { handle := ⟨"assets"⟩, url := "https://x.invalid" }⟩,
-       ⟨.scaleway, .compute, .api, { handle := ⟨"api"⟩, status := "ready" }⟩]
-    Persistence.save tmp saved
-    let loaded ← Persistence.load (κ := demoKeys) tmp
-    if loaded.length = saved.length then
-      IO.println s!"persistence round-trip: ok ({loaded.length} entries)"
-    else
-      throw (IO.userError s!"round-trip lost entries: saved {saved.length}, loaded {loaded.length}")
-
-    -- Saving *nothing* must empty the cache, not leave the previous contents
-    -- lying there. It used to: `save` skipped every `(provider, kind)` with no
-    -- rows, so an emptied pair kept its old file — and after a `destroy` the
-    -- cache went on listing resources that had just been deleted, forever,
-    -- because nothing ever wrote that path again.
-    Persistence.save (κ := demoKeys) tmp []
-    let afterEmpty ← Persistence.load (κ := demoKeys) tmp
-    unless afterEmpty.isEmpty do
-      throw (IO.userError
-        s!"a destroyed fleet left {afterEmpty.length} entry(ies) in the cache")
-    IO.println "persistence: an emptied fleet empties its cache"
-  finally
-    IO.FS.removeDirAll tmp
-
-/-- The ledger round-trips, keeps rows the declaration has dropped, and
-    refuses to read a file it did not write.
-
-    The middle property is the one that matters and the one the cache cannot
-    have: `Persistence.load` drops any name the current key family does not
-    claim, which is exactly why membership could not live there. A ledger that
-    silently dropped an undeclared row would abandon the resource instead of
-    destroying it, which is the bug this whole mechanism exists to fix. -/
-def checkLedger : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    let rows : List Ledger.Row :=
-      [ { cloud := .aws,      kind := .objectStore, name := "assets", region := "eu-west-3" }
-      , { cloud := .scaleway, kind := .queues,      name := "jobs",   region := "fr-par" } ]
-    Ledger.save tmp rows
-    let loaded ← Ledger.load tmp
-    unless loaded.length == rows.length do
-      throw (IO.userError s!"ledger round-trip: saved {rows.length}, loaded {loaded.length}")
-    -- Every field survives. The region especially: without it a row is
-    -- undeletable in a multi-region fleet, and nothing else records it once
-    -- the declaration that placed the resource is gone.
-    unless loaded.any (fun r => r.cloud == .aws && r.name == "assets"
-                                && r.region == "eu-west-3") do
-      throw (IO.userError "ledger round-trip lost a row's cloud, name or region")
-
-    -- `save` sorts and `load` deliberately does not, so this checks what was
-    -- written rather than what was read. Comparing against `Ledger.sorted`
-    -- rather than re-spelling its comparator: a copy would have to be edited
-    -- alongside it and would keep passing either way.
-    unless loaded == Ledger.sorted loaded do
-      throw (IO.userError "ledger rows were not written in sorted order")
-
-    -- An empty ledger is a *file* saying "nothing is managed", not a missing
-    -- one. Distinguishing the two is the point: a missing file cannot be told
-    -- apart from a deleted file, and the difference decides whether anything
-    -- gets destroyed.
-    Ledger.save tmp []
-    unless (← (Ledger.path tmp).pathExists) do
-      throw (IO.userError "an emptied ledger deleted its own file")
-    unless (← Ledger.load tmp).isEmpty do
-      throw (IO.userError "an emptied ledger still reported rows")
-
-    -- A file this tool did not write must stop the run rather than read as
-    -- empty. Reading it as empty would orphan everything it recorded.
-    IO.FS.writeFile (Ledger.path tmp) "{\"rows\": []}"
-    match ← (Ledger.load tmp).toBaseIO with
-    | .error _ => pure ()
-    | .ok _    => throw (IO.userError "a ledger with no version was accepted")
-
-    IO.println "ledger: ok (round-trip, sorted, empty is a file, unversioned is refused)"
-  finally
-    IO.FS.removeDirAll tmp
-
-/-- `Infra.Providers.all`, except the Scaleway backend answers `ownershipInfo`
-    with the marker tag every kind `composedPlan` uses (`.secrets`,
-    `.postgres`).
-
-    Every backend `Infra.Providers.all` is built from is a placeholder
-    answering `ownershipInfo` with `none` — meaning "cannot verify" — for
-    every kind, so an apply against it now *correctly* refuses to adopt a
-    matched-but-unverified resource (see `Engine.push`'s `none` branch).
-    Exercising the adoption path `checkLedgerAdoption` exists for needs a
-    backend that can verify, exactly as `gatedBackends` below stands in for a
-    tag-capable AWS backend. -/
-private def composedMarkedBackends : Backends where
-  backend
-    | .aws      => Infra.Providers.placeholderBackend "aws"
-    | .scaleway =>
-      { Infra.Providers.placeholderBackend "scaleway" with
-          ownershipInfo := fun _ _ => pure (.tags [(markerKey, legacyMarkerValue)] none) }
-    | .gcp      => Infra.Providers.placeholderBackend "gcp"
-
 /-- `Infra.Providers.all`, except every backend reports the marker — what a
     real backend reports for resources this (unnamed) fleet created. The
     placeholder alone answers `.unreadable`, which `push` now treats as "not
@@ -125,47 +21,6 @@ private def ownedBackends : Backends where
   backend p :=
     { Infra.Providers.placeholderBackend p.name with
         ownershipInfo := fun _ _ => pure (.tags [(markerKey, legacyMarkerValue)] none) }
-
-/-- An apply records what it claims, even when it has nothing to do.
-
-    This is the check the offline suite was missing, and its absence cost three
-    live runs. The ledger used to learn about a resource only through an
-    *action*: a resource that already existed and already matched produced
-    none, so it was never recorded — and then nothing could ever destroy it.
-    On a real account that is a leak, and it is the commonest case there is,
-    because it is what every second apply looks like.
-
-    `composedAppliedWorld` is exactly that world: all three resources exist and
-    match, so the work-list is empty. The assertion is that the ledger comes
-    out holding all three anyway, given a backend that can verify ownership —
-    see `composedMarkedBackends`. -/
-def checkLedgerAdoption : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    let bs := composedMarkedBackends
-    let store : Store composedKeys :=
-      { root := some tmp, regionOf := fun _ _ _ => "fr-par" }
-    -- Nothing to do: the world already realises the target.
-    let dry ← push bs composedPlan composedAppliedWorld {} (store := store)
-    unless dry.any (fun l => (l.splitOn "nothing to do").length > 1) do
-      throw (IO.userError s!"expected an empty plan, got: {dry}")
-    -- A dry run must not have written anything.
-    unless (← Ledger.load tmp).isEmpty do
-      throw (IO.userError "a dry run wrote to the ledger")
-
-    let applied ← push bs composedPlan composedAppliedWorld { apply := true } (store := store)
-    unless applied.any (fun l => (l.splitOn "nothing to do").length > 1) do
-      throw (IO.userError s!"expected an empty apply, got: {applied}")
-    let rows ← Ledger.load tmp
-    unless rows.length == 3 do
-      throw (IO.userError s!"an apply with nothing to do recorded {rows.length} of 3 \
-resources; a resource that needs no action is still managed")
-    -- And the region was recorded, which is what routes its eventual delete.
-    unless rows.all (fun r => r.region == "fr-par") do
-      throw (IO.userError "adopted rows lost their region")
-    IO.println "ledger: ok (an apply with nothing to do still records what it claims)"
-  finally
-    IO.FS.removeDirAll tmp
 
 /-- A `Backends` whose `.aws` backend answers `ownershipInfo` with a fixed
     verdict, rather than the placeholder default of `.unreadable`. This is what
@@ -196,321 +51,110 @@ private def namedBackends (nm : String) : Backends where
     | .scaleway => Infra.Providers.placeholderBackend "scaleway"
     | .gcp      => Infra.Providers.placeholderBackend "gcp"
 
-/-- The adoption loop in `push` and the recheck before a `deleteOrphan` both
-    used to be pure name matches; both now consult `Ownership.ownershipOf`
-    where a backend can answer it. This is what checks that wiring actually
-    runs, not just that it type-checks. -/
+/-- The marker gates every change to a declared resource: a bucket holding a
+    declared name without this fleet's marker is not replaced, and the run
+    says so by name; with the marker, the same drift is a replace. -/
 def checkOwnershipGate : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    -- The AWS `assets` bucket already exists and matches its spec, but this
-    -- account's backend reports no marker tag on it: someone else's bucket,
-    -- named the same as the one this fleet declares. Adopting it anyway is
-    -- exactly the bug this model exists to prevent.
-    let foreign : Store demoKeys := { root := some tmp, regionOf := fun _ _ _ => "eu-west-1" }
-    -- Streams captured, because *saying so* is half of the behaviour here. Not
-    -- adopting the bucket is the safe half; the loud half is that the operator
-    -- is told, since a fleet managing less than it declares produces no plan
-    -- line, no action and no other trace. The live test's ledger assertion is
-    -- what turns this warning into a red build in CI.
-    let (said, _) ← IO.FS.withIsolatedStreams
-      (push (gatedBackends false) demoPlan partialWorld { apply := true } (store := foreign))
-    let rows ← Ledger.load tmp
-    if rows.any (Ledger.Row.isAt · .aws .objectStore "assets") then
-      throw (IO.userError "an unmarked bucket was adopted into the ledger")
-    unless mentions said "aws/object-store/assets" && mentions said markerKey do
-      throw (IO.userError s!"an unmarked but declared bucket was passed over silently; \
-the run said: {said}")
+  let (said, lines) ← IO.FS.withIsolatedStreams
+    (push (gatedBackends false) demoPlan immutableDriftWorld {})
+  if lines.any (mentions · "REPLACE aws/s3-bucket/cold") then
+    throw (IO.userError s!"replaced a bucket that does not carry the marker: {lines}")
+  unless mentions said "aws/s3-bucket/cold" && mentions said markerKey do
+    throw (IO.userError s!"an unmarked declared bucket was passed over silently: {said}")
+  let marked ← push (gatedBackends true) demoPlan immutableDriftWorld {}
+  unless marked.any (mentions · "REPLACE aws/s3-bucket/cold") do
+    throw (IO.userError s!"a marked bucket with drift was not replaced: {marked}")
+  IO.println "ownership gate: ok (a declared name is changed only if it carries the marker)"
 
-    -- Same bucket, marker present: this time it must be adopted.
-    let managed : Store demoKeys := { root := some tmp, regionOf := fun _ _ _ => "eu-west-1" }
-    let _ ← push (gatedBackends true) demoPlan partialWorld { apply := true } (store := managed)
-    unless (← Ledger.load tmp).any (Ledger.Row.isAt · .aws .objectStore "assets") do
-      throw (IO.userError "a marked bucket was not adopted into the ledger")
-
-    IO.println "ownership gate: ok (adoption follows the marker, not just a name match)"
-  finally
-    IO.FS.removeDirAll tmp
-
-/-- Two fleets, one account, one bucket name — and the marker's *value* is
-    what keeps them apart.
-
-    `Boundary.fleet` is opt-in, so this also pins the two directions that must
-    not change for anyone who never sets it: an unnamed fleet still accepts any
-    marker value it finds, and the legacy value still matches every fleet. That
-    second one is what stops naming a fleet from orphaning an estate tagged
-    before the name existed — the failure this would otherwise ship with. -/
+/-- Two fleets, one account, one bucket name — the marker's *value* keeps them
+    apart. For a declared name: another fleet's value is as good as no marker;
+    this fleet's own, and the grandfathered one, are accepted; an unnamed
+    fleet accepts any value. (Undeclared resources are stricter still — see
+    `checkMarkerDecides`.) -/
 def checkFleetIsolation : IO Unit := do
-  -- One leg, in its own ledger: an account whose bucket carries `tagValue`, a
-  -- fleet calling itself `me`, and whether the bucket ends up managed.
-  let adopts (me : Option String) (tagValue : String) : IO (Bool × String) := do
-    let tmp ← IO.FS.createTempDir
-    let store : Store demoKeys :=
-      { root := some tmp, regionOf := fun _ _ _ => "eu-west-1"
-        boundary := { fleetName := me } }
-    let (said, _) ← IO.FS.withIsolatedStreams
-      (push (gatedBackends true tagValue) demoPlan partialWorld { apply := true }
-        (store := store))
-    let managed := (← Ledger.load tmp).any (Ledger.Row.isAt · .aws .objectStore "assets")
-    IO.FS.removeDirAll tmp
-    return (managed, said)
-
-  -- The isolation itself: another fleet's marker is as good as no marker.
-  let (theirs, said) ← adopts (some "mine") "theirs"
-  if theirs then
-    throw (IO.userError "a bucket marked by another fleet was adopted")
-  unless mentions said "aws/object-store/assets" do
-    throw (IO.userError s!"another fleet's bucket was passed over silently: {said}")
-  -- Our own name, adopted.
-  unless (← adopts (some "mine") "mine").1 do
-    throw (IO.userError "a bucket carrying this fleet's own name was not adopted")
-  -- The legacy value, adopted whatever the fleet is called. Deleting this
-  -- assertion is deleting the upgrade path.
-  unless (← adopts (some "mine") legacyMarkerValue).1 do
-    throw (IO.userError "a bucket tagged before fleets had names was not adopted")
-  -- And an unnamed fleet is unchanged: it reads the key and ignores the value.
-  unless (← adopts none "anything-at-all").1 do
-    throw (IO.userError "an unnamed fleet stopped adopting a marked bucket")
+  let changes (me : Option String) (tagValue : String) : IO Bool := do
+    let (_, lines) ← IO.FS.withIsolatedStreams
+      (push (gatedBackends true tagValue) demoPlan immutableDriftWorld {}
+        (boundary := { fleetName := me }))
+    return lines.any (mentions · "REPLACE aws/s3-bucket/cold")
+  if ← changes (some "mine") "theirs" then
+    throw (IO.userError "changed a bucket marked by another fleet")
+  unless ← changes (some "mine") "mine" do
+    throw (IO.userError "did not change a bucket carrying this fleet's own name")
+  unless ← changes (some "mine") legacyMarkerValue do
+    throw (IO.userError "did not change a declared bucket tagged before fleets had names")
+  unless ← changes none "anything-at-all" do
+    throw (IO.userError "an unnamed fleet stopped accepting a marked bucket")
   IO.println "fleet isolation: ok (the marker's value separates fleets; the legacy value \
-still matches every fleet)"
+still matches every fleet for a declared name)"
 
-/-- A ledger row for a name the current declaration no longer claims is an
-    orphan, and `push` re-checks its marker immediately before deleting it —
-    see the comment above that check in `Engine.push`. This pins both halves:
-    a stripped marker refuses the delete, and a marker still present lets it
-    proceed. -/
+/-- An orphan's marker is re-checked at the moment of deleting it, on both
+    rungs: gone, the delete is refused; present, it proceeds. -/
 def checkOrphanRecheck : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    let staleRow : Ledger.Row :=
-      { cloud := .aws, kind := .objectStore, name := "old-bucket", region := "eu-west-1" }
-
-    let unmarked : Store demoKeys := { root := some tmp, rows := [staleRow] }
-    match ← (push (gatedBackends false) demoPlan emptyWorld { apply := true }
-        (store := unmarked)).toBaseIO with
-    | .error e =>
-      unless mentions (toString e) "not carrying the 'managed-by-infra' tag" do
-        throw (IO.userError s!"orphan recheck failed for the wrong reason: {toString e}")
-    | .ok lines => throw (IO.userError s!"expected the recheck to refuse the delete, got: {lines}")
-    unless (← Ledger.load tmp).any (·.name == "old-bucket") do
-      throw (IO.userError "a refused delete still dropped the ledger row")
-
-    let marked : Store demoKeys := { root := some tmp, rows := [staleRow] }
-    let _ ← push (gatedBackends true) demoPlan emptyWorld { apply := true } (store := marked)
-    if (← Ledger.load tmp).any (·.name == "old-bucket") then
-      throw (IO.userError "a marked orphan was not deleted")
-
-    -- ── The same two halves on the *name* rung ──
-    --
-    -- A kind the cloud cannot tag reports only its name, and
-    -- `Boundary.namePrefix` is then the whole of the marker. These pin that
-    -- the rung reaches the same two verdicts as the tag rung above, through
-    -- `Engine.push` rather than only in `Ownership`'s own `#guard`s — and, in
-    -- the first case, that a fleet which has *not* set a prefix refuses the
-    -- delete rather than falling through to the ledger's say-so, which is the
-    -- 2026-09-10 incident's rule applied to the weakest evidence there is.
-    let noPrefix : Store demoKeys := { root := some tmp, rows := [staleRow] }
-    match ← (push (namedBackends "old-bucket") demoPlan emptyWorld { apply := true }
-        (store := noPrefix)).toBaseIO with
-    | .error e =>
-      unless mentions (toString e) "no `namePrefix` is set" do
-        throw (IO.userError s!"name-rung recheck failed for the wrong reason: {toString e}")
-    | .ok lines =>
-      throw (IO.userError s!"a name-only orphan was deleted with no prefix configured: {lines}")
-
-    -- A prefix that does not match is equally a refusal, and says so by name.
-    let wrongPrefix : Store demoKeys :=
-      { root := some tmp, rows := [staleRow], boundary := { namePrefix := some "mine-" } }
-    match ← (push (namedBackends "old-bucket") demoPlan emptyWorld { apply := true }
-        (store := wrongPrefix)).toBaseIO with
-    | .error e =>
-      unless mentions (toString e) "does not start with this fleet's" do
-        throw (IO.userError s!"a mismatched prefix refused for the wrong reason: {toString e}")
-    | .ok lines =>
-      throw (IO.userError s!"a name-only orphan outside the prefix was deleted: {lines}")
-    unless (← Ledger.load tmp).any (·.name == "old-bucket") do
-      throw (IO.userError "a refused name-rung delete still dropped the ledger row")
-
-    -- And a matching prefix lets it through, which is the half that makes the
-    -- rung worth having rather than merely safe.
-    let rightPrefix : Store demoKeys :=
-      { root := some tmp, rows := [staleRow], boundary := { namePrefix := some "old-" } }
-    let _ ← push (namedBackends "old-bucket") demoPlan emptyWorld { apply := true }
-      (store := rightPrefix)
-    if (← Ledger.load tmp).any (·.name == "old-bucket") then
-      throw (IO.userError "a name-only orphan inside the prefix was not deleted")
-
-    IO.println "orphan recheck: ok (a stripped marker refuses the delete; present, it proceeds)"
-    IO.println "name rung: ok (no prefix and a wrong prefix both refuse; a matching one deletes)"
-  finally
-    IO.FS.removeDirAll tmp
+  let old : Orphan := { cloud := .aws, kind := .objectStore, name := "old-bucket", region := "eu-west-1" }
+  let refused (bs : Backends) (b : Boundary) : IO Bool := do
+    match ← (push bs demoPlan emptyWorld { apply := true } (orphans := [old])
+        (boundary := b)).toBaseIO with
+    | .error e => return mentions (toString e) "no longer carries this fleet's marker"
+    | .ok _    => return false
+  let deleted (bs : Backends) (b : Boundary) : IO Bool := do
+    let lines ← push bs demoPlan emptyWorld { apply := true } (orphans := [old]) (boundary := b)
+    return lines.any (mentions · "DELETE aws/object-store/old-bucket")
+  let me : Boundary := { fleetName := some "me" }
+  unless ← refused (gatedBackends false) me do
+    throw (IO.userError "deleted an orphan whose marker is gone")
+  unless ← deleted (gatedBackends true "me") me do
+    throw (IO.userError "did not delete an orphan carrying this fleet's name")
+  -- A fleet that does not name itself cannot tell its orphans from another
+  -- fleet's, so it destroys none by tag — whatever the value says.
+  unless ← refused (gatedBackends true) {} do
+    throw (IO.userError "an unnamed fleet deleted an undeclared resource by tag")
+  -- The name rung: no prefix, or a wrong one, refuses; a matching one deletes.
+  unless ← refused (namedBackends "old-bucket") {} do
+    throw (IO.userError "deleted a name-only orphan with no prefix configured")
+  unless ← refused (namedBackends "old-bucket") { namePrefix := some "mine-" } do
+    throw (IO.userError "deleted a name-only orphan outside the prefix")
+  unless ← deleted (namedBackends "old-bucket") { namePrefix := some "old-" } do
+    throw (IO.userError "did not delete a name-only orphan inside the prefix")
+  IO.println "orphan recheck: ok (a stripped marker, or an unnamed fleet, refuses the delete; this fleet's name lets it proceed)"
+  IO.println "name rung: ok (no prefix and a wrong prefix both refuse; a matching one deletes)"
 
 /-- A refused orphan delete is retried, and only fails when it stops making
-    progress.
-
-    Orphans are the one part of a work-list with no edges to sort by: a
-    resource whose declaration is gone has no spec, so nothing states what it
-    referenced, and a ledger row holds a name and a region rather than a
-    dependency list. So the order is discovered instead of computed — a
-    provider that refuses ("DependencyViolation: resource is in use", the
-    security group an instance still holds) is taken at its word and asked
-    again after the rest of the work-list has run.
-
-    Both halves are pinned, because the second is what stops the first from
-    swallowing real failures: a refusal that clears is retried until the
-    teardown completes, and one that never clears fails the apply with the
-    provider's own words. -/
+    progress: orphans have no edges to sort by, so a provider's
+    "DependencyViolation" is taken at its word and asked again after the rest.
+    A refusal that never clears fails the apply in the provider's own words. -/
 def checkOrphanRetry : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    let row (nm : String) : Ledger.Row :=
-      { cloud := .aws, kind := .objectStore, name := nm, region := "eu-west-1" }
-    let rows := [row "blocked", row "other"]
-    -- Refuses to delete `blocked` its first `limit` times and then allows it,
-    -- which is the shape of a dependency refusal — no until something else is
-    -- gone — without needing a second kind or a real graph.
-    let flaky (limit : Nat) : IO (Backends × IO.Ref Nat) := do
-      let tries ← IO.mkRef 0
-      return ({ backend := fun p =>
-                  { Infra.Providers.placeholderBackend p.name with
-                      -- The orphan recheck (`Engine.push`, just before
-                      -- `deleteOrphan`) now refuses a delete it cannot verify,
-                      -- same as adoption does — see `composedMarkedBackends`.
-                      -- Both ledger rows here are meant to be deleted, so both
-                      -- must report the marker.
-                      ownershipInfo := fun _ _ =>
-                        pure (.tags [(markerKey, legacyMarkerValue)] none)
-                      delete := fun _ h => do
-                        if h.raw == "blocked" && (← tries.get) < limit then
-                          tries.modify (· + 1)
-                          throw (IO.userError "DependencyViolation: resource is in use")
-                        pure () } }, tries)
-
-    -- One refusal, then it clears: the apply must finish and empty the ledger.
-    let (bs, tries) ← flaky 1
-    Ledger.save tmp rows
-    let lines ← push bs (Plan.absent demoKeys) emptyWorld { apply := true }
-      (store := { root := some tmp, rows := rows })
-    unless (← tries.get) == 1 do
-      throw (IO.userError "the refusal never happened, so the retry proves nothing")
-    unless (← Ledger.load tmp).isEmpty do
-      throw (IO.userError s!"a retried teardown left the ledger holding {(← Ledger.load tmp).length} row(s)")
-    for nm in ["blocked", "other"] do
-      unless lines.any (mentions · s!"aws/object-store/{nm}") do
-        throw (IO.userError s!"the log does not report deleting {nm}: {lines}")
-
-    -- A refusal that never clears is a failure, reported as the provider put
-    -- it and naming the slot. Retrying must not turn a real error into
-    -- silence.
-    let (stuck, _) ← flaky 99
-    Ledger.save tmp rows
-    match ← (push stuck (Plan.absent demoKeys) emptyWorld { apply := true }
-        (store := { root := some tmp, rows := rows })).toBaseIO with
-    | .ok l => throw (IO.userError s!"a permanently refused delete reported success: {l}")
-    | .error e =>
-      for expected in ["aws/object-store/blocked", "DependencyViolation"] do
-        unless mentions (toString e) expected do
-          throw (IO.userError s!"the refusal does not mention {expected}: {toString e}")
-    -- The one that could go, went; the one that could not, is still recorded.
-    let left ← Ledger.load tmp
-    unless left.map (·.name) == ["blocked"] do
-      throw (IO.userError s!"the ledger after a stuck teardown holds {left.map (·.name)}")
-
-    IO.println "orphan retry: ok (a refused orphan delete is retried; a permanent \
+  let orphan (nm : String) : Orphan :=
+    { cloud := .aws, kind := .objectStore, name := nm, region := "eu-west-1" }
+  let orphans := [orphan "blocked", orphan "other"]
+  let flaky (limit : Nat) : IO (Backends × IO.Ref Nat) := do
+    let tries ← IO.mkRef 0
+    return ({ backend := fun p =>
+                { Infra.Providers.placeholderBackend p.name with
+                    ownershipInfo := fun _ _ => pure (.tags [(markerKey, "me")] none)
+                    delete := fun _ h => do
+                      if h.raw == "blocked" && (← tries.get) < limit then
+                        tries.modify (· + 1)
+                        throw (IO.userError "DependencyViolation: resource is in use")
+                      pure () } }, tries)
+  let (bs, tries) ← flaky 1
+  let lines ← push bs (Plan.absent demoKeys) emptyWorld { apply := true } (orphans := orphans)
+    (boundary := { fleetName := some "me" })
+  unless (← tries.get) == 1 do
+    throw (IO.userError "the refusal never happened, so the retry proves nothing")
+  for nm in ["blocked", "other"] do
+    unless lines.any (mentions · s!"aws/object-store/{nm}") do
+      throw (IO.userError s!"the log does not report deleting {nm}: {lines}")
+  let (stuck, _) ← flaky 99
+  match ← (push stuck (Plan.absent demoKeys) emptyWorld { apply := true }
+      (orphans := orphans) (boundary := { fleetName := some "me" })).toBaseIO with
+  | .ok l => throw (IO.userError s!"a permanently refused delete reported success: {l}")
+  | .error e =>
+    for expected in ["aws/object-store/blocked", "DependencyViolation"] do
+      unless mentions (toString e) expected do
+        throw (IO.userError s!"the refusal does not mention {expected}: {toString e}")
+  IO.println "orphan retry: ok (a refused orphan delete is retried; a permanent \
 refusal still fails)"
-  finally
-    IO.FS.removeDirAll tmp
-
-/-- A teardown routed through a cloud nobody authenticated must refuse.
-
-    This is the defect the 2026-09-08 live runs hid: `Infra.Cli.liveFor` loads
-    credentials for the providers a key family names and substitutes a
-    placeholder for the rest, and a placeholder's `delete` returns `()`. Two
-    clouds reported a clean teardown with their whole estate standing.
-
-    The two halves are checked here because nothing else can see them: a real
-    cloud is not available offline, and the substitution is invisible by
-    construction — a placeholder answers exactly as an empty account does. So
-    the `unreachable` backend must refuse and leave the row, and a reachable
-    one that can verify the marker tag — every live backend for a migrated
-    kind, and `.objectStore` is one — must still be free to delete. (A
-    reachable backend that cannot verify tags refuses too, but for the
-    ownership reason `checkOrphanRecheck` and `checkOrphanRetry` already
-    cover — this check is only about the `unreachable` substitution.) -/
-def checkUnreachableRefusal : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    let staleRow : Ledger.Row :=
-      { cloud := .aws, kind := .objectStore, name := "old-bucket", region := "eu-west-1" }
-    -- Exactly what `liveFor` hands back for a cloud it loaded no credentials
-    -- for, and otherwise the same placeholder the rest of this suite uses.
-    let unreachable : Backends :=
-      { backend := fun p =>
-          { Infra.Providers.placeholderBackend p.name with
-              unreachable := some "no aws credentials were loaded" } }
-
-    -- Written to disk first, because the refusal happens before `push` writes
-    -- anything: "the row survived" has to mean the file still holds it, not
-    -- that a file was never created.
-    Ledger.save tmp [staleRow]
-
-    match ← (push unreachable (Plan.absent demoKeys) emptyWorld { apply := true }
-        (store := { root := some tmp, rows := [staleRow] })).toBaseIO with
-    | .error e =>
-      unless mentions (toString e) "aws/object-store/old-bucket" do
-        throw (IO.userError s!"the refusal did not name the row: {toString e}")
-      unless mentions (toString e) "without deleting any of them" do
-        throw (IO.userError s!"push refused for the wrong reason: {toString e}")
-    | .ok lines =>
-      throw (IO.userError s!"a teardown through an unreachable cloud was allowed: {lines}")
-    unless (← Ledger.load tmp).any (·.name == "old-bucket") do
-      throw (IO.userError "a refused teardown still dropped the ledger row")
-
-    -- And the same teardown through a reachable, tag-verifying backend still
-    -- empties it, so the guard is the substitution and not teardowns in
-    -- general.
-    let reachable : Backends :=
-      { backend := fun p =>
-          { Infra.Providers.placeholderBackend p.name with
-              ownershipInfo := fun _ _ =>
-                pure (.tags [(markerKey, legacyMarkerValue)] none) } }
-    let _ ← push reachable (Plan.absent demoKeys) emptyWorld { apply := true }
-      (store := { root := some tmp, rows := [staleRow] })
-    unless (← Ledger.load tmp).isEmpty do
-      throw (IO.userError "a teardown through a reachable backend left the ledger populated")
-
-    IO.println "unreachable cloud: ok (a ledger row it cannot reach refuses the apply)"
-  finally
-    IO.FS.removeDirAll tmp
-
-/-- `discover` rebuilds a ledger row straight from `list` and `ownershipInfo`,
-    with no ledger to start from at all — the "lost ledger" case
-    `docs/persistence.md` claims `discover` recovers from. -/
-def checkDiscover : IO Unit := do
-  let listsOneBucket (marked : Bool) : Backend :=
-    { Infra.Providers.placeholderBackend "aws" with
-        list := fun k =>
-          match k with
-          | .objectStore => pure [Infra.Providers.placeholderObserved .objectStore "assets"]
-          | _            => pure []
-        ownershipInfo := fun _ _ =>
-          pure (.tags (if marked then [(markerKey, "true")] else []) none) }
-  let bs (marked : Bool) : Backends :=
-    { backend := fun p =>
-        match p with
-        | .aws      => listsOneBucket marked
-        | .scaleway => Infra.Providers.placeholderBackend "scaleway"
-        | .gcp      => Infra.Providers.placeholderBackend "gcp" }
-
-  let found ← discover (κ := demoKeys) (bs true) {} (fun _ _ _ => "eu-west-1") []
-  unless found.any (Ledger.Row.isAt · .aws .objectStore "assets") do
-    throw (IO.userError s!"discover did not recover the marked bucket, found {found.length} row(s)")
-
-  let notFound ← discover (κ := demoKeys) (bs false) {} (fun _ _ _ => "eu-west-1") []
-  if notFound.any (Ledger.Row.isAt · .aws .objectStore "assets") then
-    throw (IO.userError "discover claimed an unmarked bucket")
-
-  IO.println "discover: ok (rebuilds a lost ledger from the marker tag, not from naming)"
 
 /-- `imageId := "latest"` must not diverge.
 
@@ -593,14 +237,10 @@ def checkUnsetLaunchField : IO Unit := do
     still ask for. Nothing behind `list` is live yet, so the world comes back empty and every
     declared resource needs creating. -/
 def checkPullAndPlan : IO Unit := do
-  let tmp ← IO.FS.createTempDir
-  try
-    let world ← pull (κ := demoKeys) tmp Infra.Providers.all
-    let work := plan demoPlan world
-    IO.println s!"pull: world observed, {work.length} actions outstanding"
-    IO.println s!"idle plan (all unmanaged): {(plan idlePlan world).length} actions"
-  finally
-    IO.FS.removeDirAll tmp
+  let world ← pull (κ := demoKeys) Infra.Providers.all
+  let work := plan demoPlan world
+  IO.println s!"pull: world observed, {work.length} actions outstanding"
+  IO.println s!"idle plan (all unmanaged): {(plan idlePlan world).length} actions"
 
 /-- Exercises the credential chain against a scratch home directory.
 
@@ -782,35 +422,38 @@ fleet markerFleet in paris where
     resource scalewayContainerNamespace "ns" as markerNs { description := "d" }
     resource scalewayContainer "app" { namespace' := markerNs, image := "i", port := 8080 }
 
-private def markerOf : String → List (String × String)
-  | "kept" | "old-secret" | "app" | "old-app" | "ns" => [(markerKey, "tn")]
-  | "legacy-secret" => [(markerKey, legacyMarkerValue)]
-  | "theirs"        => [(markerKey, "another-fleet")]
-  | _               => []
-
-private def markerBackends : Backends where
-  backend p :=
-    { Infra.Providers.placeholderBackend p.name with
-        list := fun k => match k with
-          | .secrets => pure (["kept", "old-secret", "legacy-secret", "theirs", "stranger"].map
-              fun n => { handle := ⟨n⟩, version := "" })
-          | .compute => pure (["app", "old-app"].map fun n => { handle := ⟨n⟩, status := "" })
-          | .scalewayContainer => pure (["app", "old-app"].map fun n => { handle := ⟨n⟩, url := "" })
-          -- Listing queues on Scaleway mints a credential: discovery must not
-          -- touch it for a fleet that declares none.
-          | .queues => throw (IO.userError "queues were listed: that mints a credential")
-          | _ => pure []
-        ownershipInfo := fun _ h => pure (.tags (markerOf h.raw) none) }
+open Infra.Providers.Snapshot in
+/-- The account `checkMarkerDecides` runs against, as data: what the fleet
+    declares (`kept`, `app`, `ns`), what it no longer does (`old-*`), and what
+    is not its own — another fleet's, grandfathered, unmarked. The container
+    is listed under both kinds that show Serverless Containers. -/
+private def markerAccount : Snapshot :=
+  [ marked .scaleway .secrets "kept" "tn"
+  , marked .scaleway .secrets "old-secret" "tn"
+  , { cloud := .scaleway, kind := .secrets, name := "legacy-secret"
+      evidence := .tags [(markerKey, legacyMarkerValue)] none }
+  , marked .scaleway .secrets "theirs" "another-fleet"
+  , unmarked .scaleway .secrets "stranger"
+  , marked .scaleway .compute "app" "tn", marked .scaleway .scalewayContainer "app" "tn"
+  , marked .scaleway .compute "old-app" "tn", marked .scaleway .scalewayContainer "old-app" "tn"
+  , marked .scaleway .scalewayContainerNamespace "ns" "tn"
+  -- Queues are scanned like every other kind, though this fleet declares
+  -- none: removing the last one must still destroy it.
+  , marked .scaleway .queues "old-queue" "tn" ]
 
 def checkMarkerDecides : IO Unit := do
   let boundary : Boundary := { fleetName := some "tn" }
-  let found ← claimUndeclared (κ := markerFleet.keys) markerBackends boundary [] []
-  let slots := found.rows.map fun r => Ledger.slotId r.cloud r.kind r.name
-  -- Exactly the two undeclared resources carrying this fleet's name — the
-  -- container once, though two kinds list it.
-  unless slots.length == 2 && slots.contains "scaleway/secrets/old-secret"
+  let deleted ← IO.mkRef []
+  let bs := Infra.Providers.Snapshot.backends markerAccount deleted
+  let found ← claimUndeclared (κ := markerFleet.keys) bs boundary []
+  let slots := found.orphans.map (·.slot)
+  -- Exactly the three undeclared resources carrying this fleet's name — the
+  -- container once, though two kinds list it, and the queue although the
+  -- fleet declares no queue at all.
+  unless slots.length == 3 && slots.contains "scaleway/secrets/old-secret"
+      && slots.contains "scaleway/queues/old-queue"
       && slots.any (fun sl => (sl.splitOn "/old-app").length > 1) do
-    throw (IO.userError s!"expected old-secret and old-app, got {slots}")
+    throw (IO.userError s!"expected old-secret, old-app and old-queue, got {slots}")
   -- `app` is declared as a `scalewayContainer`; its `compute` listing is the
   -- same container, not an orphan.
   if slots.any (fun sl => (sl.splitOn "/app").length > 1 && (sl.splitOn "old-app").length == 1) then
@@ -818,16 +461,49 @@ def checkMarkerDecides : IO Unit := do
   -- The grandfathered marker cannot say which fleet it belongs to: warned, not claimed.
   unless found.warnings.length == 1 && (found.warnings.head!.splitOn "legacy-secret").length > 1 do
     throw (IO.userError s!"expected one warning, about legacy-secret: {found.warnings}")
-  -- With those rows — and nothing else — the plan destroys them.
-  let store : Store markerFleet.keys := { rows := found.rows, boundary }
-  let lines ← push markerBackends markerFleet.plan (worldOf []) {} (store := store)
-  unless lines.any (mentions · "DELETE scaleway/secrets/old-secret")
-      && lines.any (fun l => (l.splitOn "DELETE").length > 1 && (l.splitOn "old-app").length > 1) do
-    throw (IO.userError s!"expected the two orphans deleted: {lines}")
-  if lines.any (fun l => (l.splitOn "theirs").length > 1 || (l.splitOn "stranger").length > 1
-      || (l.splitOn "legacy-secret").length > 1) then
-    throw (IO.userError s!"touched a resource that is not this fleet's: {lines}")
-  IO.println "marker: ok (an empty ledger still finds and destroys what carries this fleet's name, and nothing else)"
+  -- Applied: every orphan is deleted, and nothing that is not this fleet's is
+  -- touched. (Declared resources may be replaced — the replay's placeholder
+  -- report differs from their specs — and that is theirs to be.)
+  let entries ← pullEntries (κ := markerFleet.keys) bs
+  let _ ← push bs markerFleet.plan (worldOf entries) { apply := true } (orphans := found.orphans)
+    (boundary := boundary) (seen := some entries)
+  let gone ← deleted.get
+  unless slots.all gone.contains do
+    throw (IO.userError s!"not every orphan was deleted: deleted {gone}, orphans {slots}")
+  if gone.any (fun g => ["theirs", "stranger", "legacy-secret", "kept"].any
+      fun n => g == s!"scaleway/secrets/{n}") then
+    throw (IO.userError s!"deleted a resource that is not an orphan of this fleet: {gone}")
+  -- And a second pass over the account the first one left finds nothing.
+  let again ← claimUndeclared (κ := markerFleet.keys) bs boundary []
+  unless again.orphans.isEmpty do
+    throw (IO.userError s!"orphans survived the apply: {again.orphans.map (·.slot)}")
+  IO.println "marker: ok (what carries this fleet's name and is not declared is found and destroyed — every kind, queues included — and nothing else)"
+
+/-- A `dump` is a snapshot, and a snapshot replays: dumping the account
+    `checkMarkerDecides` uses, reading the file back and scanning the replay
+    finds the same orphans. This is what makes a real account's dump usable as
+    a test fixture. -/
+def checkDumpReplays : IO Unit := do
+  let boundary : Boundary := { fleetName := some "tn" }
+  let bs := Infra.Providers.Snapshot.backends markerAccount (← IO.mkRef [])
+  let found ← claimUndeclared (κ := markerFleet.keys) bs boundary []
+  let entries ← pullEntries (κ := markerFleet.keys) bs
+  let snap ← Infra.Cli.snapshotOf bs markerFleet.regions entries found.orphans
+  let tmp ← IO.FS.createTempDir
+  try
+    let path := tmp / "dump.json"
+    IO.FS.writeFile path (Infra.Cli.dumpJson snap found.orphans [] found.warnings).pretty
+    let back ← Infra.Providers.Snapshot.load path
+    unless back == snap do
+      throw (IO.userError "a dump did not read back as the same snapshot")
+    let replayed ← claimUndeclared (κ := markerFleet.keys)
+      (Infra.Providers.Snapshot.backends back (← IO.mkRef [])) boundary []
+    unless replayed.orphans == found.orphans do
+      throw (IO.userError s!"the replayed dump found {replayed.orphans.map (·.slot)}, \
+the account {found.orphans.map (·.slot)}")
+  finally
+    IO.FS.removeDirAll tmp
+  IO.println "dump: ok (a dump reads back as the same snapshot, and replaying it finds the same orphans)"
 
 /-- Checks `push`'s planning and ordering without touching a cloud.
 
@@ -915,15 +591,11 @@ def checkSecretComposition : IO Unit := do
     if mentions line canary then
       throw (IO.userError s!"apply log leaked a secret value: {line}")
 
-  -- Nor may it reach the on-disk cache.
-  let tmp ← IO.FS.createTempDir
-  try
-    let _ ← pull (κ := composedKeys) tmp bs
-    for entry in ← tmp.walkDir do
-      if mentions (← IO.FS.readFile entry) canary then
-        throw (IO.userError s!"cache leaked a secret value: {entry}")
-  finally
-    IO.FS.removeDirAll tmp
+  -- Nor may it reach a `dump`, the one thing written to disk.
+  let entries ← pullEntries (κ := composedKeys) bs
+  let snap ← Infra.Cli.snapshotOf bs {} entries []
+  if mentions (Infra.Cli.dumpJson snap [] [] []).pretty canary then
+    throw (IO.userError "dump leaked a secret value")
 
   -- Create-only: a composed value cannot be compared, so once the resources
   -- exist a second apply must ask for nothing. Without this, every plan would
@@ -1065,7 +737,7 @@ def checkVanishingResource : IO Unit := do
     { backend := fun _ => listsOneRefusingToRead err }
 
   -- Not found: the pull completes and reports nothing there.
-  let gone ← pull (κ := demoKeys) (← IO.FS.createTempDir)
+  let gone ← pull (κ := demoKeys)
     (backendsWith "HTTP 400 com.amazonaws.sqs#QueueDoesNotExist: The specified queue does not exist.")
   match gone.sighting .aws .objectStore .assets with
   | none   => pure ()
@@ -1073,7 +745,7 @@ def checkVanishingResource : IO Unit := do
 
   -- Denied: the pull must fail rather than silently report absence, because
   -- "absent" would make the next apply create a duplicate.
-  match ← (pull (κ := demoKeys) (← IO.FS.createTempDir)
+  match ← (pull (κ := demoKeys)
             (backendsWith "HTTP 403 AccessDenied: not authorised")).toBaseIO with
   | .error _ => pure ()
   | .ok _    => throw (IO.userError "a permission error was mistaken for absence")
@@ -1158,21 +830,17 @@ a live run would mint one per call")
 
 def selfCheck : IO Unit := do
   IO.println "infra: refinement core loaded"
-  checkPersistenceRoundTrip
-  checkLedger
-  checkLedgerAdoption
   checkOwnershipGate
   checkFleetIsolation
   checkOrphanRecheck
   checkOrphanRetry
-  checkUnreachableRefusal
-  checkDiscover
   checkLatestImage
   checkUnsetLaunchField
   checkPullAndPlan
   checkCredentials
   checkSigning
   checkMarkerDecides
+  checkDumpReplays
   checkPush
   checkTeardown
   checkSecretComposition

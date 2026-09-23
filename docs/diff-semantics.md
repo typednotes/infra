@@ -120,7 +120,8 @@ There is no field for "everything else". There was one, `outside : Status
 Unit`, and it is gone: a single verdict cannot close the world, because closing
 it requires knowing *which* resources were once managed, and a fleet-wide
 `absent` would have proposed deleting every resource in the account. Membership
-is now recorded per-resource by `Infra.Core.Ledger` and answered there. See
+is now answered per resource, by the ownership marker on the resource itself,
+read from the cloud on every run (`Engine.claimUndeclared`). See
 `docs/persistence.md`.
 
 Because `unmanaged` is ⊥, a plan whose every key is `unmanaged` is satisfied by *any* world and
@@ -407,7 +408,7 @@ defaults to knowing nothing, so the planning path cannot hold one in a *spec*
 
 **One real weakening, recorded as one** (0.13.0, with
 `postgresMigrations`): the kind's observation path — `list`/`read` behind
-`refresh`/`plan` — reads a secret's *value*, because the only way to see
+`plan` and `dump` — reads a secret's *value*, because the only way to see
 what a database has applied is to connect to it, and the only way to connect
 is a URL somebody wrote down. Two things hold the widening to its size:
 
@@ -418,9 +419,9 @@ is a URL somebody wrote down. Two things hold the widening to its size:
   The apply path keeps the read-write URL, exactly where
   `fetchMasterPassword` already reads one.
 
-The ephemeral-key alternative — mint a short-lived key at refresh, delete it
-after — was rejected because it would have widened a bigger invariant: plan
-and refresh are read-only, and Scaleway IAM cannot scope key-minting below
+The ephemeral-key alternative — mint a short-lived key at each read, delete
+it after — was rejected because it would have widened a bigger invariant:
+`plan` and `dump` are read-only, and Scaleway IAM cannot scope key-minting below
 the project, so the `plan.yml` token would have gained the right to mint
 keys for *any* identity, the read-write ones included. Recorded in
 `docs/migrations.md`, hard edge 2.
@@ -501,10 +502,11 @@ before applying anything. Cheap at every tier, fatal at none.
   closing it properly means a non-`Expr` slot for reference fields, recorded
   under "Not yet adopted" below.
 - **The cache was never cleaned, and lied after a `destroy`** — fixed in 0.3.1,
-  recorded because of how it was found. `Persistence.save` wrote only
+  recorded because of how it was found (the cache has since been removed
+  entirely; see `docs/persistence.md`). `Persistence.save` wrote only
   non-empty `(provider, kind)` pairs and never removed the file of a pair that
   had become empty, so a destroyed fleet's resources stayed in the cache
-  forever. Nothing reads the cache, so no plan was affected; what it damaged
+  forever. Nothing read the cache, so no plan was affected; what it damaged
   was the cache's credibility as a record, and it was believed — including by
   the author of this entry, who read those files as evidence that two
   terminated EC2 instances were still running and said so.
@@ -576,15 +578,16 @@ before applying anything. Cheap at every tier, fatal at none.
   that recomputes every edge from `HasDeps` rather than trusting the scheduler.
   It asserts both directions, and that the teardown is exactly the build order
   reversed.
-- **Membership is decided by ownership evidence, cached in the ledger.**
+- **Membership is decided by ownership evidence, read on every run.**
   `Plan.outside` used to head this list, declared and never consumed, so a
   resource deleted from a declaration was silently abandoned. It is gone,
   replaced by `Infra.Core.Ownership` (a marker plus a human-authored realm
-  and exclusion list), with `Infra.Core.Ledger` — a local, gitignored *cache*
-  of `(cloud, kind, name, region)` rows, rebuildable with `infra discover` —
-  as what survives a resource's line being deleted, which is what makes
-  deleting that line destroy the resource. `forget` releases a row without
-  deleting.
+  and exclusion list). What survives a resource's line being deleted is the
+  marker on the resource: `plan`, `apply` and `destroy` ask every region the
+  fleet uses for undeclared resources carrying it (`Engine.claimUndeclared`),
+  which is what makes deleting that line destroy the resource, from any
+  machine. Nothing is stored locally. `forget` releases a resource without
+  deleting it, for as long as the `forget` line stays.
 
   Every `(cloud, kind)` pair reports evidence now, on one of three rungs —
   tags, a marker in the object's one writable free-text field, or the
@@ -596,10 +599,10 @@ before applying anything. Cheap at every tier, fatal at none.
   prefix gets no evidence there at all.
 
   What the replacement does *not* record is references, and that is a choice
-  rather than an omission. A ledger row has a name and a region, not a
-  dependency list, so orphans are scheduled with no edges between them
-  (`Engine.stepOf`); recording edges too would make the ledger a second copy
-  of the declaration, which is the shape that let `S3BucketSpec.region`
+  rather than an omission. An `Orphan` has a name and a region, not a
+  dependency list — the cloud cannot say what a deleted line referred to — so
+  orphans are scheduled with no edges between them (`Engine.stepOf`); keeping
+  a record of edges would make it a second copy of the declaration, which is the shape that let `S3BucketSpec.region`
   disagree with the placement.
 
   The ordering used to be the open question here, and it no longer is: an
@@ -632,7 +635,9 @@ before applying anything. Cheap at every tier, fatal at none.
   rotation means deleting the secret — which deletes its key — and applying
   again. The key is found at teardown through two tags written on the secret
   beside the marker, because `Backend.delete` is handed a `Handle` and an
-  orphan has no declaration left to consult.
+  orphan has no declaration left to consult. The same back-reference tags are
+  what the secrets listing rebuilds a minted key's principal and access key
+  from (0.14.1; until then both read back as `""` after the minting apply).
 - **Parallel execution.** The scheduler orders; it does not fan out.
 - **Field-level constraints richer than "exact value or nothing"** — `AtLeast
   4`, a region set, a version range: targets a provider could satisfy several

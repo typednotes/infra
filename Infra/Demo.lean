@@ -810,12 +810,11 @@ private def dagDeps (T : Plan dagFleet.keys) : Action dagFleet.keys → List Str
   | .create p k key | .update p k key | .replace p k key | .delete p k key =>
     match T.assign p k key with
     | .present spec => ((hasDepsOf k).deps spec).map fun d =>
-        Ledger.slotId d.provider d.kind (dagFleet.keys.name d.provider d.kind d.key)
+        slotId d.provider d.kind (dagFleet.keys.name d.provider d.kind d.key)
     | _ => []
-  -- Neither carries a key, so neither has a spec to read edges from. This
-  -- checker is about the declared graph; the ledger records names and
-  -- regions, not references. See `Engine.stepOf`.
-  | .deleteOrphan .. | .forget .. => []
+  -- An orphan carries no key, so it has no spec to read edges from. This
+  -- checker is about the declared graph. See `Engine.stepOf`.
+  | .deleteOrphan .. => []
 
 /-- Every dependency that is itself scheduled appears strictly earlier.
 
@@ -905,74 +904,63 @@ private def killAt (slot : String) : Nat := (dagTeardown.map Action.slot).idxOf 
 
 end DagGuards
 
-/-! ## Membership: what the ledger says, not what the declaration says
+/-! ## Membership: what the markers say, not what the declaration says
 
   The declaration below keeps one resource and releases another. What matters
-  is a third name, in the ledger and in neither list: that is a resource whose
-  line was deleted, and destroying it is the whole point of the ledger. -/
+  is a third name, found by its marker and in neither list: a resource whose
+  line was deleted, which is what `apply` destroys. Finding those is
+  `Engine.claimUndeclared`'s job (it skips released names); these guards pin
+  what the plan does with what it found. -/
 
 /-! A declaration with nothing in it, which is what the last stage of a live
   sequence applies. Its key family is empty, so it cannot name anything. -/
 
 fleet nothingDeclared where
 
-fleet ledgerFleet in paris where
+fleet forgetFleet in paris where
   resource scaleway queues "keep" { visibilityTimeoutSec := 30 }
-  -- Released: still in the ledger, must not be destroyed.
+  -- Released: carries the marker, must not be destroyed while this line stays.
   forget scaleway queues "released"
 
-section LedgerGuards
+section OrphanGuards
 
-private def row (k : Kind) (nm : String) : Ledger.Row :=
+private def orphan (k : Kind) (nm : String) : Orphan :=
   { cloud := .scaleway, kind := k, name := nm, region := "fr-par" }
-
-/-- Three rows: one still declared, one released, one simply dropped. -/
-private def ledgerRows : List Ledger.Row :=
-  [row .queues "keep", row .queues "released", row .queues "dropped"]
 
 /- The `forget` declaration reached the fleet, as a `Released` carrying this
    fleet's own key family — which is what stops it being handed to another. -/
-#guard ledgerFleet.forgets.map (fun r => (r.cloud, r.kind, r.name))
+#guard forgetFleet.forgets.map (fun r => (r.cloud, r.kind, r.name))
      = [(ProviderId.scaleway, Kind.queues, "released")]
-#guard ledgerFleet.forgets.length = 1
+#guard forgetFleet.forgets.length = 1
 
-/- `keep` is still claimed by a key, so it is not the orphan pass's business. -/
-#guard Infra.Core.claimedByKey ledgerFleet.keys .scaleway .queues "keep" = true
-#guard Infra.Core.claimedByKey ledgerFleet.keys .scaleway .queues "dropped" = false
+/- `keep` is still claimed by a key, so it is never an orphan. -/
+#guard Infra.Core.claimedByKey forgetFleet.keys .scaleway .queues "keep" = true
+#guard Infra.Core.claimedByKey forgetFleet.keys .scaleway .queues "dropped" = false
 
-/- The three rows produce exactly two actions, and each is the right one:
-   nothing for the declared resource, a release for the forgotten one, and a
-   delete for the one whose line was deleted. This is the behaviour the whole
-   change exists for. -/
-#guard (actionsOrphaned ledgerFleet.keys ledgerRows ledgerFleet.forgets).map Action.slot
-     = ["scaleway/queues/released", "scaleway/queues/dropped"]
-#guard (actionsOrphaned ledgerFleet.keys ledgerRows ledgerFleet.forgets).map Action.verb
-     = ["FORGET", "DELETE"]
+/- An orphan is destroyed; a name still declared is not, even if a caller
+   hands it in as an orphan. -/
+#guard (actionsOrphaned forgetFleet.keys [orphan .queues "keep", orphan .queues "dropped"]).map
+         Action.slot = ["scaleway/queues/dropped"]
+#guard (actionsOrphaned forgetFleet.keys [orphan .queues "dropped"]).map Action.verb = ["DELETE"]
+#guard (actionsOrphaned forgetFleet.keys [orphan .queues "dropped"]).map Action.isDestructive
+     = [true]
 
-/- A release is not destructive, so it is never ordered against the teardown
-   graph: it changes what is managed, not what exists. -/
-#guard (actionsOrphaned ledgerFleet.keys ledgerRows ledgerFleet.forgets).map
-         Action.isDestructive = [false, true]
+/- With no orphans, nothing is deleted — which is what keeps every `#guard` in
+   `example/` asking about a declaration alone. -/
+#guard actionsOrphaned forgetFleet.keys [] = []
 
-/- With no ledger, nothing is an orphan — which is what keeps every `#guard`
-   in `example/` asking about a declaration alone, and what makes a first run
-   against an empty ledger propose no deletions at all. -/
-#guard actionsOrphaned ledgerFleet.keys [] ledgerFleet.forgets = []
-
-/- The same row, against a declaration that does not mention it, is destroyed.
-   That is the whole mechanism in one line: membership is the ledger, and
-   whether a managed resource survives depends on whether the declaration still
-   claims it. `dagFleet` declares plenty, but no `scaleway/queues/keep`. -/
-#guard (actionsOrphaned dagFleet.keys [row .queues "keep"] []).map Action.verb = ["DELETE"]
-#guard (actionsOrphaned dagFleet.keys [row .queues "keep"] []).map Action.slot
+/- The same resource, against a declaration that does not mention it, is
+   destroyed: whether a marked resource survives depends only on whether the
+   declaration still claims it. `dagFleet` declares plenty, but no
+   `scaleway/queues/keep`. -/
+#guard (actionsOrphaned dagFleet.keys [orphan .queues "keep"]).map Action.slot
      = ["scaleway/queues/keep"]
 
 /- So `destroy` is not a second teardown mechanism. It reconciles against
    `Plan.absent`, which deletes every declared resource; deleting every line
    and applying orphans the same resources and deletes those. Both end at the
-   same `Backend.delete`, addressed by name — see `Engine.runAction`, where the
-   two cases share one body. -/
-#guard (actions (Plan.absent ledgerFleet.keys)
+   same `Backend.delete`, addressed by name — see `Engine.runAction`. -/
+#guard (actions (Plan.absent forgetFleet.keys)
           (worldOf [⟨.scaleway, .queues, ⟨0, by decide⟩,
                     { observed := { handle := ⟨"keep"⟩, url := "" }
                       reported := { name := "keep", visibilityTimeoutSec := .unknown } }⟩])).map
@@ -980,7 +968,7 @@ private def ledgerRows : List Ledger.Row :=
 
 /-! ### The brake, and what it must not stop
 
-  `push` refuses a plan that destroys most of the ledger — the hazard being a
+  `push` refuses a plan that destroys most of what it manages — the hazard being a
   declaration edited by mistake, or a rename that orphans everything. What it
   must *not* refuse is a teardown, and the first live run of the staged test
   failed on exactly that: all three clouds created and trimmed correctly, then
@@ -996,12 +984,12 @@ private def ledgerRows : List Ledger.Row :=
 /- An empty declaration declares nothing, and `Plan.absent` says the same
    thing about a fleet that has keys. Both are teardowns. -/
 #guard nothingDeclared.plan.declaresAnything = false
-#guard (Plan.absent ledgerFleet.keys).declaresAnything = false
+#guard (Plan.absent forgetFleet.keys).declaresAnything = false
 
 /- A declaration with resources in it does declare something, however many of
    them are on their way out. This is the case the brake is for: dropping most
    of a fleet while still declaring the rest. -/
-#guard ledgerFleet.plan.declaresAnything = true
+#guard forgetFleet.plan.declaresAnything = true
 #guard dagFleet.plan.declaresAnything = true
 
 /-! ### Negative checks
@@ -1016,7 +1004,7 @@ private def ledgerRows : List Ledger.Row :=
 
           could not synthesize default value for parameter '_h' using tactics
           Tactic `decide` proved that the proposition
-            Assert (!claimedByKey ledgerFleet.keys ProviderId.scaleway Kind.queues "keep")
+            Assert (!claimedByKey forgetFleet.keys ProviderId.scaleway Kind.queues "keep")
           is false
 
     * **A `forget` naming only a kind**, outside a `provider` block, is
@@ -1025,12 +1013,12 @@ private def ledgerRows : List Ledger.Row :=
     * **One fleet's releases handed to another.** `Released` is indexed by the
       key family, so the two are different types:
 
-          example : List (Released dagFleet.keys) := ledgerFleet.forgets
+          example : List (Released dagFleet.keys) := forgetFleet.forgets
 
           Type mismatch
-            ledgerFleet.forgets
+            forgetFleet.forgets
           has type
-            List (Released ledgerFleet.keys)
+            List (Released forgetFleet.keys)
           but is expected to have type
             List (Released dagFleet.keys)
 
@@ -1040,7 +1028,7 @@ private def ledgerRows : List Ledger.Row :=
 
     * **Building a release by hand**, skipping the check entirely:
 
-          example : Released ledgerFleet.keys :=
+          example : Released forgetFleet.keys :=
             { cloud := .scaleway, kind := .queues, name := "keep" }
 
           invalid {...} notation, constructor for `Released` is marked as
@@ -1053,7 +1041,7 @@ private def ledgerRows : List Ledger.Row :=
       than an argument to the front end, and the field has no default, so a
       hand-written `Fleet` that leaves them out does not elaborate:
 
-          example : Fleet := { keys := ledgerFleet.keys, plan := ledgerFleet.plan }
+          example : Fleet := { keys := forgetFleet.keys, plan := forgetFleet.plan }
 
           Fields missing: `forgets`
 
@@ -1068,15 +1056,15 @@ private def ledgerRows : List Ledger.Row :=
       declarations:
 
           example : Fleet :=
-            { keys := ledgerFleet.keys, plan := dagFleet.plan
-              forgets := ledgerFleet.forgets }
+            { keys := forgetFleet.keys, plan := dagFleet.plan
+              forgets := forgetFleet.forgets }
 
           Type mismatch
             dagFleet.plan
           has type
             Plan dagFleet.keys
           but is expected to have type
-            Plan ledgerFleet.keys
+            Plan forgetFleet.keys
 
       Placement is the half that carries no index — `Regions` is deliberately
       fleet-independent, see `Regions.slot` — and it is guarded by
@@ -1085,6 +1073,6 @@ private def ledgerRows : List Ledger.Row :=
       by. While `run` took the two separately it accepted one fleet's plan
       with another's placement, and built it in the wrong region. -/
 
-end LedgerGuards
+end OrphanGuards
 
 end Infra.Demo

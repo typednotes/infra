@@ -275,11 +275,14 @@ Missing the *write* half fails loudly, which is how `iam:TagUser` was found:
     CREATE aws/iam/ci-tests-infra-user failed: iam POST iam.amazonaws.com/:
     HTTP 403 AccessDenied: … is not authorized to perform: iam:TagUser …
 
-Missing the *read* half is worse, because it is quiet. `readOwnership` reports
-`none` when the call fails, which the engine reads as "this cloud cannot answer"
-and falls back to the ledger — so the ownership perimeter silently stops being
-enforced for that kind rather than failing. `sqs:ListQueueTags` and
-`iam:ListUserTags` were both absent for that reason.
+Missing the *read* half used to be worse, because it was quiet: a failed read
+made the engine fall back to the local ledger (since removed), so the ownership
+perimeter silently stopped being enforced for that kind. `sqs:ListQueueTags` and
+`iam:ListUserTags` were both absent for that reason. There is no fallback now:
+a listing or tag read that errors fails the run (`claimUndeclared` does not
+catch it), and a marker a backend reports as unreadable counts as foreign — a
+declared resource is left alone with a warning, an undeclared one is never
+destroyed.
 
 One permission is easy to miss because no resource names it: the fleets contain
 two **composed** secrets, whose values are built from a base secret's value at
@@ -553,9 +556,10 @@ runner does not reach the backstop at all — that is the next section.
 A run that *passes* checks the account itself, which it did not always: the
 driver's last act is `assertAccountClean`, the sweep's listing without the
 deletes, polled through the settle window. So a green leg means the cloud
-reported no `ci-tests-infra-*` resource, not merely that the local ledger came
-out empty — those are different claims, and 0.8.0 shipped a defect that
-satisfied the second while leaving two whole estates standing.
+reported no `ci-tests-infra-*` resource, not merely that nothing carrying the
+fleet's marker is left — those are different claims, and 0.8.0 shipped a defect
+that satisfied a version of the second (then an empty local ledger, since
+removed) while leaving two whole estates standing.
 
 ## Cleaning up after a failed live run
 
@@ -569,13 +573,17 @@ Two verbs, and picking the wrong one is why this section exists:
 
 | | What it deletes | When it is the right one |
 |---|---|---|
-| `lake test -- <cloud> destroy` | what the **local ledger** records (`.infra/live-<cloud>/infra.ledger.json`) | on the machine that ran the apply, straight after it failed |
-| `lake test -- <cloud> sweep` | every resource named `ci-tests-infra-*` the credentials can **list** | anywhere else, and always in CI |
+| `lake test -- <cloud> destroy` | every resource carrying the live fleet's **marker** (`fleetName` `ci-tests-infra`, or the `ci-tests-infra-` name prefix where a kind can carry nothing else), then checks the account is clean | from any machine, a fresh runner included — the first thing to try |
+| `lake test -- <cloud> sweep` | every resource named `ci-tests-infra-*` the credentials can **list**, marker or not | when `destroy` leaves something standing, and in the Cleanup workflow |
 
-The ledger is gitignored and does not survive a CI job, so a fresh runner asked
-to `destroy` finds an empty ledger and deletes nothing however much is
-standing. That is the whole reason `sweep` exists: it asks the account instead
-of asking local state. Every resource the live fleets declare is named
+`destroy` is the live test's last stage on its own: an empty declaration run
+like any fleet's `destroy`, which asks the account for what carries the
+fleet's marker — nothing is read from local state, so it works the same on a
+fresh runner. What it cannot see is debris without that marker: a run that died
+between creating a resource and marking it, or one from a version of this test
+that marked differently. `destroy` leaves those alone by design, and its final
+account check fails naming them. That is the reason `sweep` exists: it matches
+the name, not the marker. Every resource the live fleets declare is named
 `ci-tests-infra-*`, and a `#guard` in `test/Live.lean` holds that naming rule
 precisely so a sweep can rely on it — `isDebris` is the only thing standing
 between a sweep and somebody else's resources, which is why it is one function

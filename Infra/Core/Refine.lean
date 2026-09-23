@@ -137,8 +137,8 @@ instance {α : Type u} [Refines α] [LawfulRefines α] : LawfulRefines (Partial 
       | unknown => exact absurd h₁ (by simp [refines, Refines.refines, Partial.refinesB])
       | known y => exact congrArg Partial.known (LawfulRefines.antisymm h₁ h₂)
 
-/-- `unknown` serialises as `null`. `Cloud.lean` has no persistence layer; this is what
-    `docs/persistence.md` needs to cache a partially-known world. -/
+/-- `unknown` serialises as `null`, so a partially-known value can be written out as JSON
+    like any other. -/
 instance {α : Type} [ToJson α] : ToJson (Partial α) where
   toJson
     | .unknown => Json.null

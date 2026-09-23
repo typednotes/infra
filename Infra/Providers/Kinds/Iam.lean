@@ -125,9 +125,10 @@ def create (creds : Credentials) (name markerValue : String) (policies : List St
 
     Every AWS IAM user this tool created therefore read back as carrying no
     tags at all, which `ownershipOf` correctly calls `foreign`. It survived
-    because nothing exercised it: the live sequence puts a resource in the
-    ledger as it creates it, so the adoption loop never asks; the trimmed
-    stage does not drop the user, so the orphan recheck never asks either;
+    because nothing exercised it: the live sequence put a resource in the
+    (then) ledger as it created it, so the (then) adoption loop never
+    asked; the trimmed stage does not drop the user, so the orphan recheck
+    never asks either;
     and no offline test could reach an XML body. The live ownership check
     added in 0.11.0 asks directly, and found it on its first real run.
 

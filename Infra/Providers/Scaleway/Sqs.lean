@@ -97,6 +97,22 @@ private def keychainAccount : String := "scaleway-sqs"
     whatever holds it. Do not name a hand-made credential `infra`. -/
 private def credentialName : String := "infra"
 
+/-- Whether Queues is enabled for this project and region — read-only
+    (`GET …/sqs-info`, Scaleway's `SqsAPI.GetSqsInfo`: status `enabled`,
+    `disabled` or `unknown_status`; route checked against scaleway-sdk-go,
+    2026-09-23).
+
+    What listing asks first. A project where Queues was never enabled
+    provably holds no queues, so the answer is an empty listing — without
+    `credentialsFor`, which would *activate* the product and mint a
+    credential just to learn there is nothing there. Anything but `enabled`
+    counts as "no queues"; a failed call is an error, never "none". -/
+def enabled (creds : Credentials) : IO Bool := do
+  let project ← creds.requireProject
+  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/sqs-info")
+    (query := [("project_id", project)])
+  return stringField reply "status" == some "enabled"
+
 /-- Does this error mean "it is already there"? -/
 private def alreadyExists (msg : String) : Bool :=
   (msg.splitOn "already_exists").length > 1 || (msg.splitOn "HTTP 409").length > 1

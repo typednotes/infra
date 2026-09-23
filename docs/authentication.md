@@ -45,7 +45,8 @@ opening the browser.
   equivalents elsewhere) keeps the token out of plaintext files and off disk in the clear,
   at the cost of being unavailable on machines without a keychain service (some CI
   runners, some Linux setups) and pulling in whatever Linen's implementation needs.
-- **A config file** (e.g. under `.infra/`) is simpler and more portable, works
+- **A config file** (in some local directory — infra itself keeps no local state,
+  so it would be the only file it writes) is simpler and more portable, works
   everywhere, and is easy to inspect/debug — but stores the token in the clear unless
   encrypted separately, and needs its own gitignore/permissions discipline so it doesn't
   end up committed.

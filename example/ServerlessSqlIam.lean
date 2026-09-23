@@ -13,7 +13,7 @@ import Infra
   read back after it does. Scaleway returns an API key's secret half **once**,
   at creation; `GET /api-keys` reports it as null for ever after. So it can be
   neither an environment variable (nobody has it yet) nor an observed value
-  (observed state is cached in `.infra/` and printed in plans).
+  (observed state is written by `dump` and printed in plans).
 
   `SecretSource.apiKeyFor` is the answer: it mints the key at the moment the
   secret is created and writes the secret half straight in, which is the one
@@ -66,7 +66,7 @@ import Infra
   Serverless SQL Database carries no tags and no description — there is
   nothing on one but the name it was created with — so the name is the only
   marker available, and without a prefix to check it against this fleet could
-  create the database and then never be allowed to adopt or destroy it. The
+  create the database and then never be allowed to change or destroy it. The
   IAM application and both secrets are tagged normally; only the database
   falls to the name rung. See `Infra/Core/Ownership.lean`.
 
@@ -133,7 +133,7 @@ fleet reportsStack in paris where
     carries no tags and no description — there is nothing on one but the name
     it was created with — so the name is the only marker available, and
     without a prefix to check it against this fleet could create the database
-    and then never be allowed to adopt or destroy it. The IAM application and
+    and then never be allowed to change or destroy it. The IAM application and
     both secrets are tagged normally and do not need this; only the database
     falls to the name rung. Every resource above is named to match. -/
 def reportsBoundary : Boundary :=

@@ -1,4 +1,4 @@
-import Infra.Core.Ledger
+import Infra.Core.Slot
 
 /-
   Whether a resource is ours.
@@ -6,9 +6,10 @@ import Infra.Core.Ledger
   This is the question that decides whether deleting a line from a declaration
   destroys the resource or abandons it, and getting it wrong is expensive in
   both directions. It is the replacement for an earlier answer that could not
-  work (see below). `Engine.push` calls `ownershipOf` from two places — the
-  adoption loop, and the recheck immediately before a `deleteOrphan` runs —
-  and `Infra.Providers.Live` writes the marker on create. The `#guard`s below
+  work (see below). The engine asks it in three places — the scan for
+  undeclared resources (`Engine.claimUndeclared`), the check on declared ones
+  (`Engine.foreignDeclared`), and the recheck immediately before a
+  `deleteOrphan` runs — and `Infra.Providers.Live` writes the marker on create. The `#guard`s below
   pin the semantics this is meant to have, independent of which kinds are
   wired up.
 
@@ -91,7 +92,7 @@ namespace Infra.Core
     name (`Boundary.fleetName`), and that is the split rather than the other way
     round for one reason worth keeping: a constant key is what makes "what did
     this tool create in this account?" answerable at all, which is the question
-    `Infra.Cli.discover` and any audit of the account rests on. A configurable
+    `Engine.claimUndeclared`, `dump` and any audit of the account rest on. A configurable
     key would take that away, and a key with a typo in it would leave an entire
     estate looking like it belonged to nobody. -/
 def markerKey : String := "managed-by-infra"
@@ -189,10 +190,10 @@ inductive Ownership
 
 /-- One resource this tool must never touch.
 
-    Same shape as a ledger row minus the region, which is only needed to route
+    Same shape as an `Orphan` minus the region, which is only needed to route
     a delete, and nothing here is ever deleted. Authored by a human (or written
-    once by a sweep of the account and then committed), so unlike the ledger it
-    never has to be written back by a run. -/
+    once by a sweep of the account and then committed), so it never has to be
+    written back by a run. -/
 structure Exclusion where
   cloud : ProviderId
   kind  : Kind
@@ -216,7 +217,7 @@ structure Boundary where
   /-- This fleet's own name, written into the marker's value and required back
       out of it.
 
-      **Named `fleetName` rather than `fleet`** for the reason `Ledger.Row`'s
+      **Named `fleetName` rather than `fleet`** for the reason `Orphan`'s
       first field is `cloud` rather than `provider`: `fleet` is a parser token
       of the `fleet` command, so a file that imports the DSL — which is every
       file that declares one — cannot write `{ fleet := … }`. The field
@@ -257,7 +258,7 @@ structure Boundary where
       `push` warns by name about every one that fails to answer it.
 
       `none` — the default — means there is no marker to check, so such a
-      resource is `foreign`: never adopted, and never deleted as an orphan.
+      resource is `foreign`: never changed, and never deleted as an orphan.
       That is exactly the behaviour these kinds had before this field existed,
       which is what keeps an existing fleet unchanged until it opts in.
 
@@ -366,18 +367,22 @@ def Ownership.isOurs : Ownership → Bool
   | _        => false
 
 /-- Whether a resource the declaration does **not** name may be claimed —
-    and so destroyed — on the marker's say-so alone, with no ledger row.
+    and so destroyed — on the marker's say-so alone.
 
     `ownershipOf` decides whether a resource is ours; this is stricter in one
     way, and deliberately. The grandfathered marker value (`legacyMarkerValue`)
-    matches *every* fleet, which is right for adopting a resource the
+    matches *every* fleet, which is right for managing a resource the
     declaration names (the name is corroboration) and wrong for destroying one
     it does not: a resource tagged `true` by another, unnamed fleet in the same
     account — `infra`'s own live tests, say — would read as ours and be deleted.
-    So when this fleet names itself, only its own name in the marker claims an
-    undeclared resource. A fleet that does not name itself owns its realm
-    outright (`Accounts` refuses two such fleets in one account), so any marker
-    value is its own.
+    So only this fleet's own name in the marker claims an undeclared
+    resource — and a fleet that does not name itself (`Boundary.fleetName`)
+    claims none this way. It cannot tell its own resources from any other
+    fleet's in the same account, and "destroy everything marked" is exactly
+    what an unnamed fleet sharing a project with a named one would otherwise
+    do: `infra`'s own live tests would have destroyed `typednotes-infra`'s
+    fleet. `Accounts` cannot prevent that — it checks the account, not who
+    else deploys into it.
 
     The name rung (`Boundary.prefixes`, for the kinds nothing can be written
     on) claims as it does everywhere: the prefix *is* the declaration's claim,
@@ -388,6 +393,7 @@ def claimsUndeclared (b : Boundary) (cloud : ProviderId) (k : Kind) (name : Stri
   (ownershipOf b cloud k name e).isOurs &&
     match e, b.fleetName with
     | .tags ts _, some me => ts.any fun t => t.1 == markerKey && t.2 == me
+    | .tags _ _,  none    => false
     | _,          _       => true
 
 /-- The verdict, as a warning line's worth of English — and, when it is not
@@ -400,9 +406,10 @@ def claimsUndeclared (b : Boundary) (cloud : ProviderId) (k : Kind) (name : Stri
     A fleet in that state manages less than it declares and, before this,
     said nothing at all about it.
 
-    Which is a worse failure than it looks. The resource is unreachable by
-    every path: `push` will not adopt it, `destroy` only knows the ledger, and
-    `discover` re-derives from the same marker and reaches the same verdict.
+    Which is a worse failure than it looks. The resource is out of reach by
+    every path: `push` drops every change to it (`Engine.foreignDeclared`),
+    `destroy` is the same `push` with an empty target, and `dump` reads the
+    same marker and reaches the same verdict.
     Only a name-based sweep can see it. So the warning is the whole remedy the
     tool offers, and it has to name the fix.
 
@@ -604,7 +611,7 @@ private def bTwo : Boundary := { namePrefix := some "secrets-", namePrefixes := 
 
 /-! ### Claiming what the declaration does not name
 
-  Stricter than adopting: the grandfathered value cannot tell fleets apart, so
+  Stricter than managing a declared one: the grandfathered value cannot tell fleets apart, so
   it never licenses destroying an undeclared resource for a named fleet. -/
 private def bNamed : Boundary := { fleetName := some "typednotes", namePrefix := some "secrets-" }
 #guard claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, "typednotes")])
@@ -615,8 +622,11 @@ private def bNamed : Boundary := { fleetName := some "typednotes", namePrefix :=
 -- The name rung claims by its prefix, and only by it.
 #guard claimsUndeclared bNamed .scaleway .postgres "secrets-old" (.named "secrets-old" none)
 #guard !claimsUndeclared bNamed .scaleway .postgres "reports" (.named "reports" none)
--- An unnamed fleet owns its realm: any marker value is its own.
-#guard claimsUndeclared {} .aws anyKind "x" (tagged [(markerKey, legacyMarkerValue)])
+-- An unnamed fleet claims no undeclared resource by tag: whose it is cannot
+-- be told. The name rung still claims for it, by its prefix.
+#guard !claimsUndeclared {} .aws anyKind "x" (tagged [(markerKey, legacyMarkerValue)])
+#guard !claimsUndeclared {} .aws anyKind "x" (tagged [(markerKey, "anything")])
+#guard claimsUndeclared { namePrefix := some "tn-" } .scaleway .postgres "tn-db" (.named "tn-db" none)
 -- Exclusions and the `since` cutoff still win.
 #guard !claimsUndeclared { bNamed with exclusions := [⟨.scaleway, .secrets, "old", "kept"⟩] }
          .scaleway .secrets "old" (tagged [(markerKey, "typednotes")])

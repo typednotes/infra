@@ -1,6 +1,6 @@
 import Infra.Core.Stage
 import Infra.Core.Diverge
-import Infra.Core.Ledger
+import Infra.Core.Slot
 import Infra.Core.SqlDeps
 
 /-
@@ -24,7 +24,8 @@ structure Keys where
   Key    : ProviderId → Kind → Type
   finite : ∀ p k, Finite (Key p k)
   decEq  : ∀ p k, DecidableEq (Key p k)
-  /-- A stable string per key, for the on-disk cache. See `docs/persistence.md`. -/
+  /-- A stable string per key: the resource's cloud-side name, which is how
+      a key is matched to what the cloud lists. -/
   name   : ∀ p k, Key p k → String
 
 attribute [instance] Keys.finite Keys.decEq
@@ -65,9 +66,9 @@ def Keys.providers (κ : Keys) : List ProviderId :=
     it, and it could not have worked as a single verdict: closing the world
     requires knowing *which* resources were once managed, and a fleet-wide
     `absent` would have proposed deleting every resource in the account. That
-    question is now answered per-resource by the ledger
-    (`Infra.Core.Ledger`), which records exactly what this fleet manages and
-    survives a resource's line being deleted. -/
+    question is now answered per-resource by the ownership marker
+    (`Infra.Core.Ownership`), which is on the resource itself and so survives
+    its line being deleted (`Engine.claimUndeclared`). -/
 structure Plan (κ : Keys) where
   assign  : (p : ProviderId) → (k : Kind) → (key : κ.Key p k) →
               Status (SpecOf.{1} k κ.Key Partial (Expr κ.Key))
@@ -113,8 +114,9 @@ def satisfiesAt {κ : Keys} (T : Plan κ) (W : World κ)
     saying it is easier and more reviewable than emptying a file, not because
     it does anything a declaration cannot.
 
-    Resources this fleet never claimed are untouched either way: they have no
-    ledger row, so nothing here can name them. -/
+    Resources that do not carry this fleet's marker are untouched either way:
+    the scan does not claim them, and `push` drops any change to a declared
+    one (`Engine.foreignDeclared`). -/
 def Plan.absent (κ : Keys) : Plan κ where
   assign _ _ _ := .absent
 
@@ -217,13 +219,13 @@ def Plan.migrationDepsProblem {κ : Keys} (T : Plan κ) : Option String :=
           let ambiguous := own.filterMap fun t =>
             let owners := peers.filter fun g => (historyCreates g).contains t
             if owners.length > 1 && (owners.head?.map (·.name)) == some h.name then
-              some s!"{Ledger.slotId p .postgresMigrations h.name}: table {t} on database \
+              some s!"{slotId p .postgresMigrations h.name}: table {t} on database \
 '{h.database}' is created by several histories ({String.intercalate ", " (owners.map (·.name))}), \
 so which one a reference means would be a guess"
             else none
           let unresolved := (historyRefs h).filterMap fun t =>
             if own.contains t || peers.any (fun g => (historyCreates g).contains t) then none
-            else some s!"{Ledger.slotId p .postgresMigrations h.name}: its SQL references {t}, \
+            else some s!"{slotId p .postgresMigrations h.name}: its SQL references {t}, \
 which no declared history on database '{h.database}' creates — declare the history that \
 creates it (or, if it is created where a scanner cannot see, such as inside a DO block, create \
 it with a plain CREATE TABLE)"
@@ -239,7 +241,7 @@ it with a plain CREATE TABLE)"
 def Plan.unresolvedMigrationSources {κ : Keys} (T : Plan κ) : List String :=
   (Finite.elems (α := ProviderId)).flatMap fun p =>
     (T.histories p).filterMap fun h =>
-      if h.migrations.isNone then some (Ledger.slotId p .postgresMigrations h.name) else none
+      if h.migrations.isNone then some (slotId p .postgresMigrations h.name) else none
 
 /-- Whether every declared migration history is sound, as far as can be
     decided from the declaration: each history's own rule
@@ -281,7 +283,7 @@ def Plan.migrationsAppendOnly {κ : Keys} (T : Plan κ) (W : World κ) : Option 
         match T.assign p .postgresMigrations key, W.sighting p .postgresMigrations key with
         | .present s, some seen =>
             match s.migrations.asLit.bind resolvedMigrations? with
-            | some target => [(Ledger.slotId p .postgresMigrations
+            | some target => [(slotId p .postgresMigrations
                                  (κ.name p .postgresMigrations key),
                                seen.reported.migrations.filterMap MigrationDecl.resolved?,
                                target)]
@@ -298,16 +300,17 @@ conflict deliberately — see docs/migrations.md"
 
 /-- The key carrying this name, if this fleet has one.
 
-    Decidable because every key type is `Finite`. Both the membership test
-    below and `Persistence.load` need it, and it was written out at both. -/
+    Decidable because every key type is `Finite`. The membership test below
+    is built on it. -/
 def Keys.keyOfName? (κ : Keys) (p : ProviderId) (k : Kind) (name : String) :
     Option (κ.Key p k) :=
   (Finite.elems (α := κ.Key p k)).find? fun key => κ.name p k key == name
 
 /-- Whether any key in this fleet carries that name, for that `(provider, kind)`.
 
-    Decidable because every key type is `Finite`. This is the test that turns a
-    ledger row into either "still declared" or "an orphan". -/
+    Decidable because every key type is `Finite`. This is the test that keeps a
+    declared name from ever becoming an orphan's delete (`actionsOrphaned`),
+    and that `forget` asserts is false. -/
 def claimedByKey (κ : Keys) (p : ProviderId) (k : Kind) (name : String) : Bool :=
   (κ.keyOfName? p k name).isSome
 

@@ -121,6 +121,70 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.16.0] — 2026-09-23
+
+### Removed: the ledger and the observed-state cache — there is no local state
+
+0.15.0 made the markers decide what a fleet manages, but kept the ledger
+(`.infra/<exe>/infra.ledger.json`) and the per-kind cache beside them as
+"only a cache". A second record that can disagree with the first is a source
+of the very bug 0.15.0 fixed, so both are gone: `Infra.Core.Ledger`,
+`Infra.Core.Persistence`, `Engine.observe`/`discover`, the adoption loop, the
+`unreachable`-cloud refusal and `Backend.CachedEntry`. Every run reads the
+markers from the cloud; a fresh CI runner and the laptop that created a
+resource reach the same plan, and there is nothing to gitignore, lose or share.
+
+**Breaking:**
+- **CLI:** `refresh` and `discover` are removed. The commands are
+  `check | plan [--destroy] | apply [--force] | destroy | dump [FILE]`.
+- **`Infra.Cli.run` takes no `cacheRoot`.**
+- **Orphans are `Infra.Core.Orphan`** (`cloud`, `kind`, `name`, `region`, in
+  the new `Infra/Core/Slot.lean`, with `slotId`, formerly `Ledger.slotId`).
+  `Engine.plan`/`actions` take them in place of ledger rows; `push` takes
+  `(orphans := …)`.
+- **The FORGET action is gone for everything but `postgresMigrations`**, whose
+  delete still prints `FORGET` and now does nothing at all. A `forget`
+  declaration makes the scan skip the name — and since the resource keeps its
+  marker, **the `forget` line must stay for as long as the resource exists**;
+  removing it makes the resource an orphan, destroyed on the next apply.
+- **A fleet without `fleetName` destroys no undeclared resource by tag.** It
+  cannot tell its own resources from another fleet's in a shared account, so
+  they are warned about instead (the name rung still claims by prefix). The
+  grandfathered marker value `true` was already warned about, not destroyed.
+  Name your fleet — the scaffold now does by default.
+
+### Added: `dump` writes a snapshot, and a snapshot is a test fixture
+
+`dump [FILE]` writes what the fleet sees as JSON
+(`Infra.Providers.Snapshot`): every resource on the declared clouds and
+regions with its ownership evidence and observed state, the undeclared ones
+the next apply destroys, the foreign ones it leaves alone, and the warnings —
+never a secret value (checked with a canary). `Snapshot.load` reads one back
+and `Snapshot.backends` replays it as in-memory backends that record deletes,
+so a real account's dump can be a test. `checkMarkerDecides` now runs against
+a snapshot, and `checkDumpReplays` checks that a dump round-trips and replays
+to the same orphans. A cache may come back one day, but only as a real cache:
+deleting it could never change a plan.
+
+### Changed: Scaleway queues are scanned like every other kind
+
+0.15.0 scanned queues only while the fleet declared one, because listing them
+needs a minted SQS credential and `plan` must not change the account. Listing
+now first asks, read-only, whether Queues is enabled in the project
+(`Scaleway.Sqs.enabled`, `GET /mnq/v1beta1/regions/{region}/sqs-info`): if not,
+there are no queues and nothing is activated or minted. If it is, listing goes
+through the dedicated `infra` SQS credential, minting it the first time — the
+one account change a `plan` can still make, and only in a project that already
+uses Queues. Queues still have no tags on Scaleway (no `TagQueue` or
+`ListQueueTags`), so they are claimed on the name rung.
+
+### Changed: the scaffold names the fleet
+
+`infra new` now writes `boundary := { fleetName := some "<name>" }`
+uncommented, and its README and `Fleet.lean` header say what is now true:
+removing a line destroys the resource on the next apply, and only what
+carries the fleet's marker is touched.
+
 ## [0.15.0] — 2026-09-23
 
 ### Changed: the marker decides what a fleet manages — on every run

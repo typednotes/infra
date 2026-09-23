@@ -358,7 +358,7 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
 /-- Tags and launch time, by `Name` tag — the evidence `Ownership.ownershipOf`
     needs. `none` means no live, non-terminated instance carries this name;
     that is a real answer (there is nothing to own), not "not implemented",
-    so callers reading it as "defer to the ledger" would be wrong — see
+    so callers reading it as "ask something else" would be wrong — see
     `Backend.ownershipInfo`'s doc comment for why the two are kept distinct
     at the `Live.lean` call site instead of collapsed here. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
@@ -402,7 +402,7 @@ it must exist before an instance can reference it")
     let instanceId := (i.childText "instanceId").getD ""
     -- The `Name` tag is this fleet's identifier, so it must be set before the
     -- next `pull` can recognise what was just created. The marker tag is what
-    -- lets a later `push`/`discover` tell this instance apart from one that
+    -- lets a later `push` tell this instance apart from one that
     -- merely happens to share the name — see `Infra.Core.Ownership`.
     let _ ← Query.call creds ep "CreateTags" version
       [ ("ResourceId.1", instanceId)

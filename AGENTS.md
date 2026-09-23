@@ -21,7 +21,7 @@ it should logically cover, that is not "done for now" — it is a trap for
 whoever assumes the feature applies uniformly. A 2026-09-10 incident: the
 ownership/tag system (`Infra/Core/Ownership.lean`) was wired for `.objectStore`
 and `.awsInstance` only, with every other kind silently falling back to
-ledger-only matching; `destroy` on a Scaleway container namespace cascaded
+matching the (since removed) ledger; `destroy` on a Scaleway container namespace cascaded
 Scaleway-side and deleted an unmanaged sibling container that a user
 reasonably assumed the tag system would have protected. Either implement a
 feature for every case it claims to cover in the same change, or say loudly
@@ -31,7 +31,7 @@ part of a feature, stop and get explicit agreement from the user on the
 partial scope before shipping it, rather than deciding unilaterally that
 "the common case" is good enough.
 
-**The marker decides what a fleet manages — never the ledger, never a name.**
+**The marker decides what a fleet manages — never local state, never a name.**
 This is the principle everything else rests on, and it cuts both ways:
 
 1. **Every resource `infra` creates carries the fleet's marker** — a tag, the
@@ -39,8 +39,8 @@ This is the principle everything else rests on, and it cuts both ways:
    when `Boundary.fleetName` is set.
 2. **A resource carrying this fleet's marker that the declaration no longer
    names is destroyed on the next apply — on any machine.** Deleting a line
-   must destroy the resource from a CI runner with no `.infra/` at all, not
-   only from the laptop whose ledger happens to remember it. `push`'s callers
+   must destroy the resource from a fresh CI runner exactly as from the
+   laptop that created it. `push`'s callers
    find these by asking the cloud (`Engine.claimUndeclared`), across every
    region and every kind the fleet's clouds offer — including a kind the
    declaration no longer has anything of, which is exactly the case where the
@@ -49,30 +49,45 @@ This is the principle everything else rests on, and it cuts both ways:
    declared name is not evidence: a resource holding a declared name without
    the marker is warned about by name and left alone — `update`, `replace` and
    `delete` included, on the plan path too (`Engine.foreignDeclared`).
-4. **The ledger is a cache.** It may be absent, stale or wrong, and nothing
-   may depend on it for correctness: not what exists, not what is managed, not
-   what gets destroyed. It only saves work.
+4. **There is no ledger, and no local state at all.** Every run reads the
+   markers from the cloud. The ledger and the observed-state cache were
+   removed in 0.16.0 because each was a second source of truth that could
+   disagree with the first. A cache may come back only as a *real* cache —
+   deleting it can never change a plan — and the structure that shape wants
+   already exists as `Infra.Providers.Snapshot`: what `dump` writes, and what
+   tests replay as in-memory backends (`Snapshot.backends`). Build test
+   accounts from it rather than hand-rolling a `Backends`.
 5. **"Undeclared" is about the physical resource.** Two kinds that list the
    same thing (an S3 bucket as `objectStore` and `s3Bucket`; a Scaleway
    container as `compute` and `scalewayContainer`) share a physical class
    (`Engine.physicalClass`); a resource declared under one is not an orphan of
    the other. Adding a kind means checking whether it overlaps an existing one.
 6. **Destroying needs a marker that names this fleet.** The grandfathered value
-   (`legacyMarkerValue`) matches every fleet, so for a fleet that names itself
-   it may adopt a declared resource but never license destroying an undeclared
-   one (`Ownership.claimsUndeclared`) — it is warned about instead.
+   (`legacyMarkerValue`) matches every fleet, so it may let a fleet change a
+   declared resource but never license destroying an undeclared one
+   (`Ownership.claimsUndeclared`) — it is warned about instead. A fleet with no
+   `fleetName` destroys no undeclared resource by tag at all: in a shared
+   account it cannot tell its own from another fleet's. (The name rung still
+   applies, by prefix.)
+7. **`forget` lasts as long as its line.** A forgotten resource keeps its
+   marker, and nothing records that it was forgotten except the declaration;
+   remove the `forget` line and it is an orphan again, destroyed next apply.
 
 The cases this cannot cover are **enumerated, in `Engine.scannableUndeclared`
-and `docs/coverage.md`**, never left to a catch-all: Scaleway queues are only
-scanned while the fleet declares one (listing them mints a credential, and
-`plan` must not change the account); `postgresMigrations` has nothing to find
-(its delete is a ledger-only FORGET); and a cloud the declaration no longer
-names *at all* is not scanned — retire a cloud with `destroy` before removing
-its last line. Every change near this principle is tested with an **empty
-ledger** (`checkMarkerDecides` in `Main.lean`), because a ledger in the test
-hides exactly the bug this section exists to prevent — as it did until 0.15.0,
-when removing a line from `typednotes-infra` left an IAM application and its
-live API key standing after a CI apply.
+and `docs/coverage.md`**, never left to a catch-all: `postgresMigrations` has
+nothing to find (its delete is a FORGET that does nothing); a cloud the
+declaration no longer names *at all* is not scanned — retire a cloud with
+`destroy` before removing its last line; a name-rung resource is only found
+when the fleet sets a prefix; and an undeclared resource carrying the
+grandfathered marker, or any tag in a fleet without `fleetName`, is warned
+about, not destroyed. Scaleway queues are no longer an exception: listing
+checks, read-only, whether Queues is enabled, and only then uses (and, the
+first time, mints) the dedicated `infra` SQS credential. Every change near this
+principle is tested against a snapshot of an account (`checkMarkerDecides`,
+`checkDumpReplays` in `Main.lean`) — never with remembered state, which hides
+exactly the bug this section exists to prevent: before 0.15.0, removing a line
+from `typednotes-infra` left an IAM application and its live API key standing
+after a CI apply, because only the laptop's ledger knew they existed.
 
 **Ownership falls back down a ladder, and never off the end.** When a feature
 needs to mark a resource — ownership being the one that matters — not every
@@ -91,7 +106,7 @@ strongest rung the object supports, and say in the code which rung it is on:
 Rung 3 is weaker than the other two and must stay opt-in and *verifying*: the
 evidence is something the declaration wrote rather than something this tool
 did, and renaming a resource to fit is not infra's to do — a fleet key is the
-cloud-side name. Unset, such a resource is `foreign`: never adopted, never
+cloud-side name. Unset, such a resource is `foreign`: never changed, never
 deleted as an orphan. Never treat an empty prefix as matching everything.
 
 Two rules that come out of the 2026-09-19 pass over this:

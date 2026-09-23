@@ -42,12 +42,11 @@ One apply, end to end. Each box is a real function; the names are searchable.
        ├─ Ansi.wanted ......... colour on, only if stdout is a terminal
        ├─ liveFor κ regions ... build Backends; authenticate ONLY the
        │                        clouds κ declares resources in
-       ├─ checkAccounts ....... refuse the wrong account before touching it
-       └─ Ledger.load ......... what this fleet already manages
+       └─ checkAccounts ....... refuse the wrong account before touching it
                  │
                  ▼
   ┌─ OBSERVE ─────────────────────────────────────────────────┐
-  │  Engine.observe → Engine.pullEntries                      │
+  │  Engine.pullEntries                ... what is declared    │
   │                                                            │
   │    for each (provider, kind) with keys:                    │
   │      for each region in bs.listers p k:                    │
@@ -56,7 +55,19 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │        for each match: b.read k handle ... its config      │
   │                                                            │
   │  → List (Entry κ) = (p, k, key, {observed, reported})      │
-  │  → Persistence.save (the cache)                            │
+  │                                                            │
+  │  Engine.claimUndeclared            ... what is not         │
+  │                                                            │
+  │    for each cloud κ names, each region in bs.scanners p,   │
+  │    each kind scannableUndeclared allows (all but           │
+  │    postgresMigrations):                                    │
+  │      b.list k, skip names declared (any kind of the same   │
+  │      physicalClass) or forgotten, b.ownershipInfo k h      │
+  │      → Orphan if Ownership.claimsUndeclared, else a        │
+  │        warning if it only reads as ours                    │
+  │                                                            │
+  │  → List Orphan = {cloud, kind, name, region}               │
+  │  Nothing is written to disk.                               │
   └───────────────────────────────────────────────────────────┘
                  │
                  │  worldOf entries : World κ
@@ -65,8 +76,8 @@ One apply, end to end. Each box is a real function; the names are searchable.
   ┌─ DIFF ────────────────────────────────────────────────────┐
   │  Engine.plan → Action.actions                             │
   │                                                            │
-  │    actionsDeclared T W    ... over κ's keys                │
-  │  ++ actionsOrphaned κ rows forgets  ... over ledger rows   │
+  │    actionsDeclared T W        ... over κ's keys            │
+  │  ++ actionsOrphaned κ orphans ... over the scan's orphans  │
   │                                                            │
   │  → List (Action κ)                                         │
   └───────────────────────────────────────────────────────────┘
@@ -82,20 +93,24 @@ One apply, end to end. Each box is a real function; the names are searchable.
                  ▼
   ┌─ APPLY ───────────────────────────────────────────────────┐
   │  Engine.push                                              │
-  │    1. dry run? print "would …" and return. No writes.     │
-  │    2. brake: refuse to destroy most of the ledger while    │
+  │    1. foreignDeclared: declared names that exist but are   │
+  │       not verifiably ours (.unreadable included) — warn,   │
+  │       and drop their update/replace/delete. Plan too.      │
+  │    2. dry run? print "would …" and return. No writes.     │
+  │    3. brake: refuse to destroy most of what is managed     │
+  │       (declared + existing + marked, plus orphans) while   │
   │       still declaring things (T.declaresAnything)          │
-  │    3. ADOPT: record every declared resource that exists,   │
-  │       action or not — but only if it is ours; warn about   │
-  │       one that exists and is not (Ownership.describe)      │
-  │    4. for each action: runAction, then persist both        │
-  │       records if they changed                              │
+  │    4. for each action: runStep. An orphan's marker is      │
+  │       re-read (claimsUndeclared) before its delete; a      │
+  │       refused orphan delete is retried after the rest      │
   └───────────────────────────────────────────────────────────┘
                  │
                  ▼
-        .infra/<exe>/infra.ledger.json   what is managed
-        .infra/<exe>/<cloud>/<kind>.json what was last seen
+        the cloud — and nothing else. There is no local state.
 ```
+
+`dump` runs the same OBSERVE box plus `foreignDeclared`, and prints the result
+as a `Snapshot` (`Infra.Cli.snapshotOf`, `dumpJson`) instead of diffing it.
 
 ## The type stack
 
@@ -270,7 +285,7 @@ distinction, because both are the same edge.
 ```
   actions ──▶ List (Action κ)
                    │
-                   ├─ builds (create/update/replace/forget)
+                   ├─ builds (create/update/replace)      
                    │      stepOf ── dependsOn ── HasDeps
                    │         │
                    │         ▼
@@ -293,10 +308,11 @@ that deleted a database before the secret that read its endpoint, because
 
 *Orphans have no edges, and are ordered by the provider instead.* An orphan
 carries no spec — its declaration is gone — so it contributes nothing to sort
-by (`stepOf`'s `.deleteOrphan` case returns `[]`), and the ledger records names
-and regions rather than references, because recording references too would make
-it a second copy of the declaration. So `push` does not compute that order, it
-*discovers* it: a refused `deleteOrphan` is held back rather than fatal, and
+by (`stepOf`'s `.deleteOrphan` case returns `[]`), and the scan that finds it
+(`claimUndeclared`) yields a name and a region, not references — the cloud does
+not know what a deleted line referred to, and keeping a record of it would be a
+second copy of the declaration. So `push` does not compute that order, it
+finds it out: a refused `deleteOrphan` is held back rather than fatal, and
 tried again after the rest of the work-list has run.
 
 ```
@@ -355,38 +371,48 @@ here:
 ## Membership: what is mine
 
 The question that decides whether deleting a line destroys the resource. It is
-answered by the **ledger**, and by nothing else.
+answered by the **marker on the resource**, read from the cloud on every run,
+and by nothing else — there is no local record (`docs/persistence.md`).
 
 ```
-  .infra/<exe>/infra.ledger.json
+  Infra.Core.Slot
   ┌─────────────────────────────────────────────┐
-  │  Ledger.Row = cloud, kind, name, region     │
+  │  Orphan = cloud, kind, name, region         │
   │                                              │
   │  NOT indexed by κ.Key — deliberately.        │
-  │  A CachedEntry κ is, so it structurally      │
-  │  cannot hold a row for a resource the        │
-  │  current declaration no longer names,        │
-  │  which is exactly the row that matters.      │
+  │  A key structurally cannot name a resource   │
+  │  the current declaration no longer names,    │
+  │  which is exactly the resource that matters. │
   └─────────────────────────────────────────────┘
 ```
 
-Three ways a row appears or leaves:
+Three cases, decided per resource on every run:
 
 ```
-  ADOPT     apply, and the declaration names it, and it exists
-            → recorded, even when there is nothing to do.
-              (An apply that only recorded what it *changed* would
-               never claim a converged resource, and nothing could
-               then destroy it. That was a real leak.)
+  DECLARED  the declaration names it, and it exists
+            → managed if it carries this fleet's marker
+              (Ownership.ownershipOf); otherwise foreignDeclared
+              warns and push drops its update/replace/delete.
 
-  ORPHAN    the declaration no longer names it
+  ORPHAN    it carries a marker that NAMES this fleet
+            (Ownership.claimsUndeclared), and the declaration does
+            not name it under any kind of its physicalClass
             → Action.deleteOrphan, addressed by name and routed on
-              the region the row recorded, because the placement
+              the region the scan found it in, because the placement
               table cannot answer for a slot it does not contain.
+              The marker is re-checked at delete time (runStep).
 
-  FORGET    `forget <cloud> <kind> "<name>"` in the declaration
-            → the row goes, the cloud is untouched.
+  FORGOTTEN `forget <cloud> <kind> "<name>"` in the declaration
+            → skipped by the scan; the cloud is untouched. The line
+              must stay while the resource exists: it still carries
+              the marker, so removing the line re-orphans it.
 ```
+
+A marker names this fleet only if `Boundary.fleetName` is set and the tag
+value equals it. The grandfathered value `true` and any tag in a fleet with no
+`fleetName` read as ours for a *declared* resource, but never license
+destroying an undeclared one: `claimUndeclared` warns about those by name.
+The name rung claims by prefix, as it does everywhere.
 
 The five-stage live test is this mechanism as a sequence (AWS's counts; see
 `test/Live.lean`):
@@ -398,7 +424,7 @@ The five-stage live test is this mechanism as a sequence (AWS's counts; see
   stage 3  ramp-down  declare 12 ──▶ 12 managed
                       the same paths back down
   stage 4  trimmed    declare 11 ──▶ 11 managed
-                      │   drops 2 (lines GONE — only the ledger knows)
+                      │   drops 2 (lines GONE — found by their marker)
                       └── adds 1             → CREATE
   stage 5  empty      declare 0  ──▶ 0 managed
                       everything is an orphan; this is `apply` reaching
@@ -408,19 +434,20 @@ The five-stage live test is this mechanism as a sequence (AWS's counts; see
                       last clause is load-bearing
 ```
 
-*What the ledger is not.* It is local and gitignored, so it does not survive a
-CI job. `Infra.Core.Ownership` is what actually decides membership — a marker
-written on create, plus a realm and an exclusion list — so the ledger is a
-rebuildable cache (`infra discover`) rather than the sole record. Every
-`(cloud, kind)` pair reports evidence now, on one of three rungs: real tags,
+*Why nothing is stored.* A local record does not survive a CI job, and until
+0.15.0 that is exactly what went wrong: plans read orphans from a local
+ledger, so a CI runner deleting a line abandoned the resource.
+`Infra.Core.Ownership` is what decides membership — a marker written on
+create, plus a realm and an exclusion list — and it is read where it lives.
+Every `(cloud, kind)` pair reports evidence, on one of three rungs: real tags,
 a marker serialised into the object's one writable free-text field, or — for
-the two Scaleway products with neither — the resource's own name, checked
-against `Boundary.namePrefix` (and any `namePrefixes`; `Boundary.prefixes` is
-the union). `docs/coverage.md` has the table of which pair
-is on which rung. A fleet that has not set a `namePrefix` still gets nothing
-from the third rung, which is why `lake test -- <cloud> sweep` remains what
-finds debris a ledger cannot name: it asks the account, matching on the
-`ci-tests-infra-` prefix. The
+the two Scaleway products with neither (Serverless SQL Database and Queues) —
+the resource's own name, checked against `Boundary.namePrefix` (and any
+`namePrefixes`; `Boundary.prefixes` is the union). `docs/coverage.md` has the
+table of which pair is on which rung. A fleet that has not set a `namePrefix`
+gets nothing from the third rung, which is why `lake test -- <cloud> sweep`
+remains what finds debris no marker names: it asks the account, matching on
+the `ci-tests-infra-` prefix. The
 procedure — that verb versus `destroy`, the Cleanup workflow and its review
 gate, and the three things a sweep structurally cannot reach — is in
 [`../ci/README.md`](../ci/README.md).
@@ -443,6 +470,11 @@ gate, and the three things a sweep structurally cannot reach — is in
                  one call with no slot to route on: it asks a REGION
                  what is in it, and its answers must be matched only
                  against the slots placed there.
+    scanners   : ProviderId → List (String × Backend)
+                 one entry per region the fleet uses, with its code.
+                 For claimUndeclared, which has no slots at all: it
+                 asks each region for everything, and records the
+                 region an orphan was found in for backendAt.
 ```
 
 Routing lives here rather than in the engine because the engine has no
@@ -513,84 +545,80 @@ fleet run without AWS credentials, and it is deliberate.
 
 The consequence is not: a provider `κ` does not name gets
 `Infra.Providers.placeholderBackend`, whose `delete` returns `()` and whose
-`list` returns `[]`. For a declaration that names *nothing at all* — which is
-the same statement as a teardown, see `Plan.absent` — that means every backend
-is a placeholder, and a teardown of a full ledger becomes a loop of successful
-no-ops that empties the ledger and touches no cloud. It takes milliseconds and
-reports success.
+`list` returns `[]`. Before 0.16.0, for a declaration that named *nothing at
+all* — which is the same statement as a teardown, see `Plan.absent` — that
+meant every backend was a placeholder, and a teardown of a full ledger became a
+loop of successful no-ops that emptied the ledger and touched no cloud. It took
+milliseconds and reported success.
 
-That is not a hypothetical: it is what the 2026-09-08 live runs did on GCP and
+That was not a hypothetical: it is what the 2026-09-08 live runs did on GCP and
 Scaleway. Both printed `ok — all 5 stages`, both left their whole estate
 standing, and only AWS came out clean — because its run *failed*, and the
 workflow's backstop sweep deleted the twelve resources the teardown had not.
+(The ledger, and the `Backend.unreachable` refusal that fixed this, have since
+been removed; see below.)
 
-So a live apply now **refuses the substitution rather than performing it**.
-`Backend.unreachable : Option String` is how a backend says it cannot reach its
-cloud and why; `liveFor` sets it on every placeholder it substitutes, and
-`push`, before running any action, throws if the ledger holds a row for a
-provider whose backend answers `some`:
+With no ledger, that failure has nothing left to feed on. Orphans come only
+from `claimUndeclared`, which scans `κ.providers` — the clouds whose
+credentials were loaded — so a placeholder is never asked for orphans and
+never "deletes" one. The price is the mirror image, and it is stated rather
+than hidden: **a cloud the declaration no longer names at all is not scanned**,
+so its resources are left standing rather than destroyed. Retire a cloud with
+`destroy` (or `plan --destroy` first) *before* deleting its last line.
 
-```
-the ledger records aws/object-store/old-bucket, but no aws credentials were
-loaded, because this declaration names no aws resources. Refusing to apply:
-this would report every aws resource as destroyed without deleting any of
-them. Declare the cloud, or point the ledger elsewhere
-```
+The other half of the old fix is still load-bearing, in the test driver:
+`Live.emptyStage` builds its teardown as `Plan.absent κ` over the cloud's *own*
+key family rather than as an empty `fleet` of its own, so `κ.providers` still
+names the cloud, the credentials still load, and the scan still runs.
+`#guard (at! awsStages 4).κ.providers = [.aws]` is what stops that regressing
+— `declared = []`, the guard that was already there, cannot see the
+difference.
 
-The field, rather than a test for "is this the placeholder", is what keeps the
-rule narrow: a placeholder used *deliberately* as a test double leaves
-`unreachable` at `none` and is unaffected, so the offline suite — which is
-placeholders throughout,
-including its own teardown checks — keeps working. `Main.lean`'s
-`checkUnreachableRefusal` pins both halves, since neither is visible any other
-way offline.
+The general shape is worth naming: **a placeholder is indistinguishable from a
+cloud that agreed.** Every placeholder method answers the way a successful call
+would. That is the right default for an offline suite and a live-fire hazard
+everywhere else, so the question to ask of any new path through `Backends` is
+what it does when the credentials for a cloud were never loaded.
 
-The other half of the fix is in the test driver: `Live.emptyStage` builds its
-teardown as `Plan.absent κ` over the cloud's *own* key family rather than as an
-empty `fleet` of its own, so `κ.providers` still names the cloud and the
-credentials still load. `#guard (at! awsStages 4).κ.providers = [.aws]` is what
-stops that regressing — `declared = []`, the guard that was already there,
-cannot see the difference.
+## No local records
 
-The general shape is worth naming, because the fix above closes one instance of
-it: **a placeholder is indistinguishable from a cloud that agreed.** Every
-placeholder method answers the way a successful call would. That is the right
-default for an offline suite and a live-fire hazard everywhere else, so the
-question to ask of any new path through `Backends` is what it does when the
-credentials for a cloud were never loaded.
-
-## The two records
+Before 0.16.0 infra kept two local records under `.infra/<exe>/`: a ledger
+(what do I manage?) and a cache (what did I last see?). Both are gone. The
+first question is answered by the markers, on every run; the second by reading
+again. When a record is wanted, `dump` writes one:
 
 ```
-                    LEDGER                      CACHE
-  Holds       cloud, kind, name, region    ObservedOf per resource
-  Answers     what do I manage?            what did I last see?
-  Path        .infra/<exe>/                .infra/<exe>/<cloud>/<kind>.json
-                infra.ledger.json
-  Written by  apply and destroy            every refresh
-  Committed   no                           no
-  If lost     orphans: resources           nothing. One re-read
-              nothing can name             restores it
+  infra dump [FILE]  →  JSON (Infra.Providers.Snapshot)
+    resources   cloud, kind, name, region, ownership evidence,
+                observed state — declared-and-existing, plus orphans
+    undeclared  the slots the next apply destroys
+    foreign     declared names that exist but are not ours
+    warnings    what the scan saw but may not claim
 ```
 
-Neither can hold a secret. `SecretsObserved` is a handle and a version, no
-`ObservedOf` has a value field, and `Backend.read` for `.secrets` deliberately
-never fetches one — `Backend.secretValue` is the only inbound plaintext path,
-its result goes straight to one create call, and it is never stored.
+`Snapshot.load` and `Snapshot.backends` replay that file as in-memory
+backends, so a real account's dump can be a test fixture.
+
+A snapshot cannot hold a secret. `SecretsObserved` is a handle and a version,
+no `ObservedOf` has a value field, and `Backend.read` for `.secrets`
+deliberately never fetches one — `Backend.secretValue` is the only inbound
+plaintext path, its result goes straight to one create call, and it is never
+stored.
 
 ## The CLI verbs
 
 ```
   check      offline. Placeholder backends, no credentials, no charges.
-  refresh    observe + write the CACHE. Never the ledger: observing is
-             not a decision about what is managed.
-  plan       observe + diff + print. No mutation, and it does not
-             reach a write — a dry run returns before them.
+  plan       observe + claimUndeclared + diff + print. No mutation,
+             and it does not reach a write — a dry run returns before
+             them. --destroy plans the teardown instead.
   apply      the pipeline above. --force overrides the brake.
   destroy    apply against Plan.absent, which is the empty declaration.
              Not a second mechanism: `.delete` and `.deleteOrphan`
              share one body and one `Backend.delete` call, addressed
              by name.
+  dump       observe + claimUndeclared + foreignDeclared, written as a
+             JSON Snapshot to FILE or stdout. Read-only, like plan.
 ```
 
 ## Reading order
@@ -598,6 +626,7 @@ its result goes straight to one create call, and it is never stored.
 - `docs/architecture.md` — what the design is, and why
 - `docs/diff-semantics.md` — the two axes, the refinement order, and the
   ledger of what is a compile error and what is not
-- `docs/persistence.md` — the two records, and why membership is not intent
+- `docs/persistence.md` — why nothing is stored locally, and why membership is
+  not intent
 - `docs/coverage.md` — what actually exists and how far it has been run
 - `docs/tutorial.md` — how to use it

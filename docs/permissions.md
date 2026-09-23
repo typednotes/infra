@@ -113,10 +113,14 @@ The two halves fail very differently:
 
 - Missing the **write** half fails loudly, at create, naming the action —
   `is not authorized to perform: iam:TagUser`.
-- Missing the **read** half fails **silently**. `readOwnership` reports `none`
-  when its call fails, the engine reads that as "this cloud cannot answer"
-  and falls back to the ledger, so the ownership perimeter quietly stops being
-  enforced for that kind. Nothing in the output says so.
+- Missing the **read** half fails **quietly**. `readOwnership` reports
+  `.unreadable` when its call fails, and the engine reads that as "not
+  verifiably ours": a declared resource of that kind gets a warning and is
+  left unchanged (`Engine.foreignDeclared`), and an undeclared one is never
+  found as an orphan, so deleting its line leaves it running. Membership is
+  read off the marker on every run — there is no local record to fall back
+  on — so without the read grant the fleet simply manages less, and for the
+  undeclared case nothing in the output says so.
 
 That asymmetry is why the read grants are listed here rather than left to be
 discovered: a run that is missing them looks like a run that is working.
@@ -206,10 +210,18 @@ aws accessanalyzer validate-policy \
   --policy-type IDENTITY_POLICY     # AWS's own validator
 ```
 
-A fleet that declares only some kinds needs only those statements. Deleting the
-ones you do not use is the point of them being separate statements with names —
-and with the per-product shape, that is now the *only* editing a fleet's
-evolution should ever need.
+A fleet that declares only some kinds needs only those statements' write
+actions. Deleting the ones you do not use is the point of them being separate
+statements with names — and with the per-product shape, that is now the *only*
+editing a fleet's evolution should ever need.
+
+The *listing* actions are the exception since 0.15.0. Every `plan`, `apply`
+and `destroy` lists every kind on each cloud the fleet uses, declared or not,
+to find undeclared resources carrying its marker (`Engine.claimUndeclared`) —
+that is how a kind whose last line was just deleted still gets cleaned up. A
+refused listing fails the run rather than reading as empty, so keep the list
+and tag-read actions of every kind, even the ones you have trimmed the writes
+for.
 
 ## GCP and Scaleway
 

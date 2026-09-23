@@ -5,6 +5,7 @@ import Infra.Core.Bundle
 import Infra.Core.GcpAuth
 import Infra.Providers.Live
 import Infra.Providers.Placeholder
+import Infra.Providers.Snapshot
 import Infra.Providers.Kinds.Identity
 import Infra.Providers
 
@@ -12,7 +13,7 @@ import Infra.Providers
   The command-line front end, as library code.
 
   A declaration repo declares a fleet; it should not also have to reimplement
-  `check | refresh | plan | apply | destroy`, decide which clouds to authenticate,
+  `check | plan | apply | destroy | dump`, decide which clouds to authenticate,
   or remember that a dry run is the default. All of that lives here and is
   parameterised by the fleet, so a consumer's `Main.lean` is a call rather than
   a copy — this file exists because `infra`'s own `Main.lean` and
@@ -32,10 +33,6 @@ namespace Infra.Cli
 
 open Infra.Core
 open Infra.Specs (MigrationDecl)
-
-/-- Where the observed-state cache lives, relative to the working directory.
-    See `docs/persistence.md`. -/
-def defaultCacheRoot : System.FilePath := ".infra"
 
 /-- The declared migration sets, as the backend's routes.
 
@@ -61,7 +58,7 @@ def migrationRoutesOf (κ : Keys) (T : Plan κ) :
           routes := { resource := nm, database := db
                       connectionSecret := cs, observerSecret := os, schema := sc } :: routes
         | _, _, _, _ =>
-          throw (IO.userError s!"{Ledger.slotId p .postgresMigrations nm}: \
+          throw (IO.userError s!"{slotId p .postgresMigrations nm}: \
 database/connectionSecret/observerSecret/schema must be literal names — a migrations \
 resource is observed through them, and a composed name would be a resource this fleet \
 could never see. See docs/migrations.md")
@@ -131,13 +128,10 @@ def liveFor (κ : Keys) (regions : Regions := {})
   let backendIn := fun (p : ProviderId) (code : String) =>
     match lookup p with
     | some c => Infra.Providers.liveBackend p { c with region := code } fleet (routes p)
-    -- Marked unreachable, not merely absent. The engine may hold ledger rows
-    -- for a cloud this key family does not name — a stale row, or a teardown
-    -- whose declaration names nothing — and routing those through a
-    -- placeholder would delete nothing and say it had. `push` refuses instead.
-    | none   => { Infra.Providers.placeholderBackend p.name with
-                    unreachable := some s!"no {p.name} credentials were loaded, because \
-this declaration names no {p.name} resources" }
+    -- A cloud this declaration names nothing on: no credentials, so the
+    -- placeholder, which calls nothing. Nothing is routed here — orphans are
+    -- only looked for on the clouds the declaration uses.
+    | none   => Infra.Providers.placeholderBackend p.name
   -- Where a cloud goes when the fleet does not say: the credentials' region.
   let fallback := fun (p : ProviderId) => ((lookup p).map (·.region)).getD ""
   let resolve := fun p k nm => (regions.codeFor p k nm).getD (fallback p)
@@ -149,11 +143,11 @@ this declaration names no {p.name} resources" }
             listers    := fun p k =>
               (regions.used κ p k (fallback p)).map fun code =>
                 (backendIn p code, fun nm => resolve p k nm == code)
-            -- For an orphan, whose region comes from its ledger row rather
-            -- than from `resolve` — a placement table cannot answer for a slot
-            -- the declaration no longer names. An empty code means the row was
-            -- written by a fleet that never said where it was, which is the
-            -- same case `backend` covers.
+            -- For an orphan, whose region is where the scan found it
+            -- (`Orphan.region`) rather than `resolve`'s answer — a placement
+            -- table cannot answer for a slot the declaration no longer names.
+            -- An empty code means nobody said where it was, which is the same
+            -- case `backend` covers.
             backendAt  := fun p code =>
               backendIn p (if code.isEmpty then fallback p else code)
             -- Every region the fleet uses on this cloud, across all kinds —
@@ -246,7 +240,7 @@ SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
 
   A `postgresMigrations` history may read its SQL from URLs (`github`), so
   the SQL stays in the service's own repository. The fetch happens here, at
-  the edge, before `plan`/`apply`/`refresh` hand the plan to the engine —
+  the edge, before `plan`/`apply` hand the plan to the engine —
   which refuses a plan with an unfetched source (`Engine.push`). `check`
   never fetches: it stays offline, and says what it could not check. -/
 
@@ -355,26 +349,62 @@ histories their SQL implies, and their content, are checked by `plan`.")
   IO.println (Ansi.style colour Ansi.dim
     "For the real thing: `plan` (reads), then `apply` (changes).")
 
+/-- What `dump` writes: a `Snapshot` of the account as this fleet sees it,
+    plus what the next `apply` would make of it.
+
+    * `resources` — every declared resource that exists, and every undeclared
+      one carrying this fleet's marker, each with its ownership evidence and
+      what the cloud reported (`Snapshot.Resource`). Replayable offline with
+      `Snapshot.load` and `Snapshot.backends`.
+    * `undeclared` — the slots the next `apply` destroys;
+    * `foreign` — declared names held by something without the marker, which
+      this fleet leaves alone, with why;
+    * `warnings` — what the scan saw but may not claim.
+
+    A snapshot, not a record: nothing reads it back unless a test does. -/
+def dumpJson (resources : Infra.Providers.Snapshot.Snapshot) (orphans : List Orphan)
+    (foreign : List (String × String)) (warnings : List String) : Lean.Json :=
+  Lean.Json.mkObj
+    [ ("resources", Lean.toJson resources)
+    , ("undeclared", Lean.toJson (orphans.map (·.slot)))
+    , ("foreign", Lean.Json.arr (foreign.map fun (slot, why) => Lean.Json.mkObj
+        [ ("slot", Lean.Json.str slot), ("reason", Lean.Json.str why) ]).toArray)
+    , ("warnings", Lean.toJson warnings) ]
+
+/-- The snapshot `dump` writes: declared resources that exist, and the
+    orphans, each with the evidence its backend reports now. -/
+def snapshotOf {κ : Keys} (bs : Backends) (regions : Regions) (entries : List (Entry κ))
+    (orphans : List Orphan) : IO Infra.Providers.Snapshot.Snapshot := do
+  let mut out : Infra.Providers.Snapshot.Snapshot := []
+  for ⟨p, k, key, sighting⟩ in entries do
+    let nm := κ.name p k key
+    out := out ++ [{ cloud := p, kind := k, name := nm
+                     region := (regions.codeFor p k nm).getD ""
+                     evidence := ← (bs.backendFor p k nm).ownershipInfo k
+                       (observedHandle k sighting.observed)
+                     observed := some (Lean.toJson sighting.observed) }]
+  for o in orphans do
+    out := out ++ [{ cloud := o.cloud, kind := o.kind, name := o.name, region := o.region
+                     evidence := ← (bs.backendAt o.cloud o.region).ownershipInfo o.kind ⟨o.name⟩ }]
+  return out
+
 def usage (exe : String) : String := String.intercalate "\n"
-  [ s!"usage: {exe} [check | refresh | discover | plan [--destroy] | apply [--force] | destroy]"
+  [ s!"usage: {exe} [check | plan [--destroy] | apply [--force] | destroy | dump [FILE]]"
   , ""
   , "  check            run the offline self-checks (default)"
-  , "  refresh          observe the declared clouds and cache what is there"
-  , "  discover         rebuild the ledger from real ownership evidence, for"
-  , "                   the kinds a backend can report a marker for"
   , "  plan             show what would change, without changing anything"
   , "  plan --destroy   show what tearing the fleet down would delete"
   , "  apply            actually reconcile"
   , "  apply --force    reconcile even if that destroys most of the fleet"
-  , "  destroy          delete everything this fleet declares"
+  , "  destroy          delete everything this fleet manages"
+  , "  dump [FILE]      write what this fleet manages, as JSON, to FILE or stdout"
   , ""
-  , "  Deleting a resource from the declaration destroys it: what a fleet"
-  , "  manages is what carries its marker in the account, found by asking the"
-  , "  cloud on every run — the local ledger is only a cache, so this works"
-  , "  from a fresh CI runner too. Only marked resources are ever changed or"
-  , "  destroyed. To stop managing something without destroying it, say"
-  , "  `forget` in the declaration. `destroy` is `apply` against an empty"
-  , "  declaration. `discover` rewrites the cache from the markers."
+  , "  What a fleet manages is what carries its marker in the account, read off"
+  , "  the resources on every run; nothing is stored locally. So deleting a"
+  , "  resource from the declaration destroys it, from any machine, and only"
+  , "  marked resources are ever changed or destroyed. To stop managing"
+  , "  something without destroying it, say `forget` in the declaration, and"
+  , "  keep saying it for as long as the resource carries the marker."
   ]
 
 /-- The whole front end for one fleet.
@@ -399,20 +429,11 @@ def usage (exe : String) : String := String.intercalate "\n"
     check, which is the old behaviour and a worse default: a fleet that names
     its accounts cannot be applied into someone else's.
 
-    `cacheRoot` defaults to `.infra/<exe>`, not `.infra`: two fleets have
-    different key families and their caches must never be read as if they were
-    the same shape. Making that structural means a second fleet cannot forget
-    to override it.
-
-    The ledger lives under `cacheRoot` too, and is **not** committed. It was,
-    briefly, on the reasoning that what a fleet manages is intent; that was
-    wrong, and CI is where it showed. `Infra.Core.Ownership`'s marker-and-
-    boundary model is what actually decides membership now — the adoption
-    loop and the orphan-delete check in `Engine.push` both consult it — for
-    every kind a backend can report a marker for (`Backend.ownershipInfo`);
-    the ledger itself is the cache of that decision, rebuildable with
-    `discover`. A kind whose marker cannot be read is refused rather than
-    claimed.
+    **Nothing is stored locally.** What this fleet manages is read off the
+    resources' markers on every run (`Engine.claimUndeclared`,
+    `Engine.foreignDeclared`) — there is no ledger and no cache, so every
+    machine, a fresh CI runner included, reaches the same plan. `dump` writes
+    a snapshot when one is wanted.
 
     `boundary` is the realm and exclusion legs of the ownership model
     (`Infra.Core.Ownership.Boundary`): exclusions, an optional cutoff date
@@ -442,7 +463,6 @@ def run (exe : String) (F : Fleet)
     (headline : String := "")
     (selfCheck : IO Unit := offlinePlan F.plan headline)
     (accounts : Accounts := {})
-    (cacheRoot : System.FilePath := defaultCacheRoot / exe)
     (boundary : Boundary := {}) (args : List String) :
     IO UInt32 := do
   -- Resolved once, at the edge: whether stdout is a terminal is a property of
@@ -457,16 +477,13 @@ def run (exe : String) (F : Fleet)
   -- prints as "uncaught exception: …", which reads like a crash in the tool
   -- rather than a refusal by a cloud — and buries the message in a prefix
   -- that carries no information.
-  -- What this fleet manages, decided by the cloud: the ledger (a cache — it
-  -- may be empty, as on every CI runner) plus every undeclared resource
-  -- carrying this fleet's marker (`Engine.claimUndeclared`). Without the
-  -- second half, removing a line from the declaration abandoned the resource
-  -- anywhere the ledger did not happen to remember it.
-  let managedRows (bs : Backends) : IO (List Ledger.Row) := do
-    let cached ← Ledger.load cacheRoot
-    let found ← claimUndeclared (κ := F.keys) bs boundary F.forgets cached
+  -- The undeclared resources carrying this fleet's marker, found by asking
+  -- the cloud (`Engine.claimUndeclared`); warnings for what it saw but may
+  -- not claim go to stderr.
+  let orphansIn (bs : Backends) : IO (List Orphan) := do
+    let found ← claimUndeclared (κ := F.keys) bs boundary F.forgets
     for w in found.warnings do IO.eprintln w
-    return cached ++ found.rows
+    return found.orphans
   let reporting (act : IO Unit) : IO UInt32 := do
     match ← act.toBaseIO with
     | .ok _    => return 0
@@ -475,34 +492,18 @@ def run (exe : String) (F : Fleet)
       return 1
   match args with
   | [] | ["check"] => reporting selfCheck
-  -- `refresh` rather than `pull`: it is Terraform's name for exactly this
-  -- (observe reality, record it), and it deliberately has no destructive
-  -- counterpart that rhymes with it — `pull`/`push` would differ by one
-  -- character while differing completely in consequence. Terraform's own
-  -- `state pull`/`state push` mean something else again: moving a state file
-  -- to and from a remote backend.
-  -- `refresh` deliberately does not write the ledger. It observes, and
-  -- observing is not a decision about what is managed. Only `apply` and
-  -- `destroy` change membership.
-  | ["refresh"] =>
+  -- A snapshot of what this fleet manages, as JSON: to stdout, or to the file
+  -- named. Read-only, like `plan`.
+  | ["dump"] | ["dump", _] =>
     reporting <| withLive fun bs => do
-      let world ← pull (κ := F.keys) cacheRoot bs
-      let rows ← managedRows bs
-      let wanted := withFetchedSources F.plan (← fetchMigrationSources F.plan)
-      let outstanding := (plan wanted world rows F.forgets).length
-      IO.println s!"refreshed; {rows.length} managed; {outstanding} action(s) outstanding"
-  -- Rebuilds the ledger as what it is documented to be: a cache of ownership,
-  -- not the record of it. Only kinds whose marker a backend can actually read
-  -- (`Backend.ownershipInfo`) are re-derived; every other kind's rows are
-  -- carried over untouched, so a fleet holding one does not lose what it
-  -- already knew about it.
-  | ["discover"] =>
-    reporting <| withLive fun bs => do
-      let before ← Ledger.load cacheRoot
-      let after ← discover (κ := F.keys) bs boundary
-        (fun p k nm => (F.regions.codeFor p k nm).getD "") before
-      Ledger.save cacheRoot after
-      IO.println s!"discovered; {after.length} managed (was {before.length})"
+      let entries ← pullEntries (κ := F.keys) bs
+      let foreign ← foreignDeclared bs F.plan (worldOf entries) boundary
+      let found ← claimUndeclared (κ := F.keys) bs boundary F.forgets
+      let snap ← snapshotOf bs F.regions entries found.orphans
+      let out := (dumpJson snap found.orphans foreign found.warnings).pretty
+      match args with
+      | ["dump", path] => IO.FS.writeFile path (out ++ "\n"); IO.eprintln s!"wrote {path}"
+      | _              => IO.println out
   -- Four commands, one body. They vary in two independent ways — *which*
   -- declaration to reconcile against, and whether to actually do it — so
   -- writing them out separately would be four copies of the same three lines.
@@ -513,9 +514,9 @@ def run (exe : String) (F : Fleet)
     let doIt     := args.head? == some "apply" || args.head? == some "destroy"
     let forced   := args.contains "--force"
     reporting <| withLive fun bs => do
-      let entries ← observe (κ := F.keys) cacheRoot bs
+      let entries ← pullEntries (κ := F.keys) bs
       let world := worldOf entries
-      let rows ← managedRows bs
+      let orphans ← orphansIn bs
       -- `Plan.absent` is the empty declaration: the same keys, every one
       -- `.absent`. So `destroy` is not a second teardown mechanism, it is
       -- this one with an empty target, and the guard below checks that.
@@ -528,21 +529,12 @@ def run (exe : String) (F : Fleet)
       -- because `Plan.absent` declares nothing and that is exactly what a
       -- teardown is. `--force` stays for the other case, a declaration that
       -- still declares things and drops most of them.
-      let store : Store F.keys :=
-        { root     := some cacheRoot
-        , rows
-        , forgets  := F.forgets
-        -- The same resolution `backendFor` routes on, so a row records the
-        -- region the resource was actually created in rather than a second,
-        -- differently-defaulted answer.
-        , regionOf := fun p k nm => (F.regions.codeFor p k nm).getD ""
-        , boundary }
       let opts : PushOptions := { apply := doIt, colour, force := forced }
       -- `edges := F.plan` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
       -- order deletions by. See `orderActions`.
-      for line in ← push bs wanted world opts (edges := resolved) (store := store)
-                        (seen := some entries) do
+      for line in ← push bs wanted world opts (edges := resolved) (orphans := orphans)
+                        (boundary := boundary) (seen := some entries) do
         IO.println line
   | _ =>
     IO.eprintln (usage exe)

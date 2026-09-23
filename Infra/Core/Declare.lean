@@ -172,8 +172,9 @@ private def mkNamedArg (fieldId : Ident) (val : Term) : Syntax :=
     #[mkAtom "(", fieldId, mkAtom " := ", val, mkAtom ")"]
 
 /-- One release with its enclosing `provider` context resolved. No place,
-    because nothing is called and so nothing has to be routed here: the region
-    a forgotten resource sits in is already in the ledger row being dropped. -/
+    because nothing is called and so nothing has to be routed here: a `forget`
+    only tells the scan (`Engine.claimUndeclared`) to skip the name, wherever
+    it is found. -/
 private structure Rel where
   cloud : Ident
   kind  : Ident

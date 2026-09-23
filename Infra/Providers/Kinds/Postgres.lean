@@ -17,7 +17,7 @@ import Infra.Core.Ownership
   That is the single exception to the rule in `Kinds.Secrets` that values only
   ever travel outward, and it is deliberately confined to `fetchMasterPassword`
   below. The value is passed straight to the create call and never returned,
-  never stored in a `Sighting`, and never written to the `.infra/` cache. The
+  never stored in a `Sighting`, and so never reaches a plan or a `dump`. The
   `.secrets` kind's own `read` still never fetches a value; drift detection
   there remains metadata-only.
 

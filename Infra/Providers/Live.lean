@@ -488,6 +488,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
         return (← Gcp.PubSub.listTopics creds project).map fun (name, resource) =>
           { handle := ⟨name⟩, url := resource }
       | .aws | .scaleway =>
+        -- Scaleway: a project where Queues is not enabled holds none, and
+        -- asking the SQS endpoint would first activate the product and mint
+        -- a credential. Checked read-only instead (`Sqs.enabled`).
+        if provider == .scaleway then
+          unless ← Scaleway.Sqs.enabled creds do return []
         let ep := sqsFor provider creds
         let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
         return (← Queues.listQueues sqsCreds ep).map fun (name, url) =>
@@ -1151,9 +1156,10 @@ history left in place"
     -- marker of its own to read and the parent's is the only evidence there
     -- is. No route means the declaration does not name it, and there is no
     -- cloud-side place to look its parent up; `.unreadable` is the honest
-    -- answer for the adoption loop (which warns rather than claims), and
-    -- the orphan-delete path skips the check for this kind because its
-    -- delete destroys nothing. Neither caller falls to a catch-all.
+    -- answer, and nothing acts on it: the scan for undeclared resources
+    -- skips this kind (`Engine.claimUndeclared`), and the orphan-delete path
+    -- skips the check because its delete destroys nothing. No caller falls
+    -- to a catch-all.
     | .postgresMigrations, h =>
       match routes.find? fun r => r.resource == h.raw with
       | some route => postgresEvidence provider creds route.database

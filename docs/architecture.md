@@ -159,7 +159,7 @@ Nothing observed, cached, or reported carries a value either, which is also
 why a composed secret can never be diffed: it is create-only.
 
 One kind widens that, deliberately and by exactly one read:
-`postgresMigrations`' observation path (`refresh`/`plan` pulls, behind
+`postgresMigrations`' observation path (`plan`/`dump` pulls, behind
 `Backend.list`/`read`) reads the **read-only** connection URL through
 `Kinds.Secrets.fetchValue`, because the only way to see what a database has
 applied is to connect to it. The widening is scoped to its size — the same
@@ -335,7 +335,7 @@ Three things carry it below the syntax:
 - **The engine learned nothing about regions.** It addresses slots; `Cli`
   translates slots to backends. `liveFor` writes the resolved region into the
   `Credentials` it hands to `liveBackend`, so no backend knows either.
-- **The cache key did not have to change.** `namesNodup` already forces names
+- **`Keys.name` did not have to change.** `namesNodup` already forces names
   unique within a `(provider, kind)` bucket, so `Keys.name` stays unique
   whatever the regions are. The cost is that one *name* cannot exist twice in
   a bucket, in two regions — which is the fleet's own identifier for a
@@ -415,18 +415,22 @@ is used, has no key for `Plan.assign` to mention it by. There is no separate "un
 a kind" flag, and none is needed.
 
 The other half is *membership*, and it deliberately does not live here. Ownership is decided by
-`Infra.Core.Ownership` — a marker tag `infra` writes on create, checked against a human-authored
-realm and exclusion list — for the kinds a backend can read tags for; a kind that cannot yet
-falls back to naming alone. The tag's value carries the fleet's own name where a declaration
-sets one (`Boundary.fleetName`), which is what makes two fleets in one account leave each other
-alone rather than merely being refused. Either way, `Infra.Core.Ledger` — a local, gitignored cache of
-`(cloud, kind, name, region)` rows, rebuildable with `infra discover` — is what actually gets
-consulted at plan and apply time, for one reason: the key family changes when the declaration
+`Infra.Core.Ownership` — a marker `infra` writes on create (a tag, or a marker in the object's
+one free-text field, or for the kinds with neither a name prefix the declaration sets), checked
+against a human-authored realm and exclusion list. The tag's value carries the fleet's own name
+where a declaration sets one (`Boundary.fleetName`), which is what makes two fleets in one
+account leave each other alone rather than merely being refused.
+
+The marker, read from the cloud on every run, is what gets consulted at plan and apply time —
+there is no local record — for one reason: the key family changes when the declaration
 changes, so it cannot answer a question about a resource whose line has just been deleted. That
-resource has no key, and if the key family were the only record it would be indistinguishable
-from a resource nobody ever declared. The ledger is what makes "deleted from the file" mean
-"destroy" while resources this tool never touched stay out of reach. `Plan.outside`, a single
-fleet-wide verdict meant to do this job, is gone; see `docs/persistence.md`.
+resource has no key, and if the key family were the only evidence it would be indistinguishable
+from a resource nobody ever declared. `Engine.claimUndeclared` asks every region the fleet uses
+for resources carrying a marker that names this fleet and that the declaration does not; that
+is what makes "deleted from the file" mean "destroy", on any machine, while resources this tool
+never touched stay out of reach. `Plan.outside`, a single fleet-wide verdict meant to do this
+job, is gone, and so is the local ledger that replaced it until 0.16.0; see
+`docs/persistence.md`.
 
 ## Ordering
 
@@ -455,6 +459,10 @@ Basic file manipulation, network, and other IO use:
 There are 2 kinds of objects:
 - Objects to define the current state of a remote system and cache it on disk
 - Objects to define a target state
+
+(This is the original brief. As built, current state is not cached on disk: it is read from the
+cloud on every run, and `dump` serialises it to JSON when a record is wanted — see
+`docs/persistence.md`.)
 
 The idea is that each remote object can be defined locally in lean.
 Each lean state object definition can be persisted locally.

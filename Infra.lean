@@ -6,6 +6,7 @@ import Infra.Core.Finite
 import Infra.Core.Ansi
 import Infra.Core.Refine
 import Infra.Core.Kind
+import Infra.Core.Slot
 import Infra.Core.Expr
 import Infra.Core.Spec
 import Infra.Core.Coe
@@ -24,8 +25,6 @@ import Infra.Core.Backend
 import Infra.Core.Diverge
 import Infra.Core.Settle
 import Infra.Core.Credentials
-import Infra.Core.Persistence
-import Infra.Core.Ledger
 import Infra.Core.Ownership
 import Infra.Core.Engine
 

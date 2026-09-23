@@ -9,7 +9,8 @@ documents linked at the end.
 A **fleet** is an ordinary Lean value describing the resources you want. You do
 not write steps. You write the destination, and the engine works out the route:
 
-1. **observe** what actually exists in your accounts (`refresh`),
+1. **observe** what actually exists in your accounts — on every run,
+   nothing is stored locally,
 2. **diff** that against what you declared,
 3. **reconcile** — create what is missing, update what drifted, replace what
    cannot be updated in place, delete what you declared absent.
@@ -24,13 +25,18 @@ that runs later.
 
 Two consequences worth internalising before you start:
 
-- **Removing a `resource` line deletes the resource.** What the fleet manages
-  is recorded in `infra.ledger.json`, which you commit next to your
-  declaration, so a resource whose line you deleted is still named there and
-  still gets destroyed. If you want to keep it and stop managing it, say
-  `forget <cloud> <kind> "<name>"` instead; that drops the ledger row and
-  leaves the cloud alone. Resources you never declared are never touched, in
-  either case, because they have no row.
+- **Removing a `resource` line deletes the resource.** Everything the fleet
+  creates carries an ownership marker (a tag, where the cloud allows one), and
+  every `plan`, `apply` and `destroy` asks the cloud for resources carrying
+  this fleet's marker that the declaration no longer names — and destroys
+  them. Nothing is stored locally, so this works the same from your laptop and
+  from a fresh CI runner. If you want to keep a resource and stop managing it,
+  say `forget <cloud> <kind> "<name>"` instead, and **leave that line in** for
+  as long as the resource exists: it still carries the marker, so deleting the
+  `forget` makes it an orphan again. Resources without this fleet's marker are
+  never changed or destroyed, declared or not. Give the fleet a name
+  (`Boundary.fleetName`): a fleet without one destroys no undeclared tagged
+  resource at all, because it cannot tell its own from another fleet's.
 - **A bare invocation is offline.** It plans against placeholder backends: no
   credentials, no network, no charges. You have to ask for the real thing.
 
@@ -64,7 +70,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.15.0"
+require infra from git "https://github.com/typednotes/infra" @ "v0.16.0"
 
 @[default_target]
 lean_exe «my-infra» where
@@ -174,11 +180,11 @@ belong in the repo that declares the fleet. If you cannot hardcode them, use
 
 ```
 lake exe my-infra                # check (default) — offline, free
-lake exe my-infra refresh        # observe the clouds, cache what is there
 lake exe my-infra plan           # what would change — reads, changes nothing
 lake exe my-infra apply          # actually reconcile
 lake exe my-infra plan --destroy # what tearing it down would delete
-lake exe my-infra destroy        # delete everything this fleet declares
+lake exe my-infra destroy        # delete everything this fleet manages
+lake exe my-infra dump out.json  # what this fleet manages, as JSON
 ```
 
 `check` and a bare invocation are the same thing and are always safe. `plan`
@@ -186,8 +192,17 @@ reads your accounts. `apply` and `destroy` change them.
 `destroy` is `apply` against an empty declaration, so it is the same mechanism
 as deleting every line, not a second one.
 
-Observed state is cached under `.infra/<exe>/` — one directory per executable,
-so two fleets cannot read each other's state. Add `.infra/` to `.gitignore`.
+Nothing is written to disk: there is no state directory to gitignore or lose.
+`dump [FILE]` writes a snapshot when you want one — each resource with its
+region, ownership evidence and observed state, plus the undeclared resources
+the next `apply` would destroy and the declared ones that are not this
+fleet's. A dump also replays offline as test backends (`Snapshot.load`).
+
+`apply` refuses a plan that would destroy more than half of what the fleet
+manages while still declaring other things; `--force` overrides it. And retire
+a cloud with `destroy` *before* deleting its last line: a cloud the
+declaration no longer names is not scanned, so its resources would be left
+standing.
 
 ## 5. Where it runs
 
@@ -237,7 +252,7 @@ indented past its keyword. Precedence is strictly innermost-wins:
 innermost `in` block  →  outer `in` block  →  fleet-level `in`  →  credentials
 ```
 
-Only the regions your fleet actually names are ever listed during a refresh, so
+Only the regions your fleet actually names are ever listed during a run, so
 a single-region fleet costs exactly what it always did.
 
 > **One mechanism only.** A resource has no region field of its own to
@@ -304,7 +319,7 @@ resource secrets "db-url"
 Both references become ordering edges, so **one `apply`** creates the password,
 then the database, then the secret that reads them — no second run, no
 operator pasting a connection string in between. The value is never known to
-the file, the plan output, or the on-disk cache.
+the file, the plan output, or a `dump`.
 
 A plaintext value is *expressible* and therefore *checked* rather than
 impossible: `#guard myFleet.plan.secretsAreSound` rejects a composed value with
@@ -393,7 +408,7 @@ anything:
 - [`providers.md`](providers.md) — how each kind maps onto each cloud's API,
   and what has actually been verified against a live account
 - [`authentication.md`](authentication.md) — the credential chain
-- [`persistence.md`](persistence.md) — the on-disk cache
+- [`persistence.md`](persistence.md) — why nothing is stored locally
 
 If something here did not work, the ledger in `diff-semantics.md` is the honest
 list of what is not finished — it is kept current deliberately, including the

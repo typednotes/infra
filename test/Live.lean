@@ -58,18 +58,19 @@ def ciPrefix : String := "ci-tests-infra-"
     a Scaleway mnq queue has no tags, no description and no other writable
     field, so the only marker it can carry is the name it was created with
     (`Infra.Core.Ownership`'s third rung). Without a prefix to check that
-    against, the queue is `foreign` — never adopted, never deleted as an
+    against, the queue is `foreign` — never changed, never deleted as an
     orphan — and `ci-tests-infra-` is exactly the prefix every resource here
     already has.
 
-    `fleetName` is deliberately **not** set. Setting it would make the marker
-    carry a name, which sounds like more coverage and is less: every resource
-    these legs touch is one they created moments earlier, so the value would
-    always match, and the interesting case — another fleet's value — is
-    already pinned offline by `checkFleetIsolation`. What is *not* pinnable
-    offline is whether a real cloud hands the marker back at all, and that is
-    what `assertOwnershipEvidence` below asks. -/
-def liveBoundary : Boundary := { namePrefix := some ciPrefix }
+    `fleetName` **is** set, and must be: a fleet destroys the undeclared
+    resources carrying its own name, so an unnamed live test sharing an
+    account with a real fleet could otherwise claim nothing — and a live test
+    that *could* claim by any marker value would destroy that fleet. The name
+    is stamped on everything these legs create (`liveFleet`, passed to
+    `liveFor`) and required back by every claim. -/
+def liveFleet : String := "ci-tests-infra"
+
+def liveBoundary : Boundary := { fleetName := some liveFleet, namePrefix := some ciPrefix }
 
 /-- The managed policy the AWS ramp attaches and detaches.
 
@@ -248,8 +249,8 @@ fleet awsRampDown in ireland where
   group. Deliberately that way round: an instance holds a required reference to
   its group, so dropping the group while keeping the instance would not
   compile, and dropping both would make two orphans with a dependency between
-  them — which is the one ordering case the ledger cannot express, since a row
-  records a name and a region and not an edge. Dropping the dependent alone is
+  them — which is the one ordering case an orphan cannot express, since it
+  carries a name and a region and not an edge. Dropping the dependent alone is
   the case it can. -/
 
 fleet awsTrimmed in ireland where
@@ -561,7 +562,7 @@ fleet gcpFull in paris where
   the one an operator actually uses, which is editing a file.
 
   So each cloud now runs a **sequence of declarations**, applied in order
-  against one ledger:
+  against one account:
 
   | Stage | What it declares | What that has to make happen |
   |---|---|---|
@@ -572,7 +573,7 @@ fleet gcpFull in paris where
   Stage 2 is the one worth having, and it is the one nothing tested before. Its
   dropped resources have no key in stage 2's key family at all — their lines
   are *gone*, exactly as if a person had deleted them — so the only thing that
-  knows they exist is the ledger. If membership were still derived from the
+  knows they exist is their marker. If membership were still derived from the
   declaration, stage 2 would silently abandon them and stage 3 would have
   nothing to clean up, and both stages would pass while leaking two billable
   resources per cloud. The assertion that catches that is in `liveSequence`:
@@ -830,15 +831,15 @@ fleet gcpTrimmed in paris where
 /-! ### The last stage: nothing at all
 
   A declaration that declares no resources — `Plan.absent` over the cloud's
-  *own* key family. Everything the ledger records becomes an orphan, and
-  orphans are what get destroyed. This is `apply` reaching the same place
+  *own* key family. Everything carrying this fleet's marker becomes an
+  orphan, and orphans are what get destroyed. This is `apply` reaching the same place
   `destroy` does.
 
   Over the full key family, and not over an empty `fleet` of its own, which is
   what it used to be. `liveFor` authenticates exactly `κ.providers`, so a key
   family that names no cloud gets no credentials, and every backend it hands
   back is `Infra.Providers.placeholderBackend` — whose `delete` returns `()`.
-  A teardown built that way deleted nothing, emptied the ledger, and satisfied
+  A teardown built that way deleted nothing, emptied the (then) ledger, and satisfied
   `runStage`'s check because `[] == []`. Two clouds reported five green stages
   on 2026-09-08 with their whole estate still standing. `Plan.absent κ` says
   the same thing about the resources while keeping the providers, and `push`
@@ -989,7 +990,7 @@ def settleSeconds : Nat := 180
     backoff would make the worst case unpredictable in a job that has a
     timeout. Fuel bounds the recursion so this is not `partial`, but the
     deadline is what stops it. -/
-def waitFor {κ : Keys} (label : String) (root : System.FilePath) (bs : Backends)
+def waitFor {κ : Keys} (label : String) (bs : Backends)
     (done : World κ → Bool) (report : World κ → List String) : IO (List String) := do
   let start ← Data.Time.getCurrentTime
   let deadline := start.nanosSinceEpoch + settleSeconds * 1000000000
@@ -1000,7 +1001,7 @@ def waitFor {κ : Keys} (label : String) (root : System.FilePath) (bs : Backends
   -- real; the *deadline* is what actually stops it, and the fuel can only be
   -- reached if a pull returns instantly, which it cannot.
   let rec go (fuel : Nat) (lastBeat : Nat) : IO (List String) := do
-    let w ← pull (κ := κ) root bs
+    let w ← pull (κ := κ) bs
     if done w then return []
     let secs ← elapsed
     let now ← Data.Time.getCurrentTime
@@ -1032,9 +1033,8 @@ def waitFor {κ : Keys} (label : String) (root : System.FilePath) (bs : Backends
     They must differ: a stage that *drops* a resource has fewer keys than the
     one before it, so `Plan κ` is a different type at each step. Bundling the
     key family with everything derived from it is what lets the driver below
-    iterate over them, and it is the same trick the ledger plays — the record
-    of what is managed cannot be indexed by a key family that changes
-    underneath it. -/
+    iterate over them — what is managed cannot be indexed by a key family
+    that changes underneath it. -/
 structure Stage where
   label   : String
   κ       : Keys
@@ -1065,7 +1065,7 @@ def stage (label : String) (F : Fleet) : Stage where
       (Finite.elems (α := Kind)).flatMap fun k =>
         (Finite.elems (α := F.keys.Key p k)).filterMap fun key =>
           match F.plan.assign p k key with
-          | .present _ => some (Ledger.slotId p k (F.keys.name p k key))
+          | .present _ => some (slotId p k (F.keys.name p k key))
           | _          => none
 
 /-- The teardown stage: declare nothing, over the key family that names the
@@ -1075,80 +1075,56 @@ def stage (label : String) (F : Fleet) : Stage where
     different things about *providers*, and the difference is not cosmetic —
     `liveFor` authenticates `κ.providers`, so the empty family authenticates
     nothing and tears down through placeholder backends that delete nothing.
-    Nothing is forgotten in a teardown either: a `Released` key is one the
-    ledger drops without deleting, which is the opposite of what this stage is
-    for. -/
+    Nothing is forgotten in a teardown either: a `Released` name is one this
+    fleet leaves standing, which is the opposite of what this stage is for. -/
 def emptyStage (F : Fleet) : Stage :=
   stage "empty" { keys := F.keys, plan := Plan.absent F.keys
                   regions := F.regions, forgets := [] }
-
-/-- Everything the ledger says is managed, as slot strings. -/
-def ledgerSlots (rows : List Ledger.Row) : List String :=
-  (Ledger.sorted rows).map Ledger.Row.slot
 
 /-- Apply one stage, wait for it to settle, and check the account holds exactly
     what the stage declares — no more.
 
     "No more" is the whole point of the sequence. A stage that drops a resource
-    must *destroy* it, and the only thing that knows the resource exists is the
-    ledger, because its line is gone from the declaration. If membership were
-    still read off the declaration, a dropped resource would be silently
-    abandoned: this stage would pass, the next would find nothing to clean up,
-    and the leak would show up on a bill. Comparing the ledger against
-    `declared` after every stage is what catches that. -/
-def runStage (name : String) (root : System.FilePath) (st : Stage) : IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions
-  let rows ← Ledger.load root
+    must *destroy* it, and nothing but the resource's own marker says it exists
+    — its line is gone from the declaration, and there is no local record. So
+    after every stage the account is asked again (`claimUndeclared`): anything
+    still carrying this fleet's marker that the stage does not declare is a
+    resource abandoned rather than destroyed, and fails the stage. -/
+def runStage (name : String) (st : Stage) : IO Unit := do
+  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions (some liveFleet)
+  let found ← claimUndeclared (κ := st.κ) bs liveBoundary st.forgets
   progress s!"[{name}/{st.label}] applying ({st.declared.length} declared, \
-{rows.length} managed)…"
-  let entries ← observe (κ := st.κ) root bs
-  let store : Store st.κ :=
-    { root := some root, rows, forgets := st.forgets
-      -- Not the default `{}`: see `liveBoundary`. This is what the engine's
-      -- own adoption loop and its recheck before a `deleteOrphan` consult, so
-      -- passing it here is what makes the name rung load-bearing live rather
-      -- than only in `Ownership`'s guards.
-      boundary := liveBoundary
-      regionOf := fun p k nm => (st.regions.codeFor p k nm).getD "" }
+{found.orphans.length} undeclared to destroy)…"
+  let entries ← pullEntries (κ := st.κ) bs
   discard <| push bs st.plan (worldOf entries) { apply := true }
-    (edges := st.plan) (store := store) (seen := some entries)
+    (edges := st.plan) (orphans := found.orphans) (boundary := liveBoundary)
+    (seen := some entries)
 
   -- Converged: a second apply would do nothing. Polled, because every cloud's
   -- list API is eventually consistent and a resource created a moment ago may
   -- simply not be visible yet — checking once tests the propagation delay
   -- rather than this library, which is what the first live run of this test
   -- actually did.
-  let after ← Ledger.load root
-  let outstanding ← waitFor s!"{name}/{st.label} converge" root bs
-    (fun w => (plan st.plan w after st.forgets).isEmpty)
-    (fun w => (plan st.plan w after st.forgets).map Action.render)
+  let outstanding ← waitFor s!"{name}/{st.label} converge" bs
+    (fun w => (plan st.plan w).isEmpty)
+    (fun w => (plan st.plan w).map Action.render)
   unless outstanding.isEmpty do
     throw (IO.userError s!"[{name}/{st.label}] did not converge after \
 {settleSeconds}s: {String.intercalate ", " outstanding}")
 
-  -- And the ledger records exactly the declaration, which is what says the
-  -- dropped resources were destroyed rather than forgotten about.
-  let managed := ledgerSlots after
-  let expected := (st.declared.mergeSort fun a b => compare a b != .gt)
-  unless managed == expected do
-    let extra := managed.filter (!expected.contains ·)
-    let missing := expected.filter (!managed.contains ·)
-    throw (IO.userError s!"[{name}/{st.label}] the ledger and the declaration \
-disagree.\n  still managed but not declared: {String.intercalate ", " extra}\
-\n  declared but not managed: {String.intercalate ", " missing}\
-\n  A resource on the second list exists and matches, or the stage would not have \
-converged, so it was refused rather than missed: look for `push`'s warning about the \
-'{markerKey}' tag just above. Debris from an earlier run predates the marker, is not \
-adopted, and is therefore not destroyed by the teardown either — \
-`lake test -- {name} sweep` is what removes it.")
-  progress s!"[{name}/{st.label}] converged; {managed.length} managed"
+  -- And nothing undeclared still carries the marker: the dropped resources
+  -- were destroyed, not abandoned.
+  let left ← claimUndeclared (κ := st.κ) bs liveBoundary st.forgets
+  unless left.orphans.isEmpty do
+    throw (IO.userError s!"[{name}/{st.label}] still standing after the stage, marked as \
+this fleet's but not declared: {String.intercalate ", " (left.orphans.map (·.slot))}")
 
 /-- The stages for one cloud, ending in a declaration that names nothing.
 
     That last stage is `apply` against an empty declaration, which is the same
     operation `destroy` performs — see `Plan.absent` — and is the half that had
-    never run live. Everything the ledger holds becomes an orphan, and orphans
-    are what get destroyed. -/
+    never run live. Everything carrying this fleet's marker becomes an orphan,
+    and orphans are what get destroyed. -/
 def stagesFor : String → Option (List Stage)
   | "aws" => some
     [ stage "full" awsFull
@@ -1232,12 +1208,12 @@ private def gcpStages := stagesFor "gcp" |>.getD []
 #guard gcpRampUp.plan.declaresAnything && gcpRampDown.plan.declaresAnything
 
 /- The trimming stage drops exactly what its comment says, on each cloud.
-   These are the orphans: no key in that stage names them, so only the ledger
-   can. -/
+   These are the orphans: no key in that stage names them, so only their
+   markers can. -/
 #guard dropped (at! awsStages 0) (at! awsStages 3)
      = ["aws/secrets/ci-tests-infra-b", "aws/aws-instance/ci-tests-infra-vm"]
 -- Three orphans here, and each one's namespace is *still declared*, which is
--- what keeps them orderable: the ledger records a name and a region, not an
+-- what keeps them orderable: an orphan carries a name and a region, not an
 -- edge, so an orphan whose dependency is also an orphan is the case it cannot
 -- sequence.
 #guard dropped (at! scwStages 0) (at! scwStages 3)
@@ -1301,13 +1277,12 @@ private def kindsOf (st : Stage) : List String :=
           ((sl.splitOn "/").drop 1).headD "?").eraseDups).length = 13
 #guard card Kind = 15
 
-/-! ## Sweeping an account, without a ledger to go on
+/-! ## Sweeping an account, by name
 
-  `destroy` tears down what the *ledger* records, which is the right thing
-  inside a run and useless between them: the ledger lives under `.infra/`,
-  which is gitignored and does not survive a CI job. So a fresh job asked to
-  clean up finds an empty ledger and deletes nothing, however much debris is
-  standing.
+  `destroy` tears down what carries this fleet's marker. Debris from a run
+  that died between creating a resource and marking it, or from a version of
+  this test that marked differently, carries no such marker — so the sweep
+  matches the `ci-tests-infra-` prefix instead.
 
   A sweep answers a different question — *what in this account looks like this
   test's?* — and answers it from the account rather than from local state.
@@ -1369,7 +1344,7 @@ def forEachDebris {α : Type} (bs : Backends) (p : ProviderId) (debrisPrefix : S
       for o in observed do
         let h := observedHandle k o
         if isDebris debrisPrefix h.raw then
-          out := (← f b k h (Ledger.slotId p k h.raw)) :: out
+          out := (← f b k h (slotId p k h.raw)) :: out
   return out.reverse
 
 /-- One pass: delete every prefixed resource the credentials can see.
@@ -1426,13 +1401,12 @@ def sweepUntilQuiet (bs : Backends) (p : ProviderId)
 /-- Delete every `ci-tests-infra-*` resource one cloud's credentials can see.
 
     Independent of any declaration and of any local state, which is what makes
-    it the right thing for a scheduled cleanup: it needs no ledger, no cache
-    and no knowledge of which fleet created what. It also clears debris from a
-    *previous* version of the fleet, which `destroy` cannot, because the
-    ledger only ever knew what the current declaration named. -/
+    it the right thing for a scheduled cleanup: it needs no knowledge of
+    which fleet created what. It also clears debris whose marker is missing
+    or different, which `destroy` leaves alone by design. -/
 def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions)
     (debrisPrefix : String := ciPrefix) : IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor κ regions
+  let (bs, _) ← Infra.Cli.liveFor κ regions (some liveFleet)
   progress s!"[{name}] sweeping for '{debrisPrefix}*'…"
   -- Fuel of eight: the deepest dependency chain this test can build is four
   -- (base → a → sink → tail), and a sweep needs one round per level plus a
@@ -1442,21 +1416,18 @@ def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions)
     progress s!"[{name}] nothing to sweep — the account is clean"
   else
     progress s!"[{name}] swept {n} resource(s)"
-  -- The ledger may name things that are now gone, so clear it rather than
-  -- leave it claiming resources that do not exist.
-  Ledger.save (".infra" / s!"live-{name}") []
 
-/-! ## Asking the account, not the ledger
+/-! ## Asking the account, not a record
 
-  A teardown empties the ledger, and the check that a run ends clean used to
-  compare the ledger against the declaration — so *anything* that empties the
-  ledger without deleting satisfied it. That is not hypothetical: `liveFor`
+  The check that a run ends clean used to compare a local ledger against the
+  declaration — so *anything* that emptied the ledger without deleting
+  satisfied it. That is not hypothetical: `liveFor`
   used to substitute a placeholder for a cloud it loaded no credentials for,
   a placeholder's `delete` returns `()`, and two clouds reported a clean
   teardown with their whole estate standing.
 
-  So a run now finishes by asking the cloud's own listings the question the
-  ledger cannot answer. It is the sweep's walk without the deletes. -/
+  So a run now finishes by asking the cloud's own listings, prefix and all.
+  It is the sweep's walk without the deletes. -/
 
 /-- Every prefixed resource one cloud's credentials can see, as slot ids, and
     nothing deleted. -/
@@ -1494,14 +1465,14 @@ def debrisAfterSettling (name : String) (bs : Backends) (p : ProviderId) :
 
 /-- Fail unless the account itself reports no debris.
 
-    This is the assertion a green run is worth something for: the ledger being
-    empty says only that local state is empty. -/
+    This is the assertion a green run is worth something for: it asks the
+    account for anything named like this test's debris, marked or not. -/
 def assertAccountClean (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
     IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor κ regions
+  let (bs, _) ← Infra.Cli.liveFor κ regions (some liveFleet)
   let standing ← debrisAfterSettling name bs p
   unless standing.isEmpty do
-    throw (IO.userError s!"[{name}] the ledger is empty but the account is not: {standing.length} resource(s) named '{ciPrefix}*' are still standing — {String.intercalate ", " standing}. `lake test -- {name} sweep` removes them")
+    throw (IO.userError s!"[{name}] torn down, but the account is not clean: {standing.length} resource(s) named '{ciPrefix}*' are still standing — {String.intercalate ", " standing}. `lake test -- {name} sweep` removes them")
   progress s!"[{name}] the account reports no '{ciPrefix}*' resource"
 
 /-- The teardown, on its own, for the workflow's backstop.
@@ -1513,19 +1484,14 @@ def assertAccountClean (name : String) (κ : Keys) (p : ProviderId) (regions : R
     same way and could leave more behind than it cleaned up. That is what the
     first extended AWS run actually did.
 
-    Because the empty stage destroys whatever the *ledger* holds rather than
-    whatever some declaration names, it also cleans up after a run that failed
-    partway through a different stage. -/
+    Because the empty stage destroys whatever carries this fleet's marker
+    rather than whatever some declaration names, it also cleans up after a run
+    that failed partway through a different stage. -/
 def liveTeardown (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
     IO Unit := do
-  let root : System.FilePath := ".infra" / s!"live-{name}"
-  runStage name root (emptyStage { keys := κ, plan := Plan.absent κ, regions := regions, forgets := [] })
-  let rows ← Ledger.load root
-  unless rows.isEmpty do
-    throw (IO.userError s!"[{name}] torn down, but the ledger still lists \
-{rows.length} resource(s)")
-  progress s!"[{name}] torn down, and the ledger is empty"
-  -- And the account agrees, which the ledger on its own cannot say.
+  runStage name (emptyStage { keys := κ, plan := Plan.absent κ, regions := regions, forgets := [] })
+  progress s!"[{name}] torn down: nothing marked as this fleet's is left"
+  -- And the whole account agrees, prefix and all.
   assertAccountClean name κ p regions
 
 /-! ## `apiKeyFor`: a credential minted into a secret, and taken away with it
@@ -1609,11 +1575,10 @@ fleet gcpIdentityTrimmed in paris where
 private def identityCheck (name : String) (κ : Keys) (p : ProviderId)
     (regions : Regions) (stages : List Stage) (keysOf : IO (List String)) :
     IO Unit := do
-  let root : System.FilePath := ".infra" / s!"live-{name}-identity"
   let teardown : IO Unit := do
-    runStage s!"{name}-identity" root (at! stages 2)
+    runStage s!"{name}-identity" (at! stages 2)
   match ← (do
-      runStage s!"{name}-identity" root (at! stages 0)
+      runStage s!"{name}-identity" (at! stages 0)
       -- One key, and exactly one: a mint that ran twice would be a leak of
       -- the same shape as one that never cleaned up.
       let minted ← keysOf
@@ -1625,7 +1590,7 @@ key after the first stage, found {minted.length}: \
 
       -- Drop the secret alone. The identity stays, so nothing but the
       -- secret's own teardown can remove the key.
-      runStage s!"{name}-identity" root (at! stages 1)
+      runStage s!"{name}-identity" (at! stages 1)
       let after ← keysOf
       unless after.isEmpty do
         throw (IO.userError s!"[{name}-identity] the secret was deleted and \
@@ -1690,8 +1655,7 @@ def gcpIdentityCheck : IO Unit := do
   stage out of five — and it is the one that would have caught the marker
   gaps directly rather than through their consequences. The consequences are
   worth naming, because they are what "unverifiable" actually costs: such a
-  resource is never adopted, never deleted as an orphan, and `discover`
-  cannot rebuild its ledger row. -/
+  resource is never changed by this fleet, and never found as an orphan. -/
 
 /-- Which rung of `Ownership`'s ladder a piece of evidence came from, for the
     progress line.
@@ -1713,7 +1677,7 @@ private def rungOf : Evidence → String
     which is what a create that forgot to write one looks like, and is
     indistinguishable from `.unreadable` in every consequence that matters. -/
 def assertOwnershipEvidence (name : String) (st : Stage) : IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions
+  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions (some liveFleet)
   let mut seen : List String := []
   let mut unreadable : List String := []
   let mut unmanaged : List String := []
@@ -1723,7 +1687,7 @@ def assertOwnershipEvidence (name : String) (st : Stage) : IO Unit := do
         match st.plan.assign p k key with
         | .present _ =>
           let nm := st.κ.name p k key
-          let slot := Ledger.slotId p k nm
+          let slot := slotId p k nm
           let ev ← (bs.backendFor p k nm).ownershipInfo k ⟨nm⟩
           seen := seen ++ [s!"{k.name}:{rungOf ev}"]
           match ev with
@@ -1737,8 +1701,7 @@ def assertOwnershipEvidence (name : String) (st : Stage) : IO Unit := do
     throw (IO.userError s!"[{name}] ownership: {unreadable.length} resource(s) \
 report no marker at all — {String.intercalate ", " unreadable}.\n  \
 `Backend.ownershipInfo` answered `.unreadable` for them, so this fleet can \
-neither adopt them nor delete them as orphans, and `discover` cannot rebuild \
-their ledger rows. Either the backend was never taught to read a marker for \
+neither change them nor find them as orphans. Either the backend was never taught to read a marker for \
 that kind, or the cloud does not hand back the one it was given. See \
 `docs/coverage.md`'s ladder.")
   unless unmanaged.isEmpty do
@@ -1753,7 +1716,7 @@ a marker and read as managed — {String.intercalate ", " seen.eraseDups}"
 
   Everything above proves the fleet converges and cleans up after itself. None
   of it proves the fleet leaves a *stranger's* resource alone — every resource
-  any stage touches is one this test itself created, so a bug that adopted or
+  any stage touches is one this test itself created, so a bug that claimed or
   destroyed by name coincidence rather than by tag would pass every assertion
   above and still be exactly the 2026-09-10 incident.
 
@@ -1772,12 +1735,12 @@ a marker and read as managed — {String.intercalate ", " seen.eraseDups}"
   this is named for. AWS and GCP have no equivalent grouping resource, so
   their decoys are a secret each: same flat, account-wide namespace every
   other kind those fleets manage lives in, and the risk the perimeter is
-  actually checking — an orphan pass adopting or deleting by listing rather
+  actually checking — an orphan pass claiming or deleting by listing rather
   than by tag — is exactly the same one regardless of whether there happens
   to be a cascading container to hide the story in. -/
 
 /-- Fail, naming exactly what would have to be true for this to trip: the
-    perimeter did not hold, and something in this run destroyed or adopted a
+    perimeter did not hold, and something in this run destroyed or claimed a
     resource it does not own. -/
 private def assertDecoySurvives (name desc : String) (stillThere : IO Bool) : IO Unit := do
   unless ← stillThere do
@@ -1796,7 +1759,6 @@ private def perimeterCheck (name : String) (κ : Keys) (p : ProviderId)
     (stages : List Stage) (regions : Regions) (desc : String)
     (createDecoy : IO Unit) (decoyStillThere : IO Bool) (deleteDecoy : IO Unit) :
     IO Unit := do
-  let root : System.FilePath := ".infra" / s!"live-{name}"
 
   -- Cleans up both the decoy and the managed fleet, best-effort, and reports
   -- every failure alongside the one that triggered it — never silently.
@@ -1816,15 +1778,15 @@ failed: {e3}"
   match ← (do
       -- Stage 1 first: whatever the decoy shares a namespace with does not
       -- exist until this runs.
-      runStage name root (at! stages 0)
+      runStage name (at! stages 0)
       createDecoy
       progress s!"[{name}] perimeter: {desc} created, carrying no \
 '{markerKey}' tag"
       -- Ramp up, ramp down, trim: the decoy surviving each of these is the
       -- perimeter holding.
-      runStage name root (at! stages 1); assertDecoySurvives name desc decoyStillThere
-      runStage name root (at! stages 2); assertDecoySurvives name desc decoyStillThere
-      runStage name root (at! stages 3); assertDecoySurvives name desc decoyStillThere
+      runStage name (at! stages 1); assertDecoySurvives name desc decoyStillThere
+      runStage name (at! stages 2); assertDecoySurvives name desc decoyStillThere
+      runStage name (at! stages 3); assertDecoySurvives name desc decoyStillThere
       progress s!"[{name}] perimeter: {desc} survived a create, two updates \
 and an orphan-deletion pass untouched"
       -- Deleted by hand now, before the final stage tears the managed fleet
@@ -1833,13 +1795,9 @@ and an orphan-deletion pass untouched"
       deleteDecoy
       progress s!"[{name}] perimeter: {desc} removed by hand before the \
 managed fleet is torn down"
-      runStage name root (at! stages 4)
-      let rows ← Ledger.load root
-      unless rows.isEmpty do
-        throw (IO.userError s!"[{name}] perimeter check torn down, but the \
-ledger still lists {rows.length} resource(s)")
+      runStage name (at! stages 4)
       assertAccountClean name κ p regions).toBaseIO with
-  | .ok _    => progress s!"[{name}] perimeter: ok — {desc} was never adopted \
+  | .ok _    => progress s!"[{name}] perimeter: ok — {desc} was never claimed \
 or destroyed by the managed fleet's lifecycle"
   | .error e => cleanupAndRethrow e
 
@@ -1993,7 +1951,6 @@ def gcpPerimeterCheck : IO Unit := do
     becomes a mystery and a bill. -/
 def liveSequence (name : String) (κ : Keys) (p : ProviderId) (stages : List Stage)
     (regions : Regions) : IO Unit := do
-  let root : System.FilePath := ".infra" / s!"live-{name}"
   -- Stage by stage rather than `forM`, so that a failure knows *which* stage
   -- failed. That matters for one case: the last stage is itself the teardown,
   -- and re-running it as a fallback would issue the same request, fail the
@@ -2007,7 +1964,7 @@ def liveSequence (name : String) (κ : Keys) (p : ProviderId) (stages : List Sta
   let rec go : List Stage → (Stage → IO Unit) → IO Unit
     | [],       _     => pure ()
     | st :: rest, after => do
-      match ← (do runStage name root st; after st).toBaseIO with
+      match ← (do runStage name st; after st).toBaseIO with
       | .ok _ => go rest (fun _ => pure ())
       | .error e =>
         if st.declared.isEmpty then
@@ -2027,13 +1984,8 @@ def liveSequence (name : String) (κ : Keys) (p : ProviderId) (stages : List Sta
   -- everything is freshly created, and therefore where a `create` that forgot
   -- to write a marker shows.
   go stages (assertOwnershipEvidence name)
-  -- The last stage already emptied it; this asserts that rather than assuming.
-  let rows ← Ledger.load root
-  unless rows.isEmpty do
-    throw (IO.userError s!"[{name}] the sequence finished with \
-{rows.length} resource(s) still managed")
-  -- The ledger is empty; now ask the cloud, because an empty ledger is what a
-  -- teardown produces whether or not it deleted anything.
+  -- The last stage asserted nothing marked as this fleet's is left; now ask
+  -- the whole account, prefix and all.
   assertAccountClean name κ p regions
 
 def usage : String :=
@@ -2041,17 +1993,17 @@ def usage : String :=
 [sweep [--prefix <p>]|destroy|perimeter|identity]]\n\n\
   With no argument:     the offline checks. No cloud, no credentials, no cost.\n\
   With a provider:      runs five declarations in sequence against one\n\
-                        ledger: the whole fleet, the same fleet scaled up,\n\
+                        account: the whole fleet, the same fleet scaled up,\n\
                         the same scaled back down, a trimmed version, then\n\
                         one that declares nothing. After each it checks that\n\
                         the account holds exactly what that stage declares.\n\
                         Ten to twelve real resources, all named\n\
                         'ci-tests-infra-*'. The last stage destroys them.\n\
   …plus 'sweep':        deletes every resource in the account named\n\
-                        'ci-tests-infra-*', whatever created it. Needs no\n\
-                        ledger, so unlike 'destroy' it works in a fresh\n\
-                        checkout and clears debris from an older version of\n\
-                        the fleet. `lake test -- all sweep` does all three\n\
+                        'ci-tests-infra-*', whatever created it — marked or\n\
+                        not, so unlike 'destroy' it also clears debris a\n\
+                        run left unmarked, or an older version marked\n\
+                        differently. `lake test -- all sweep` does all three\n\
                         clouds. This is the scheduled cleanup.\n\
   …with '--prefix <p>': narrows what counts as debris, for an account shared\n\
                         with another project or checkout whose resources also\n\
@@ -2059,7 +2011,7 @@ def usage : String :=
                         An empty prefix is refused: it would match every\n\
                         resource the credentials can see.\n\
   …plus 'destroy':      runs only the last stage. Safe to re-run: it destroys\n\
-                        whatever the *ledger* holds rather than whatever some\n\
+                        whatever carries the test's marker rather than some\n\
                         declaration names, so it also cleans up after a run\n\
                         that died partway through. This is what CI's backstop\n\
                         runs after a failed leg — the full command is a create\n\
@@ -2073,7 +2025,7 @@ def usage : String :=
                         stage that does not itself destroy it. The decoy and\n\
                         the managed fleet are both deleted no matter how it\n\
                         comes out. Re-enacts the 2026-09-10 incident: an\n\
-                        adopt-or-delete by name or listing rather than by tag.\n\
+                        claim-or-delete by name or listing rather than by tag.\n\
   …plus 'identity':     aws|gcp only, and **opt-in: CI never runs it**. Mints\n\
                         a real API key into a secret with `apiKeyFor`, drops\n\
                         the secret alone, and fails unless the key is gone\n\
@@ -2085,8 +2037,8 @@ def usage : String :=
                         to an identity that runs on every pull request is a\n\
                         decision about security posture, not about coverage.\n\n\
   The middle stage is the one that earns the sequence: it drops two resources,\n\
-  so their lines are gone from the declaration entirely, and only the ledger\n\
-  knows they exist. If membership came from the declaration they would be\n\
+  so their lines are gone from the declaration entirely, and only their\n\
+  markers say they exist. If membership came from the declaration they would be\n\
   silently abandoned and every assertion would still pass.\n\n\
   The secret's value is read from the environment, never from the fleet: a\n\
   committed literal would not compile, which is what `secretsAreSound`\n\
@@ -2116,7 +2068,7 @@ def checkSweepTouchesOnlyDebris : IO Unit := do
       list := fun k => match k with
         | .objectStore => pure listed
         | _            => pure []
-      delete := fun k h => seen.modify (Ledger.slotId .aws k h.raw :: ·) }
+      delete := fun k h => seen.modify (slotId .aws k h.raw :: ·) }
   let bs : Backends := { backend := fun _ => b }
   let (gone, stuck) ← sweepPass bs .aws ciPrefix
   unless stuck.isEmpty do
@@ -2184,7 +2136,7 @@ def checkSweepPrefixScopes : IO Unit := do
       list := fun k => match k with
         | .objectStore => pure listed
         | _            => pure []
-      delete := fun k h => seen.modify (Ledger.slotId .aws k h.raw :: ·) }
+      delete := fun k h => seen.modify (slotId .aws k h.raw :: ·) }
   let bs : Backends := { backend := fun _ => b }
   let (gone, _) ← sweepPass bs .aws "ci-tests-infra-a-"
   unless gone == ["aws/object-store/ci-tests-infra-a-store"] do

@@ -129,7 +129,7 @@ structure QueuesObserved where
     and observed state is where post-apply values belong.
 
     Nothing secret is here, and that is worth being explicit about, because
-    this structure is written to `.infra/` and printed in plans:
+    this structure is written by `dump` and printed in plans:
 
     * `accessKey` is the public half — an AWS access key id, a Scaleway
       access key, a GCP key id. Scaleway's own documentation calls the access
@@ -154,15 +154,14 @@ structure SecretsObserved where
   principal : String := ""
   deriving Repr, DecidableEq, ToJson
 
-/-- Hand-written, unlike every other `FromJson` here, because of a cache
+/-- Hand-written, unlike every other `FromJson` here, because of JSON
     written before `accessKey` and `principal` existed.
 
     Lean's derived decoder does **not** fall back to a field's default when the
-    key is absent — it fails, naming the field. `.infra/` is a cache of
-    observed state that survives across upgrades of this library, so a derived
-    instance would make the first run after this change fail to load it and
-    re-observe the world from scratch. Recoverable, but it would look like data
-    loss, and the fix is four lines. Any field added here later needs the same
+    key is absent — it fails, naming the field. A `dump` is observed state that
+    outlives the version of this library that wrote it, and `Snapshot.load`
+    replays it, so a derived instance would silently replace an older
+    snapshot's secrets with placeholders. The fix is four lines. Any field added here later needs the same
     treatment. -/
 instance : FromJson SecretsObserved where
   fromJson? j := do
@@ -365,7 +364,7 @@ section Guards
 #guard card ProviderId = 3
 #guard card Nothing = 0
 
-/- A cache written before `accessKey`/`principal` existed must still load, with
+/- JSON written before `accessKey`/`principal` existed must still load, with
    the two new fields at their defaults. This is the assertion that fails if
    `SecretsObserved`'s hand-written `FromJson` is ever replaced by a derived
    one — which compiles fine and breaks only at the next upgrade. -/

@@ -1,4 +1,4 @@
-# Coverage in 0.15.0
+# Coverage in 0.16.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-23.
@@ -49,17 +49,18 @@ serves AWS, Scaleway and GCP alike — the clouds differ only in whose secret
 manager holds the two URL secrets (read-write for apply, read-only for
 observation) and whose IAM minted the identities behind them. And its
 `list` is route-driven: the only migration sets a backend can even name are
-the ones the declaration names, so `discover` cannot rebuild these ledger
-rows. That is safe *because* the kind's `delete` is a no-op FORGET — the
-schema's lifetime is the parent database's, and the plan prints `FORGET`
-where it would print `DELETE` for everything else — and the two properties
-are one design decision, not two coincidences. Ownership is inherited from
+the ones the declaration names, so the scan for undeclared resources
+(`Engine.claimUndeclared`) skips the kind — there is nothing for it to find.
+That is safe *because* the kind's `delete` is a no-op FORGET — the schema's
+lifetime is the parent database's, and the plan prints `FORGET` where it
+would print `DELETE` for everything else — and the two properties are one
+design decision, not two coincidences. Ownership is inherited from
 the parent `postgres` resource (`.unreadable` when there is no route to
 read a parent through). The design, the three hard edges and their
 trade-offs: `docs/migrations.md`.
 
 Since 0.14.0 a migration's SQL can live at a URL (`github "owner/repo"
-"ref" [files]`), fetched by `plan`/`apply`/`refresh` — so the SQL stays in
+"ref" [files]`), fetched by `plan`/`apply` — so the SQL stays in
 the service's own repository — and histories on one database are ordered by
 what their SQL says: one that `REFERENCES` a table follows the one that
 `CREATE`s it (`Infra.Core.SqlDeps`); an unresolved reference, or a table two
@@ -107,8 +108,9 @@ clients for those kinds, not one.
 | Composed secrets — a value assembled from post-apply state, in one apply | complete |
 | Account guard — refuse to run against the wrong account | complete |
 | Offline planning against placeholder backends | complete |
-| Observed-state cache on disk | complete |
-| `check` / `refresh` / `plan` / `apply` / `destroy` | complete |
+| No local state — membership read from each resource's marker, every run | complete |
+| `check` / `plan` / `apply` / `destroy` / `dump` | complete |
+| `dump` snapshots replayed as offline test fixtures (`Snapshot.load`) | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
 | Terraform/OpenTofu export (`toHcl`) | works; not a round trip — see below |
 | Terraform/OpenTofu import (`fleetOfState`) | works, from `terraform show -json` |
@@ -172,12 +174,12 @@ This is the section worth reading before trusting anything. Correctness of
   was wrong in a way that did not resolve at all, and Scaleway's SQS-compatible
   API refuses the main API key and needs a dedicated minted credential.
 - **AWS S3 `create` and `list`** — `example/CrossCloud.lean` applied against a
-  real account. The cache holds a real bucket URL
+  real account. The cache (since removed) held a real bucket URL
   (`s3.eu-west-3.amazonaws.com/typednotes-assets`) and a real ARN
   (`arn:aws:s3:::typednotes-archive`), so both the portable `objectStore` and
   the provider-local `s3Bucket` create paths work.
 - **AWS EC2 `create` and `read`** — `example/ParisInstances.lean` applied
-  against a real account. The cache holds a real security group
+  against a real account. The cache (since removed) held a real security group
   (`sg-…`, with its VPC) and two instances with real ids, private IPs and state
   `running`. That means `CreateSecurityGroup`, `RunInstances`,
   `DescribeSecurityGroups` and `DescribeInstances` all work with the parameter
@@ -195,8 +197,8 @@ first apply on 2026-09-23 created four histories on two Scaleway Serverless
 SQL databases, each read from its service's repository at a release tag,
 ordered by the foreign keys in their SQL, and gating five container
 rollouts; the plan afterwards read all four back through the read-only
-identity and proposed nothing. That run settled the two provider facts the
-ledger carried (`CREATE SCHEMA` under the DDL set, and the read identity
+identity and proposed nothing. That run settled the two provider facts
+`docs/migrations.md` left open (`CREATE SCHEMA` under the DDL set, and the read identity
 seeing what the DDL identity created). It is not part of `lake test`'s live
 sequence yet, so AWS and GCP remain exercised offline only.
 
@@ -228,13 +230,14 @@ What the 2026-09-08 runs actually did:
 
 Both are fixed — the first by not comparing an unset optional launch field, the
 second by refusing the placeholder substitution rather than performing it
-(`docs/internals.md`, "Which clouds get authenticated"). Neither is
+(`docs/internals.md`, "Which clouds get authenticated"; since 0.16.0 there is
+no ledger for a placeholder to empty, so that refusal is gone too). Neither is
 re-verified: **the claim to make after the next live run is the five-stage
 one**, and until it runs this section says only what the runs above showed.
 
 The membership property the sequence exists to test is unchanged and still
 worth stating: stage 4 drops resources whose lines are *gone* from the
-declaration, so the ledger is the only thing that can name them.
+declaration, so only the marker on each resource can name them.
 
 It took two rounds of failures to get there, both of them the tool's fault and
 neither any cloud's. They are recorded because the second one is the kind of
@@ -252,12 +255,14 @@ numbers in them are the three-stage sequence's: its stage 3 is now stage 5.
   standing — which therefore needed no action — were never recorded, and the
   teardown deleted only the few that had. An apply now adopts what the
   declaration claims and the cloud already has. This reproduces with
-  placeholder backends, and `Main.lean`'s `checkLedgerAdoption` is the check
-  that should have existed from the start.
+  placeholder backends, and `Main.lean`'s `checkLedgerAdoption` was the check
+  that should have existed from the start. (The ledger, adoption and that
+  check have since been removed: membership is read off the markers on every
+  run, so a converged resource needs recording by nobody.)
 
 #### What one live leg does
 
-Five declarations, applied in order against one ledger. Each stage is a real
+Five declarations, applied in order against one account. Each stage is a real
 apply against a real account, and after each one the account must hold
 *exactly* what that stage declares:
 
@@ -266,7 +271,7 @@ apply against a real account, and after each one the account must hold
 | 1 `full` | twelve resources on AWS and Scaleway, ten on GCP | `create` works, and the dependency order works: five secrets forming a fan-out of two, a fan-in of three with a redundant edge, and a four-deep chain, all in one apply |
 | 2 `ramp-up` | the same resources, scaled up | `update` on every field that moves, and only `update`: each is on a `.mutable` row, so none may come back as a replace |
 | 3 `ramp-down` | the same resources, scaled back | the same paths in the other direction. Scaling a container back to a floor of zero instances is the direction that costs money when it silently fails |
-| 4 `trimmed` | resources dropped — two on AWS and GCP, three on Scaleway — and one added | `deleteOrphan` for the dropped — their lines are *gone*, so only the ledger knows they exist — plus `create` for the new one |
+| 4 `trimmed` | resources dropped — two on AWS and GCP, three on Scaleway — and one added | `deleteOrphan` for the dropped — their lines are *gone*, so only their markers say they exist — plus `create` for the new one |
 | 5 `empty` | nothing at all | `deleteOrphan` for everything left. This is `apply` against an empty declaration, which is the same operation `destroy` performs |
 
 The ramp stages are checked offline for not having rotted: each must declare
@@ -277,17 +282,15 @@ drifted into a no-op would pass every live assertion while testing nothing.
 Stage 4 is the one that earns the sequence. If membership still came from the
 declaration, the resources it drops would be silently abandoned, stage 5 would
 find nothing to clean up, and both stages would pass while leaking billable
-resources on every cloud. The assertion that catches that compares the
-ledger against the stage's own declared slots, derived from the key family
-rather than written out.
+resources on every cloud. The assertion that catches that asks the account
+again after each stage (`claimUndeclared`): anything still carrying this
+fleet's marker that the stage does not declare fails it.
 
 Each stage polls for convergence rather than reading once, because every list
 API here is eventually consistent to some degree and a single read after a
 write measures propagation delay rather than correctness. The sequence ends by
-asserting the ledger is empty, which is the descendant of a check that existed
-because of a past defect: `save` left the file of an emptied
-`(provider, kind)` pair on disk, so the cache went on listing what had just
-been deleted.
+asking the account itself whether anything named `ci-tests-infra-*` is still
+standing (`assertAccountClean`, under "Known defects" below).
 
 Teardown runs from a `finally`, and its failure is reported *alongside* the
 original rather than replacing it. There is a backstop teardown in the workflow
@@ -305,7 +308,7 @@ if the driver dies between create and delete. Everything created is named
 | GCP | 8 | `queues`, three `secrets`, `imageRegistry`, `objectStore`, `compute`, `iam` |
 
 Each created from nothing, converged (`a second apply would do nothing`),
-deleted, and the state cache verified empty. In every case the workflow's
+deleted, and the (then) state cache verified empty. In every case the workflow's
 backstop step was *skipped*, which is the evidence that the driver's own
 teardown ran and left nothing behind — and the accounts were checked afterwards
 and are clean.
@@ -443,7 +446,7 @@ The settle window is 180 seconds, up from 60: it is not the resource count
 that raised it but the slowest member — Scaleway's Functions and Containers
 namespaces take tens of seconds to appear and tens more to go. It is not a
 coverage matrix; it is a proof that the whole engine — credential chain,
-region resolution, list, create, diff, delete, settle, persistence — works
+region resolution, list, create, diff, delete, settle, ownership — works
 end to end against three different real APIs. Everything it does *not* cover
 is covered offline or not at all, and the two sections around this one say
 which.
@@ -475,14 +478,15 @@ That closes the gap this document named a version ago: `destroy` was "the least
 exercised code in the library relative to how much it can cost to get wrong".
 It is now on the CI path for all three clouds, and on AWS it has actually
 deleted seven kinds of resource and been checked against both a fresh listing
-and the state cache.
+and (at the time) the state cache.
 
 ### Verified offline, on every build
 
 Signing against AWS's published SigV4 test vectors; both provider error
 dialects; the divergence rules; `Content-MD5` for S3 configuration writes; the
 credential chain and its redaction; composed secrets creating three resources
-in one correctly-ordered apply with no value leaking into output or cache; that
+in one correctly-ordered apply with no value leaking into output or observed
+state; that
 the `fleet` command produces a fleet indistinguishable from the hand-written
 equivalent; and DAG scheduling over a sixteen-resource graph with a diamond,
 fan-in, a redundant edge, a four-deep chain and cross-cloud edges, checked in
@@ -522,7 +526,9 @@ doing what it had been told to. Three findings, in order of how badly they read:
   exists and matches produces no action, no plan line and no ledger row, so a
   fleet could manage less than it declared in silence. `push` now warns per
   resource, naming the verdict and what to do about it, and the live test's
-  ledger assertion is what turns that warning into a red build.
+  ledger assertion is what turns that warning into a red build. (The ledger
+  has since been removed; `assertOwnershipEvidence` now plays that part —
+  see docs/persistence.md.)
 - **And the fix for the second one uncovered a third**, before it could reach
   an account: the marker is a tag, `objectStore` compares tags as an equal set,
   so every bucket created by this build would have diverged on `tags` for ever
@@ -761,9 +767,9 @@ called; all three now create, read and delete on every AWS live run.
 
   `delete`, which used to sit here beside `update`, is now exercised on AWS
   across seven kinds and checked against both a fresh listing and the state
-  cache. Two library bugs were found on the way out of that: `pullEntries`
-  assumed anything `list` returned still existed when it read it — so the
-  post-delete refresh saw the queue in SQS's eventually-consistent listing,
+  cache (since removed). Two library bugs were found on the way out of that:
+  `pullEntries` assumed anything `list` returned still existed when it read
+  it — so the post-delete pull saw the queue in SQS's eventually-consistent listing,
   failed to read it, and aborted the pull — and before that, the harness read
   the listing immediately after creating and reported propagation delay as
   non-convergence. Both directions poll now.
@@ -821,22 +827,26 @@ credential named `infra` ever exists.
 The consequence to know: **do not create a Scaleway SQS credential named
 `infra` by hand.** `infra` will delete it.
 
+Since 0.16.0 listing queues goes through that credential too, because queues
+are scanned for orphans like every other kind. Minting on a read would turn
+every `plan` into a write, so listing first asks, read-only, whether Queues is
+enabled in the project (`Scaleway.Sqs.enabled`, `GET
+/mnq/v1beta1/regions/{region}/sqs-info`). If it is not, there are no queues and
+nothing is activated or minted; only if it is does listing call
+`credentialsFor`.
+
 ## Membership, and what of it has been run
 
-The ledger (`Infra.Core.Ledger`), `forget`, and orphan deletion are new, and
-this is how far they have actually been exercised.
+Membership — what a fleet manages — is read off the markers on the resources,
+on every run (`Engine.claimUndeclared`, `Engine.foreignDeclared`); nothing is
+stored locally. This is how far that, `forget`, and orphan deletion have
+actually been exercised.
 
-**Verified offline, every build.** The ledger round-trips through JSON with
-every field intact — the region especially, since nothing else records it once
-a resource's line is gone. Rows come back sorted, because a human still reads
-this file even though nothing commits it. An emptied ledger stays a *file*, so
-"manages
-nothing" is distinguishable from "someone deleted the ledger". A file without a
-version is refused rather than read as empty, because reading it as empty would
-orphan everything it recorded. And `actionsOrphaned` is guarded on the three
-cases that matter: a row still declared produces nothing, a row named in
-`forget` produces a non-destructive `FORGET`, and a row the declaration has
-dropped produces a `DELETE`.
+**Verified offline, every build.** `actionsOrphaned` turns the scan's orphans
+into `deleteOrphan` actions, each carrying the region it was found in — the one
+thing nothing else records once a resource's line is gone. `checkMarkerDecides`
+runs the whole scan over a `Snapshot` account (below), and `checkDumpReplays`
+asserts a `dump` reads back as backends that plan the same way.
 
 **Verified by the compiler.** Five things, each recorded with the message it
 actually produces in `Infra/Demo.lean`'s negative checks:
@@ -856,14 +866,14 @@ actually produces in `Infra/Demo.lean`'s negative checks:
 - A fleet cannot be assembled out of two: `plan` and `forgets` are indexed by
   the `keys` field beside them.
 
-**Run against all three accounts.** The wiring in `Infra.Cli` that loads the
-ledger, hands it to `push`, and writes it back after each action, and with it
-the three ways a row moves: adoption (a declared resource that already exists
-is claimed even with no action to take), orphan deletion (a resource whose line
-is gone is destroyed), and the empty declaration that ends the sequence. The
-staged sequence passes on AWS, Scaleway and GCP, and it cannot pass without all
-three: after every stage the account must hold exactly what that stage
-declares.
+**Run against all three accounts** — before 0.16.0, through the ledger then in
+place: orphan deletion (a resource whose line is gone is destroyed) and the
+empty declaration that ends the sequence. The staged sequence passed on AWS,
+Scaleway and GCP, and it cannot pass without both: after every stage the
+account must hold exactly what that stage declares. Since 0.15.0 the same
+sequence finds its orphans by marker (`runStage` calls `claimUndeclared`, and
+asks again after the stage); that version has run against `typednotes-infra`'s
+Scaleway account (below) but not yet as a full five-stage leg.
 
 Four things about membership are still not exercised, and each is unexercised
 for a reason rather than by oversight:
@@ -873,23 +883,24 @@ for a reason rather than by oversight:
   what a test account wants. Its guarantees are the compiler's anyway — see
   "Verified by the compiler" above.
 - **Orphan routing across regions.** An orphan is deleted through
-  `Backends.backendAt` on the region its ledger row recorded, because the
+  `Backends.backendAt` on the region the scan found it in, because the
   placement table cannot answer for a slot it no longer contains. Every live
   fleet is single-region per cloud, so that region is the same one
   `backendFor` would have chosen: the mechanism runs on every teardown, but it
   has never had to *disagree* with the fallback.
-- **The more-than-half brake firing.** Stage 3 destroys the whole ledger and
-  the brake correctly stands aside, because an empty declaration is a
-  teardown. A plan that destroys most of the ledger *while still declaring
-  others* is what trips it, and no live fleet does that.
-- **A ledger rewritten after a half-failed apply.** The per-action write is
-  what makes a crash survivable, and rounds one and two above both exercised
-  it accidentally — that is how stage 1 came to run against leftovers at all —
-  but nothing asserts it.
+- **The more-than-half brake firing.** The last stage destroys everything
+  managed and the brake correctly stands aside, because an empty declaration
+  is a teardown. A plan that destroys most of what is managed (declared,
+  existing and marked, plus orphans) *while still declaring others* is what
+  trips it, and no live fleet does that.
+- **Resuming after a half-failed apply.** With no local record there is
+  nothing to rewrite: the next run reads the markers and sees what the failed
+  one did. Rounds one and two above exercised a crash mid-apply by accident,
+  but nothing asserts the resumption.
 
 **A `Backend.probe` field was added and then removed**, and the reason is worth
 keeping because it is a fact about this provider layer rather than about the
-design. Making membership the ledger's business invited answering *existence*
+design. Making membership the (then) ledger's business invited answering *existence*
 per resource, by name, the way Terraform does. Terraform can, because its
 providers implement a per-resource read that returns not-found. This one cannot:
 `liveRead`'s `.secrets` clause makes no cloud call at all, and every
@@ -901,7 +912,7 @@ So existence comes from `list` again, which can be wrong only by omission — th
 safe direction — and which is the call this repo has exercised against real
 accounts for all fourteen cloud-control-plane kinds (the fifteenth,
 `postgresMigrations`, is route-driven and answers to a database, not to an
-account listing). Membership stays the ledger's. The two
+account listing). Membership stays the markers'. The two
 questions were conflated before this change; separating them was right, and
 answering the second one per resource was not.
 
@@ -910,7 +921,8 @@ answering the second one per resource was not.
 `Infra.Core.Ownership.ownershipOf` was pure and fully guard-checked from the
 start, but for a while nothing called it: `Engine.push`'s adoption loop
 claimed anything named right that existed, and `actionsOrphaned` trusted the
-ledger alone. Both consult `Backend.ownershipInfo` first, and **every
+ledger alone. Both paths now consult `Backend.ownershipInfo` —
+`foreignDeclared` for declared names, `claimUndeclared` for the rest — and **every
 `(cloud, kind)` pair now answers it with real evidence**. There is no
 "not migrated" state left.
 
@@ -953,8 +965,8 @@ resource, not a cloud object of its own, so there is no marker of its own to
 read and the parent's verdict is the whole of it (`Live.lean`'s
 `postgresEvidence`, reached through the route table). A migrations resource
 with no route — one whose declaration is gone — answers `.unreadable`, which
-for the adoption loop means "warn rather than claim"; the orphan-delete path
-skips the check for this kind entirely because its `delete` destroys nothing.
+`foreignDeclared` reads as "warn rather than touch"; it is never an orphan,
+because the scan skips this kind, and its `delete` destroys nothing anyway.
 The `infra_migrations` table's existence is the rung-2-style marker for
 everything that matters here: it is something this tool wrote, inside
 something this tool owns or refuses to touch.
@@ -962,16 +974,20 @@ something this tool owns or refuses to touch.
 The tag's **value** is the fleet's own name where the declaration sets one
 (`Boundary.fleetName`) and `"true"` where it does not, which is what lets two
 fleets share an account without claiming each other's resources. Opt-in, and
-the old `"true"` matches every fleet permanently so that naming a fleet cannot
-orphan an estate tagged before the name existed — `docs/persistence.md` has the
-three limits of the scheme.
+the old `"true"` matches every fleet permanently for declared resources, so that
+naming a fleet cannot orphan an estate tagged before the name existed.
+Destroying an *undeclared* resource asks more (`Ownership.claimsUndeclared`):
+the marker must carry this fleet's own name, so `"true"` never licenses it, and
+a fleet with no `fleetName` destroys no undeclared resource by tag at all —
+both are warned about by name. `docs/persistence.md` has the three limits of
+the scheme.
 
 ### What changed, and what was simply wrong
 
 **Eight `(cloud, kind)` pairs used to answer `none`**, plus one within-pair
 gap: Scaleway's `postgres` reported for Managed Database and not for
 Serverless SQL, which share the kind. All nine were therefore permanently
-unadoptable and undeletable-as-orphan.
+unmanageable and undeletable-as-orphan.
 
 Four of the nine had a stated permanent reason, and **one of those reasons was
 false**:
@@ -992,7 +1008,9 @@ false**:
   against the generated SDKs: a Serverless SQL `Database` is id, name, status,
   endpoint, ids, region, timestamps and capacity, and its create and update
   requests carry no tags and no description; Scaleway's SQS shim implements no
-  tagging at all. These two are the name rung, and the reason it exists.
+  tagging at all (no `TagQueue`, no `ListQueueTags`, `CreateQueue`'s `Tag`
+  unsupported — Scaleway, "Queues - Supported Actions", reviewed 2025-11-19)
+  and no free-text attribute. These two are the name rung, and the reason it exists.
 
 The other five answered `none` for no stated reason at all — nobody had
 written them, and `imageRegistry` was not even mentioned in the dispatch, so
@@ -1009,39 +1027,55 @@ deliberate too.
 
 ### What a fleet manages is found by its marker, on every run
 
-Since 0.15.0, `plan`/`apply`/`destroy`/`refresh` ask the cloud for every
-resource carrying this fleet's marker that the declaration does not name
-(`Engine.claimUndeclared`) and destroy it — so deleting a line works from a CI
-runner with no ledger — and `push` changes or destroys only resources that
-carry the marker (`Engine.foreignDeclared`). Scanned: every region the fleet
-uses, on every cloud it uses, every kind `Engine.scannableUndeclared` allows
-there — including kinds the declaration no longer has anything of. Kinds that
+Since 0.15.0, `plan`/`apply`/`destroy` ask the cloud for every resource
+carrying this fleet's marker that the declaration does not name
+(`Engine.claimUndeclared`) and destroy it — so deleting a line works from any
+machine, a fresh CI runner included, with nothing stored locally — and `push`
+changes or destroys only resources that carry the marker
+(`Engine.foreignDeclared`, which drops, with a warning, the update, replace or
+delete of any declared name that is not verifiably ours, `.unreadable`
+included). Scanned: every region the fleet uses (`Backends.scanners`), on every
+cloud it uses, every kind `Engine.scannableUndeclared` allows there — every
+kind that exists on that cloud except `postgresMigrations` — including kinds
+the declaration no longer has anything of. Scaleway queues are no exception:
+listing checks read-only whether Queues is enabled first, so a scan never
+activates the product. Kinds that
 list the same physical resources share a class (`Engine.physicalClass`: S3
 buckets as `objectStore`/`s3Bucket`, Scaleway containers as
 `compute`/`scalewayContainer`), so one declared under either is not an orphan
 of the other.
 
+An orphan's marker is read again, with `claimsUndeclared`, at the moment of
+deleting it (`runStep`), so a resource retagged between plan and apply is not
+destroyed. A refused orphan delete (`DependencyViolation`) is retried after the
+rest of the work-list, and fails the apply if it never clears.
+
 What this cannot reach, enumerated:
 
 | case | why | instead |
 |---|---|---|
-| Scaleway `queues`, once the fleet declares none | listing mints an SQS credential; `plan` must not change the account | remove the last queue with a run whose ledger remembers it, or delete it by hand |
-| `postgresMigrations` | its listing is route-driven, and its delete is a ledger-only FORGET | nothing to destroy: the schema dies with its database |
-| a cloud the declaration no longer names at all | no credentials are loaded for it | `destroy` before removing its last line |
+| `postgresMigrations` | rows in a database, not a cloud object: there is nothing to find, and its delete is a no-op FORGET | nothing to destroy: the schema dies with its database |
+| a cloud the declaration no longer names at all | no credentials are loaded for it, so it is not scanned | `destroy` before removing its last line |
 | a name-rung resource in a fleet with no `namePrefix` | nothing on it says whose it is | set the prefix |
-| a resource marked with the grandfathered value, in a named fleet | the value matches every fleet, so whose it is cannot be told | warned by name; retag it or `forget` it |
+| an undeclared resource marked with the grandfathered value, or any undeclared tagged resource in a fleet without `fleetName` | the marker cannot say which fleet it belongs to | warned by name, not destroyed; name the fleet and retag, or `forget` it |
 
-Exercised: offline by `checkMarkerDecides` (an empty ledger finds and destroys
-exactly the undeclared, fleet-named resources — once per physical resource —
-and leaves the declared-under-another-kind, grandfathered, other-fleet and
-unmarked ones alone, without listing Scaleway queues), and live against
-`typednotes-infra`'s Scaleway account with no ledger, where the plan found
-exactly its four abandoned resources and claimed nothing else.
+Exercised: offline by `checkMarkerDecides` (over an in-memory `Snapshot`
+account, it finds and destroys exactly the undeclared, fleet-named resources —
+once per physical resource, and including a queue although the fleet declares
+none — and leaves the declared-under-another-kind, grandfathered, other-fleet
+and unmarked ones alone), and live against `typednotes-infra`'s Scaleway
+account from a machine with no local state, where the plan found exactly its
+four abandoned resources and claimed nothing else.
+
+`dump` writes the same view as JSON — `resources` (cloud, kind, name, region,
+ownership evidence, observed state), `undeclared`, `foreign`, `warnings` — and
+`Snapshot.load` with `Snapshot.backends` replays it as in-memory backends, so a
+real account's dump can be an offline test fixture (`checkDumpReplays`).
 
 ### The name rung, and why it is opt-in
 
 `Boundary.namePrefix` is unset by default. Unset, a name-only resource is
-`foreign`: never adopted, never deleted as an orphan — exactly where those two
+`foreign`: never managed, never deleted as an orphan — exactly where those two
 kinds were before, so no existing fleet changes behaviour. Set, a resource of
 such a kind is ours when its name starts with the prefix.
 
@@ -1067,7 +1101,7 @@ rather than everything, which is pinned by a guard.
 The verdict is **said out loud** when it goes against a resource the
 declaration names. `foreign` or `excluded` on a declared, existing resource
 means the fleet manages less than it declares, and nothing else about that
-state is observable: there is no action, no plan line and no row. So `push`
+state is observable: there is no action and no plan line. So `push`
 warns per resource and per apply, naming the verdict and the way out — and the
 way out now differs by rung, which is why `describeVerdict` takes the evidence:
 "retag it", "set a `namePrefix` and name it accordingly", and "the marker
@@ -1077,8 +1111,7 @@ covering all three named none of them.
 `createdAt` is still `none` for most rows — `Boundary.since` has little real
 evidence to work on. Serverless SQL is the exception and reports `created_at`,
 which matters most precisely there: it is the weakest rung, and the cutoff is
-the one thing that strengthens it. `Infra.Cli.discover` rebuilds the ledger
-from this table for a fleet that already has one.
+the one thing that strengthens it.
 
 ### Checked live, once, and it found something
 
@@ -1090,8 +1123,8 @@ in 0.11.1 and failed, correctly:
 
 `Iam.Aws'.readOwnership` had been unwrapping the `ListUserTags` reply twice,
 so it always read zero tags while `create` wrote the marker correctly. Every
-AWS IAM user this tool made was therefore `foreign` — unadoptable,
-undeletable-as-orphan, invisible to `discover`. Pre-existing, and older than
+AWS IAM user this tool made was therefore `foreign` — unmanageable,
+undeletable-as-orphan, invisible to the (then) `discover`. Pre-existing, and older than
 the check that caught it.
 
 Two things worth taking from that. The check earns its place: nothing else in
@@ -1111,18 +1144,19 @@ every other kind those fleets declare.
 The suite gives a placeholder backend a fixed `ownershipInfo` answer, since the
 placeholders report no evidence on their own:
 
-- `checkOwnershipGate` asserts a matching-but-unmarked resource is not adopted,
-  that the run *says* so — captured streams, since the warning is the only
-  observable half — and that a marked one is adopted.
+- `checkOwnershipGate` asserts a matching-but-unmarked declared resource is
+  not changed or destroyed, that the run *says* so — captured streams, since
+  the warning is the only observable half — and that a marked one is managed.
 - `checkFleetIsolation` asserts another fleet's marker value is refused, that
-  this fleet's own is adopted, that the legacy `"true"` is adopted whatever the
-  fleet is called, and that an unnamed fleet still ignores the value.
+  this fleet's own is managed, that the legacy `"true"` is managed on a
+  declared resource whatever the fleet is called, and that an unnamed fleet
+  still ignores the value.
 - `checkOrphanRecheck` asserts a stripped marker refuses an orphan delete and a
   present one lets it proceed — then the same two verdicts on the **name** rung
   through a `namedBackends` double: no prefix refuses, a mismatched prefix
   refuses and says which prefix, and a matching one deletes.
-- `checkDiscover` rebuilds a lost ledger from the marker rather than from
-  naming.
+- `checkMarkerDecides` and `checkDumpReplays`, described under "What a fleet
+  manages is found by its marker" above.
 
 `Infra/Core/Ownership.lean`'s own `#guard`s carry the rest: the failure
 direction of each rung, that a prefix is a prefix and not a substring, that an
@@ -1143,17 +1177,17 @@ The two that headed this list are closed, and both closures are checked
 offline:
 
 - **An orphan's references are still not recorded, and no longer need to be.**
-  A ledger row holds a name and a region, not dependency edges, so orphan
-  deletions have nothing to sort by. `push` therefore discovers the order
+  An orphan is a name and a region, not dependency edges, so orphan
+  deletions have nothing to sort by. `push` therefore finds out the order
   instead of computing it: a refused orphan delete is held back and retried
   once the rest of the work-list has run, and only a round that frees nothing
   fails the apply — with the provider's own words. `Main.lean`'s
   `checkOrphanRetry` pins both halves: a refusal that clears is retried until
   the teardown completes, and one that never clears still fails.
-- **A green live run now asks the account, not just the ledger.** The
-  end-of-run check used to compare the ledger against the declaration, and a
-  teardown empties both — so anything that emptied the ledger without deleting
-  satisfied it, which is exactly how the placeholder substitution below went
+- **A green live run now asks the account, not a record.** The
+  end-of-run check used to compare the (since removed) ledger against the
+  declaration, and a teardown empties both — so anything that emptied the
+  ledger without deleting satisfied it, which is exactly how the placeholder substitution below went
   unnoticed. `liveTeardown` and `liveSequence` now finish with
   `assertAccountClean`: the cloud's own listings, polled through the settle
   window, and a failure naming every `ci-tests-infra-*` resource still
@@ -1165,17 +1199,18 @@ offline:
 `liveFor`'s placeholder substitution used to head this list — a provider the
 declaration did not name got `placeholderBackend`, whose `delete` returns `()`,
 so a teardown against an empty declaration deleted nothing and said it had. It
-is gone, not softened: a live apply refuses to act on a ledger row through a
-placeholder. The offline suite is unaffected, because nothing there has a
-ledger row for a cloud it is not pretending to be.
+is gone: with no ledger, orphans come only from scanning the clouds whose
+credentials are loaded, so a placeholder is never asked to delete one. The
+cost is stated in the table above — a cloud the declaration no longer names is
+not scanned, so retire it with `destroy` first.
 
 `Plan.outside` used to head this list — declared, never consumed, and the
 reason deleting a resource from a declaration left it running in the cloud. It
 is gone, not softened: membership is now decided by `Infra.Core.Ownership`'s
-marker and boundary for the kinds a backend can read tags for, and by naming
-alone for the rest, with `Infra.Core.Ledger` — a local, uncommitted cache,
-rebuildable with `infra discover` — as what survives the declaration it came
-from either way. `forget` is how a resource leaves it without being destroyed.
+marker and boundary, on the rung each kind supports, read from the cloud on
+every run — the marker is what survives the declaration it came from. `forget`
+is how a resource leaves management without being destroyed, for as long as
+the `forget` line stays.
 
 `S3BucketSpec.region` used to head this list — a field that did not place the
 bucket and was only compared, so a bucket declared without it proposed a

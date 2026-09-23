@@ -20,14 +20,14 @@ import Linen.Database.PostgreSQL.LibPQ
     `Kinds.Postgres.fetchMasterPassword` already reads one. Nothing it
     returns is stored, cached, or printed.
 
-  * **Observation** (`list`/`read`, i.e. `refresh`/`plan` pulls) reads the
+  * **Observation** (`list`/`read`, i.e. `plan`/`dump` pulls) reads the
     *read-only* URL (`observerSecret`). This is the one widening of the
     "planning path holds no secret value" rule this kind costs — recorded
     in `docs/diff-semantics.md`'s ledger — and it is scoped by design: the
     credential the observation path can reach can `SELECT` on one table and
     nothing else. See `docs/migrations.md`, hard edge 2, for why the
-    alternative (minting an ephemeral key at refresh) was rejected: it
-    would have made refresh *mutating*.
+    alternative (minting an ephemeral key at observation) was rejected: it
+    would have made observation *mutating*.
 
   Both reads go through `Kinds.Secrets.fetchValue`, the same narrowly-scoped
   reader the rest of the library uses, and neither value outlives the
@@ -37,8 +37,8 @@ import Linen.Database.PostgreSQL.LibPQ
 
   The rows this kind manages live in the parent database, and their
   lifetime is the database's, not the declaration's. `delete` is a no-op
-  FORGET — the plan prints `FORGET` (`Engine.Action.verb`), the ledger row
-  goes, the schema stays. Deleting the `postgres` resource is what drops
+  FORGET — the plan prints `FORGET` (`Engine.Action.verb`), nothing is
+  called, the schema stays. Deleting the `postgres` resource is what drops
   the tables, which is the correct teardown.
 
   ## Ordering and locking
@@ -268,7 +268,7 @@ private def observeRoute (provider : ProviderId) (creds : Credentials)
     route-driven rather than account-driven — "everything the credentials
     can see" is not enumerable without connecting to every database in the
     account — so it can only ever report what the *declaration* names, and
-    `discover` cannot rebuild these ledger rows. That is safe because
+    the scan for undeclared resources skips this kind. That is safe because
     `delete` is a no-op FORGET: the two properties are one design decision,
     recorded together in `docs/coverage.md`. -/
 def list (provider : ProviderId) (creds : Credentials) (routes : List MigrationRoute) :
@@ -324,7 +324,7 @@ private def applySession (spec : ProviderSpec .postgresMigrations) :
   Session.sql (ensureTableSql spec.schema)
   Session.sql (grantSql spec.schema)
   let applied ← readApplied spec.schema
-  -- The contract, checked against the database rather than the cache: what
+  -- The contract, checked against the database rather than the pull: what
   -- is applied must be a prefix of what is declared, content and all.
   -- `none` from `migrationsConflict` covers equal and strict-prefix both,
   -- and the suffix is the work.

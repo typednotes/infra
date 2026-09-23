@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.15.0 covers
+## What 0.16.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **15 resource kinds** (8 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -75,7 +75,7 @@ any one of them:
 | | |
 |---|---|
 | Verified against a real account | a three-stage sequence on **all three clouds**: 32 resources across 11 of the 14 kinds, created, converged, partly dropped, and destroyed. Stage 2 deletes resources whose lines are *gone* from the declaration, so it cannot pass unless membership works |
-| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, ledger adoption, and that a sweep deletes only what it created |
+| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, that the marker decides (orphans found and destroyed, nothing else), dump round-trip and replay, fleet isolation, orphan recheck and retry, and that a sweep deletes only what it created |
 | **Never run against an account** | AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
@@ -115,7 +115,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.15.0"
+rev = "v0.16.0"
 ```
 
 Then:
@@ -135,7 +135,7 @@ is nothing to install and nothing to keep on your `PATH`.
 **What `infra init` does to the project.** It adds `Fleet.lean` (the
 declaration you edit), `Catalogue.lean` (every resource kind, declared once,
 to copy from), rewrites Lake's stub `Main.lean` to run the fleet, adds a
-`.gitignore` that excludes the state cache, and adds CI for **GitHub Actions,
+`.gitignore` for Lake's build output, and adds CI for **GitHub Actions,
 GitLab CI, CircleCI, Azure Pipelines and Jenkins** — each with the same
 plan/apply split, so a plan runs on every push and an apply waits for a person
 to press the button. Delete the ones you do not use. It writes only what is
@@ -160,9 +160,9 @@ a guess.
 
 Your declaration is a Lean program, so `lake exe my_infra` *is* the CLI —
 there is no separate binary to keep in step with your code, and no state file
-to commit: what is managed is marked on the resources themselves, and `.infra/`
-is a disposable local record. Neither holds a secret. See
-`docs/persistence.md`.
+to commit: what is managed is marked on the resources themselves and read from
+the cloud on every run, and nothing is stored locally. `dump` writes what a run
+sees, without secret values. See `docs/persistence.md`.
 
 ### Starting from nothing
 
@@ -193,11 +193,12 @@ keychain / environment-variable chain it tries, in that order.
 
 ```sh
 lake exe infra check            # offline self-checks (default, no cloud)
-lake exe infra refresh          # observe both clouds, cache to .infra/
 lake exe infra plan             # show what would change, no changes made
 lake exe infra plan --destroy   # show what tearing the fleet down would delete
 lake exe infra apply            # actually reconcile
-lake exe infra destroy          # delete everything the fleet declares
+lake exe infra apply --force    # reconcile even if that destroys most of the fleet
+lake exe infra destroy          # delete everything carrying the fleet's marker
+lake exe infra dump [FILE]      # JSON snapshot of what the fleet sees, no secrets
 ```
 
 **Deleting a resource from the declaration destroys it.** A resource is yours
@@ -213,10 +214,15 @@ configure (`namePrefix`, plus `namePrefixes` when a fleet's untaggable resources
 were not all named under one). A resource whose line you deleted is found by
 its marker — `plan` and `apply` ask the cloud for everything carrying this
 fleet's marker, in every region and kind the fleet's clouds offer — so deleting
-a line destroys the resource from any machine, a fresh CI runner included; the
-ledger is never needed for it. And the rule runs the other way too: only a
-resource carrying the marker is ever changed or destroyed, so a declared name
-held by something else is warned about and left alone. Saying
+a line destroys the resource from any machine, a fresh CI runner included;
+nothing local is consulted, because nothing local is kept. And the rule runs
+the other way too: only a resource carrying the marker is ever changed or
+destroyed, so a declared name held by something else is foreign — its changes
+are dropped with a warning. Destroying an *undeclared* resource asks more: a
+marker naming this fleet. One carrying the old unnamed value `true` is warned
+about and never destroyed, and a fleet without a `fleetName` destroys nothing
+undeclared by tag, since it cannot tell its own from another fleet's (the
+name-prefix rung still works). Saying
 `.absent` within the declaration does the same thing; `destroy` is `apply`
 against an empty declaration. All three end at the same call, and deletions
 run in the reverse of creation order so a resource goes before whatever it
@@ -225,12 +231,15 @@ depends on.
 Nothing about that needs committing, which is deliberate: membership is a
 consequence of applying, not a statement of intent, so CI never has to write
 back to your branch. `Infra/Core/Ownership.lean` records the reasoning, and
-which way each rule fails. The ledger is a local cache of the decision, not the
-decision itself, and nothing depends on it. The cases that can still strand
-an orphan are enumerated in `docs/coverage.md`: a resource on the name rung in
-a fleet that has set no `namePrefix` (there is no marker on it), a Scaleway
-queue once the fleet declares none (listing queues there mints a credential),
-and anything on a cloud the declaration no longer names at all.
+which way each rule fails. `dump` writes what a run sees — every resource with
+its ownership evidence and observed state, the undeclared ones the next apply
+destroys, the foreign ones, the warnings, never a secret value — and the same
+JSON replays as in-memory backends for tests. It is a record, never an input.
+The cases that can still strand an orphan are enumerated in
+`docs/coverage.md`: a resource on the name rung in a fleet that has set no
+`namePrefix` (there is no marker on it), and anything on a cloud the
+declaration no longer names at all — that cloud is not scanned, so retire it
+with `destroy` before removing it.
 
 To stop managing something *without* destroying it, say so:
 
@@ -238,13 +247,16 @@ To stop managing something *without* destroying it, say so:
 forget scaleway queues "old-queue"
 ```
 
-which drops its ledger row and leaves the cloud alone. It is checked: a
-`forget` for something the fleet still declares does not compile.
+which the scan skips, leaving the resource alone. It is checked: a `forget`
+for something the fleet still declares does not compile. The resource keeps its
+marker, so the `forget` line has to stay for as long as the resource exists.
+For `postgresMigrations` a delete is already a forget: it prints FORGET and
+touches nothing.
 
-Resources you never declared are untouched throughout. They have no ledger
-row, so nothing here can name them.
+Resources you never marked are untouched throughout. They carry no marker of
+this fleet's, so nothing here can claim them.
 
-`plan` never touches a cloud. Treat `apply` like you would `terraform apply`:
+`plan` never changes a cloud. Treat `apply` like you would `terraform apply`:
 read the plan first. Output is coloured by verb when stdout is a terminal —
 green to create, yellow to update, magenta to replace, red to delete — and
 plain when piped, so a redirect or a CI step summary stays free of escape

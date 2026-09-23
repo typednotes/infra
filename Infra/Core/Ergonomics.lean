@@ -109,8 +109,7 @@ def namesNodup : List String → Bool
     needed — see `docs/diff-semantics.md`.
 
     `.named names` gives the pair a `NamedKey names`. `names` must be duplicate-free: two equal
-    names would let `Keys.name` map two distinct keys to the same on-disk cache string (see
-    `docs/persistence.md`), so the check is a decidable side-condition on the constructor rather
+    names would let `Keys.name` map two distinct keys to the same cloud-side name, so the check is a decidable side-condition on the constructor rather
     than skippable. -/
 inductive KeySpec where
   | unused

@@ -93,7 +93,7 @@ the URLs for a public repository at a ref:
 migrations := github "typednotes/ledger" "v0.2.0" ["sql/0001_init.sql"]
 ```
 
-`Infra.Cli.run` fetches every URL before `plan`, `apply` and `refresh`
+`Infra.Cli.run` fetches every URL before `plan` and `apply`
 (`fetchMigrationSources`, then `withFetchedSources`), and `Engine.push`
 refuses a plan that still holds an unfetched one. `check` stays offline: it
 prints the plan with a labelled stand-in and says which sources it did not
@@ -164,8 +164,10 @@ cannot collide and the history table is not large.
 This is the edge the whole design stands or falls on, and it is named first
 because of the 2026-09-10 incident: `destroy.yml` reconciles against an empty
 declaration, every resource flips to `absent`, and `delete` is called on each.
-For this kind, `delete` must **do nothing to the schema** — drop the ledger
-row, print `FORGET` (not `DELETE`) — and say so in the plan output. The tables
+For this kind, `delete` must **do nothing to the schema** — print `FORGET`
+(not `DELETE`) and touch nothing else — and say so in the plan output. (Until
+0.16.0 it also dropped a ledger row; there is no local record any more, so it
+now simply does nothing.) The tables
 themselves die with the `postgres` resource's own deletion, which is the
 correct teardown: the schema's lifetime is the database's, not the
 declaration's.
@@ -211,8 +213,8 @@ kind needs the connection string, so one of two things has to give:
   The obvious refinement — mint an *ephemeral* key at refresh instead
   (`CreateAPIKey` accepts an `expires_at`; verified against the IAM API
   reference, 2026-09-23), read, delete — was considered and rejected. It
-  preserves the secret invariant's letter by breaking a bigger one: plan and
-  refresh are read-only ("plan pulls live state and prints what would change,
+  preserves the secret invariant's letter by breaking a bigger one: plan is
+  read-only ("plan pulls live state and prints what would change,
   but change nothing" — `typednotes-infra`'s README). The CI token behind
   `plan.yml`, which runs a live plan on every push to `main`, would need
   API-key-minting rights, and per the same IAM reference, *"access management
@@ -222,6 +224,11 @@ kind needs the connection string, so one of two things has to give:
   database traded for project-wide key minting, held by the most exposed
   credential in the fleet, plus orphaned keys on crash and quota churn: a
   worse trade on every axis.
+
+(These options were argued when a `refresh` command wrote observed state to a
+cache under `.infra/`; both have since been removed. What shipped is (c)
+without the cache: every live pull — `plan`, `apply`, `dump` — reads the
+read-only secret directly. See `docs/persistence.md`.)
 
 The recommendation is **(c)** — (a)'s mechanics against a read-only
 credential — because plan-time review of schema changes is the point of the
@@ -239,13 +246,13 @@ If it cannot, the apply path issues
 either way.
 
 Operational note for the backend either way: a Serverless SQL Database sleeps
-when idle, so the refresh connection needs bounded wake-up retries, and a
-database that will not wake is a refresh error, not an empty result — an empty
+when idle, so the observing connection needs bounded wake-up retries, and a
+database that will not wake is an error, not an empty result — an empty
 `applied` read as "nothing applied" would propose re-running every migration.
 
 ### 3. Fresh fleets are unobservable at plan time
 
-On a first apply the database does not exist at refresh time, so there is
+On a first apply the database does not exist at plan time, so there is
 nothing to connect to. The kind answers "unobservable → would CREATE + would
 apply N migrations" rather than failing — the same posture `SecretSource.composed`
 takes toward values that only exist post-apply. The apply path re-observes
@@ -326,11 +333,12 @@ is a hole:
   this tool wrote, and its presence is the marker.
 - The resource is **subordinate**: its ownership verdict is its `database`
   reference's verdict. A migrations resource pointing at a database this fleet
-  does not own is `foreign` — never adopted, never touched — and the check is
+  does not own is `foreign` — never managed, never touched — and the check is
   the parent's, not a new mechanism.
 - `list` returns `[]`, deliberately and documented: "everything of this kind
   the credentials can see" is not enumerable without connecting to every
-  database the account holds, and `discover` cannot rebuild these ledger rows.
+  database the account holds, so the scan for undeclared resources
+  (`Engine.claimUndeclared`) skips the kind: there is nothing for it to find.
   This is safe *only because* delete is a no-op forget — the two properties
   are one design decision, and `docs/coverage.md` must carry them together,
   enumerated, not left to a catch-all.
@@ -350,7 +358,8 @@ is a hole:
 - **A new observed-state shape.** Derived `FromJson` rather than the
   `SecretsObserved` precedent's hand-written one: there is no legacy cache to
   load, this being a new kind, and the hand-written decoder is for caches
-  written before a field existed.
+  written before a field existed. (The cache has since been removed; the
+  encoding now serves `dump`.)
 - **The secret-read widening** (hard edge 2), recorded in
   `docs/diff-semantics.md`'s ledger.
 - **The ordering field**, on `scalewayContainer` (typed reference) and

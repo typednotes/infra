@@ -133,7 +133,7 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
 
     The `queueUrl` call is what establishes the queue is really there: without
     it this would happily report a name for a queue that does not exist, and
-    `discover` would write a ledger row for nothing. -/
+    the scan would claim — and `push` try to destroy — nothing. -/
 def readOwnershipByName (creds : Credentials) (ep : Endpoint) (name : String) :
     IO Evidence := do
   match ← (queueUrl creds ep name).toBaseIO with

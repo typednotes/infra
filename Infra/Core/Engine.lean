@@ -1,6 +1,4 @@
 import Infra.Core.Backend
-import Infra.Core.Persistence
-import Infra.Core.Ledger
 import Infra.Core.Ansi
 
 /-
@@ -13,31 +11,6 @@ namespace Infra.Core
 -- ══════════════════════════════════════════════════════════════
 -- Pull
 -- ══════════════════════════════════════════════════════════════
-
-/-- Where the two records live, and how to place a slot.
-
-    `cacheRoot` holds observations (`Persistence`), `ledgerRoot` holds
-    membership (`Ledger`). Both are optional so that the offline suite can
-    push against no storage at all; the CLI always supplies them.
-
-    `regionOf` is how a ledger row learns where its resource is. It has to be
-    recorded at apply time, because after the declaration that placed the
-    resource is deleted there is nothing left to derive it from, and
-    `Backends.backendFor` needs it to route the delete. -/
-structure Store (κ : Keys) where
-  /-- One root for both records. They are distinguished by filename
-      (`Ledger.path` vs `Persistence.statePath`), never by directory, so two
-      roots could only ever disagree. -/
-  root       : Option System.FilePath := none
-  /-- What the ledger already records. Membership, and the only source of it. -/
-  rows       : List Ledger.Row := []
-  /-- Names being released rather than destroyed. -/
-  forgets    : List (Released κ) := []
-  regionOf   : ProviderId → Kind → String → String := fun _ _ _ => ""
-  /-- The realm and exclusion legs of the ownership model (`Ownership.Boundary`).
-      Empty by default: no exclusions, no cutoff, so the marker alone decides
-      for any backend that reports one. -/
-  boundary   : Boundary := {}
 
 /-- Ask every backend to list every kind, and match what comes back to fleet
     keys by `Keys.name`.
@@ -52,11 +25,10 @@ structure Store (κ : Keys) where
     which is the safe direction, and it is the call this repo has actually
     exercised against real accounts for all fourteen kinds.
 
-    What listing no longer decides is *membership*. It used to: a listed
-    resource no fleet key claimed was dropped, which is what made deleting a
-    line abandon the resource. That question is now the ledger's
-    (`Infra.Core.Ledger`), and this function answers only "what is out there
-    right now". -/
+    This answers only "what does the declaration's name point at right now".
+    Which resources this fleet *manages* is a different question, answered by
+    their markers: `claimUndeclared` for the ones the declaration no longer
+    names, `foreignDeclared` for the declared names held by something else. -/
 def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
   let mut acc : List (Entry κ) := []
   for p in Finite.elems (α := ProviderId) do
@@ -85,7 +57,7 @@ def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
               --
               -- A resource can disappear between the listing and this read,
               -- and it is not an exotic case: every cloud's list API is
-              -- eventually consistent, so a `refresh` moments after a delete
+              -- eventually consistent, so a `plan` moments after a delete
               -- sees the deleted thing in the listing and then fails to read
               -- it. Treating that as "absent" is the truthful reading — it
               -- *is* absent — and the alternative was an aborted pull.
@@ -96,28 +68,15 @@ def pullEntries {κ : Keys} (bs : Backends) : IO (List (Entry κ)) := do
             | none   => pure ()
   return acc
 
-/-- Observe the world and cache it, keeping the entries.
-
-    Separate from `pull` because `push` needs the entries and not just the
-    `World` built from them: a `World` is a function, so it cannot be
-    enumerated back into the list `runAction` threads forward. Without this
-    the CLI pulled once for the plan and `push` pulled again for the apply,
-    reading every declared resource twice per invocation. -/
-def observe {κ : Keys} (root : System.FilePath) (bs : Backends) :
-    IO (List (Entry κ)) := do
-  let es ← pullEntries (κ := κ) bs
-  Persistence.save root (es.map Entry.cached)
-  return es
-
-/-- Observe the world and cache it. -/
-def pull {κ : Keys} (root : System.FilePath) (bs : Backends) : IO (World κ) :=
-  worldOf <$> observe root bs
+/-- Observe the world. Nothing is written anywhere: see `Infra.Cli`'s `dump`
+    for a snapshot on disk. -/
+def pull {κ : Keys} (bs : Backends) : IO (World κ) :=
+  worldOf <$> pullEntries bs
 
 /-- What would have to change for the world to realise the target. Pure: it
     decides, it does not act. -/
-def plan {κ : Keys} (T : Plan κ) (W : World κ)
-    (ledger : List Ledger.Row := []) (forgets : List (Released κ) := []) :
-    List (Action κ) := actions T W ledger forgets
+def plan {κ : Keys} (T : Plan κ) (W : World κ) (orphans : List Orphan := []) :
+    List (Action κ) := actions T W orphans
 
 /-! ## Which physical thing a listing shows
 
@@ -142,26 +101,21 @@ def physicalClass (p : ProviderId) : Kind → String
 #guard physicalClass .aws .compute != physicalClass .aws .scalewayContainer
 #guard physicalClass .scaleway .scalewayContainer != physicalClass .scaleway .scalewayContainerNamespace
 
-/-- Whether `claimUndeclared` lists kind `k` on cloud `p` even when the
-    declaration has nothing of that kind there — which is what lets removing
-    the *last* resource of a kind destroy it.
+/-- Whether a kind has anything on cloud `p` for `claimUndeclared` to find.
 
-    Every pair where the kind exists and listing it is a plain read, except,
-    enumerated rather than left to a catch-all:
+    Not a list of exemptions — the two facts that make a `(cloud, kind)` pair
+    empty by construction:
 
-    * `postgresMigrations` — its listing is route-driven (only declared
-      histories can be named, `Kinds.Migrations.list`), and its delete is a
-      ledger-only FORGET that touches no cloud, so there is nothing to find
-      and nothing to destroy.
-    * `queues` **on Scaleway** — listing mints an SQS credential
-      (`Scaleway.Sqs`), and `plan` must not change the account. Scanned only
-      while the fleet declares a Scaleway queue (it mints one anyway then); a
-      fleet that removes its *last* Scaleway queue leaves it standing — the
-      one known gap in this principle, stated in `docs/coverage.md`.
-    * the provider-local kinds off their own cloud, where they do not exist. -/
+    * a provider-local kind exists only on its own cloud;
+    * `postgresMigrations` is rows in a database, not a cloud object: its
+      listing can only name declared histories, and its delete is a FORGET
+      that touches nothing.
+
+    Every other pair is listed, including kinds the declaration no longer has
+    anything of — which is where the last resource of a kind, just removed,
+    has to be found. -/
 def scannableUndeclared (p : ProviderId) : Kind → Bool
   | .postgresMigrations => false
-  | .queues => p != .scaleway
   | .s3Bucket | .securityGroup | .awsInstance => p == .aws
   | .scalewayFunctionNamespace | .scalewayFunction
   | .scalewayContainerNamespace | .scalewayContainer => p == .scaleway
@@ -175,35 +129,32 @@ def declaredPhysically (κ : Keys) (p : ProviderId) (cls name : String) : Bool :
     physicalClass p k == cls &&
       (Finite.elems (α := κ.Key p k)).any fun key => κ.name p k key == name
 
-/-- What discovery found: rows for undeclared resources this fleet owns, and
-    the warnings for what it saw but may not claim. -/
+/-- What discovery found: the undeclared resources this fleet owns, and the
+    warnings for what it saw but may not claim. -/
 structure Discovered where
-  rows     : List Ledger.Row := []
+  orphans  : List Orphan := []
   warnings : List String := []
 
 /-- **Every resource marked as this fleet's that the declaration does not name,
-    found by asking the cloud — not the ledger.**
+    found by asking the cloud.**
 
-    This is what makes deleting a line destroy the resource on any machine,
-    including a CI runner that starts with no `.infra/` at all. The ledger is a
-    cache: it can be absent, stale or wrong, and none of that may decide what
-    exists and is managed. The marker decides (`claimsUndeclared`): a tag or
-    description carrying this fleet's name, or the name prefix for the kinds
-    that carry nothing.
+    This is what makes deleting a line destroy the resource, on any machine:
+    there is no local record of what a fleet manages, only the markers on the
+    resources themselves (`claimsUndeclared`) — a tag or description carrying
+    this fleet's name, or the name prefix for the kinds that carry nothing.
 
     Scope: every region the fleet uses on every cloud it uses (`scanners`),
     and every kind `scannableUndeclared` allows there, plus every kind the
-    declaration names. A resource already in `existing` (the ledger), named in
-    a `forget`, or declared under any kind of its physical class is skipped —
-    the first is already managed, the other two are not orphans. One row per
+    declaration names. A resource named in a `forget`, or declared under any
+    kind of its physical class, is not an orphan and is skipped. One orphan per
     physical resource, however many kinds list it.
 
     A resource that reads as ours only through the grandfathered marker is not
     claimed, and is warned about by name: which fleet it belongs to cannot be
     told, so destroying it is not this fleet's call. -/
 def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
-    (forgets : List (Released κ)) (existing : List Ledger.Row) : IO Discovered := do
-  let mut found : List (String × Ledger.Row) := []   -- (physical class, row)
+    (forgets : List (Released κ)) : IO Discovered := do
+  let mut found : List (String × Orphan) := []   -- (physical class, orphan)
   let mut warnings : List String := []
   for p in κ.providers do
     for (code, b) in bs.scanners p do
@@ -219,63 +170,20 @@ def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
             q == p && physicalClass q k' == cls && n == nm
           if declaredPhysically κ p cls nm
               || forgets.any (fun r => sameThing r.cloud r.kind r.name)
-              || existing.any (fun r => sameThing r.cloud r.kind r.name)
               || found.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm) then
             continue
           let evidence ← b.ownershipInfo k handle
           if claimsUndeclared boundary p k nm evidence then
             found := found ++ [(cls, { cloud := p, kind := k, name := nm, region := code })]
           else if (ownershipOf boundary p k nm evidence).isOurs then
-            warnings := warnings ++ [s!"warning: {Ledger.slotId p k nm} is not declared and \
-carries the grandfathered '{markerKey}={legacyMarkerValue}' marker, which cannot say which fleet \
-it belongs to — so it is not destroyed. Retag it with this fleet's name to have it removed, or \
-`forget` it."]
-  return { rows := found.map (·.2), warnings }
-
-/-- Rebuild the ledger from what the account itself says is ours, for every
-    `(provider, kind)` this fleet's key family names and whose backend can
-    report a marker for (`Backend.ownershipInfo`).
-
-    This is the ledger's cache nature made concrete: `discover` throws away no
-    information that cannot be recomputed, because everything it writes was
-    read straight back off the resource's own marker. A kind whose backend
-    cannot read one (`ownershipInfo` answers `.unreadable`) is left exactly as
-    `existing` already had it — `discover` only replaces rows it can actually
-    verify, it never guesses for the rest. A kind on the *name* rung is
-    rebuilt like any other: `Boundary.namePrefix` is the marker there, and
-    `ownershipOf` weighs it the same way. Scoped to the
-    regions `listers` already knows about, the same limitation `pullEntries`
-    accepts: a fleet cannot discover resources placed somewhere it declares
-    nothing. -/
-def discover {κ : Keys} (bs : Backends) (boundary : Boundary)
-    (regionOf : ProviderId → Kind → String → String)
-    (existing : List Ledger.Row) : IO (List Ledger.Row) := do
-  let mut rows := existing
-  for p in Finite.elems (α := ProviderId) do
-    for k in Finite.elems (α := Kind) do
-      if (Finite.elems (α := κ.Key p k)).isEmpty then
-        continue
-      for (b, here) in bs.listers p k do
-        let observed ← b.list k
-        for o in observed do
-          let handle := observedHandle k o
-          let nm := handle.raw
-          -- The same physical thing declared under another kind (a container
-          -- declared as `scalewayContainer`, listed here as `compute`) is not
-          -- a resource of *this* kind, and recording it as one would make it
-          -- an orphan. See `physicalClass`.
-          let declaredElsewhere := (Finite.elems (α := Kind)).any fun k' =>
-            k' != k && physicalClass p k' == physicalClass p k &&
-              (Finite.elems (α := κ.Key p k')).any fun key => κ.name p k' key == nm
-          if here nm && !declaredElsewhere then
-            match ← b.ownershipInfo k handle with
-            | .unreadable => pure ()
-            | evidence =>
-              rows := rows.filter fun r => !Ledger.Row.isAt r p k nm
-              if (ownershipOf boundary p k nm evidence).isOurs then
-                rows := { cloud := p, kind := k, name := nm
-                          region := regionOf p k nm } :: rows
-  return rows
+            let why := match boundary.fleetName with
+              | none   => s!"this fleet does not name itself (`Boundary.fleetName`), so its \
+'{markerKey}' marker cannot say the resource is this fleet's rather than another's"
+              | some _ => s!"it carries the grandfathered '{markerKey}={legacyMarkerValue}' \
+marker, which cannot say which fleet it belongs to"
+            warnings := warnings ++ [s!"warning: {slotId p k nm} is not declared, but {why} \
+— so it is not destroyed. Name the fleet (and let it retag what it manages), or `forget` it."]
+  return { orphans := found.map (·.2), warnings }
 
 -- ══════════════════════════════════════════════════════════════
 -- Ordering
@@ -289,24 +197,21 @@ def Action.verb {κ : Keys} : Action κ → String
   -- schema's lifetime is the database's, not the declaration's, so removing
   -- the line releases the rows from management and destroys nothing. The
   -- plan must not read as if it did. See `docs/migrations.md`, hard edge 1.
-  | .delete p k _ => if k == .postgresMigrations then "FORGET" else "DELETE"
-  | .deleteOrphan p k _ _ => if k == .postgresMigrations then "FORGET" else "DELETE"
-  | .forget ..  => "FORGET"
+  | .delete _ k _ => if k == .postgresMigrations then "FORGET" else "DELETE"
+  | .deleteOrphan _ k _ _ => if k == .postgresMigrations then "FORGET" else "DELETE"
 
 /-- Whether this action removes a resource. Deletions are ordered against the
     transpose of the creation graph. -/
 def Action.isDestructive {κ : Keys} : Action κ → Bool
   | .delete ..       => true
   | .deleteOrphan .. => true
-  -- `forget` touches the ledger and never the cloud, so it is not destructive
-  -- and must not be ordered against the teardown graph.
   | _                => false
 
 /-- The slot an action points at. Identical for an orphan and for a declared
     resource, so a plan reads the same whether something was dropped from the
     declaration or told to be absent within it. -/
 def Action.slot {κ : Keys} (a : Action κ) : String :=
-  let (p, k, nm) := a.address; Ledger.slotId p k nm
+  let (p, k, nm) := a.address; slotId p k nm
 
 /-- A human-readable line for a plan. -/
 def Action.render {κ : Keys} (a : Action κ) : String := s!"{a.verb} {a.slot}"
@@ -319,10 +224,9 @@ def Action.colour {κ : Keys} : Action κ → String
   | .create ..  => Ansi.green
   | .update ..  => Ansi.yellow
   | .replace .. => Ansi.magenta
-  | .delete p k _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
-  | .deleteOrphan p k _ _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
-  -- Blue: it changes what is managed, not what exists.
-  | .forget ..  => Ansi.blue
+  -- Blue for a history's FORGET: it touches no cloud.
+  | .delete _ k _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
+  | .deleteOrphan _ k _ _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
 
 /-- `render`, with the verb coloured. Identical to `render` when `colour` is
     off, which is what keeps a rendered plan matchable as plain text. -/
@@ -363,11 +267,11 @@ def impliedByName {κ : Keys} (p : ProviderId) :
   | .secrets, s =>
     match s.valueFrom.asLit with
     | some (.apiKeyFor identity) =>
-      if identity.isEmpty then [] else [Ledger.slotId p .iam identity]
+      if identity.isEmpty then [] else [slotId p .iam identity]
     | _ => []
   | .postgres, s =>
     match s.masterPasswordSecret.asLit with
-    | some nm => if nm.isEmpty then [] else [Ledger.slotId p .secrets nm]
+    | some nm => if nm.isEmpty then [] else [slotId p .secrets nm]
     | none    => []
   -- Three name-borne edges: the parent database, and the two URL secrets.
   -- Same-cloud on purpose — the read-only and read-write identities are
@@ -381,9 +285,9 @@ def impliedByName {κ : Keys} (p : ProviderId) :
   | .postgresMigrations, s =>
     match s.database.asLit, s.connectionSecret.asLit, s.observerSecret.asLit with
     | some db, some cs, some os =>
-        (if db.isEmpty then [] else [Ledger.slotId p .postgres db])
-        ++ (if cs.isEmpty then [] else [Ledger.slotId p .secrets cs])
-        ++ (if os.isEmpty then [] else [Ledger.slotId p .secrets os])
+        (if db.isEmpty then [] else [slotId p .postgres db])
+        ++ (if cs.isEmpty then [] else [slotId p .secrets cs])
+        ++ (if os.isEmpty then [] else [slotId p .secrets os])
     | _, _, _ => []
   -- The rollout-ordering edges: a compute waits for every migration set its
   -- `migrations` field names. An empty name constrains nothing.
@@ -391,7 +295,7 @@ def impliedByName {κ : Keys} (p : ProviderId) :
     match s.migrations with
     | .known e => match e.asLit with
       | some nms => nms.filterMap fun nm =>
-          if nm.isEmpty then none else some (Ledger.slotId p .postgresMigrations nm)
+          if nm.isEmpty then none else some (slotId p .postgresMigrations nm)
       | none     => []
     | .unknown => []
   | _, _ => []
@@ -404,11 +308,11 @@ private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
     -- The `Need` tag is ignored here: a handle and a value are the same edge
     -- as far as ordering goes.
     (((hasDepsOf k).deps authored).map fun d =>
-      Ledger.slotId d.provider d.kind (κ.name d.provider d.kind d.key))
+      slotId d.provider d.kind (κ.name d.provider d.kind d.key))
     ++ impliedByName p k authored
     -- A history follows the histories whose tables its SQL references.
     ++ (if k == .postgresMigrations then
-          (T.historyDeps p (κ.name p k key)).map (Ledger.slotId p .postgresMigrations)
+          (T.historyDeps p (κ.name p k key)).map (slotId p .postgresMigrations)
         else [])
   | _ => []
 
@@ -434,12 +338,9 @@ private def stepOf {κ : Keys} (T : Plan κ) : Action κ → Step κ
   --
   -- The consequence is worth naming: if an orphaned instance still references
   -- an orphaned security group, nothing here knows, and AWS will refuse the
-  -- group's delete with `DependencyViolation` until the instance is gone. The
-  -- ledger records names and regions, not references. Recording edges too
-  -- would make it a second copy of the declaration.
+  -- group's delete with `DependencyViolation` until the instance is gone —
+  -- which is why `push` retries a refused orphan delete after the rest.
   | a@(.deleteOrphan ..) => { action := a, id := a.slot, after := [] }
-  -- Touches the ledger, never a provider, so it depends on nothing.
-  | a@(.forget ..)       => { action := a, id := a.slot, after := [] }
 
 /-- Kahn's algorithm, bounded by the number of steps.
 
@@ -508,11 +409,10 @@ structure PushOptions where
       Off by default, and the reason is a documented accident rather than
       caution for its own sake: HashiCorp deprecated `terraform refresh`
       because misconfigured credentials could make it read every managed
-      object as deleted and then destroy them all without asking. Membership
-      here comes from the ledger and existence from a per-name `read`, which
-      is the same shape, so it needs the same brake. A plan that removes most
-      of the ledger is either a real teardown, in which case `destroy` says so
-      explicitly, or something is wrong with the credentials. -/
+      object as deleted and then destroy them all without asking. A plan that
+      destroys most of what this fleet manages is either a real teardown, in
+      which case `destroy` says so explicitly, or something is wrong with the
+      credentials or the declaration. -/
   force : Bool := false
   /-- Colour the rendered lines. **Off by default**, deliberately: every
       existing caller — including `infra check`, which matches rendered lines
@@ -549,8 +449,8 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
       let nm := κ.name d.provider d.kind d.key
       unless (world.sighting d.provider d.kind d.key).isSome do
         throw (IO.userError
-          s!"{Ledger.slotId p k (κ.name p k key)}: needs the value of \
-{Ledger.slotId d.provider d.kind nm}, which does not exist yet")
+          s!"{slotId p k (κ.name p k key)}: needs the value of \
+{slotId d.provider d.kind nm}, which does not exist yet")
       -- Deduplicated: a spec naming one secret twice would otherwise pay for
       -- two plaintext reads, which is the most expensive call to repeat.
       unless values.any (fun v => v.1 == d.provider && v.2.1 == nm) do
@@ -562,8 +462,8 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
     match settleSpec k env authored with
     | some spec => return spec
     | none => throw (IO.userError
-        s!"{Ledger.slotId p k (κ.name p k key)}: a referenced resource does not exist yet")
-  | _ => throw (IO.userError s!"{Ledger.slotId p k (κ.name p k key)}: nothing to apply")
+        s!"{slotId p k (κ.name p k key)}: a referenced resource does not exist yet")
+  | _ => throw (IO.userError s!"{slotId p k (κ.name p k key)}: nothing to apply")
 
 /-- Record what a mutation produced, so later steps can reference it. -/
 private def remember {κ : Keys} (bs : Backends) (entries : List (Entry κ))
@@ -601,17 +501,17 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     (entries : List (Entry κ)) : Action κ → IO (List (Entry κ))
   -- Every mutation goes to the slot's *own* backend, which for a fleet in one
   -- region per cloud is the cloud's only one.
-  | .create p k key => inContext s!"CREATE {Ledger.slotId p k (κ.name p k key)}" do
+  | .create p k key => inContext s!"CREATE {slotId p k (κ.name p k key)}" do
     let o ← (bs.backendFor p k (κ.name p k key)).create k (← settleFor T bs entries p k key)
     remember bs entries p k key o
-  | .update p k key => inContext s!"UPDATE {Ledger.slotId p k (κ.name p k key)}" do
+  | .update p k key => inContext s!"UPDATE {slotId p k (κ.name p k key)}" do
     match (worldOf entries).sighting p k key with
     | some seen =>
       let o ← (bs.backendFor p k (κ.name p k key)).update k (observedHandle k seen.observed)
         (← settleFor T bs entries p k key)
       remember bs entries p k key o
-    | none => throw (IO.userError s!"{Ledger.slotId p k (κ.name p k key)}: vanished before update")
-  | .replace p k key => inContext s!"REPLACE {Ledger.slotId p k (κ.name p k key)}" do
+    | none => throw (IO.userError s!"{slotId p k (κ.name p k key)}: vanished before update")
+  | .replace p k key => inContext s!"REPLACE {slotId p k (κ.name p k key)}" do
     -- Destroy then create: the key survives, the handle does not.
     match (worldOf entries).sighting p k key with
     | some seen => (bs.backendFor p k (κ.name p k key)).delete k (observedHandle k seen.observed)
@@ -624,104 +524,47 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
   -- case and `deleteOrphan` below the same operation. Two spellings of one
   -- delete is exactly the shape that let `S3BucketSpec.region` disagree with
   -- the placement, so there is one.
-  | .delete p k key => inContext s!"{Action.verb (.delete p k key)} {Ledger.slotId p k (κ.name p k key)}" do
+  | .delete p k key => inContext s!"{Action.verb (.delete p k key)} {slotId p k (κ.name p k key)}" do
     let nm := κ.name p k key
     (bs.backendFor p k nm).delete k ⟨nm⟩
     return entries
-  -- The same call, for a resource whose declaration is gone, so `destroy` and
-  -- "deleted every line, then applied" end in the same place. Routed on the
-  -- region the *ledger* recorded: `backendFor` resolves a region by looking
+  -- The same call, for a resource the declaration does not name, so `destroy`
+  -- and "deleted every line, then applied" end in the same place. Routed on
+  -- the region it was *found* in: `backendFor` resolves a region by looking
   -- the name up in the placement table, and an orphan is precisely a name that
-  -- table no longer contains, so it would fall back to the wrong endpoint for
-  -- anything placed outside the credentials' own region.
+  -- table does not contain.
   | .deleteOrphan p k nm region =>
-    inContext s!"{Action.verb ((.deleteOrphan p k nm region : Action κ))} {Ledger.slotId p k nm}" do
+    inContext s!"{Action.verb ((.deleteOrphan p k nm region : Action κ))} {slotId p k nm}" do
     (bs.backendAt p region).delete k ⟨nm⟩
     return entries
-  -- Nothing is called. The row is dropped from the ledger by `push`, which is
-  -- the only thing a forget does.
-  | .forget .. => return entries
 
-/-- The ledger after one action has succeeded.
-
-    Membership changes on exactly four events: something was created (it is
-    mine now), something was destroyed (it is not), something was forgotten
-    (it is not, and it still exists), and an update or replace of something
-    already recorded (no change, but recording it is what repairs a ledger
-    that lost a row). -/
-private def rowsAfter {κ : Keys} (store : Store κ) (rows : List Ledger.Row)
-    (a : Action κ) : List Ledger.Row :=
-  let (p, k, nm) := a.address (κ := κ)
-  let without := rows.filter fun r => !Ledger.Row.isAt r p k nm
-  match a with
-  -- Recorded, and re-recorded rather than left alone, so that an `update`
-  -- repairs a row whose region went stale.
-  | .create .. | .update .. | .replace .. =>
-    { cloud := p, kind := k, name := nm, region := store.regionOf p k nm } :: without
-  -- Destroyed, or released. Either way it is no longer ours.
-  | .delete .. | .deleteOrphan .. | .forget .. => without
-
-/-- What one action left behind: the resources seen so far, the ledger rows,
-    and the log lines, threaded from action to action.
-
-    A record rather than three mutable locals, because `push` now runs an
-    action from two places — the main pass and the retry rounds for refused
-    orphan deletions — and "run it, then persist what it did" must be one
-    piece of code in both. -/
+/-- What one action left behind: the resources seen so far and the log lines,
+    threaded from action to action — from two places, the main pass and the
+    retry rounds for refused orphan deletions. -/
 private structure Progress (κ : Keys) where
   entries : List (Entry κ)
-  rows    : List Ledger.Row
   log     : List String
 
-/-- Run one action and record what it did. -/
-private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (store : Store κ)
+/-- Run one action.
+
+    An orphan's delete re-checks its marker first, at the moment of deleting:
+    the scan that found it ran before the plan, and deleting is the one step
+    that cannot be taken back. The check is `claimsUndeclared`, the same one
+    the scan used, so nothing is deleted here that the scan would not have
+    claimed. A history's delete is a FORGET that touches no cloud, so there is
+    nothing to protect and no check. -/
+private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (boundary : Boundary)
     (opts : PushOptions) (st : Progress κ) (a : Action κ) : IO (Progress κ) := do
-  -- The ledger is a cache, never authority — see the 2026-09-10 incident in
-  -- `AGENTS.md`. A `deleteOrphan` fires because a line left the declaration;
-  -- before deleting anything, re-check the marker rather than trusting a
-  -- ledger row that might be stale, wrong, or (for a kind this backend was
-  -- never taught to mark) was never actually verified in the first place. A
-  -- backend that cannot read one (`.unreadable`) refuses the deletion rather
-  -- than falling back to the ledger's say-so, for the same reason the
-  -- adoption loop above refuses to *claim* such a resource: trusting the
-  -- ledger alone is exactly the naming-only rule that caused the incident.
   match a with
   | .deleteOrphan p k nm region =>
-    -- The one kind whose delete is a ledger-only FORGET skips the ownership
-    -- re-check — not as an exemption from the rule but because the rule has
-    -- nothing to protect here: `delete` for `.postgresMigrations` touches no
-    -- cloud, so a wrong ledger row cannot destroy anyone else's resource.
-    -- Every kind whose delete *does* reach a cloud still pays the check.
     unless k == .postgresMigrations do
-      match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
-      | .unreadable =>
-        throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but this \
-backend cannot read a marker for this kind to verify it; refusing to delete on the ledger's \
-say-so alone. If it really is gone, or was never mine, `forget` it instead of applying — see \
-AGENTS.md's \"no half-implemented features\" rule.")
-      | evidence =>
-        let verdict := ownershipOf store.boundary p k nm evidence
-        unless verdict.isOurs do
-          throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but it is \
-{describeVerdict store.boundary evidence verdict}; refusing to delete a resource that might not \
-be mine. If it really is gone, or was never mine, `forget` it instead of applying.")
+      let evidence ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩
+      unless claimsUndeclared boundary p k nm evidence do
+        throw (IO.userError s!"{slotId p k nm}: no longer carries this fleet's marker; \
+refusing to delete it")
   | _ => pure ()
   let entries ← runAction bs T st.entries a
-  -- Written after *every* action, not once at the end. An apply that fails
-  -- halfway has still created things, and a created resource missing from
-  -- the ledger is an orphan nothing can name.
-  let rows := rowsAfter store st.rows a
-  -- But only when something changed. `runAction` returns `entries`
-  -- untouched for every deletion, and `rowsAfter` returns `rows` untouched
-  -- when it re-records something already recorded, so a teardown of N
-  -- resources would otherwise rewrite both records N times with identical
-  -- bytes — and `Persistence.save` is a whole-world writer that visits all
-  -- 45 `(provider, kind)` pairs on each call.
-  if let some root := store.root then
-    unless rows == st.rows do Ledger.save root rows
-    unless entries.length == st.entries.length do
-      Persistence.save root (entries.map Entry.cached)
-  return { entries := entries, rows := rows
+  return { entries
            log := s!"{a.renderStyled opts.colour} \
 {Ansi.style opts.colour Ansi.green "... ok"}" :: st.log }
 
@@ -732,8 +575,8 @@ be mine. If it really is gone, or was never mine, `forget` it instead of applyin
     destroyed only if it carries this fleet's marker, whatever the
     declaration says about it. Before 0.15.0 only an orphan's delete checked
     (`runStep`); an `update`, a `replace`, or a `destroy` of a *declared* name
-    ran against whatever held that name — while the adoption warning told the
-    reader such a resource "will not be created, changed or destroyed". Now it
+    ran against whatever held that name — while the (then) adoption warning
+    told the reader such a resource "will not be created, changed or destroyed". Now it
     will not be: `push` drops those actions, on the plan path too, so a plan
     never shows work it will refuse.
 
@@ -741,7 +584,7 @@ be mine. If it really is gone, or was never mine, `forget` it instead of applyin
     only means this fleet manages less than it declares (and says so), while
     guessing could destroy someone else's resource. `unmanaged` keys are not
     asked about: they are "not my business". -/
-private def foreignDeclared {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
+def foreignDeclared {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     (boundary : Boundary) : IO (List (String × String)) := do
   let mut out : List (String × String) := []
   for p in Finite.elems (α := ProviderId) do
@@ -752,7 +595,7 @@ private def foreignDeclared {κ : Keys} (bs : Backends) (T : Plan κ) (W : World
         | _, none       => pure ()
         | _, some sighting =>
           let nm := κ.name p k key
-          let slot := Ledger.slotId p k nm
+          let slot := slotId p k nm
           match ← (bs.backendFor p k nm).ownershipInfo k (observedHandle k sighting.observed) with
           | .unreadable =>
             out := out ++ [(slot, "of a kind whose marker this backend cannot read, so its \
@@ -769,8 +612,9 @@ ownership cannot be verified")]
     have been. A dry run performs no backend IO at all: it does not skip the
     writes, it never reaches them. -/
 def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
-    (opts : PushOptions := {}) (edges : Plan κ := T) (store : Store κ := {})
-    (seen : Option (List (Entry κ)) := none) : IO (List String) := do
+    (opts : PushOptions := {}) (edges : Plan κ := T) (orphans : List Orphan := [])
+    (boundary : Boundary := {}) (seen : Option (List (Entry κ)) := none) :
+    IO (List String) := do
   -- The migrations contract, refused before any action is derived — so a
   -- plan shows the refusal exactly where it would have shown the work, and
   -- an apply never reaches the backend's own third check. Runs on the
@@ -787,14 +631,14 @@ a caller that builds its own backends must do the same (`Infra.Cli.fetchMigratio
     throw (IO.userError msg)
   if let some msg := T.migrationsAppendOnly W then
     throw (IO.userError msg)
-  let work ← match orderActions T (plan T W store.rows store.forgets) edges with
+  let work ← match orderActions T (plan T W orphans) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
   -- Only resources carrying this fleet's marker are changed or destroyed —
   -- see `foreignDeclared`. Said out loud per resource, on every run: the
   -- state it describes (declared, existing, and not ours) is otherwise
   -- invisible — no action, no plan line.
-  let foreign ← foreignDeclared bs T W store.boundary
+  let foreign ← foreignDeclared bs T W boundary
   for (slot, why) in foreign do
     IO.eprintln s!"warning: {slot} is declared and exists, but is {why}. It will not be \
 changed or destroyed by this fleet, which therefore manages less than it declares. Either \
@@ -803,36 +647,15 @@ exclude it deliberately, or delete it and let this fleet create it — see docs/
     match a with
     | .update .. | .replace .. | .delete .. => !foreign.any (·.1 == a.slot)
     | _ => true
-  -- A dry run returns here and writes nothing. An *apply* deliberately does
-  -- not return early on an empty work-list: it still has to record what it
-  -- claims. See the adoption block below — a fully converged fleet has nothing
-  -- to do and everything to adopt, and that is the commonest case of all.
+  -- A dry run returns here and writes nothing. An apply has nothing to record
+  -- — membership is the markers, written at create — so an empty work-list
+  -- is simply "nothing to do", below the brake.
   if !opts.apply then
     if work.isEmpty then
       return [Ansi.style opts.colour Ansi.dim "nothing to do"]
     return (work.map fun a =>
         Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
       [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
-  -- No cloud, no apply. A ledger row this fleet cannot reach is not something
-  -- to be quietly reconciled: every backend method would answer as if the
-  -- account were empty, so the row would be dropped and the resource left
-  -- standing and billing. Checked here, before any action runs, rather than
-  -- left to fail at the first call — the calls do not fail, that is the whole
-  -- problem.
-  --
-  -- Narrow by construction: it fires only on a backend that says it is
-  -- unreachable, which is only ever `Infra.Cli.liveFor`'s substitution for a
-  -- cloud it loaded no credentials for. A placeholder used deliberately as a
-  -- test double answers `none` to *this* field and is unaffected, which is
-  -- what keeps the
-  -- offline suite — which is placeholders throughout — working. (Not to be
-  -- confused with `ownershipInfo`, whose "cannot tell you" is `.unreadable`.)
-  for r in store.rows do
-    if let some why := (bs.backendAt r.cloud r.region).unreachable then
-      throw (IO.userError s!"the ledger records \
-{Ledger.slotId r.cloud r.kind r.name}, but {why}. Refusing to apply: this would \
-report every {r.cloud.name} resource as destroyed without deleting any of them. \
-Declare the cloud, or point the ledger elsewhere")
   -- The brake, and note what it is *not* asked on: a declaration that asks for
   -- nothing to exist. That is a teardown, it is the explicit statement this
   -- check exists to demand, and it is recognisable from the target itself —
@@ -842,13 +665,21 @@ Declare the cloud, or point the ledger elsewhere")
   -- failed on exactly that, because the test driver built its own
   -- `PushOptions` and the CLI's teardown flag was not in them.
   --
-  -- Counted against the ledger rather than the work-list, because the question
-  -- is "how much of what I manage is about to go", and a plan that also
-  -- creates things would otherwise dilute the ratio.
+  -- Counted against what this fleet manages — the declared resources that
+  -- exist and carry its marker, plus the orphans — rather than the work-list,
+  -- because the question is "how much of what I manage is about to go", and a
+  -- plan that also creates things would otherwise dilute the ratio.
+  let declaredOurs := (Finite.elems (α := ProviderId)).foldl (init := 0) fun n p =>
+    (Finite.elems (α := Kind)).foldl (init := n) fun n k =>
+      (Finite.elems (α := κ.Key p k)).foldl (init := n) fun n key =>
+        match T.assign p k key, W.sighting p k key with
+        | .unmanaged, _ => n
+        | _, some _ => if foreign.any (·.1 == slotId p k (κ.name p k key)) then n else n + 1
+        | _, none => n
+  let managed := declaredOurs + orphans.length
   let doomed := work.countP (·.isDestructive)
-  if !opts.force && T.declaresAnything && store.rows.length > 1
-      && doomed * 2 > store.rows.length then
-    throw (IO.userError s!"this would destroy {doomed} of {store.rows.length} managed \
+  if !opts.force && T.declaresAnything && managed > 1 && doomed * 2 > managed then
+    throw (IO.userError s!"this would destroy {doomed} of {managed} managed \
       resources while still declaring others, which is not a teardown. If the declaration \
       is right, re-run with --force; if it is not, check the credentials are for the \
       account you meant")
@@ -858,54 +689,13 @@ Declare the cloud, or point the ledger elsewhere")
   let mut entries ← match seen with
     | some es => pure es
     | none    => pullEntries (κ := κ) bs
-  -- Adopt what this declaration claims and the cloud already has, *before*
-  -- running anything.
-  --
-  -- Without this the ledger only ever learns about a resource through an
-  -- action, and a resource that already exists and already matches produces
-  -- no action — so it would never be recorded, and nothing could destroy it
-  -- afterwards. That is a leak, not a cosmetic gap, and the first live run of
-  -- the staged sequence found it: stage 1 re-ran against resources a previous
-  -- failed run had left standing, eight of the eleven needed no action, and
-  -- the teardown then deleted only the three that had.
-  --
-  -- Claiming a resource because the declaration names it and it exists is
-  -- NOT the rule any more: ownership is decided by the realm (which account
-  -- these credentials are for) and the marker tag (`Infra.Core.Ownership`),
-  -- never by name/ledger matching alone — see the 2026-09-10 incident in
-  -- `AGENTS.md`, where a naming-only adoption of a Scaleway container
-  -- namespace led `destroy` to cascade-delete an unmanaged sibling container.
-  -- The ledger is purely a cache of resources already verified this way; it
-  -- must never itself be read as evidence of ownership.
-  --
-  -- So the verdict is `foreignDeclared`'s, reached above for every declared
-  -- resource that exists — tags, a marker decoded out of a description, or the
-  -- name on the rung where that is all there is, checked against
-  -- `ownershipOf`. A backend that cannot read one (`.unreadable`) counts as
-  -- foreign: refused, not adopted, and already warned about by name.
-  let mut rows := store.rows
-  for p in Finite.elems (α := ProviderId) do
-    for k in Finite.elems (α := Kind) do
-      for key in Finite.elems (α := κ.Key p k) do
-        match T.assign p k key, W.sighting p k key with
-        | .present _, some _ =>
-          let nm := κ.name p k key
-          unless rows.any (Ledger.Row.isAt · p k nm) do
-            if !foreign.any (·.1 == Ledger.slotId p k nm) then
-              rows := { cloud := p, kind := k, name := nm
-                        region := store.regionOf p k nm } :: rows
-        | _, _ => pure ()
-  -- Persist the adoptions before the first mutation, so a crash mid-apply
-  -- cannot leave a resource that exists, is claimed, and is recorded nowhere.
-  if let some root := store.root then
-    unless rows == store.rows do Ledger.save root rows
   if work.isEmpty then
     return [Ansi.style opts.colour Ansi.dim "nothing to do"]
-  let mut st : Progress κ := { entries := entries, rows := rows, log := [] }
+  let mut st : Progress κ := { entries, log := [] }
   -- Orphan deletions are the one part of the work-list with no dependency
   -- edges to sort by: a resource whose declaration is gone has no spec, so
-  -- nothing states what it referenced, and the ledger records names and
-  -- regions rather than references (`stepOf`). So an orphan delete the
+  -- nothing states what it referenced, and the scan reports names and
+  -- regions rather than references (`Orphan`). So an orphan delete the
   -- provider refuses — `DependencyViolation` on a security group an orphaned
   -- instance still uses — is *held back* rather than fatal, and tried again
   -- once the rest of the work-list has run. The schedule converges by
@@ -919,10 +709,10 @@ Declare the cloud, or point the ledger elsewhere")
   for a in work do
     match a with
     | .deleteOrphan .. =>
-      match ← (runStep bs T store opts st a).toBaseIO with
+      match ← (runStep bs T boundary opts st a).toBaseIO with
       | .ok st'  => st := st'
       | .error e => deferred := deferred ++ [(a, e)]
-    | _ => st ← runStep bs T store opts st a
+    | _ => st ← runStep bs T boundary opts st a
   -- Bounded, and the bound is a real measure: a round that deletes nothing
   -- stops, so every round but the last removes at least one orphan.
   for _ in [0:deferred.length] do
@@ -930,7 +720,7 @@ Declare the cloud, or point the ledger elsewhere")
     let before := deferred.length
     let mut left : List (Action κ × IO.Error) := []
     for (a, _) in deferred do
-      match ← (runStep bs T store opts st a).toBaseIO with
+      match ← (runStep bs T boundary opts st a).toBaseIO with
       | .ok st'  => st := st'
       | .error e => left := left ++ [(a, e)]
     deferred := left

@@ -17,7 +17,8 @@ import Linen.System.Keychain
   should just work; environment variables come last because they are the
   override of last resort and the one CI sets.
 
-  Nothing here ever logs a secret, and nothing here writes one to `.infra/`.
+  Nothing here ever logs a secret, and nothing here writes one anywhere but
+  the OS keychain.
   `Credentials`' `Repr` redacts, so a stray `dbg_trace` or error message cannot
   leak one by accident.
 -/
