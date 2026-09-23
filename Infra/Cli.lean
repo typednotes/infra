@@ -36,8 +36,46 @@ open Infra.Core
     See `docs/persistence.md`. -/
 def defaultCacheRoot : System.FilePath := ".infra"
 
+/-- The declared migration sets, as the backend's routes.
+
+    A `postgresMigrations` resource cannot be observed from its handle
+    alone — the name is all a handle carries — so the declaration's own
+    names become the table the backend looks them up by. Non-literal names
+    are refused here, loudly, rather than silently producing a route that
+    cannot answer: those names are schema, not post-apply values, and
+    `Plan.migrationsAreSound` refuses the same shape at compile time — this
+    is the loud runtime backstop for a fleet that skipped the guard. -/
+def migrationRoutesOf (κ : Keys) (T : Plan κ) :
+    IO (ProviderId → List Infra.Providers.Kinds.Migrations.MigrationRoute) := do
+  let mut table : List (ProviderId × List Infra.Providers.Kinds.Migrations.MigrationRoute) := []
+  for p in Finite.elems (α := ProviderId) do
+    let mut routes : List Infra.Providers.Kinds.Migrations.MigrationRoute := []
+    for key in Finite.elems (α := κ.Key p .postgresMigrations) do
+      match T.assign p .postgresMigrations key with
+      | .present s =>
+        let nm := κ.name p .postgresMigrations key
+        match s.database.asLit, s.connectionSecret.asLit, s.observerSecret.asLit,
+              s.schema.asLit with
+        | some db, some cs, some os, some sc =>
+          routes := { resource := nm, database := db
+                      connectionSecret := cs, observerSecret := os, schema := sc } :: routes
+        | _, _, _, _ =>
+          throw (IO.userError s!"{Ledger.slotId p .postgresMigrations nm}: \
+database/connectionSecret/observerSecret/schema must be literal names — a migrations \
+resource is observed through them, and a composed name would be a resource this fleet \
+could never see. See docs/migrations.md")
+      | _ => pure ()
+    table := (p, routes.reverse) :: table
+  return fun p => ((table.find? fun e => e.1 == p).map (·.2)).getD []
+
 /-- Build backends, authenticating only the providers `κ` actually declares
     resources in. The rest get the placeholder, which never calls a network.
+
+    `routes` is how the `postgresMigrations` backend finds each declared
+    migration set's database and URL secrets; `run` derives it from the
+    declaration, and the default (no routes) is honest: such a backend can
+    list nothing for that kind and refuses a read rather than fabricating
+    one. See `docs/migrations.md`.
 
     Credential failures name every place that was searched — see
     `docs/authentication.md`.
@@ -59,7 +97,10 @@ def defaultCacheRoot : System.FilePath := ".infra"
     itself is the *read* half. `run` passes one field to both, deliberately: a
     fleet that wrote one name and required another would refuse to manage
     everything it had just created. -/
-def liveFor (κ : Keys) (regions : Regions := {}) (fleet : Option String := none) :
+def liveFor (κ : Keys) (regions : Regions := {})
+    (fleet : Option String := none)
+    (routes : ProviderId → List Infra.Providers.Kinds.Migrations.MigrationRoute :=
+      fun _ => []) :
     IO (Backends × (ProviderId → Option Credentials)) := do
   let mut creds : List (ProviderId × Credentials) := []
   for p in κ.providers do
@@ -88,7 +129,7 @@ def liveFor (κ : Keys) (regions : Regions := {}) (fleet : Option String := none
   -- every endpoint builder reads.
   let backendIn := fun (p : ProviderId) (code : String) =>
     match lookup p with
-    | some c => Infra.Providers.liveBackend p { c with region := code } fleet
+    | some c => Infra.Providers.liveBackend p { c with region := code } fleet (routes p)
     -- Marked unreachable, not merely absent. The engine may hold ledger rows
     -- for a cloud this key family does not name — a stale row, or a teardown
     -- whose declaration names nothing — and routing those through a
@@ -303,6 +344,7 @@ def run (exe : String) (F : Fleet)
   let colour ← Ansi.wanted
   let withLive (act : Backends → IO Unit) : IO Unit := do
     let (bs, creds) ← liveFor F.keys F.regions boundary.fleetName
+      (← migrationRoutesOf F.keys F.plan)
     checkAccounts F.keys accounts creds colour
     act bs
   -- Failures are reported, not thrown out of `main`. An escaping exception

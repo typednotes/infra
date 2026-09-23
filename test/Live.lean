@@ -1299,7 +1299,7 @@ private def kindsOf (st : Stage) : List String :=
 #guard ((((at! awsStages 0).declared ++ (at! scwStages 0).declared
           ++ (at! gcpStages 0).declared).map fun (sl : String) =>
           ((sl.splitOn "/").drop 1).headD "?").eraseDups).length = 13
-#guard card Kind = 14
+#guard card Kind = 15
 
 /-! ## Sweeping an account, without a ledger to go on
 

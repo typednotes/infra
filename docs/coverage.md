@@ -1,4 +1,4 @@
-# Coverage in 0.12.1
+# Coverage in 0.13.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-21.
@@ -12,7 +12,7 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| **GCP** | **all seven portable kinds have live clients** — Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL. One stated limit: a serverless `postgres` declaration raises, since Cloud SQL has no such tier. `iam` now writes roles as well as reading them — an etag-guarded, member-scoped edit of the project IAM policy that leaves conditional bindings alone. Provider-local kinds report no counterpart rather than a missing client |
+| **GCP** | **all the portable kinds have live clients** — seven GCP-specific (Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL) and the eighth, `postgresMigrations`, whose Postgres-wire backend is one client shared by all three clouds. One stated limit: a serverless `postgres` declaration raises, since Cloud SQL has no such tier. `iam` now writes roles as well as reading them — an etag-guarded, member-scoped edit of the project IAM policy that leaves conditional bindings alone. Provider-local kinds report no counterpart rather than a missing client |
 | Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
@@ -21,7 +21,7 @@ and loud, not a plugin boundary.
 
 ## Resource kinds
 
-Fourteen, split deliberately. **Portable** kinds are the common denominator and
+Fifteen, split deliberately. **Portable** kinds are the common denominator and
 carry no cross-resource references, so the same spec value applies to either
 cloud. **Provider-local** kinds are richer and tie a plan to one cloud, which
 the kind's name makes obvious.
@@ -40,8 +40,25 @@ and Lean reports one as unreachable.
 | `compute` | Lambda (container image) | Serverless Containers | no |
 | `iam` | IAM users | IAM applications | no |
 | `postgres` | RDS | Managed Database | no |
+| `postgresMigrations` | Postgres wire | Postgres wire | **yes, all three clouds** |
 
-Two of the seven — `objectStore` and `queues` — need no per-cloud code
+`postgresMigrations` is the ninth portable kind and the odd one out twice
+over: its backend is a data plane (the Postgres protocol through
+`linen.Database.SQL`), not a cloud control plane, so one implementation
+serves AWS, Scaleway and GCP alike — the clouds differ only in whose secret
+manager holds the two URL secrets (read-write for apply, read-only for
+observation) and whose IAM minted the identities behind them. And its
+`list` is route-driven: the only migration sets a backend can even name are
+the ones the declaration names, so `discover` cannot rebuild these ledger
+rows. That is safe *because* the kind's `delete` is a no-op FORGET — the
+schema's lifetime is the parent database's, and the plan prints `FORGET`
+where it would print `DELETE` for everything else — and the two properties
+are one design decision, not two coincidences. Ownership is inherited from
+the parent `postgres` resource (`.unreadable` when there is no route to
+read a parent through). The design, the three hard edges and their
+trade-offs: `docs/migrations.md`.
+
+Two of the kinds — `objectStore` and `queues` — need no per-cloud code
 *between AWS and Scaleway*, because Scaleway's endpoints are S3- and
 SQS-compatible, so one client serves both. That is the portability claim
 paying off rather than being asserted.
@@ -92,7 +109,7 @@ This is the section worth reading before trusting anything. Correctness of
 ### Verified against a real account
 
 - **Scaleway `list`, every kind.** `example/ScalewayPull.lean` calls raw
-  `Backend.list` for all fourteen kinds. Run on 2026-09-05 it returned nine
+  `Backend.list` for every kind (fourteen, at that date). Run on 2026-09-05 it returned nine
   resources — IAM applications (3), a container image registry (2), a
   serverless container and its namespace, a queue, and a compute unit — and an
   empty list for the rest, which is a *successful* call finding nothing rather
@@ -158,7 +175,13 @@ This is the section worth reading before trusting anything. Correctness of
 
 `lake test` runs the offline driver on every push, and every example with it.
 `lake test -- <provider>` is the live sequence, run from a manual workflow
-trigger, one cloud at a time. How to trigger it, approve it and read it is in
+trigger, one cloud at a time.
+
+`postgresMigrations` (0.13.0) is exercised offline only — its guards and the
+`example/PostgresMigrations.lean` plan run on every push, but no live account
+has migrated a schema through it yet. The first live run owes the ledger one
+verification: whether Scaleway's read role needs the explicit `GRANT SELECT`
+the backend issues (`docs/diff-semantics.md`, "Known soft spots"). How to trigger it, approve it and read it is in
 `ci/README.md` ("Running the live test").
 
 **The sequence is five stages now — `full`, `ramp-up`, `ramp-down`, `trimmed`,
@@ -271,7 +294,7 @@ backstop step was *skipped*, which is the evidence that the driver's own
 teardown ran and left nothing behind — and the accounts were checked afterwards
 and are clean.
 
-**Thirteen of the fourteen kinds; 22 (cloud, kind) pairs.**
+**Thirteen of the fifteen kinds; 22 (cloud, kind) pairs.**
 
 **All three dependency patterns are exercised live.** The chain and the fan-out
 run on every cloud. The **fan-in** was Scaleway-only and is now covered: its
@@ -289,7 +312,7 @@ document, and is still drawn.
 | Scaleway | the same minus `s3Bucket`/`securityGroup`/`iam`, plus both namespaces and `scalewayContainer` | 9 |
 | GCP | the same minus `s3Bucket`/`securityGroup`, plus `compute` | 8 |
 
-**Thirteen of the fourteen kinds**, and 22 (cloud, kind) pairs.
+**Thirteen of the fifteen kinds**, and 22 (cloud, kind) pairs.
 
 `iam` is deliberately absent from the Scaleway fleet, which is the one place a
 kind was dropped rather than never added. Scaleway's IAM applications live in
@@ -305,7 +328,7 @@ built — and `scalewayContainer` for the same reason, since Serverless
 Containers can pull from an external registry. Lambda still cannot: a container
 function must come from an ECR repository in the same account.
 
-Thirteen of the fourteen kinds, 22 (cloud, kind) pairs. Every one is written to be
+Thirteen of the fifteen kinds, 22 (cloud, kind) pairs. Every one is written to be
 created from nothing and deleted again, and the set matters as much as the
 count: a fleet is applied and torn down as a *set*, so `create` and `delete`
 each run seven times in one pass and the absence check covers all of them — a
@@ -860,7 +883,9 @@ created.
 
 So existence comes from `list` again, which can be wrong only by omission — the
 safe direction — and which is the call this repo has exercised against real
-accounts for all fourteen kinds. Membership stays the ledger's. The two
+accounts for all fourteen cloud-control-plane kinds (the fifteenth,
+`postgresMigrations`, is route-driven and answers to a database, not to an
+account listing). Membership stays the ledger's. The two
 questions were conflated before this change; separating them was right, and
 answering the second one per resource was not.
 
@@ -904,6 +929,19 @@ below.
 | `postgres` | tags | tags (Managed DB) / **name** (Serverless SQL) | labels |
 | `iam` | tags | tags | **description** |
 | `scalewayFunction`, `scalewayContainer`, and both namespaces | — | tags | — |
+| `postgresMigrations` | **inherited** | **inherited** | **inherited** |
+
+`postgresMigrations` answers on all three clouds with the one evidence there
+is: its parent database's. The resource is rows inside a declared `postgres`
+resource, not a cloud object of its own, so there is no marker of its own to
+read and the parent's verdict is the whole of it (`Live.lean`'s
+`postgresEvidence`, reached through the route table). A migrations resource
+with no route — one whose declaration is gone — answers `.unreadable`, which
+for the adoption loop means "warn rather than claim"; the orphan-delete path
+skips the check for this kind entirely because its `delete` destroys nothing.
+The `infra_migrations` table's existence is the rung-2-style marker for
+everything that matters here: it is something this tool wrote, inside
+something this tool owns or refuses to touch.
 
 The tag's **value** is the fleet's own name where the declaration sets one
 (`Boundary.fleetName`) and `"true"` where it does not, which is what lets two

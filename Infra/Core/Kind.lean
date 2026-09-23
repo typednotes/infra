@@ -38,7 +38,7 @@ def ProviderId.name : ProviderId → String
     by `Kind` alone and never by provider, so a plan built from portable kinds applies through
     any backend; reaching for a provider-local kind makes that loss visible in the type.
     See `docs/diff-semantics.md`. -/
-inductive Kind
+  inductive Kind
   -- portable: `docs/architecture.md`'s coverage list
   | iam
   | objectStore
@@ -47,6 +47,7 @@ inductive Kind
   | secrets
   | imageRegistry
   | postgres
+  | postgresMigrations
   -- provider-local: the escape hatch to concepts closer to one provider
   | s3Bucket
   | securityGroup
@@ -60,6 +61,7 @@ inductive Kind
 instance : Finite Kind where
   elems :=
     [.iam, .objectStore, .compute, .queues, .secrets, .imageRegistry, .postgres,
+     .postgresMigrations,
      .s3Bucket, .securityGroup, .awsInstance,
      .scalewayFunctionNamespace, .scalewayFunction,
      .scalewayContainerNamespace, .scalewayContainer]
@@ -74,6 +76,7 @@ def Kind.name : Kind → String
   | .secrets            => "secrets"
   | .imageRegistry      => "image-registry"
   | .postgres           => "postgres"
+  | .postgresMigrations  => "postgres-migrations"
   | .s3Bucket           => "s3-bucket"
   | .securityGroup      => "security-group"
   | .awsInstance        => "aws-instance"
@@ -182,6 +185,20 @@ structure PostgresObserved where
   endpoint : String
   deriving Repr, DecidableEq, ToJson, FromJson
 
+/-- A declared migration set, as it stands in the database it belongs to.
+
+    The handle is the fleet name qualified by nothing: there is no
+    provider-assigned identifier for "rows in a table", the same situation
+    `SecurityGroupObserved` resolved by making the name the handle. `applied`
+    carries `(id, sql)` verbatim rather than a digest — an exact comparison
+    cannot collide and needs no hash whose stability across toolchain
+    versions would become its own history-conflict story. Nothing secret is
+    here; the SQL is the declaration's own content. -/
+structure PostgresMigrationsObserved where
+  handle  : Handle .postgresMigrations
+  applied : List (String × String)
+  deriving Repr, DecidableEq, ToJson, FromJson
+
 structure S3BucketObserved where
   handle : Handle .s3Bucket
   arn    : String
@@ -256,6 +273,7 @@ structure ScalewayContainerObserved where
   | .secrets           => SecretsObserved
   | .imageRegistry     => ImageRegistryObserved
   | .postgres          => PostgresObserved
+  | .postgresMigrations => PostgresMigrationsObserved
   | .s3Bucket          => S3BucketObserved
   | .securityGroup     => SecurityGroupObserved
   | .awsInstance       => AwsInstanceObserved
@@ -277,6 +295,7 @@ def observedHandle : (k : Kind) → ObservedOf k → Handle k
   | .secrets,           o => SecretsObserved.handle o
   | .imageRegistry,     o => ImageRegistryObserved.handle o
   | .postgres,          o => PostgresObserved.handle o
+  | .postgresMigrations, o => PostgresMigrationsObserved.handle o
   | .s3Bucket,          o => S3BucketObserved.handle o
   | .securityGroup,     o => SecurityGroupObserved.handle o
   | .awsInstance,       o => AwsInstanceObserved.handle o
@@ -293,6 +312,7 @@ instance : (k : Kind) → ToJson (ObservedOf k)
   | .secrets           => inferInstanceAs (ToJson SecretsObserved)
   | .imageRegistry     => inferInstanceAs (ToJson ImageRegistryObserved)
   | .postgres          => inferInstanceAs (ToJson PostgresObserved)
+  | .postgresMigrations => inferInstanceAs (ToJson PostgresMigrationsObserved)
   | .s3Bucket          => inferInstanceAs (ToJson S3BucketObserved)
   | .securityGroup     => inferInstanceAs (ToJson SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (ToJson AwsInstanceObserved)
@@ -313,6 +333,7 @@ instance : (k : Kind) → Repr (ObservedOf k)
   | .secrets           => inferInstanceAs (Repr SecretsObserved)
   | .imageRegistry     => inferInstanceAs (Repr ImageRegistryObserved)
   | .postgres          => inferInstanceAs (Repr PostgresObserved)
+  | .postgresMigrations => inferInstanceAs (Repr PostgresMigrationsObserved)
   | .s3Bucket          => inferInstanceAs (Repr S3BucketObserved)
   | .securityGroup     => inferInstanceAs (Repr SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (Repr AwsInstanceObserved)
@@ -329,6 +350,7 @@ instance : (k : Kind) → FromJson (ObservedOf k)
   | .secrets           => inferInstanceAs (FromJson SecretsObserved)
   | .imageRegistry     => inferInstanceAs (FromJson ImageRegistryObserved)
   | .postgres          => inferInstanceAs (FromJson PostgresObserved)
+  | .postgresMigrations => inferInstanceAs (FromJson PostgresMigrationsObserved)
   | .s3Bucket          => inferInstanceAs (FromJson S3BucketObserved)
   | .securityGroup     => inferInstanceAs (FromJson SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (FromJson AwsInstanceObserved)
@@ -339,7 +361,7 @@ instance : (k : Kind) → FromJson (ObservedOf k)
 
 section Guards
 
-#guard card Kind = 14
+#guard card Kind = 15
 #guard card ProviderId = 3
 #guard card Nothing = 0
 

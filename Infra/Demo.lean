@@ -106,6 +106,7 @@ def apiSpec {K : ProviderId → Kind → Type} : ComputeSpec K Partial (Expr K) 
   memoryMb   := 512
   timeoutSec := .unknown
   env        := .unknown
+  migrations := .unknown
 
 /-! ## The plan
 

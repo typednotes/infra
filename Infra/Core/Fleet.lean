@@ -1,4 +1,6 @@
 import Infra.Core.Stage
+import Infra.Core.Diverge
+import Infra.Core.Ledger
 
 /-
   A fleet: the set of resources one target speaks about, across all the clouds it spans.
@@ -6,7 +8,7 @@ import Infra.Core.Stage
 
 namespace Infra.Core
 
-open Infra.Specs (SpecOf)
+open Infra.Specs (SpecOf Migration)
 
 /-- A key family: one finite, decidable key type per `(provider, kind)` pair.
 
@@ -130,6 +132,57 @@ def Plan.secretsAreSound {κ : Keys} (T : Plan κ) : Bool :=
       match T.assign p .secrets key with
       | .present s => s.sourceIsSound
       | _          => true
+
+/-- Whether every declared migration history is internally sound — ids
+    strictly increasing, no empty SQL, a quotable schema, and literals
+    throughout. The decidable companion of `secretsAreSound`, checking the
+    per-resource rule `PostgresMigrationsSpec.historyIsSound` fleet-wide;
+    a fleet writes `#guard myPlan.migrationsAreSound` (or the `fleet`
+    declaration emits it) and gets the guarantee back at compile time. -/
+def Plan.migrationsAreSound {κ : Keys} (T : Plan κ) : Bool :=
+  (Finite.elems (α := ProviderId)).all fun p =>
+    (Finite.elems (α := κ.Key p .postgresMigrations)).all fun key =>
+      match T.assign p .postgresMigrations key with
+      | .present s => s.historyIsSound
+      | _          => true
+
+/-- The runtime half of the migrations contract: what the database has
+    applied must be a prefix of what the declaration names, with matching
+    content.
+
+    This cannot be a compile-time check — it needs observed state — so it
+    is the one rule `Engine.push` refuses to act past: `push` throws this
+    message before deriving any action, on the plan path as well as the
+    apply path. The `Divergent` table answers the same question again (as a
+    `forcesReplace` named "history conflict") for any caller that reaches
+    `repairOf` without going through `push`; the backend re-checks a third
+    time before applying, because defense against a rewritten history is
+    cheap at every tier and fatal at none.
+
+    A sighting against a target whose `migrations` is not a literal is
+    skipped here rather than guessed at — `migrationsAreSound` already
+    refuses that shape at compile time, so a fleet that got this far wrote
+    a literal. -/
+def Plan.migrationsAppendOnly {κ : Keys} (T : Plan κ) (W : World κ) : Option String :=
+  let declared : List (String × List Migration × List Migration) :=
+    (Finite.elems (α := ProviderId)).flatMap fun p =>
+      (Finite.elems (α := κ.Key p .postgresMigrations)).flatMap fun key =>
+        match T.assign p .postgresMigrations key, W.sighting p .postgresMigrations key with
+        | .present s, some seen =>
+            match s.migrations.asLit with
+            | some target => [(Ledger.slotId p .postgresMigrations
+                                 (κ.name p .postgresMigrations key),
+                               seen.reported.migrations, target)]
+            | none        => []
+        | _, _ => []
+  match declared.filterMap fun (slot, applied, target) =>
+          (migrationsConflict applied target).map fun id => (slot, id) with
+  | []            => none
+  | (slot, id) :: _ => some s!"{slot}: the database has applied '{id}' in a form the \
+declaration does not match — migrations are append-only. An applied migration must stay in \
+the declaration's history with the same content forever, and the database cannot have \
+applied an entry the declaration no longer names. Restore the history, or resolve the \
+conflict deliberately — see docs/migrations.md"
 
 /-- The key carrying this name, if this fleet has one.
 

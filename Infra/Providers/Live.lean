@@ -5,6 +5,7 @@ import Infra.Providers.Kinds.Secrets
 import Infra.Providers.Kinds.Compute
 import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
+import Infra.Providers.Kinds.Migrations
 import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Zip
 import Infra.Core.GcpAuth
@@ -44,6 +45,16 @@ import Infra.Providers.Gcp.Iam
   `instanceClass` is set: classic goes to RDS/RDB as before; serverless goes to a named "not
   implemented" error on AWS (Aurora Serverless v2), and to the honestly stubbed
   `Kinds.Postgres.ServerlessSql` on Scaleway.
+
+  `.postgresMigrations` on all three, and from **one** implementation: this
+  kind's backend is the Postgres wire protocol (`Kinds.Migrations`), not a
+  cloud control plane, so AWS, Scaleway and GCP differ only in whose secret
+  manager holds the URL and whose IAM minted the identities. It is the first
+  kind whose observation path reads a secret's value — the *read-only* URL,
+  deliberately — and whose `delete` destroys nothing. `routes` is how a
+  backend knows where each declared migration set lives; `Infra.Cli.run`
+  derives it, and a backend built without one can list nothing and refuses
+  rather than fabricate. See `docs/migrations.md`.
 
   `.scalewayFunction` on Scaleway, whose `sourceBucket` reference is passed to
   the function as a `SOURCE_BUCKET` environment variable — the cross-cloud
@@ -197,6 +208,32 @@ private def withoutMarker :
 private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
   S3.endpoint provider creds.region
 
+/-- One postgres database's ownership evidence, whichever product it is.
+
+    Extracted because two places need it: `ownershipInfo`'s own `.postgres`
+    clause, and the `.postgresMigrations` clause, whose verdict is its
+    parent's — a kind that answers "I cannot tell you" is a hole rather than
+    a design, and the child has exactly one way not to be one. -/
+private def postgresEvidence (provider : ProviderId) (creds : Credentials)
+    (name : String) : IO Evidence := do
+  match provider with
+  -- Covers Cloud SQL only: a `PostgresSpec.serverless` target on GCP
+  -- always raises at create (see `Gcp.CloudSql.createServerless`), so no
+  -- GCP postgres resource is ever the untaggable kind.
+  | .gcp      => Gcp.CloudSql.readOwnership creds (← Gcp.requireProject creds) name
+  | .aws      => Postgres.Rds.readOwnership creds (rdsFor creds) name
+  -- Two products behind one `Handle`, and they are on different rungs:
+  -- Managed Database is tag-capable, Serverless SQL Database has no
+  -- writable field but its name. Managed Database is tried first and, on
+  -- a miss, the name rung answers for the other — the same
+  -- try-then-fall-through `read` and `delete` already use for this pair,
+  -- and for the same reason: a bare name does not say which product it
+  -- belongs to.
+  | .scaleway =>
+    match ← Postgres.Rdb.readOwnership creds name with
+    | .unreadable => Postgres.ServerlessSql.readOwnership creds name
+    | evidence    => pure evidence
+
 /-- What one resource's configuration actually is, addressed by name.
 
     Extracted from `liveBackend` so that `probe` can reuse it: a field of a
@@ -208,7 +245,8 @@ private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
     conspicuously — because they are asked only after a create, where
     existence is not in question. `liveProbe` is where existence is decided,
     and it does not trust these clauses. -/
-def liveRead (provider : ProviderId) (creds : Credentials) :
+def liveRead (provider : ProviderId) (creds : Credentials)
+    (routes : List Migrations.MigrationRoute := []) :
     (k : Kind) → Handle k → IO (Reported k)
   | .objectStore, h => do
     match provider with
@@ -266,7 +304,7 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
       return { name := h.raw, runtime := .unknown, image
                executionRole := serviceAccount, namespace' := .unknown
                handler := .unknown, memoryMb := memory
-               timeoutSec := timeout, env }
+               timeoutSec := timeout, env, migrations := .unknown }
     | .aws =>
       let (role, memory, timeout, env, image) ← Compute.Lambda.read creds (lambdaFor creds) h.raw
       -- `runtime` and `namespace'` are not reported by either cloud, and are
@@ -274,13 +312,13 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
       return { name := h.raw, runtime := .unknown, image
                executionRole := role, namespace' := .unknown
                handler := .unknown, memoryMb := memory
-               timeoutSec := timeout, env }
+               timeoutSec := timeout, env, migrations := .unknown }
     | .scaleway =>
       let (memory, timeout, env, image) ← Compute.Containers.read creds h.raw
       return { name := h.raw, runtime := .unknown, image
                executionRole := .unknown, namespace' := .unknown
                handler := .unknown, memoryMb := memory
-               timeoutSec := timeout, env }
+               timeoutSec := timeout, env, migrations := .unknown }
   | .queues, h => do
     match provider with
     -- The read is what proves the topic is there; nothing is extracted from
@@ -380,11 +418,16 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
       -- converged and proposed `REPLACE` for ever.
       return { name := h.raw, namespace' := ⟨ns⟩, image
                port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env
-               secretEnv := .unknown }
+               secretEnv := .unknown, migrations := .unknown }
     | .aws => return { name := h.raw, namespace' := ⟨""⟩, image := ""
                        port := .unknown, minScale := .unknown, maxScale := .unknown
                        memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
-                       env := .unknown, secretEnv := .unknown }
+                       env := .unknown, secretEnv := .unknown, migrations := .unknown }
+  -- The applied history, verbatim, from the route's own read-only URL. The
+  -- `sql` in a reported migration is exactly what the database holds --
+  -- not redacted, because the declaration already contains it and the
+  -- history table is not a secret.
+  | .postgresMigrations, h => Migrations.read provider creds routes h
 
 
 /-- One cloud's live CRUD surface.
@@ -393,7 +436,8 @@ def liveRead (provider : ProviderId) (creds : Credentials) :
     `match` inside `do`: the result type is `ObservedOf k`/`Reported k`, so the
     equation compiler has to refine it per branch. -/
 def liveBackend (provider : ProviderId) (creds : Credentials)
-    (fleet : Option String := none) : Backend where
+    (fleet : Option String := none)
+    (routes : List Migrations.MigrationRoute := []) : Backend where
   list
     | .objectStore => do
       match provider with
@@ -528,8 +572,11 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
       | .gcp | .aws => return []
       | .scaleway =>
         return (← Compute.Containers.listFull creds).map fun (n, url) => { handle := ⟨n⟩, url }
+    -- Route-driven by construction: the only migration sets this backend can
+    -- even name are the ones the declaration names. See `Kinds.Migrations.list`.
+    | .postgresMigrations => Migrations.list provider creds routes
 
-  read := liveRead provider creds
+  read := liveRead provider creds routes
   create
     | .objectStore, spec => do
       match provider with
@@ -775,6 +822,7 @@ invocation, which is a worse failure than this one")
                   spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
                   spec.timeoutSec spec.env secretVals
       return { handle := ⟨spec.name⟩, url }
+    | .postgresMigrations, spec => Migrations.apply provider creds spec
 
   update
     | .objectStore, h, spec => do
@@ -922,6 +970,9 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
                   spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
                   spec.timeoutSec spec.env secretVals
       return { handle := h, url }
+    -- The same body as `create`: the resource *is* its history, so
+    -- "update" is "apply the pending suffix" and the backend says which.
+    | .postgresMigrations, h, spec => Migrations.apply provider creds spec
 
   delete
     | .objectStore, h =>
@@ -1002,6 +1053,14 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
     | .scalewayContainerNamespace, h => Compute.Containers.deleteNamespace creds h.raw
     | .scalewayFunction, h => Compute.Functions.delete creds h.raw
     | .scalewayContainer, h => Compute.Containers.delete creds h.raw
+    -- FORGET, and the verb in the plan says so: the schema's lifetime is
+    -- the database's, not the declaration's, so this touches no cloud. The
+    -- rows die when the `postgres` resource's own delete drops the
+    -- database — `destroy` deletes in reverse dependency order, so the
+    -- parent goes last. See `docs/migrations.md`, hard edge 1.
+    | .postgresMigrations, h => do
+      IO.eprintln s!"note: {h.raw} released from management; schema and \
+history left in place"
   -- The one inbound plaintext path; see `Backend.secretValue`. `fetchValue`
   -- already exists and is already the narrowly-scoped reader for both clouds.
   secretValue h := Secrets.fetchValue provider creds h.raw
@@ -1053,24 +1112,19 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
           creds.region h.raw
       | .aws      => ImageRegistry.Ecr.readOwnership creds (ecrFor creds) h.raw
       | .scaleway => ImageRegistry.Scw.readOwnership creds h.raw
-    | .postgres, h => do
-      match provider with
-      -- Covers Cloud SQL only: a `PostgresSpec.serverless` target on GCP
-      -- always raises at create (see `Gcp.CloudSql.createServerless`), so no
-      -- GCP postgres resource is ever the untaggable kind.
-      | .gcp      => Gcp.CloudSql.readOwnership creds (← Gcp.requireProject creds) h.raw
-      | .aws      => Postgres.Rds.readOwnership creds (rdsFor creds) h.raw
-      -- Two products behind one `Handle`, and they are on different rungs:
-      -- Managed Database is tag-capable, Serverless SQL Database has no
-      -- writable field but its name. Managed Database is tried first and, on
-      -- a miss, the name rung answers for the other — the same
-      -- try-then-fall-through `read` and `delete` already use for this pair,
-      -- and for the same reason: a bare `Handle` does not say which product
-      -- a name belongs to.
-      | .scaleway =>
-        match ← Postgres.Rdb.readOwnership creds h.raw with
-        | .unreadable => Postgres.ServerlessSql.readOwnership creds h.raw
-        | evidence    => pure evidence
+    | .postgres, h => postgresEvidence provider creds h.raw
+    -- The child's verdict is the parent database's: the resource is rows
+    -- inside that database, not a cloud object of its own, so there is no
+    -- marker of its own to read and the parent's is the only evidence there
+    -- is. No route means the declaration does not name it, and there is no
+    -- cloud-side place to look its parent up; `.unreadable` is the honest
+    -- answer for the adoption loop (which warns rather than claims), and
+    -- the orphan-delete path skips the check for this kind because its
+    -- delete destroys nothing. Neither caller falls to a catch-all.
+    | .postgresMigrations, h =>
+      match routes.find? fun r => r.resource == h.raw with
+      | some route => postgresEvidence provider creds route.database
+      | none       => pure .unreadable
     | .iam, h => do
       match provider with
       -- The description rung: no labels on a service account, one writable

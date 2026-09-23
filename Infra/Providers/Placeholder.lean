@@ -30,6 +30,9 @@ def placeholderObserved : (k : Kind) → String → ObservedOf k
                                principal := "placeholder-principal-id" }
   | .imageRegistry,    id => { handle := ⟨id⟩, repositoryUri := "placeholder.invalid/repo" }
   | .postgres,         id => { handle := ⟨id⟩, endpoint := "placeholder.invalid:5432" }
+  -- An empty applied history: the placeholder has migrated nothing, which is
+  -- also what makes a declared pending list read as work to do offline.
+  | .postgresMigrations, id => { handle := ⟨id⟩, applied := [] }
   | .s3Bucket,         id => { handle := ⟨id⟩, arn := "arn:placeholder", region := "eu-west-1" }
   | .securityGroup,    id => { handle := ⟨id⟩, groupId := "sg-placeholder", vpcId := "vpc-placeholder" }
   | .awsInstance,      id => { handle := ⟨id⟩, instanceId := "i-placeholder"
@@ -49,7 +52,8 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .compute,          h => { name := h.raw, runtime := .unknown, image := ""
                               executionRole := .unknown, namespace' := .unknown
                               handler := .unknown, memoryMb := .unknown
-                              timeoutSec := .unknown, env := .unknown }
+                              timeoutSec := .unknown, env := .unknown
+                              migrations := .unknown }
   | .queues,           h => { name := h.raw, visibilityTimeoutSec := .unknown }
   | .secrets,          h => { name := h.raw, valueFrom := .fromEnv "" }
   | .imageRegistry,    h => { name := h.raw, immutableTags := .unknown }
@@ -72,7 +76,15 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .scalewayContainer, h => { name := h.raw, namespace' := ⟨""⟩, image := ""
                                port := .unknown, minScale := .unknown, maxScale := .unknown
                                memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
-                               env := .unknown, secretEnv := .unknown }
+                               env := .unknown, secretEnv := .unknown, migrations := .unknown }
+  -- The reported shape shares the spec structure, and the placeholder has
+  -- no routes to consult -- so the names are blank and nothing has been
+  -- applied. `list` returns `[]` regardless, so this only matters to
+  -- `read`-after-`create`, which the placeholder answers like any other
+  -- kind: it never fails, because it never claims.
+  | .postgresMigrations, h => { name := h.raw, database := ""
+                                connectionSecret := "", observerSecret := ""
+                                schema := "", migrations := [] }
 
 /-- A backend that talks to nothing. Both providers are this, for now, differing only in the
     identifier they stamp on what they claim to have created. -/

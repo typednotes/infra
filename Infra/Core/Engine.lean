@@ -165,8 +165,12 @@ def Action.verb {κ : Keys} : Action κ → String
   | .create ..  => "CREATE"
   | .update ..  => "UPDATE"
   | .replace .. => "REPLACE"
-  | .delete ..  => "DELETE"
-  | .deleteOrphan .. => "DELETE"
+  -- FORGET, not DELETE, for the one kind whose delete touches no cloud: the
+  -- schema's lifetime is the database's, not the declaration's, so removing
+  -- the line releases the rows from management and destroys nothing. The
+  -- plan must not read as if it did. See `docs/migrations.md`, hard edge 1.
+  | .delete p k _ => if k == .postgresMigrations then "FORGET" else "DELETE"
+  | .deleteOrphan p k _ _ => if k == .postgresMigrations then "FORGET" else "DELETE"
   | .forget ..  => "FORGET"
 
 /-- Whether this action removes a resource. Deletions are ordered against the
@@ -195,8 +199,8 @@ def Action.colour {κ : Keys} : Action κ → String
   | .create ..  => Ansi.green
   | .update ..  => Ansi.yellow
   | .replace .. => Ansi.magenta
-  | .delete ..  => Ansi.red
-  | .deleteOrphan .. => Ansi.red
+  | .delete p k _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
+  | .deleteOrphan p k _ _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
   -- Blue: it changes what is managed, not what exists.
   | .forget ..  => Ansi.blue
 
@@ -208,12 +212,13 @@ def Action.renderStyled {κ : Keys} (colour : Bool) (a : Action κ) : String :=
 /-- The slots a spec depends on by **naming** one, rather than by holding a
     typed reference to it.
 
-    Two portable specs do this, and both for the same reason: a reference has
+    Four specs do this, all for the same reason: a reference has
     type `K p k`, which names a provider, and a portable spec that named a
     provider would not be portable. So they carry a plain `String` —
-    `PostgresSpec.masterPasswordSecret`, and `SecretSource.apiKeyFor` — and
-    `HasDeps`, which can only produce edges out of real references, reports
-    nothing for either.
+    `PostgresSpec.masterPasswordSecret`, `SecretSource.apiKeyFor`, every
+    field of `PostgresMigrationsSpec` that names another resource, and
+    `ComputeSpec.migrations` — and `HasDeps`, which can only produce edges
+    out of real references, reports nothing for the name-bearing fields.
 
     The consequence was an ordering that happened to be right. Nothing said a
     secret must exist before the database whose password it holds; it did,
@@ -244,6 +249,26 @@ def impliedByName {κ : Keys} (p : ProviderId) :
     match s.masterPasswordSecret.asLit with
     | some nm => if nm.isEmpty then [] else [Ledger.slotId p .secrets nm]
     | none    => []
+  -- Three name-borne edges: the parent database, and the two URL secrets.
+  -- Same-cloud on purpose — the read-only and read-write identities are
+  -- minted by the same cloud that hosts the database, and a cross-cloud
+  -- reading would mean the database's schema was legible from somewhere it
+  -- was never granted to.
+  | .postgresMigrations, s =>
+    match s.database.asLit, s.connectionSecret.asLit, s.observerSecret.asLit with
+    | some db, some cs, some os =>
+        (if db.isEmpty then [] else [Ledger.slotId p .postgres db])
+        ++ (if cs.isEmpty then [] else [Ledger.slotId p .secrets cs])
+        ++ (if os.isEmpty then [] else [Ledger.slotId p .secrets os])
+    | _, _, _ => []
+  -- The rollout-ordering edge: a container whose migrations field names a
+  -- migration set waits for it. An empty name constrains nothing.
+  | .compute, s =>
+    match s.migrations with
+    | .known e => match e.asLit with
+      | some nm => if nm.isEmpty then [] else [Ledger.slotId p .postgresMigrations nm]
+      | none    => []
+    | .unknown => []
   | _, _ => []
 
 /-- The slots a resource's spec references, if the plan wants it present. -/
@@ -470,7 +495,7 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
   -- case and `deleteOrphan` below the same operation. Two spellings of one
   -- delete is exactly the shape that let `S3BucketSpec.region` disagree with
   -- the placement, so there is one.
-  | .delete p k key => inContext s!"DELETE {Ledger.slotId p k (κ.name p k key)}" do
+  | .delete p k key => inContext s!"{Action.verb (.delete p k key)} {Ledger.slotId p k (κ.name p k key)}" do
     let nm := κ.name p k key
     (bs.backendFor p k nm).delete k ⟨nm⟩
     return entries
@@ -480,7 +505,8 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
   -- the name up in the placement table, and an orphan is precisely a name that
   -- table no longer contains, so it would fall back to the wrong endpoint for
   -- anything placed outside the credentials' own region.
-  | .deleteOrphan p k nm region => inContext s!"DELETE {Ledger.slotId p k nm}" do
+  | .deleteOrphan p k nm region =>
+    inContext s!"{Action.verb ((.deleteOrphan p k nm region : Action κ))} {Ledger.slotId p k nm}" do
     (bs.backendAt p region).delete k ⟨nm⟩
     return entries
   -- Nothing is called. The row is dropped from the ledger by `push`, which is
@@ -532,16 +558,22 @@ private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (store : Store κ)
   -- ledger alone is exactly the naming-only rule that caused the incident.
   match a with
   | .deleteOrphan p k nm region =>
-    match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
-    | .unreadable =>
-      throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but this \
+    -- The one kind whose delete is a ledger-only FORGET skips the ownership
+    -- re-check — not as an exemption from the rule but because the rule has
+    -- nothing to protect here: `delete` for `.postgresMigrations` touches no
+    -- cloud, so a wrong ledger row cannot destroy anyone else's resource.
+    -- Every kind whose delete *does* reach a cloud still pays the check.
+    unless k == .postgresMigrations do
+      match ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩ with
+      | .unreadable =>
+        throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but this \
 backend cannot read a marker for this kind to verify it; refusing to delete on the ledger's \
 say-so alone. If it really is gone, or was never mine, `forget` it instead of applying — see \
 AGENTS.md's \"no half-implemented features\" rule.")
-    | evidence =>
-      let verdict := ownershipOf store.boundary p k nm evidence
-      unless verdict.isOurs do
-        throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but it is \
+      | evidence =>
+        let verdict := ownershipOf store.boundary p k nm evidence
+        unless verdict.isOurs do
+          throw (IO.userError s!"{Ledger.slotId p k nm}: the ledger says this is mine, but it is \
 {describeVerdict store.boundary evidence verdict}; refusing to delete a resource that might not \
 be mine. If it really is gone, or was never mine, `forget` it instead of applying.")
   | _ => pure ()
@@ -555,7 +587,7 @@ be mine. If it really is gone, or was never mine, `forget` it instead of applyin
   -- when it re-records something already recorded, so a teardown of N
   -- resources would otherwise rewrite both records N times with identical
   -- bytes — and `Persistence.save` is a whole-world writer that visits all
-  -- 42 `(provider, kind)` pairs on each call.
+  -- 45 `(provider, kind)` pairs on each call.
   if let some root := store.root then
     unless rows == st.rows do Ledger.save root rows
     unless entries.length == st.entries.length do
@@ -572,6 +604,12 @@ be mine. If it really is gone, or was never mine, `forget` it instead of applyin
 def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     (opts : PushOptions := {}) (edges : Plan κ := T) (store : Store κ := {})
     (seen : Option (List (Entry κ)) := none) : IO (List String) := do
+  -- The migrations contract, refused before any action is derived — so a
+  -- plan shows the refusal exactly where it would have shown the work, and
+  -- an apply never reaches the backend's own third check. Runs on the
+  -- placeholder path too, where it is vacuous: no sighting, no history.
+  if let some msg := T.migrationsAppendOnly W then
+    throw (IO.userError msg)
   let work ← match orderActions T (plan T W store.rows store.forgets) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)

@@ -188,6 +188,7 @@ executable:
     lake exe cross-cloud        # bare invocation: offline, free
     lake exe multi-region       # bare invocation: offline, free
     lake exe serverless-sql-iam # bare invocation: offline, free
+    lake exe postgres-migrations # bare invocation: offline, free
     lake exe scaleway-pull      # reads a real Scaleway account
 
 All but the last are offline, credential-free and free of charge, so there is

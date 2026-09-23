@@ -450,6 +450,48 @@ credentials and no idea what a region is. It knows only slots.
 `Backend` itself is a record rather than a class, so `Backends` can be a total
 function over `ProviderId` without sigma gymnastics.
 
+### The one backend that is not a cloud: `postgresMigrations`
+
+Every other backend answers to a cloud's control plane. This kind answers to
+the Postgres wire protocol (`Kinds/Migrations.lean`, over `linen`'s
+`Database.SQL`), and two things follow from that, both visible in the call
+chain:
+
+**Where the route table comes from.** A `Handle` for this kind is only a name,
+and the database, the two URL-secret names and the schema cannot be recovered
+from it — there is no cloud-side record to ask. So `Infra.Cli.run` walks the
+declaration (`migrationRoutesOf`, one row per declared migration set) and
+hands the table to `liveFor`, which closes over it per backend. A backend
+built without routes is honest about the gap: its `list` returns what the
+(empty) table names, and its `read` refuses with a message naming the missing
+route rather than fabricating a sighting. The engine itself learns nothing —
+`pullEntries` and `remember` run unchanged, and the route table never reaches
+them.
+
+**What runs on which path.** An apply routes through `Engine.runAction` like
+any other create/update: settle (plain names, no `.observed` nodes to
+resolve), backend `create`/`update` — one body, because the resource *is* its
+history — which reads the read-write URL secret, takes a session-level
+`pg_advisory_lock` keyed by the resource name, re-reads the applied history,
+re-checks the prefix contract, and applies the pending suffix one transaction
+per migration. The connection's release is what frees the lock, so a crash
+mid-apply cannot hold it. Observation runs through the same `list`/`read`
+every other kind uses, except that the URL it reads is the **read-only**
+secret's — the one widening of the planning path's secret-blindness, scoped
+and recorded (architecture.md, `docs/diff-semantics.md`'s ledger). Wake-up
+retries bound the serverless-database cold start; a database that will not
+wake is an error, never an empty history.
+
+The append-only contract is checked at three tiers, in order: `Engine.push`
+refuses the plan before deriving actions (`Plan.migrationsAppendOnly`, which
+needs the observed history and so cannot be compile-time), the `Divergent`
+table answers any caller that reaches `repairOf` directly (conflict is
+`forcesReplace`, never quietly fixable), and the backend re-checks against
+the database rather than any cache before applying. A `delete` for this kind
+touches no cloud: the plan prints `FORGET` (`Action.verb`), the backend's
+delete is a no-op, and the schema dies with its parent `postgres` resource
+when that one's own delete runs — which the teardown graph orders last.
+
 ### Which clouds get authenticated, and the hole that leaves
 
 `Infra.Cli.liveFor` builds all four of those from **`κ.providers`** — the

@@ -60,7 +60,7 @@ both AWS and Scaleway to demonstrate exactly this.
 `Kind` splits into two groups:
 
 - **Portable kinds** — `iam`, `objectStore`, `compute`, `queues`, `secrets`, `imageRegistry`,
-  `postgres`, matching the coverage list above. These are the cross-cutting abstractions. Being
+  `postgres`, `postgresMigrations`, matching the coverage list above. These are the cross-cutting abstractions. Being
   the common denominator constrains them: a portable spec carries **no cross-resource
   references at all**, because a reference has type `K p k` and so names a provider. `compute`
   is serverless-shaped for the same reason — a required subnet reference would make the kind
@@ -149,7 +149,7 @@ dependencies, and `Plan.secretsAreSound` lifts it over a fleet. See
 `docs/diff-semantics.md`'s ledger for the tier change, which was a real
 weakening and is recorded as one.
 
-Values are read in exactly two places, both narrow and both on the apply path:
+Values are read in exactly two places on the apply path, both narrow:
 `Kinds.Postgres.fetchMasterPassword` for database creation, and
 `Backend.secretValue`, whose only caller is `Engine.settleFor`. Neither stores
 what it reads. The planning path cannot reach either — `Env.secretValue`
@@ -157,6 +157,17 @@ defaults to knowing nothing and `actions` settles against a redacted
 environment — so a dry run cannot print a secret because it never has one.
 Nothing observed, cached, or reported carries a value either, which is also
 why a composed secret can never be diffed: it is create-only.
+
+One kind widens that, deliberately and by exactly one read:
+`postgresMigrations`' observation path (`refresh`/`plan` pulls, behind
+`Backend.list`/`read`) reads the **read-only** connection URL through
+`Kinds.Secrets.fetchValue`, because the only way to see what a database has
+applied is to connect to it. The widening is scoped to its size — the same
+narrow reader, never through `Env.secretValue`, and a credential that can
+`SELECT` on one table and nothing else — and it is recorded as the tier change
+it is in `docs/diff-semantics.md`'s ledger. The apply path reads the
+read-write URL, where `fetchMasterPassword` already read one. See
+`docs/migrations.md`, hard edge 2.
 
 ## Fleets across several clouds
 

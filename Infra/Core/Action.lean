@@ -205,6 +205,7 @@ instance : HasDeps ComputeSpec where
   deps s := depsReq s.name ++ depsOpt s.runtime ++ depsReq s.image
             ++ depsOpt s.executionRole ++ depsOpt s.namespace' ++ depsOpt s.handler
             ++ depsOpt s.memoryMb ++ depsOpt s.timeoutSec ++ depsOpt s.env
+            ++ depsOpt s.migrations
 
 instance : HasDeps QueuesSpec where
   deps s := depsReq s.name ++ depsOpt s.visibilityTimeoutSec
@@ -221,6 +222,16 @@ instance : HasDeps PostgresSpec where
   deps s := depsReq s.name ++ depsOpt s.instanceClass ++ depsReq s.masterUsername
             ++ depsReq s.masterPasswordSecret ++ depsOpt s.version ++ depsOpt s.storageGb
             ++ depsOpt s.minCapacity ++ depsOpt s.maxCapacity
+
+/-- The migrations kind holds only names, so every edge here is expression
+    deps over literals — which is `[]` — and the real edges come from
+    `Engine.impliedByName`, like `PostgresSpec.masterPasswordSecret`'s.
+    The instance still has to exist and be total, which is the point of the
+    class: a kind that contributed no edges by accident would be
+    indistinguishable from one that contributed none on purpose. -/
+instance : HasDeps PostgresMigrationsSpec where
+  deps s := depsReq s.name ++ depsReq s.database ++ depsReq s.connectionSecret
+            ++ depsReq s.observerSecret ++ depsReq s.schema ++ depsReq s.migrations
 
 instance : HasDeps S3BucketSpec where
   deps s := depsReq s.name ++ depsOpt s.versioning ++ depsOpt s.objectLock
@@ -259,6 +270,7 @@ instance : HasDeps ScalewayContainerSpec where
     ++ depsOpt s.port ++ depsOpt s.minScale ++ depsOpt s.maxScale
     ++ depsOpt s.memoryMb ++ depsOpt s.cpuLimit ++ depsOpt s.timeoutSec
     ++ depsOpt s.env ++ depsOpt s.secretEnv ++ depsKeys s.secretEnv
+    ++ depsOpt s.migrations ++ depsKeyOpt s.migrations
 
 /-- Total over `Kind`, so a new kind cannot silently contribute no edges. -/
 @[reducible] def hasDepsOf : (k : Kind) → HasDeps (SpecOf.{1} k)
@@ -269,6 +281,7 @@ instance : HasDeps ScalewayContainerSpec where
   | .secrets           => inferInstanceAs (HasDeps SecretsSpec)
   | .imageRegistry     => inferInstanceAs (HasDeps ImageRegistrySpec)
   | .postgres          => inferInstanceAs (HasDeps PostgresSpec)
+  | .postgresMigrations => inferInstanceAs (HasDeps PostgresMigrationsSpec)
   | .s3Bucket          => inferInstanceAs (HasDeps S3BucketSpec)
   | .securityGroup     => inferInstanceAs (HasDeps SecurityGroupSpec)
   | .awsInstance       => inferInstanceAs (HasDeps AwsInstanceSpec)

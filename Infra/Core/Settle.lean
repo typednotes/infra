@@ -104,7 +104,8 @@ instance : Settleable .compute where
              handler := ← settleField env s.handler
              memoryMb := ← settleField env s.memoryMb
              timeoutSec := ← settleField env s.timeoutSec
-             env := ← settleField env s.env }
+             env := ← settleField env s.env
+             migrations := ← settleField env s.migrations }
 
 instance : Settleable .queues where
   settle env s := do
@@ -130,6 +131,18 @@ instance : Settleable .postgres where
              storageGb := ← settleField env s.storageGb
              minCapacity := ← settleField env s.minCapacity
              maxCapacity := ← settleField env s.maxCapacity }
+
+/-- Names only, so settling cannot fail on a reference: the edges are
+    `Engine.impliedByName`'s, and the backend — not the scheduler — is what
+    turns the `database` and secret names into a connection. -/
+instance : Settleable .postgresMigrations where
+  settle env s := do
+    return { name := ← settleField env s.name
+             database := ← settleField env s.database
+             connectionSecret := ← settleField env s.connectionSecret
+             observerSecret := ← settleField env s.observerSecret
+             schema := ← settleField env s.schema
+             migrations := ← settleField env s.migrations }
 
 instance : Settleable .s3Bucket where
   settle env s := do
@@ -187,6 +200,7 @@ instance : Settleable .scalewayContainer where
   settle env s := do
     let refs ← settleField env s.secretEnv
     let nsKey ← settleField env s.namespace'
+    let migKey ← settleField env s.migrations
     return { name := ← settleField env s.name
              namespace' := ← settleRefReq env .scaleway .scalewayContainerNamespace nsKey
              image := ← settleField env s.image
@@ -197,7 +211,8 @@ instance : Settleable .scalewayContainer where
              cpuLimit := ← settleField env s.cpuLimit
              timeoutSec := ← settleField env s.timeoutSec
              env := ← settleField env s.env
-             secretEnv := ← settleRefs env .scaleway .secrets refs }
+             secretEnv := ← settleRefs env .scaleway .secrets refs
+             migrations := ← settleRef env .scaleway .postgresMigrations migKey }
 
 /-- Total over `Kind`, so a new kind cannot be forgotten here. -/
 @[reducible] def settleableOf : (k : Kind) → Settleable k
@@ -208,6 +223,7 @@ instance : Settleable .scalewayContainer where
   | .secrets           => inferInstanceAs (Settleable .secrets)
   | .imageRegistry     => inferInstanceAs (Settleable .imageRegistry)
   | .postgres          => inferInstanceAs (Settleable .postgres)
+  | .postgresMigrations => inferInstanceAs (Settleable .postgresMigrations)
   | .s3Bucket          => inferInstanceAs (Settleable .s3Bucket)
   | .securityGroup     => inferInstanceAs (Settleable .securityGroup)
   | .awsInstance       => inferInstanceAs (Settleable .awsInstance)

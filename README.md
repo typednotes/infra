@@ -33,16 +33,16 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.12.1 covers
+## What 0.13.0 covers
 
-**3 clouds** (AWS, Scaleway, GCP) · **14 resource kinds** (7 portable, 7
+**3 clouds** (AWS, Scaleway, GCP) · **15 resource kinds** (8 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
 
-All seven portable kinds have live clients on **all three clouds** — on GCP:
+All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
 service accounts and Cloud SQL. Create-and-destroy round trips run in CI on
 **all three clouds** — AWS 12 resources, Scaleway 12, Google Cloud 10,
-covering thirteen of the fourteen kinds and 22 (cloud, kind) pairs. Each leg
+covering thirteen of the fifteen kinds and 22 (cloud, kind) pairs. Each leg
 applies five declarations in sequence: the whole fleet, a scale up, a scale
 down, a version with resources dropped, then one that declares nothing. After
 every stage the account must hold exactly what that stage declares, so a
@@ -115,7 +115,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.12.1"
+rev = "v0.13.0"
 ```
 
 Then:

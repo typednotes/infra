@@ -43,6 +43,9 @@ def declFor : Kind → String × String
   | .secrets          => ("pulledSecrets", "secrets")
   | .imageRegistry    => ("pulledImageRegistry", "imageRegistry")
   | .postgres         => ("pulledPostgres", "postgres")
+  -- Route-driven on the live backend, so a pull names only what a
+  -- declaration named; there is nothing account-side to enumerate.
+  | .postgresMigrations => ("pulledPostgresMigrations", "postgresMigrations")
   | .securityGroup    => ("pulledSecurityGroup", "securityGroup")
   | .scalewayFunctionNamespace  => ("pulledFunctionNamespace", "scalewayFunctionNamespace")
   | .scalewayContainerNamespace => ("pulledContainerNamespace", "scalewayContainerNamespace")

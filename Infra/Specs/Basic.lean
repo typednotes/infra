@@ -2,10 +2,12 @@ import Infra.Core.Spec
 import Infra.Core.Coe
 import Infra.Core.InstanceType
 
+open Lean (ToJson FromJson)
+
 /-
   One spec per `Kind`.
 
-  **Portable** specs (the first seven) are the common denominator every provider can honour, so
+  **Portable** specs (the first eight) are the common denominator every provider can honour, so
   they carry no cross-resource references at all: a reference has type `K p k` and therefore
   names a provider, which would tie the spec to one cloud. `Field .required` is the other place
   portability dies — a required field no provider-in-general can satisfy makes the kind
@@ -76,6 +78,16 @@ structure ComputeSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
   memoryMb   : Field .optional o f Nat
   timeoutSec : Field .optional o f Nat
   env        : Field .optional o f (List (String × String))
+  /-- The fleet name of the `postgresMigrations` resource this rollout must
+      wait for — migrate, then roll.
+
+      Its entire job is the ordering edge (`Engine.impliedByName`; a plain
+      name, because this spec is portable and a typed reference would name
+      a provider). No cloud reports anything about it, so it is never
+      compared and never drift: a compute whose migrations name changes is
+      a compute with a different edge, not a different resource. See
+      `docs/migrations.md`, "Ordering against the container". -/
+  migrations : Field .optional o f String
 
 structure QueuesSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
@@ -317,6 +329,103 @@ def PostgresSpec.serverless {K : ProviderId → Kind → Type}
   minCapacity := .known minCapacity
   maxCapacity := .known maxCapacity
 
+/-- A Postgres schema migration, as a declared value.
+
+    The SQL is carried verbatim rather than as a path or a digest: the
+    declaration is the review surface — a `plan` line names this resource,
+    and the diff of the declaration is where a human reads the SQL before
+    it runs — so the target holds the content itself. `id` is the
+    lexicographic application order, matching `ledger`'s numbered-file
+    convention (`sql/0001_init.sql`, …); content is compared exactly, so
+    there is no hash whose stability across toolchain versions would become
+    its own history-conflict story. See `docs/migrations.md`. -/
+structure Migration where
+  id  : String
+  sql : String
+  deriving Repr, DecidableEq, BEq, ToJson, FromJson
+
+/-- A declared migration set: an ordered list of migrations applied to one
+    schema of one declared database, by `infra` itself rather than by the
+    service's image at startup.
+
+    Every cross-resource reference here is a plain name, not a typed one —
+    `PostgresSpec.masterPasswordSecret`'s precedent, and for the same reason:
+    a typed reference names a provider, and a portable spec cannot. The
+    scheduler edges come from `Engine.impliedByName` instead of `HasDeps`,
+    same-cloud, which is right for a database and its credentials both.
+
+    Two secrets, deliberately unlike `masterPasswordSecret`'s single one:
+
+    * `connectionSecret` — the **read-write** URL, read only on the apply
+      path (backend `create`/`update`), exactly where
+      `Kinds.Postgres.fetchMasterPassword` already reads one.
+    * `observerSecret` — the **read-only** URL, read on the observation path
+      (`refresh`/`plan`/`apply` pulls). This is the one widening of the
+      "planning path holds no secret value" rule this kind costs, and it is
+      recorded in `docs/diff-semantics.md`'s ledger: the credential the
+      observation path can reach can `SELECT` and nothing else. See
+      `docs/migrations.md`, "hard edge 2".
+
+    Neither is compared by `Divergent`: which secret holds a URL is this
+    tool's bookkeeping, and rotating one (delete the secret, apply, declare
+    the new name) must not propose a replace — the same reading
+    `SecretsSpec.valueFrom` gets. -/
+structure PostgresMigrationsSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
+    (f : Type → Type u) where
+  name             : Field .required o f String
+  /-- The fleet name of the `postgres` resource whose database this schema
+      lives in. An ordering edge, and the parent whose ownership verdict
+      this kind inherits — the resource is rows inside that database, not a
+      cloud object of its own. -/
+  database         : Field .required o f String
+  connectionSecret : Field .required o f String
+  observerSecret   : Field .required o f String
+  /-- The Postgres schema this service owns. One resource per service, one
+      schema per service: two services never share a migration resource. -/
+  schema           : Field .required o f String
+  /-- The full ordered history. Append-only: a migration the database has
+      already applied must stay in this list with the same content, forever —
+      enforced at plan time by `Plan.migrationsAppendOnly`, and again by the
+      backend before it applies anything. -/
+  migrations       : Field .required o f (List Migration)
+
+/-- A schema name the backend can quote safely. Checked rather than escaped
+    past: the decidable tier of the design rule, so the backend's quoting is
+    belt and braces rather than the only thing standing between a declaration
+    and `pg_advisory_lock('…')`. -/
+def isSimpleIdent (s : String) : Bool :=
+  let okFirst (c : Char) : Bool := c.isAlpha || c == '_'
+  let okRest (c : Char) : Bool := c.isAlphanum || c == '_'
+  match s.toList with
+  | []       => false
+  | c :: cs  => okFirst c && cs.all okRest
+
+/-- Whether this declared history is internally sound, at the decidable tier:
+
+    ids strictly increasing (so list order *is* lexicographic application
+    order, `ledger`'s convention), no empty `sql`, and a quotable `schema`.
+
+    Everything here is decidable from the authored value alone, like
+    `SecretsSpec.sourceIsSound`; lift it fleet-wide with
+    `Plan.migrationsAreSound`. A non-literal `migrations` or `schema` is
+    *unsound*: migration content is schema, not a post-apply value, and a
+    history nobody can read offline is a history nobody can check. -/
+def PostgresMigrationsSpec.historyIsSound {K : ProviderId → Kind → Type}
+    (s : PostgresMigrationsSpec K Partial (Expr K)) : Bool :=
+  match s.schema.asLit, s.migrations.asLit with
+  | some schema, some ms =>
+      isSimpleIdent schema
+      && (ms.zip (ms.drop 1)).all fun (a, b) => a.id < b.id
+      && ms.all fun m => !m.id.isEmpty && !m.sql.isEmpty
+  | _, _ => false
+
+#guard isSimpleIdent "ledger"
+#guard isSimpleIdent "usage_events_2"
+#guard ¬ isSimpleIdent ""
+#guard ¬ isSimpleIdent "1schema"
+#guard ¬ isSimpleIdent "has-dash"
+#guard ¬ isSimpleIdent "sp ace"
+
 /-! ## Provider-local kinds -/
 
 /-- Richer than the portable `.objectStore`, and therefore not portable. Reaching for this
@@ -418,6 +527,13 @@ structure ScalewayContainerSpec (K : ProviderId → Kind → Type) (o : Type u �
       real Scaleway secret-binding mechanism is unconfirmed — see `Infra/Providers/Live.lean`
       and `docs/providers.md`. -/
   secretEnv  : Field .optional o f (List (String × K .scaleway .secrets))
+  /-- The `postgresMigrations` resource this container's rollout waits for —
+      a *typed* reference this time, since the spec is provider-local
+      already, and a real `Dep` edge (`depsKeyOpt`) rather than a name-based
+      one. Ordering is the field's whole job: it is settled to a handle the
+      backend ignores, reported `unknown`, and never compared. See
+      `docs/migrations.md`, "Ordering against the container". -/
+  migrations : Field .optional o f (Option (K .scaleway .postgresMigrations))
 
 /-! ## Dispatch -/
 
@@ -488,6 +604,7 @@ structure AwsInstanceSpec (K : ProviderId → Kind → Type) (o : Type u → Typ
   | .secrets           => SecretsSpec
   | .imageRegistry     => ImageRegistrySpec
   | .postgres          => PostgresSpec
+  | .postgresMigrations => PostgresMigrationsSpec
   | .s3Bucket          => S3BucketSpec
   | .securityGroup     => SecurityGroupSpec
   | .awsInstance       => AwsInstanceSpec
@@ -526,7 +643,8 @@ instance : Fillable ComputeSpec where
       handler    := s.handler.getD (.lit "main")
       memoryMb   := s.memoryMb.getD (.lit 256)
       timeoutSec := s.timeoutSec.getD (.lit 30)
-      env        := s.env.getD (.lit []) }
+      env        := s.env.getD (.lit [])
+      migrations := s.migrations.getD (.lit "") }
 
 instance : Fillable QueuesSpec where
   fill s :=
@@ -551,6 +669,20 @@ instance : Fillable PostgresSpec where
       storageGb            := s.storageGb.getD (.lit 10)
       minCapacity          := s.minCapacity.getD (.lit 0)
       maxCapacity          := s.maxCapacity.getD (.lit 0) }
+
+/-- Every field is required, so `fill` copies field for field with no
+    defaults to fill: a target with a missing field was a structure-literal
+    error before it ever reached here. The existence of this instance is
+    the compile-time certificate that any well-typed `postgresMigrations`
+    target is creatable. -/
+instance : Fillable PostgresMigrationsSpec where
+  fill s :=
+    { name := s.name
+      database := s.database
+      connectionSecret := s.connectionSecret
+      observerSecret := s.observerSecret
+      schema := s.schema
+      migrations := s.migrations }
 
 instance : Fillable S3BucketSpec where
   fill s :=
@@ -587,7 +719,8 @@ instance : Fillable ScalewayContainerSpec where
       cpuLimit   := s.cpuLimit.getD (.lit 140)
       timeoutSec := s.timeoutSec.getD (.lit 30)
       env        := s.env.getD (.lit [])
-      secretEnv  := s.secretEnv.getD (.lit []) }
+      secretEnv  := s.secretEnv.getD (.lit [])
+      migrations := s.migrations.getD (.lit none) }
 
 /-- `ingress := []` is the safe default: a group that lets nothing in. -/
 instance : Fillable SecurityGroupSpec where
@@ -621,6 +754,7 @@ instance : Fillable ScalewayNamespaceSpec where
   | .secrets           => inferInstanceAs (Fillable SecretsSpec)
   | .imageRegistry     => inferInstanceAs (Fillable ImageRegistrySpec)
   | .postgres          => inferInstanceAs (Fillable PostgresSpec)
+  | .postgresMigrations => inferInstanceAs (Fillable PostgresMigrationsSpec)
   | .s3Bucket          => inferInstanceAs (Fillable S3BucketSpec)
   | .securityGroup     => inferInstanceAs (Fillable SecurityGroupSpec)
   | .awsInstance       => inferInstanceAs (Fillable AwsInstanceSpec)

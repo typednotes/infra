@@ -61,7 +61,7 @@ namespace Infra.Cli.New
     line `init` appends when converting a `lakefile.toml`, and into what
     `scaffold` prints when it keeps a lakefile it did not write — one string,
     so those three cannot disagree. -/
-private def infraRev : String := "v0.12.1"
+private def infraRev : String := "v0.13.0"
 
 /-- The dependency line a consumer's `lakefile.lean` needs, pinned to
     `infraRev`. -/
@@ -114,13 +114,17 @@ def pkgConfigFlags (args : Array String) : IO (Array String) := do
     is a default target there: `lake build` never links an executable. `infra`
     does.
 
-    Naming `<libdir>/libfoo.so` directly links exactly the intended file and
-    shadows nothing. Falls back to `-lfoo` if the file is absent, so a distro
-    with a different layout still gets a chance. -/
+    Naming the library file directly links exactly the intended file and
+    shadows nothing — `.dylib` on macOS, `.so` on Linux (`ledger`'s lakefile
+    carries the same two-extension probe, for the same reason: a Homebrew
+    libpq is `libpq.dylib`, and a `.so`-only probe falls back to a bare
+    `-lpq` whose directory nothing added). Falls back to `-lfoo` if the file
+    is absent, so a distro with a different layout still gets a chance. -/
 def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
   let libs ← pkgConfigFlags #[\"--libs\", pkg]
   let libdirs ← pkgConfigFlags #[\"--variable=libdir\", pkg]
   let libdir : Option String := (libdirs.filter (· != \"\"))[0]?
+  let ext := if System.Platform.isOSX then \"dylib\" else \"so\"
   let mut out : Array String := #[]
   for tok in libs do
     if tok.startsWith \"-L\" then
@@ -129,7 +133,7 @@ def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
       let name := (tok.drop 2).toString
       match libdir with
       | some d =>
-        let candidate : FilePath := (d : FilePath) / s!\"lib{name}.so\"
+        let candidate : FilePath := (d : FilePath) / s!\"lib{name}.{ext}\"
         if ← candidate.pathExists then
           out := out.push candidate.toString
         else
@@ -164,6 +168,10 @@ run_cmd do
       pure #[\"-ladvapi32\", \"-lcredui\"]
     else
       pkgAbsoluteLibs \"libsecret-1\"
+  -- `Database.SQL`'s libpq. Absolute-path form on Linux for the same reason
+  -- the comment above `pkgAbsoluteLibs` gives: an `-L` to the system libdir
+  -- lets the distro's glibc shadow Lean's bundled one.
+  let libpq : Array String ← pkgAbsoluteLibs \"libpq\"
   -- OpenSSL is deliberately absent, though `jose.o` and `tls.o` both reference
   -- it. Lean already ends every executable link with its own
   -- `LEANC_INTERNAL_LINKER_FLAGS`:
@@ -192,7 +200,7 @@ run_cmd do
   --
   -- The Linux CI still installs `libssl-dev`, for the *headers* Linen's
   -- `jose.c`/`tls.c` compile against. Only the link flags are unnecessary.
-  mkDef `nativeLinkArgs keychain
+  mkDef `nativeLinkArgs (keychain ++ libpq)
 -- ⟪native-link-flags:end⟫
 "
 

@@ -64,7 +64,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.12.1"
+require infra from git "https://github.com/typednotes/infra" @ "v0.13.0"
 
 @[default_target]
 lean_exe «my-infra» where

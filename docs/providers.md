@@ -48,6 +48,7 @@ file to compile.
 | `compute` | Lambda (image) | Serverless Containers | no |
 | `iam` | IAM users | IAM applications | no |
 | `postgres` | RDS | Managed Database | no — and routed on shape: a set `instanceClass` means a classic instance, capacity bounds mean serverless. Scaleway's Serverless SQL Database is implemented (`serverless-sqldb/v1alpha1`, capacity as `cpu_min`/`cpu_max`); AWS's Aurora Serverless v2 raises a named error, and GCP's Cloud SQL has no serverless tier at all, so it raises with the tier to set instead |
+| `postgresMigrations` | Postgres wire | Postgres wire | **yes** — one wire-protocol client for all three clouds, and route-driven: the only migration sets a backend can name are the declared ones (`docs/migrations.md`) |
 | `s3Bucket` | S3 | — | AWS-only kind |
 | `securityGroup` | EC2 security groups | — | AWS-only kind |
 | `awsInstance` | EC2 instances | — | AWS-only kind; the portable `compute` kind is serverless-shaped and cannot carry a required network reference |
@@ -185,6 +186,7 @@ is the point; a mapping that looked like it worked would be worse.
 | `scalewayFunction.namespace'` | Scaleway | placement, not configuration: the API does not report which namespace a function is in, so it can never diverge — moving one between namespaces is not detected |
 | `scalewayContainer.namespace'` | Scaleway | same |
 | `postgres.masterPasswordSecret` | both | bookkeeping, never reported by the database |
+| `compute.migrations`, `scalewayContainer.migrations` | both | ordering-only fields: no cloud reports anything about them, and nothing is compared — their whole job is the rollout edge (`docs/migrations.md`, "Ordering against the container") |
 
 `iam.policies` used to head that table, on the grounds that AWS policy ARNs
 have no Scaleway equivalent. That was a statement about the *spelling*, and it

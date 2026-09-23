@@ -121,6 +121,48 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.13.0] — 2026-09-23
+
+### Added: `postgresMigrations` — a declared migration history
+
+The fifteenth kind, and the first whose backend is a data plane rather than
+a cloud control plane: an ordered list of SQL migrations applied to a
+declared database's schema by `infra` itself, over the Postgres wire
+(`Kinds/Migrations.lean`, through `linen`'s `Database.SQL`).
+`docs/migrations.md` is the design doc, written and argued before any of
+this was implemented.
+
+- **The plan names the work.** A pending migration is an `UPDATE` against
+  the resource, and the SQL under review is the diff of the declaration —
+  the review surface the design doc exists to argue for. A history the
+  database no longer matches is refused before any action is derived
+  (`Plan.migrationsAppendOnly`), answered again by the `Divergent` table
+  (conflict can never read as quietly fixable), and checked a third time by
+  the backend before it applies anything.
+- **Delete means FORGET.** The plan prints `FORGET`, the ledger row goes,
+  and the schema stays: its lifetime is the database's, and the `postgres`
+  resource's own delete is what drops it.
+- **Two identities, deliberately.** Apply reads a read-write URL secret;
+  observation (`refresh`/`plan`) reads a *read-only* one — the one widening
+  of "the planning path holds no secret value" this kind costs, recorded
+  in `docs/diff-semantics.md`'s ledger, and the reason the ephemeral-key
+  alternative was rejected: it would have made `refresh` mutating.
+- **Ordering is structural.** `scalewayContainer` gained an optional typed
+  `migrations` reference, and portable `compute` a name-based one, so a
+  rollout waits for its migrations inside the same `apply`.
+- **The link line grew.** `infra` now reaches `linen`'s libpq FFI, so the
+  native link-flag block — and its mirror in `Infra/Cli/New.lean`, and every
+  consumer's duplicated copy — names `libpq`. CI already installed the
+  package everywhere for the headers; a consumer now needs it at link time
+  too. `typednotes-infra`'s ~80-line copy moves with the same
+  `ci/check-lakefile-sync.sh` discipline it always had.
+
+Also: this kind's `list` is route-driven — the only migration sets a
+backend can even name are the declared ones, and `discover` cannot rebuild
+those ledger rows. That is safe *because* delete is a no-op FORGET; the two
+properties are one design decision, carried together in
+`docs/coverage.md`.
+
 ## [0.12.1] — 2026-09-21
 
 ### Fixed

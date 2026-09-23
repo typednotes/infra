@@ -58,9 +58,11 @@ def compute (name : Expr K String) (image : Expr K String)
     (handler : Partial (Expr K String) := .unknown)
     (memoryMb : Partial (Expr K Nat) := .unknown)
     (timeoutSec : Partial (Expr K Nat) := .unknown)
-    (env : Partial (Expr K (List (String × String))) := .unknown) :
+    (env : Partial (Expr K (List (String × String))) := .unknown)
+    (migrations : Partial (Expr K String) := .unknown) :
     ComputeSpec K Partial (Expr K) :=
-  { name, runtime, image, executionRole, namespace', handler, memoryMb, timeoutSec, env }
+  { name, runtime, image, executionRole, namespace', handler, memoryMb, timeoutSec, env,
+    migrations }
 
 def queues (name : Expr K String)
     (visibilityTimeoutSec : Partial (Expr K Nat) := .unknown) :
@@ -104,6 +106,15 @@ def postgresClassic (name : Expr K String) (masterUsername : Expr K String)
     PostgresSpec K Partial (Expr K) :=
   PostgresSpec.classic name masterUsername masterPasswordSecret instanceClass
     version storageGb
+
+/-- A declared migration set. `migrations` is the full history, newest last —
+    the same order `ledger`'s `sql/NNNN_*.sql` files apply in. Check the
+    fleet's soundness with `Plan.migrationsAreSound`, the way the `fleet`
+    command checks `secretsAreSound`. -/
+def postgresMigrations (name database connectionSecret observerSecret schema :
+    Expr K String) (migrations : Expr K (List Migration)) :
+    PostgresMigrationsSpec K Partial (Expr K) :=
+  { name, database, connectionSecret, observerSecret, schema, migrations }
 
 def s3Bucket (name : Expr K String)
     (versioning : Partial (Expr K Bool) := .unknown)
@@ -155,10 +166,11 @@ def scalewayContainer (name : Expr K String)
     (cpuLimit : Partial (Expr K Nat) := .unknown)
     (timeoutSec : Partial (Expr K Nat) := .unknown)
     (env : Partial (Expr K (List (String × String))) := .unknown)
-    (secretEnv : Partial (Expr K (List (String × K .scaleway .secrets))) := .unknown) :
+    (secretEnv : Partial (Expr K (List (String × K .scaleway .secrets))) := .unknown)
+    (migrations : Partial (Expr K (Option (K .scaleway .postgresMigrations))) := .unknown) :
     ScalewayContainerSpec K Partial (Expr K) :=
   { name, namespace', image, port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec,
-    env, secretEnv }
+    env, secretEnv, migrations }
 
 /-- Total over `Kind`, and checking the *correspondence* rather than just that
     the names exist.
@@ -179,7 +191,7 @@ def scalewayContainer (name : Expr K String)
   | .objectStore       => let _ : ∀ {K}, Expr K String → _ → _ →
                             ObjectStoreSpec K Partial (Expr K) := @objectStore; ()
   | .compute           => let _ : ∀ {K}, Expr K String → Expr K String → _ → _ → _ → _ → _ →
-                            _ → _ → ComputeSpec K Partial (Expr K) := @compute; ()
+                            _ → _ → _ → ComputeSpec K Partial (Expr K) := @compute; ()
   | .queues            => let _ : ∀ {K}, Expr K String → _ → QueuesSpec K Partial (Expr K) :=
                             @queues; ()
   | .secrets           => let _ : ∀ {K}, Expr K String → Expr K SecretSource →
@@ -189,6 +201,10 @@ def scalewayContainer (name : Expr K String)
   | .postgres          => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
                             Expr K Nat → Expr K Nat → _ → _ →
                             PostgresSpec K Partial (Expr K) := @postgres; ()
+  | .postgresMigrations =>
+      let _ : ∀ {K}, Expr K String → Expr K String → Expr K String → Expr K String →
+                  Expr K String → Expr K (List Migration) →
+                  PostgresMigrationsSpec K Partial (Expr K) := @postgresMigrations; ()
   | .s3Bucket          => let _ : ∀ {K}, Expr K String → _ → _ →
                             S3BucketSpec K Partial (Expr K) := @s3Bucket; ()
   | .securityGroup     => let _ : ∀ {K}, Expr K String → Expr K String → _ →
@@ -207,7 +223,7 @@ def scalewayContainer (name : Expr K String)
                             ScalewayFunctionSpec K Partial (Expr K) := @scalewayFunction; ()
   | .scalewayContainer => let _ : ∀ {K}, Expr K String →
                             Expr K (K .scaleway .scalewayContainerNamespace) →
-                            Expr K String → _ → _ → _ → _ → _ → _ → _ → _ →
+                            Expr K String → _ → _ → _ → _ → _ → _ → _ → _ → _ →
                             ScalewayContainerSpec K Partial (Expr K) := @scalewayContainer; ()
 
 end Infra.Specs.Build

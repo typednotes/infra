@@ -60,6 +60,9 @@ def resourceType : ProviderId → Kind → Option String
   | .aws, .secrets                    => some "aws_secretsmanager_secret"
   | .aws, .imageRegistry              => some "aws_ecr_repository"
   | .aws, .postgres                   => some "aws_db_instance"
+  -- A migration set is data-plane state, not a registry resource: no
+  -- Terraform provider expresses it, on any cloud.
+  | .aws, .postgresMigrations         => none
   | .aws, .s3Bucket                   => some "aws_s3_bucket"
   | .aws, .securityGroup              => some "aws_security_group"
   | .aws, .awsInstance                => some "aws_instance"
@@ -74,6 +77,7 @@ def resourceType : ProviderId → Kind → Option String
   | .scaleway, .secrets                    => some "scaleway_secret"
   | .scaleway, .imageRegistry              => some "scaleway_registry_namespace"
   | .scaleway, .postgres                   => some "scaleway_rdb_instance"
+  | .scaleway, .postgresMigrations         => none
   | .scaleway, .scalewayFunctionNamespace  => some "scaleway_function_namespace"
   | .scaleway, .scalewayFunction           => some "scaleway_function"
   | .scaleway, .scalewayContainerNamespace => some "scaleway_container_namespace"
@@ -88,6 +92,7 @@ def resourceType : ProviderId → Kind → Option String
   | .gcp, .secrets                    => some "google_secret_manager_secret"
   | .gcp, .imageRegistry              => some "google_artifact_registry_repository"
   | .gcp, .postgres                   => some "google_sql_database_instance"
+  | .gcp, .postgresMigrations         => none
   | .gcp, .s3Bucket                   => none
   | .gcp, .securityGroup              => none
   | .gcp, .awsInstance                => none
@@ -234,6 +239,12 @@ def attrsOf (nameOf : (p : ProviderId) → (k : Kind) → K p k → String) :
     ++ strOpt "instance_class" s.instanceClass ++ strOpt "engine_version" s.version
     ++ natOpt "allocated_storage" s.storageGb
     ++ [.missing "password" "held as a secret reference, not a value"]
+  -- Data-plane state in a data-plane resource: no Terraform type
+  -- expresses it (see `resourceType`), so the exported block says so rather
+  -- than exporting an empty history that would import back as truth.
+  | .postgresMigrations, s =>
+    [strReq "name" s.name, strReq "database" s.database,
+     .missing "migrations" "a migration history has no Terraform type"]
   | .s3Bucket, s =>
     [strReq "bucket" s.name] ++ boolOpt "versioning" s.versioning
     ++ boolOpt "object_lock_enabled" s.objectLock
@@ -350,6 +361,7 @@ def kindIdent : Kind -> String
   | .secrets => "secrets"
   | .imageRegistry => "imageRegistry"
   | .postgres => "postgres"
+  | .postgresMigrations => "postgresMigrations"
   | .s3Bucket => "s3Bucket"
   | .securityGroup => "securityGroup"
   | .awsInstance => "awsInstance"

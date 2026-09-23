@@ -158,6 +158,66 @@ instance : Divergent .postgres where
     ++ diverges "minCapacity" .mutable t.minCapacity r.minCapacity
     ++ diverges "maxCapacity" .mutable t.maxCapacity r.maxCapacity
 
+/-- The append-only comparison: the first point at which `applied` stops
+    being a prefix of `target` (matching `id` *and* `sql`), if it does.
+
+    `none` covers both "equal" and "applied is a strict prefix" — the two
+    states that are legal history. The caller decides what the difference
+    between them means. -/
+def migrationsConflict (applied target : List Migration) : Option String :=
+  match applied, target with
+  | [],        _          => none
+  | a :: _,    []         => some a.id
+  | a :: rest, b :: rest' =>
+      if a.id == b.id && a.sql == b.sql then migrationsConflict rest rest'
+      else some a.id
+
+/-- What a declared migration set disagrees with its target about, and
+    whether it can be fixed in place.
+
+    `migrations` is the interesting one, and it is *not* a `diverges`
+    comparison: the reported list is what the database already applied, and
+    the legal relationship to the target is "prefix of", not "equal to".
+    A strict prefix means pending work — `UPDATE`, which the backend turns
+    into applying exactly the suffix. Anything else — an id with different
+    content, or an applied id the target no longer names — is a history
+    conflict, and `Engine.push` refuses the plan before any action is
+    derived, via `Plan.migrationsAppendOnly`. This table still answers it
+    (as `forcesReplace`, so a caller using `repairOf` directly cannot read
+    conflict as quietly fixable), but `push` gets there first and says what
+    the conflict actually is.
+
+    The two secret-name fields are not compared at all: which secret holds
+    a URL is bookkeeping, and rotating one must not propose a replace —
+    `SecretsSpec.valueFrom`'s reading. `name`, `database` and `schema` are
+    `forcesReplace` because the rows live in exactly that database and
+    schema: a different one is a different resource, and "replace" here is
+    `delete` — a ledger-only FORGET that touches no schema — followed by a
+    create against the new parent. -/
+instance : Divergent .postgresMigrations where
+  divergence t r :=
+    divergesReq "name" .forcesReplace t.name r.name
+    ++ divergesReq "database" .forcesReplace t.database r.database
+    ++ divergesReq "schema" .forcesReplace t.schema r.schema
+    ++ (match migrationsConflict r.migrations t.migrations with
+        | none =>
+            if r.migrations.length == t.migrations.length then []
+            else [("migrations", .mutable)]
+        | some _ => [("migrations (history conflict)", .forcesReplace)])
+
+/- The three shapes the prefix comparison exists to tell apart, pinned: no
+   applied history is a prefix of anything (a first apply), an exact match is
+   not a conflict, and the same id with different content is. The second is
+   the one a plain equality would get wrong in the dangerous direction — it
+   would call pending work "converged". -/
+private def m1 : Migration := { id := "0001", sql := "CREATE SCHEMA x" }
+private def m2 : Migration := { id := "0002", sql := "CREATE TABLE x.t ()" }
+#guard (migrationsConflict [] [m1, m2]).isNone
+#guard (migrationsConflict [m1] [m1, m2]).isNone
+#guard (migrationsConflict [m1, m2] [m1, m2]).isNone
+#guard migrationsConflict [{ id := "0001", sql := "different" }] [m1] == some "0001"
+#guard migrationsConflict [m1, m2] [m1] == some "0002"
+
 instance : Divergent .s3Bucket where
   divergence t r :=
     divergesReq "name" .forcesReplace t.name r.name
@@ -260,6 +320,7 @@ instance : Divergent .scalewayContainer where
   | .secrets           => inferInstanceAs (Divergent .secrets)
   | .imageRegistry     => inferInstanceAs (Divergent .imageRegistry)
   | .postgres          => inferInstanceAs (Divergent .postgres)
+  | .postgresMigrations  => inferInstanceAs (Divergent .postgresMigrations)
   | .s3Bucket          => inferInstanceAs (Divergent .s3Bucket)
   | .securityGroup     => inferInstanceAs (Divergent .securityGroup)
   | .awsInstance       => inferInstanceAs (Divergent .awsInstance)

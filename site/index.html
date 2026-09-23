@@ -281,9 +281,10 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.12.1</strong> — a serverless Postgres database no longer demands
-  a master password the product has no user to
-  set.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.13.0</strong> — a Postgres schema's migrations are a declared
+  resource: the plan names the work, the apply runs it before the rollout,
+  and deleting the declaration means
+  forget.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -323,7 +324,7 @@
       </p>
       <div class="stats">
         <div class="stat"><b>3</b><span>clouds — AWS, Scaleway, GCP</span></div>
-        <div class="stat"><b>14</b><span>resource kinds</span></div>
+        <div class="stat"><b>15</b><span>resource kinds</span></div>
       </div>
       <div class="ctas">
         <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Read the tutorial</a>
@@ -680,7 +681,7 @@ would CREATE scaleway/secrets/db-url
 <span class="c">#   [[require]]</span>
 <span class="c">#   name = "infra"</span>
 <span class="c">#   git = "https://github.com/typednotes/infra"</span>
-<span class="c">#   rev = "v0.12.1"</span>
+<span class="c">#   rev = "v0.13.0"</span>
 
 lake update                <span class="c"># fetch infra</span>
 lake exe infra init        <span class="c"># turn this into an infra project</span>

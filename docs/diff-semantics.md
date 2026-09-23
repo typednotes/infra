@@ -354,6 +354,7 @@ misplaced fleet never reaches a DNS lookup:
 | An instance type that does not exist | `Assert (f.sizes.contains s)` on `InstanceType.of` — `t3` has no `32xlarge` |
 | A placement leaving one of the fleet's clouds unplaced | `Assert (rs.covers κ)` on `Regions.covering` |
 | A *resource* placed in a region its cloud does not have | `Assert (l.code p).isSome` on `Locality.region`, one resource at a time |
+| A migration history that is not one | `Plan.migrationsAreSound` lifting `PostgresMigrationsSpec.historyIsSound` — ids strictly increasing, no empty `sql`, a quotable `schema`, literals throughout (migration content is schema, not a post-apply value) |
 
 `Regions.covers` is per *cloud* and not per *slot*, which is a deliberate
 weakening: `by decide` reduces in the kernel, and a per-slot check compares
@@ -401,8 +402,28 @@ who wants it, and `Infra.Core.Declare`'s `fleet` command makes it easy to
 assert. What remains *structural* is that a secret value cannot be observed,
 cached, or reported: `SecretsObserved` carries a version, never a value;
 `.secrets`' `read` returns `valueFrom := .fromEnv ""`; and `Env.secretValue`
-defaults to knowing nothing, so the planning path cannot hold one at all —
-only `Engine.settleFor`, on the apply path, ever fills it in.
+defaults to knowing nothing, so the planning path cannot hold one in a *spec*
+— only `Engine.settleFor`, on the apply path, ever fills it in.
+
+**One real weakening, recorded as one** (0.13.0, with
+`postgresMigrations`): the kind's observation path — `list`/`read` behind
+`refresh`/`plan` — reads a secret's *value*, because the only way to see
+what a database has applied is to connect to it, and the only way to connect
+is a URL somebody wrote down. Two things hold the widening to its size:
+
+* it goes through `Kinds.Secrets.fetchValue`, the same narrowly-scoped reader
+  as every other read, never through `Env.secretValue` — a spec still cannot
+  hold a value, and `settleSpec` on the plan path is as blind as ever;
+* it is the **read-only** URL, a credential scoped to `SELECT` on one table.
+  The apply path keeps the read-write URL, exactly where
+  `fetchMasterPassword` already reads one.
+
+The ephemeral-key alternative — mint a short-lived key at refresh, delete it
+after — was rejected because it would have widened a bigger invariant: plan
+and refresh are read-only, and Scaleway IAM cannot scope key-minting below
+the project, so the `plan.yml` token would have gained the right to mint
+keys for *any* identity, the read-write ones included. Recorded in
+`docs/migrations.md`, hard edge 2.
 
 **Decidable, but not embeddable in the structure**: `PostgresSpec.hasCapacityChoice` — "at least
 one of `instanceClass` or `{minCapacity, maxCapacity}` is set" — is a decidable `Bool` function,
@@ -441,7 +462,15 @@ they agree on cardinalities, providers, names, and the ordered action list.
 
 **Genuinely runtime**: global uniqueness of bucket names, quota and capacity,
 eventual consistency, whether an `absent` resource is still referenced from
-outside the fleet.
+outside the fleet, and — the `postgresMigrations` contract — that what the
+database has applied is still a prefix of what the declaration names. That
+last one is the newest tier-lowering of all: it cannot be checked at compile
+time because it needs observed state, so `Engine.push` refuses to act past a
+violation (`Plan.migrationsAppendOnly`, on the plan path as well as the
+apply path), the `Divergent` table answers the same question for any caller
+that reaches `repairOf` without going through `push` (conflict is
+`forcesReplace`, never quietly fixable), and the backend checks a third time
+before applying anything. Cheap at every tier, fatal at none.
 
 ### Known soft spots
 
@@ -482,6 +511,18 @@ outside the fleet.
 - **Nothing forces a `Plan` through `fill` before apply.** `settleSpec` does
   it, and `push` goes through `settleSpec`, but the type system does not
   require that route.
+- **The `role_read` grant on a migrations history table is unverified.**
+  The permission sets themselves are checked, not recalled
+  (`ServerlessSQLDatabaseReadOnly` maps to exactly `SELECT`, and
+  `ServerlessSQLDatabaseReadWrite` to SELECT/INSERT/UPDATE/DELETE plus DDL —
+  Scaleway's "Manage user permissions for Serverless SQL Databases" page,
+  reviewed 2025-09-17, checked 2026-09-23). What no live account has
+  exercised is whether the read role can see a table the DDL identity
+  created *without* the explicit `GRANT SELECT` the backend issues — the
+  guarded grant closes the gap if there is one, and costs nothing where
+  `role_read` is nobody (RDS, Cloud SQL). When the first live run happens,
+  verify against the account and delete this entry. `docs/migrations.md`
+  carries the note.
 - **Unreportable fields are unenforced, not rejected.** A target asking for
   something a cloud cannot express is accepted and quietly ignored; see
   `docs/providers.md` for the list.

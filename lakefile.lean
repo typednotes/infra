@@ -13,8 +13,14 @@ open System Lake DSL
   the platform-conditional flags that fixes, hence Lean.
 
   Only the flags for the FFI `infra` actually reaches are declared. A static
-  archive contributes only the members whose symbols are referenced, so there
-  is no need for Linen's libpq or DuckDB flags here.
+  archive contributes only the members whose symbols are referenced — DuckDB
+  stays out for that reason — but libpq no longer does: the
+  `postgresMigrations` backend talks the Postgres wire protocol through
+  `Linen.Database.SQL`, so `linen_pg_*` symbols are now on the link line of
+  every executable that reaches `Infra.Cli`, and every consumer needs
+  `libpq`/`pkg-config` installed wherever it builds (CI already installs
+  `libpq-dev`/`brew install libpq` — see the workflows, and
+  `docs/migrations.md`'s "What it costs").
 
   Resolution happens at lakefile-elaboration time on the build machine, so
   nothing is hardcoded to one developer's paths.
@@ -48,13 +54,17 @@ def pkgConfigFlags (args : Array String) : IO (Array String) := do
     is a default target there: `lake build` never links an executable. `infra`
     does.
 
-    Naming `<libdir>/libfoo.so` directly links exactly the intended file and
-    shadows nothing. Falls back to `-lfoo` if the file is absent, so a distro
-    with a different layout still gets a chance. -/
+    Naming the library file directly links exactly the intended file and
+    shadows nothing — `.dylib` on macOS, `.so` on Linux (`ledger`'s lakefile
+    carries the same two-extension probe, for the same reason: a Homebrew
+    libpq is `libpq.dylib`, and a `.so`-only probe falls back to a bare
+    `-lpq` whose directory nothing added). Falls back to `-lfoo` if the file
+    is absent, so a distro with a different layout still gets a chance. -/
 def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
   let libs ← pkgConfigFlags #["--libs", pkg]
   let libdirs ← pkgConfigFlags #["--variable=libdir", pkg]
   let libdir : Option String := (libdirs.filter (· != ""))[0]?
+  let ext := if System.Platform.isOSX then "dylib" else "so"
   let mut out : Array String := #[]
   for tok in libs do
     if tok.startsWith "-L" then
@@ -63,7 +73,7 @@ def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
       let name := (tok.drop 2).toString
       match libdir with
       | some d =>
-        let candidate : FilePath := (d : FilePath) / s!"lib{name}.so"
+        let candidate : FilePath := (d : FilePath) / s!"lib{name}.{ext}"
         if ← candidate.pathExists then
           out := out.push candidate.toString
         else
@@ -98,6 +108,10 @@ run_cmd do
       pure #["-ladvapi32", "-lcredui"]
     else
       pkgAbsoluteLibs "libsecret-1"
+  -- `Database.SQL`'s libpq. Absolute-path form on Linux for the same reason
+  -- the comment above `pkgAbsoluteLibs` gives: an `-L` to the system libdir
+  -- lets the distro's glibc shadow Lean's bundled one.
+  let libpq : Array String ← pkgAbsoluteLibs "libpq"
   -- OpenSSL is deliberately absent, though `jose.o` and `tls.o` both reference
   -- it. Lean already ends every executable link with its own
   -- `LEANC_INTERNAL_LINKER_FLAGS`:
@@ -126,11 +140,11 @@ run_cmd do
   --
   -- The Linux CI still installs `libssl-dev`, for the *headers* Linen's
   -- `jose.c`/`tls.c` compile against. Only the link flags are unnecessary.
-  mkDef `nativeLinkArgs keychain
+  mkDef `nativeLinkArgs (keychain ++ libpq)
 -- ⟪native-link-flags:end⟫
 
 package infra where
-  version := v!"0.12.1"
+  version := v!"0.13.0"
   -- Metadata Reservoir (the Lake package index) surfaces on the package page.
   -- Reservoir indexes public Lean repos automatically — no submission — but it
   -- only shows what is declared here, and the repo link is all it can infer.
@@ -219,3 +233,14 @@ lean_exe «serverless-sql-iam» where
 lean_exe «multi-region» where
   srcDir := "example"
   root := `MultiRegion
+
+/-- `example/PostgresMigrations.lean`: a database, the two identities and
+    URL secrets that gate it, a declared migration history, and a container
+    whose rollout waits on it — the `postgresMigrations` kind's whole
+    story in one fleet. Placeholder-backed, so a bare invocation needs no
+    credentials and touches no network: it is there to be read and
+    compiled, and the ordering of its plan is what it proves. -/
+@[default_target]
+lean_exe «postgres-migrations» where
+  srcDir := "example"
+  root := `PostgresMigrations
