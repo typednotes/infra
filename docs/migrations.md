@@ -389,8 +389,12 @@ Where the shipped kind differs from the proposal this page argued, and why:
   exactly `SELECT`, and `ServerlessSQLDatabaseReadWrite` to the DDL suite —
   Scaleway's "Manage user permissions for Serverless SQL Databases" page,
   reviewed 2025-09-17, checked 2026-09-23 — so option (c)'s read-only
-  observer identity is real. The remaining unverified fact is whether
-  `role_read` needs the explicit `GRANT SELECT` the backend issues; the
-  guarded grant costs nothing where the role is nobody, and
-  `docs/diff-semantics.md`'s ledger carries the soft spot until a live run
-  exercises it.
+  observer identity is real. Scaleway's "Known differences" page (checked
+  2026-09-23) says `GRANT` cannot be performed on Serverless SQL — access is
+  IAM's, per permission set — so the backend's guarded grant is best effort
+  since 0.14.0: a refusal is a `NOTICE`, where before it would have aborted
+  the apply session before any migration ran. Still unverified live: that
+  the read role sees the history table without it, and that the DDL set may
+  `CREATE SCHEMA` (the permission page lists only `TABLE` and `INDEX`).
+  `docs/diff-semantics.md`'s ledger carries both until a live run exercises
+  them.

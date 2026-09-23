@@ -162,6 +162,24 @@ only `namePrefix` behaves exactly as before. An empty entry claims nothing
 even beside real ones, and the `foreign` warning names every prefix, not
 the first; both pinned in `Ownership.lean`.
 
+### Fixed: a refused `GRANT` no longer aborts a migrations apply
+
+The backend grants `SELECT` on `<schema>.infra_migrations` to `role_read`
+when that role exists. Scaleway's "Known differences between Serverless SQL
+Databases and PostgreSQL" page (checked 2026-09-23) lists `GRANT … TO role`
+as a command that *cannot be performed* — access is managed only through
+IAM permission sets. On the one cloud the grant was written for, it could
+therefore fail, and a failed statement aborted the apply session before any
+migration ran. The `EXECUTE` now sits in its own `BEGIN … EXCEPTION` block
+and a refusal is a `NOTICE`. Checked against a local Postgres by running the
+exact block as a role that does not own the table. The observation path's
+read still fails loudly if the observer truly cannot see the table.
+
+Also newly flagged rather than assumed: the same permission page lists
+`CREATE/ALTER/DROP TABLE` and `INDEX` for `ServerlessSQLDatabaseReadWrite`,
+not `CREATE SCHEMA`, which the backend needs. Unverified live; recorded in
+`docs/diff-semantics.md`'s ledger and the backend's module note.
+
 ### Fixed: a one-migration history skipped the empty-`sql` check
 
 `historyIsSound` read `… all fun (a, b) => a.id < b.id && ms.all fun m => …`.

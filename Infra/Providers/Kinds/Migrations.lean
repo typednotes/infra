@@ -58,11 +58,18 @@ import Linen.Database.PostgreSQL.LibPQ
     history — an empty `applied` read as "nothing applied" would propose
     re-running every migration.
   * `role_read` is granted `SELECT` on the history table *if that role
-    exists* — unverified whether Scaleway's `ServerlessSQLDatabaseDataRead`
-    mapping needs the grant to see a table the DDL identity created; the
-    guarded `DO` block costs nothing on clouds where the role does not
-    exist (RDS, Cloud SQL) and closes the gap on the one where it might.
-    See `docs/migrations.md`'s "provider facts" note.
+    exists*, best effort. Scaleway documents `GRANT` as a command that
+    cannot be performed on Serverless SQL — access comes from IAM
+    permission sets, which apply to every table — so there the grant is
+    expected to be unnecessary and may be refused; a refusal is a `NOTICE`,
+    not a failed apply (`grantSql`). Clouds where the role does not exist
+    (RDS, Cloud SQL) skip it. See `docs/migrations.md`'s "provider facts".
+  * **Unverified: `CREATE SCHEMA` under `ServerlessSQLDatabaseReadWrite`.**
+    Scaleway's permission page lists `CREATE/ALTER/DROP TABLE` and `INDEX`
+    for that set, not `CREATE SCHEMA`. If a live run refuses
+    `ensureSchemaSql`, the apply fails here, before any migration or
+    rollout — loud and early — and the history table needs a home that
+    does not require creating a schema.
 -/
 
 namespace Infra.Providers.Kinds.Migrations
@@ -159,13 +166,28 @@ private def ensureTableSql (schema : String) : String :=
   s!"CREATE TABLE IF NOT EXISTS {historyTable schema} \
 (id text PRIMARY KEY, sql text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
 
-/-- `SELECT` for the observer role, but only where such a role exists —
-    see the module note. A plain `GRANT` would fail outright on RDS and
-    Cloud SQL, where `role_read` is nobody. -/
+/-- `SELECT` for the observer role, but only where such a role exists, and
+    only where the cloud allows it — see the module note. A plain `GRANT`
+    would fail outright on RDS and Cloud SQL, where `role_read` is nobody.
+
+    **Best effort, and a refusal is not an error.** Scaleway's "Known
+    differences between Serverless SQL Databases and PostgreSQL" page
+    (checked 2026-09-23) lists `GRANT SELECT ON TABLE … TO role` among the
+    commands that *cannot be performed*: access is managed only through IAM
+    permission sets, which apply to every table. So on the one cloud this
+    grant was written for, it may be both unnecessary and refused — and a
+    refused `GRANT` used to abort the whole apply session, before any
+    migration ran. The inner block turns that into a `NOTICE`; the
+    observation path's own read (`appliedOf`) still fails loudly if the
+    observer really cannot see the table, which is the check that matters. -/
 private def grantSql (schema : String) : String :=
   s!"DO $grant$ BEGIN \
 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'role_read') THEN \
+BEGIN \
 EXECUTE 'GRANT SELECT ON {historyTable schema} TO role_read'; \
+EXCEPTION WHEN OTHERS THEN \
+RAISE NOTICE 'infra: GRANT on %.infra_migrations refused (%); access is expected to come from the cloud''s IAM instead', '{schema}', SQLERRM; \
+END; \
 END IF; END $grant$"
 
 -- ────────────────────────────────────────────────────────────────────
