@@ -175,10 +175,24 @@ namespace Asm
 
 private def target (op : String) : String := s!"secretsmanager.{op}"
 
+/-- A secret entry's `Tags`, as `(key, value)` pairs. -/
+private def tagsOf (s : Value) : List (String × String) :=
+  (arrayField s "Tags").filterMap fun t =>
+    match stringField t "Key", stringField t "Value" with
+    | some k, some v => some (k, v)
+    | _,      _      => none
+
+/-- Every secret's name, with its tags — `ListSecrets` returns `Tags` on each
+    entry, so no second call is needed. -/
+def listTagged (creds : Credentials) (ep : Endpoint) :
+    IO (List (String × List (String × String))) := do
+  let reply ← Json.call creds ep (target "ListSecrets") (.object [])
+  return (arrayField reply "SecretList").filterMap fun s =>
+    (stringField s "Name").map fun n => (n, tagsOf s)
+
 /-- Every secret's name. -/
 def list (creds : Credentials) (ep : Endpoint) : IO (List String) := do
-  let reply ← Json.call creds ep (target "ListSecrets") (.object [])
-  return (arrayField reply "SecretList").filterMap (stringField · "Name")
+  return (← listTagged creds ep).map (·.1)
 
 /-- Metadata only. `DescribeSecret` deliberately, not `GetSecretValue`: this
     must not pull plaintext into the engine. -/
@@ -250,12 +264,7 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
   match ← (Json.call creds ep (target "DescribeSecret")
       (.object [("SecretId", .string name)])).toBaseIO with
   | .error _  => return .unreadable
-  | .ok reply =>
-    let tags := (arrayField reply "Tags").filterMap fun t =>
-      match stringField t "Key", stringField t "Value" with
-      | some k, some v => some (k, v)
-      | _,      _      => none
-    return .tags tags none
+  | .ok reply => return .tags (tagsOf reply) none
 
 def putValue (creds : Credentials) (ep : Endpoint) (name value : String) : IO String := do
   let reply ← Json.call creds ep (target "PutSecretValue")
@@ -300,6 +309,11 @@ private def listRaw (creds : Credentials) : IO (List (String × String × List S
 
 def list (creds : Credentials) : IO (List String) := do
   return (← listRaw creds).map (·.1)
+
+/-- Every secret's name, with its tags decoded — the same single call as
+    `list`, since Scaleway's listing carries each secret's flat tags. -/
+def listTagged (creds : Credentials) : IO (List (String × List (String × String))) := do
+  return (← listRaw creds).map fun (n, _, tags) => (n, tags.map Scaleway.decodeTag)
 
 /-- Scaleway addresses secrets by UUID, so every operation resolves the name
     first. The extra call keeps fleet keys readable. -/

@@ -10,24 +10,6 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Verified live: `postgresMigrations` on Scaleway
-
-`typednotes-infra`'s first apply (2026-09-23) created four migration
-histories on two Serverless SQL databases — SQL read from each service's
-repository at its release tag, ordered by foreign keys — and gated five
-container rollouts on them; a plan afterwards proposed nothing for them.
-It settled both provider facts `docs/diff-semantics.md` carried, so that
-entry is deleted: `ServerlessSQLDatabaseReadWrite` may `CREATE SCHEMA`
-(the permission page lists only tables and indexes), and the read identity
-sees every table the DDL identity created, with `SELECT` only.
-
-It also found one nobody predicted: Serverless SQL routes connections by
-TLS SNI and refuses a client that sends none. libpq — this library's
-driver — sends it; Go's `lib/pq` does not, and needs the
-`options=databaseid%3D<id>` parameter Scaleway documents. Recorded in
-`docs/migrations.md`.
-
-
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order
@@ -138,6 +120,57 @@ The inline block loses `sed -i` along with Python: BSD sed reads the next
 argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
+
+## [0.14.1] — 2026-09-23
+
+### Fixed: a minted key's principal was empty after the apply that minted it
+
+`principalOf` and `accessKeyOf` read a minted API key's identity and public
+half from the key secret's observed state, and the `.secrets` listing —
+which is where observed state comes from — reported both as `""` for every
+secret. They were right only in the apply that *minted* the key, whose
+observed state came from `create`'s return. So a composed secret declared in
+a later apply was built with an empty user name. CI runners start with no
+`.infra/` cache, so every apply re-lists.
+
+Found by `typednotes-infra`'s second apply: a new connection string for its
+DB inspector composed as `postgres://:…@…`, and pgweb crashed on
+`authentication failed`. Composed secrets are create-only, so the bad value
+stays until that secret is replaced.
+
+The listing now reads each secret's tags from the same listing call on all
+three clouds (`listTagged`: AWS `ListSecrets` entries, GCP secret labels,
+Scaleway's flat tags). For a secret carrying the minted-key back-reference
+(`Secrets.apiKeyTags`, what `delete` already relies on) it rebuilds both
+fields the way `create` computes them. The key id is the public half. The
+principal is the AWS user name, the GCP service-account email, or the
+Scaleway application's id — one IAM lookup per minted key, Scaleway only.
+
+Checked against the real Scaleway account: the three rebuilt principals equal
+the IAM applications' ids (`scw iam application list`), and the one composed
+into the first apply's observer URL. Before the fix, all three were `""`.
+
+Known limit: a minted key whose identity was deleted outside infra is
+reported with no principal, rather than failing the listing of every secret
+in the project.
+
+### Verified live: `postgresMigrations` on Scaleway
+
+`typednotes-infra`'s first apply (2026-09-23) created four migration
+histories on two Serverless SQL databases — SQL read from each service's
+repository at its release tag, ordered by foreign keys — and gated five
+container rollouts on them; a plan afterwards proposed nothing for them.
+It settled both provider facts `docs/diff-semantics.md` carried, so that
+entry is deleted: `ServerlessSQLDatabaseReadWrite` may `CREATE SCHEMA`
+(the permission page lists only tables and indexes), and the read identity
+sees every table the DDL identity created, with `SELECT` only.
+
+It also found one nobody predicted: Serverless SQL routes connections by
+TLS SNI and refuses a client that sends none. libpq — this library's
+driver — sends it; Go's `lib/pq` does not, and needs the
+`options=databaseid%3D<id>` parameter Scaleway documents. Recorded in
+`docs/migrations.md`.
+
 
 ## [0.14.0] — 2026-09-23
 

@@ -47,9 +47,21 @@ def host : String := "secretmanager.googleapis.com"
 private def secretPath (project name : String) : String :=
   s!"/v1/projects/{project}/secrets/{name}"
 
-/-- Every secret in the project, by short name. -/
-def list (creds : Credentials) (project : String) : IO (List String) := do
-  let rec go (fuel : Nat) (token : String) (acc : List String) : IO (List String) := do
+/-- A secret object's labels, as `(key, value)` pairs. -/
+private def labelsOf (s : Value) : List (String × String) :=
+  match field s "labels" with
+  | some (.object fields) => fields.filterMap fun (k, v) =>
+      match v with
+      | .string str => some (k, str)
+      | _           => none
+  | _ => []
+
+/-- Every secret in the project, by short name, with its labels — which the
+    listing returns on each secret object, so no second call is needed. -/
+def listTagged (creds : Credentials) (project : String) :
+    IO (List (String × List (String × String))) := do
+  let rec go (fuel : Nat) (token : String) (acc : List (String × List (String × String))) :
+      IO (List (String × List (String × String))) := do
     match fuel with
     | 0 =>
       IO.eprintln "warning: gcp secret manager: stopped paginating secrets after 50 \
@@ -59,12 +71,16 @@ pages; the list may be incomplete"
       let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
       let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/secrets" query
       let here := (arrayField reply "secrets").filterMap fun s =>
-        (stringField s "name").map Gcp.shortName
+        (stringField s "name").map fun n => (Gcp.shortName n, labelsOf s)
       let acc := acc ++ here
       match stringField reply "nextPageToken" with
       | some next => if next.isEmpty then return acc else go fuel' next acc
       | none      => return acc
   go 50 "" []
+
+/-- Every secret in the project, by short name. -/
+def list (creds : Credentials) (project : String) : IO (List String) := do
+  return (← listTagged creds project).map (·.1)
 
 /-- The newest enabled version's identifier, as an opaque string.
 
@@ -119,13 +135,7 @@ def readOwnership (creds : Credentials) (project name : String) :
   match attempt with
   | .error _ => return .unreadable
   | .ok reply =>
-    let tags := match field reply "labels" with
-      | some (.object fields) => fields.filterMap fun (k, v) =>
-          match v with
-          | .string s => some (k, s)
-          | _         => none
-      | _ => []
-    return .tags tags none
+    return .tags (labelsOf reply) none
 
 /-- Give an existing secret a new value. Returns the version identifier.
 

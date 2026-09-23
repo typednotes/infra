@@ -500,16 +500,49 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
         | .scaleway => ImageRegistry.Scw.list creds
       return entries.map fun (name, uri) => { handle := ⟨name⟩, repositoryUri := uri }
     | .secrets => do
-      let names ← match provider with
-        | .gcp      => Gcp.SecretManager.list creds (← Gcp.requireProject creds)
-        | .aws      => Secrets.Asm.list creds (asmFor creds)
-        | .scaleway => Secrets.Scw.list creds
-      -- Left empty deliberately: a version costs one `describeVersion` call
-      -- per secret, and nothing consumes it — `liveRead` reports the spec, and
-      -- the divergence table for `.secrets` never looks at a version. The
-      -- three `describeVersion` implementations are there for the drift
-      -- detection that would, and are uncalled until then.
-      return names.map fun n => { handle := ⟨n⟩, version := "" }
+      let tagged ← match provider with
+        | .gcp      => Gcp.SecretManager.listTagged creds (← Gcp.requireProject creds)
+        | .aws      => Secrets.Asm.listTagged creds (asmFor creds)
+        | .scaleway => Secrets.Scw.listTagged creds
+      -- `version` is left empty deliberately: it costs one `describeVersion`
+      -- call per secret, and nothing consumes it — `liveRead` reports the
+      -- spec, and the divergence table for `.secrets` never looks at a
+      -- version. The three `describeVersion` implementations are there for
+      -- the drift detection that would, and are uncalled until then.
+      --
+      -- A minted key's public half and principal are *not* optional, though:
+      -- `accessKeyOf`/`principalOf` read them from here, and before 0.14.1
+      -- this listing reported them as `""` for every secret. They were right
+      -- only in the apply that minted the key (from `create`'s return), so a
+      -- composed secret declared in any *later* apply — or recomposed after a
+      -- deletion — was built with an empty user name and failed
+      -- authentication (first seen as pgweb's `authentication failed` on
+      -- `typednotes-infra`'s second apply). The back-reference tags every
+      -- minted secret carries (`Secrets.apiKeyTags`, what `delete` already
+      -- reads) name the identity and the key, so both are rebuilt here, the
+      -- way `create` computes them: the key id is the public half, and the
+      -- principal is the AWS user name, the GCP service-account email, or
+      -- the Scaleway application's *id* — the one extra call, once per
+      -- minted key, and only on Scaleway.
+      let mut out : List SecretsObserved := []
+      for (n, tags) in tagged do
+        match Secrets.apiKeyRefOf (.tags tags none) with
+        | none => out := { handle := ⟨n⟩, version := "" } :: out
+        | some (identity, keyId) =>
+          let principal ← match provider with
+            | .aws      => pure identity
+            | .gcp      => pure (Gcp.Iam.emailOf (← Gcp.requireProject creds) identity)
+            -- An identity deleted outside infra leaves a key nothing can
+            -- authenticate as. It is reported with no principal rather than
+            -- failing the listing of every secret in the project — the
+            -- known limit of this reconstruction (CHANGELOG 0.14.1); a
+            -- declared key's identity is declared too, and exists.
+            | .scaleway =>
+              match ← (Iam.Scw.requireId creds identity).toBaseIO with
+              | .ok appId => pure appId
+              | .error _  => pure ""
+          out := { handle := ⟨n⟩, version := "", accessKey := keyId, principal } :: out
+      return out.reverse
     | .compute => do
       let names ← match provider with
         | .gcp      => do
