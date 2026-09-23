@@ -93,9 +93,15 @@ Every other Scaleway kind is signed with the main access/secret key above.
 `.queues` cannot be: its SQS-compatible endpoint refuses that key outright and
 needs a *dedicated* credential, minted by calling Scaleway's own API
 (`activate-sqs` then `sqs-credentials`) using the main key once. That minted
-credential is cached under keychain service `infra`, account `scaleway-sqs` —
-a second, separate keychain entry from the `scaleway` one above — so it is
-provisioned once per machine rather than on every `push`. See
+credential is cached under keychain service `infra`, account
+`scaleway-sqs/<project>/<region>` — one entry per project and region, since a
+credential belongs to exactly one of each, and separate from the `scaleway`
+entry above — so it is provisioned once per machine rather than on every run.
+A cached entry is used only after checking, read-only, that its access key is
+still one of that project's credentials. (Before 0.16.0 the account was the
+constant `scaleway-sqs`, so every project on a machine signed its queue calls
+with whichever project's credential was minted first; that entry is no longer
+read and can be deleted.) See
 `Infra.Providers.Scaleway.Sqs` and `docs/providers.md`'s "verified against a
 real account" note.
 

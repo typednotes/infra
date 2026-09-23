@@ -86,9 +86,19 @@ private def prefix' (region : String) : String := Scaleway.regionalPrefix "mnq" 
     region, and Scaleway's SQS credentials are regional. -/
 initialize mintedThisRun : IO.Ref (List ((String × String) × Credentials)) ← IO.mkRef []
 
-/-- The keychain account the dedicated SQS credential is cached under. Distinct
-    from the main `scaleway` account `Infra.Core.Credentials` uses. -/
-private def keychainAccount : String := "scaleway-sqs"
+/-- The keychain account the dedicated SQS credential for `project` in
+    `region` is cached under. Distinct from the main `scaleway` account
+    `Infra.Core.Credentials` uses.
+
+    **Keyed by project and region**, because a Scaleway SQS credential belongs
+    to exactly one of each. Until 0.16.0 this was the constant
+    `scaleway-sqs`, so whichever project minted first owned the entry, and
+    every other project's queue operations were signed with it — listing,
+    and deleting, *that* project's queues. Found live: `typednotes-infra`'s
+    plan listed the default project's queues rather than its own. The old
+    entry is no longer read; it can be deleted from the keychain by hand. -/
+private def keychainAccountFor (project region : String) : String :=
+  s!"scaleway-sqs/{project}/{region}"
 
 /-- The name this library gives the credential it manages.
 
@@ -160,13 +170,26 @@ private def activate (creds : Credentials) (region project : String) :
     reply for this one is not documented alongside the create call. Both
     plausible spellings are read; the wrong one is simply an empty list, which
     is cheaper than being wrong about which is right. -/
-private def existingId (creds : Credentials) (region project : String) :
-    IO (Option String) := do
+private def listed (creds : Credentials) (region project : String) :
+    IO (List Value) := do
   let reply ← Scaleway.call creds "GET" (prefix' region ++ "/sqs-credentials")
     (query := [("project_id", project)])
-  let entries := arrayField reply "sqs_credentials" ++ arrayField reply "credentials"
-  return entries.findSome? fun c =>
+  return arrayField reply "sqs_credentials" ++ arrayField reply "credentials"
+
+private def existingId (creds : Credentials) (region project : String) :
+    IO (Option String) := do
+  return (← listed creds region project).findSome? fun c =>
     if stringField c "name" == some credentialName then stringField c "id" else none
+
+/-- Whether `accessKey` is one of `project`'s SQS credentials in `region` —
+    read-only. What a keychain entry must pass before it is used: the entry
+    says what was minted once, not what still exists or where, and a
+    credential of another project would sign requests against *that*
+    project's queues without any error to say so. -/
+private def belongsTo (creds : Credentials) (region project accessKey : String) :
+    IO Bool := do
+  return (← listed creds region project).any fun c =>
+    stringField c "access_key" == some accessKey
 
 /-- Delete the credential holding our name, so a fresh one can take it.
 
@@ -228,7 +251,20 @@ def credentialsFor (provider : ProviderId) (creds : Credentials) : IO Credential
     -- because it is the one that holds on a runner with no keychain at all.
     if let some c := (← mintedThisRun.get).lookup key then
       return c
-    match ← fromKeychainAccount keychainAccount with
+    let account := keychainAccountFor project creds.region
+    let cached ← match ← fromKeychainAccount account with
+      | some c => do
+        -- Verified, not trusted: one read per process (the memo covers the
+        -- rest), against a credential that was deleted in the console, or
+        -- an entry written by hand, signing for the wrong project.
+        if ← belongsTo creds creds.region project c.accessKey then pure (some c)
+        else
+          IO.eprintln s!"note: the cached Scaleway SQS credential for project \
+{project} ({creds.region}) is not one of that project's credentials any more; \
+minting a new one"
+          pure none
+      | none => pure none
+    match cached with
     | some c =>
       mintedThisRun.modify ((key, c) :: ·)
       return c
@@ -274,7 +310,7 @@ be retrieved; replacing it"
       -- able to fail the operation it is optimising. A CI runner has no
       -- keychain daemon, so this throws there — after a successful mint, which
       -- would waste the credential and report a confusing error.
-      match ← (storeInKeychainAccount keychainAccount c).toBaseIO with
+      match ← (storeInKeychainAccount account c).toBaseIO with
       | .ok _ => pure ()
       | .error e =>
         -- Said out loud, but no longer alarming: the memo above means this

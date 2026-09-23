@@ -178,6 +178,20 @@ one account change a `plan` can still make, and only in a project that already
 uses Queues. Queues still have no tags on Scaleway (no `TagQueue` or
 `ListQueueTags`), so they are claimed on the name rung.
 
+### Fixed: Scaleway queue calls could be signed for the wrong project
+
+The dedicated SQS credential was cached in the keychain under the constant
+account `scaleway-sqs`, whatever the project. So on a machine that had used
+Queues in one project, every other project's queue calls were signed with that
+credential — which Scaleway scopes to the project it was minted in. Found
+live: `typednotes-infra`'s plan listed the *default* project's queues instead
+of its own. Now that every fleet scans queues, that means a name-rung fleet
+could have claimed another project's queue as an orphan and deleted it there.
+The keychain account is now `scaleway-sqs/<project>/<region>`, and a cached
+credential is used only after a read-only check that it is still one of that
+project's credentials (a credential deleted in the console is replaced rather
+than failing). The old entry is no longer read.
+
 ### Changed: the scaffold names the fleet
 
 `infra new` now writes `boundary := { fleetName := some "<name>" }`
