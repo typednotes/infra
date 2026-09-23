@@ -418,8 +418,14 @@ Where the shipped kind differs from the proposal this page argued, and why:
   2026-09-23) says `GRANT` cannot be performed on Serverless SQL — access is
   IAM's, per permission set — so the backend's guarded grant is best effort
   since 0.14.0: a refusal is a `NOTICE`, where before it would have aborted
-  the apply session before any migration ran. Still unverified live: that
-  the read role sees the history table without it, and that the DDL set may
-  `CREATE SCHEMA` (the permission page lists only `TABLE` and `INDEX`).
-  `docs/diff-semantics.md`'s ledger carries both until a live run exercises
-  them.
+  the apply session before any migration ran. **Verified live on
+  2026-09-23** (`typednotes-infra`'s first apply, four histories on two
+  databases): the DDL set may `CREATE SCHEMA` although the permission page
+  lists only `TABLE` and `INDEX`, and the read identity sees every table the
+  DDL identity created — the history tables and the services' own — with
+  `SELECT` and nothing more (`INSERT` is refused). One more fact the run
+  turned up: Serverless SQL routes connections by **TLS SNI** and refuses a
+  client that does not send one (`Database hostname wasn't sent to
+  server`). The backend's libpq sends it; a consumer's own tools may not
+  (Go's `lib/pq` does not), and Scaleway's fix for those is an
+  `options=databaseid%3D<id>` connection parameter.

@@ -511,22 +511,6 @@ before applying anything. Cheap at every tier, fatal at none.
 - **Nothing forces a `Plan` through `fill` before apply.** `settleSpec` does
   it, and `push` goes through `settleSpec`, but the type system does not
   require that route.
-- **Two Serverless SQL facts a migrations apply depends on are unverified
-  live.** The permission sets themselves are checked, not recalled
-  (`ServerlessSQLDatabaseReadOnly` maps to exactly `SELECT`, and
-  `ServerlessSQLDatabaseReadWrite` to SELECT/INSERT/UPDATE/DELETE plus
-  `CREATE/ALTER/DROP TABLE` and `INDEX` — Scaleway's "Manage user
-  permissions for Serverless SQL Databases" page, reviewed 2025-09-17,
-  checked 2026-09-23). Scaleway's "Known differences" page (checked
-  2026-09-23) adds that `GRANT`/`REVOKE` cannot be performed at all — access
-  is IAM's — which is why the backend's `role_read` grant is now best
-  effort (a refusal is a `NOTICE`; since 0.14.0) and why the read role is
-  expected to see tables the DDL identity created. What no live account has
-  exercised: (1) that the read role does see them, and (2) that the DDL set
-  may `CREATE SCHEMA`, which the permission page does not list and the
-  backend needs for `<schema>.infra_migrations`. Either failing fails the
-  apply before any migration runs. When the first live run happens, verify
-  both and delete this entry. `docs/migrations.md` carries the note.
 - **Unreportable fields are unenforced, not rejected.** A target asking for
   something a cloud cannot express is accepted and quietly ignored; see
   `docs/providers.md` for the list.

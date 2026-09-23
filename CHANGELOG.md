@@ -10,6 +10,24 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Verified live: `postgresMigrations` on Scaleway
+
+`typednotes-infra`'s first apply (2026-09-23) created four migration
+histories on two Serverless SQL databases — SQL read from each service's
+repository at its release tag, ordered by foreign keys — and gated five
+container rollouts on them; a plan afterwards proposed nothing for them.
+It settled both provider facts `docs/diff-semantics.md` carried, so that
+entry is deleted: `ServerlessSQLDatabaseReadWrite` may `CREATE SCHEMA`
+(the permission page lists only tables and indexes), and the read identity
+sees every table the DDL identity created, with `SELECT` only.
+
+It also found one nobody predicted: Serverless SQL routes connections by
+TLS SNI and refuses a client that sends none. libpq — this library's
+driver — sends it; Go's `lib/pq` does not, and needs the
+`options=databaseid%3D<id>` parameter Scaleway documents. Recorded in
+`docs/migrations.md`.
+
+
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order

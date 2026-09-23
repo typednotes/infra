@@ -69,7 +69,7 @@ by `example/PostgresMigrations.lean`'s guards (the dependent history is
 declared first, so only the inferred edge can put it second); the fetch
 against real `raw.githubusercontent.com` files, including a 404 and an
 `http://` URL refused; and the inference over the four real schemas of
-`typednotes-infra`. Not yet: a live apply.
+`typednotes-infra`, and a live apply on Scaleway (see "Verification").
 
 Two of the kinds — `objectStore` and `queues` — need no per-cloud code
 *between AWS and Scaleway*, because Scaleway's endpoints are S3- and
@@ -190,12 +190,15 @@ This is the section worth reading before trusting anything. Correctness of
 `lake test -- <provider>` is the live sequence, run from a manual workflow
 trigger, one cloud at a time.
 
-`postgresMigrations` (0.13.0) is exercised offline only — its guards and the
-`example/PostgresMigrations.lean` plan run on every push, but no live account
-has migrated a schema through it yet. The first live run owes the ledger one
-verification: whether Scaleway's read role needs the explicit `GRANT SELECT`
-the backend issues (`docs/diff-semantics.md`, "Known soft spots"). How to trigger it, approve it and read it is in
-`ci/README.md` ("Running the live test").
+`postgresMigrations` (0.13.0) has migrated real schemas: `typednotes-infra`'s
+first apply on 2026-09-23 created four histories on two Scaleway Serverless
+SQL databases, each read from its service's repository at a release tag,
+ordered by the foreign keys in their SQL, and gating five container
+rollouts; the plan afterwards read all four back through the read-only
+identity and proposed nothing. That run settled the two provider facts the
+ledger carried (`CREATE SCHEMA` under the DDL set, and the read identity
+seeing what the DDL identity created). It is not part of `lake test`'s live
+sequence yet, so AWS and GCP remain exercised offline only.
 
 **The sequence is five stages now — `full`, `ramp-up`, `ramp-down`, `trimmed`,
 `empty` — and as of 2026-09-08 no cloud has passed all five honestly.** The

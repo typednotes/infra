@@ -64,12 +64,12 @@ import Linen.Database.PostgreSQL.LibPQ
     expected to be unnecessary and may be refused; a refusal is a `NOTICE`,
     not a failed apply (`grantSql`). Clouds where the role does not exist
     (RDS, Cloud SQL) skip it. See `docs/migrations.md`'s "provider facts".
-  * **Unverified: `CREATE SCHEMA` under `ServerlessSQLDatabaseReadWrite`.**
-    Scaleway's permission page lists `CREATE/ALTER/DROP TABLE` and `INDEX`
-    for that set, not `CREATE SCHEMA`. If a live run refuses
-    `ensureSchemaSql`, the apply fails here, before any migration or
-    rollout — loud and early — and the history table needs a home that
-    does not require creating a schema.
+  * `CREATE SCHEMA` under `ServerlessSQLDatabaseReadWrite` works, although
+    Scaleway's permission page lists only `CREATE/ALTER/DROP TABLE` and
+    `INDEX` for that set — verified by `typednotes-infra`'s first apply,
+    2026-09-23, as is the read identity seeing the history tables.
+  * Serverless SQL routes connections by TLS SNI; libpq, which this module
+    connects through, sends it.
 -/
 
 namespace Infra.Providers.Kinds.Migrations
