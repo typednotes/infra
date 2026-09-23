@@ -189,7 +189,10 @@ def migrationsConflict (applied target : List Migration) : Option String :=
 
     The two secret-name fields are not compared at all: which secret holds
     a URL is bookkeeping, and rotating one must not propose a replace —
-    `SecretsSpec.valueFrom`'s reading. `name`, `database` and `schema` are
+    `SecretsSpec.valueFrom`'s reading. Nor is `after`: it is an ordering
+    edge between histories that nothing in the database records, so it is
+    reported unknown and changing it can only reorder future work. `name`,
+    `database` and `schema` are
     `forcesReplace` because the rows live in exactly that database and
     schema: a different one is a different resource, and "replace" here is
     `delete` — a ledger-only FORGET that touches no schema — followed by a

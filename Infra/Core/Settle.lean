@@ -142,7 +142,8 @@ instance : Settleable .postgresMigrations where
              connectionSecret := ← settleField env s.connectionSecret
              observerSecret := ← settleField env s.observerSecret
              schema := ← settleField env s.schema
-             migrations := ← settleField env s.migrations }
+             migrations := ← settleField env s.migrations
+             after := ← settleField env s.after }
 
 instance : Settleable .s3Bucket where
   settle env s := do

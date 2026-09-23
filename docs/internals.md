@@ -415,7 +415,8 @@ rebuildable cache (`infra discover`) rather than the sole record. Every
 `(cloud, kind)` pair reports evidence now, on one of three rungs: real tags,
 a marker serialised into the object's one writable free-text field, or — for
 the two Scaleway products with neither — the resource's own name, checked
-against `Boundary.namePrefix`. `docs/coverage.md` has the table of which pair
+against `Boundary.namePrefix` (and any `namePrefixes`; `Boundary.prefixes` is
+the union). `docs/coverage.md` has the table of which pair
 is on which rung. A fleet that has not set a `namePrefix` still gets nothing
 from the third rung, which is why `lake test -- <cloud> sweep` remains what
 finds debris a ledger cannot name: it asks the account, matching on the
@@ -491,6 +492,15 @@ the database rather than any cache before applying. A `delete` for this kind
 touches no cloud: the plan prints `FORGET` (`Action.verb`), the backend's
 delete is a no-op, and the schema dies with its parent `postgres` resource
 when that one's own delete runs — which the teardown graph orders last.
+
+**Where its edges come from.** None from `HasDeps`: every cross-resource
+field is a plain name. `Engine.impliedByName` turns `database`,
+`connectionSecret` and `observerSecret` into slot ids, and — since 0.14.0 —
+each `after` name into the slot of another history, so a service whose SQL
+references another's tables is scheduled after it even though both are
+ready in the same wave. `schedule` would drop an edge to a slot nothing
+touches, which is why `Plan.migrationsAreSound` refuses an `after` name that
+is not a declared history rather than leaving it to the scheduler.
 
 ### Which clouds get authenticated, and the hole that leaves
 

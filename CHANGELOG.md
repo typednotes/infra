@@ -121,6 +121,58 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.14.0] — 2026-09-23
+
+### Added: `after` — one migration history ordered after another
+
+`PostgresMigrationsSpec` gains an optional `after : List String`: the fleet
+names of other `postgresMigrations` resources whose pending migrations must
+apply first. The case that forced it is the first real consumer of 0.13.0:
+`typednotes-infra` declares three histories on one database — the app's
+(`users`, `orgs`), `ledger`'s (`usage_events … references orgs(id)`) and
+`liaison`'s — and all three name the same database and URL secrets, so they
+became ready in the same scheduling wave and ran in *declaration order*.
+Correct only when the fleet happened to be written in dependency order: the
+accident `Engine.impliedByName`'s note describes for `.secrets` before
+`.postgres`, arriving again one kind over.
+
+- Wired through `impliedByName`, name-based and same-cloud like every other
+  name the kind carries.
+- `Plan.migrationsAreSound` refuses an `after` name that is not a history
+  the plan declares present — the scheduler ignores an edge to a slot no
+  action touches, so a misspelt name would otherwise silently drop the
+  ordering it was written to guarantee. `historyIsSound` refuses a history
+  naming itself; a longer cycle is refused by `orderActions` at plan time.
+- Reported `unknown` and never compared by `Divergent`: nothing in the
+  database records it, so editing it can only reorder future work.
+- `example/PostgresMigrations.lean` declares a second history *before* the
+  one it depends on, so its `runsBefore` guard can only pass because of the
+  edge — checked by deleting the edge and watching the guard fail — plus
+  two negative fleets (`badAfter`, `selfAfter`) pinned `!migrationsAreSound`.
+
+### Added: `Boundary.namePrefixes`
+
+Further prefixes on the name rung, each claiming exactly as `namePrefix`
+does; `Boundary.prefixes` is the union and `ownershipOf` checks it. A fleet
+that already owns a `secrets-db` cannot bring it under a new prefix —
+infra never renames — and should not name a second database, for other
+services, after the vault. Listing both prefixes is the honest answer.
+Backwards compatible: the field defaults to `[]`, and a boundary that sets
+only `namePrefix` behaves exactly as before. An empty entry claims nothing
+even beside real ones, and the `foreign` warning names every prefix, not
+the first; both pinned in `Ownership.lean`.
+
+### Fixed: a one-migration history skipped the empty-`sql` check
+
+`historyIsSound` read `… all fun (a, b) => a.id < b.id && ms.all fun m => …`.
+A `fun` body extends as far right as it can, so the empty-id/empty-`sql`
+check sat *inside* the pairwise-order lambda — and a history with one
+migration has no pairs, so it was never evaluated: `[{ id := "0001",
+sql := "" }]` passed `migrationsAreSound`. Every conjunct is now
+parenthesised, and `example/PostgresMigrations.lean`'s `emptySql` fleet pins
+the case. Found by the `after` check, which was written the same way and
+did not fire.
+
 ## [0.13.0] — 2026-09-23
 
 ### Added: `postgresMigrations` — a declared migration history

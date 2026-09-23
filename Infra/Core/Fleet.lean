@@ -138,12 +138,28 @@ def Plan.secretsAreSound {κ : Keys} (T : Plan κ) : Bool :=
     throughout. The decidable companion of `secretsAreSound`, checking the
     per-resource rule `PostgresMigrationsSpec.historyIsSound` fleet-wide;
     a fleet writes `#guard myPlan.migrationsAreSound` (or the `fleet`
-    declaration emits it) and gets the guarantee back at compile time. -/
+    declaration emits it) and gets the guarantee back at compile time.
+
+    Plus the one rule a single spec cannot decide: every `after` name is a
+    history this plan declares *present* on the same cloud. The scheduler
+    ignores an edge to a slot no action touches — right for an identity the
+    fleet does not manage, wrong here, where a misspelt name would silently
+    drop the ordering the field exists to guarantee and the first sign would
+    be a `references` failing against a table that is not there yet. A
+    cycle between histories is not checked here: `orderActions` refuses it
+    at plan time, naming the slots. -/
 def Plan.migrationsAreSound {κ : Keys} (T : Plan κ) : Bool :=
   (Finite.elems (α := ProviderId)).all fun p =>
+    let declared : List String :=
+      (Finite.elems (α := κ.Key p .postgresMigrations)).filterMap fun key =>
+        match T.assign p .postgresMigrations key with
+        | .present _ => some (κ.name p .postgresMigrations key)
+        | _          => none
     (Finite.elems (α := κ.Key p .postgresMigrations)).all fun key =>
       match T.assign p .postgresMigrations key with
-      | .present s => s.historyIsSound
+      | .present s =>
+          s.historyIsSound
+          && ((s.afterNames.getD []).all fun nm => declared.contains nm)
       | _          => true
 
 /-- The runtime half of the migrations contract: what the database has

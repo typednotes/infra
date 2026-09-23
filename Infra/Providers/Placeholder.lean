@@ -84,7 +84,7 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   -- kind: it never fails, because it never claims.
   | .postgresMigrations, h => { name := h.raw, database := ""
                                 connectionSecret := "", observerSecret := ""
-                                schema := "", migrations := [] }
+                                schema := "", migrations := [], after := .unknown }
 
 /-- A backend that talks to nothing. Both providers are this, for now, differing only in the
     identifier they stamp on what they claim to have created. -/

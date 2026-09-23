@@ -216,7 +216,8 @@ def Action.renderStyled {κ : Keys} (colour : Bool) (a : Action κ) : String :=
     type `K p k`, which names a provider, and a portable spec that named a
     provider would not be portable. So they carry a plain `String` —
     `PostgresSpec.masterPasswordSecret`, `SecretSource.apiKeyFor`, every
-    field of `PostgresMigrationsSpec` that names another resource, and
+    field of `PostgresMigrationsSpec` that names another resource (including
+    `after`, one history naming another it must follow), and
     `ComputeSpec.migrations` — and `HasDeps`, which can only produce edges
     out of real references, reports nothing for the name-bearing fields.
 
@@ -254,13 +255,21 @@ def impliedByName {κ : Keys} (p : ProviderId) :
   -- minted by the same cloud that hosts the database, and a cross-cloud
   -- reading would mean the database's schema was legible from somewhere it
   -- was never granted to.
+  --
+  -- Plus one per `after` name: the histories this one's SQL depends on (a
+  -- `references` into another service's table). Same-cloud too — two
+  -- histories that must apply in order share a database, or at least a
+  -- deploy, and `Plan.migrationsAreSound` refuses a name that is not a
+  -- declared history here, so none of these edges can point at nothing.
   | .postgresMigrations, s =>
-    match s.database.asLit, s.connectionSecret.asLit, s.observerSecret.asLit with
-    | some db, some cs, some os =>
-        (if db.isEmpty then [] else [Ledger.slotId p .postgres db])
-        ++ (if cs.isEmpty then [] else [Ledger.slotId p .secrets cs])
-        ++ (if os.isEmpty then [] else [Ledger.slotId p .secrets os])
-    | _, _, _ => []
+    (match s.database.asLit, s.connectionSecret.asLit, s.observerSecret.asLit with
+     | some db, some cs, some os =>
+         (if db.isEmpty then [] else [Ledger.slotId p .postgres db])
+         ++ (if cs.isEmpty then [] else [Ledger.slotId p .secrets cs])
+         ++ (if os.isEmpty then [] else [Ledger.slotId p .secrets os])
+     | _, _, _ => [])
+    ++ ((Infra.Specs.PostgresMigrationsSpec.afterNames s |>.getD []).filterMap fun nm =>
+          if nm.isEmpty then none else some (Ledger.slotId p .postgresMigrations nm))
   -- The rollout-ordering edge: a container whose migrations field names a
   -- migration set waits for it. An empty name constrains nothing.
   | .compute, s =>

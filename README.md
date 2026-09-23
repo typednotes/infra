@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.13.0 covers
+## What 0.14.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **15 resource kinds** (8 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -115,7 +115,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.13.0"
+rev = "v0.14.0"
 ```
 
 Then:
@@ -209,7 +209,8 @@ foreign and are left alone. Every cloud and kind reports that evidence, on one
 of three rungs: a tag, or — where the object has no tags but one writable
 free-text field — a marker written into its `description`, or, for the two
 Scaleway products with neither, the resource's own name against a prefix you
-configure (`namePrefix`). A resource whose line
+configure (`namePrefix`, plus `namePrefixes` when a fleet's untaggable resources
+were not all named under one). A resource whose line
 you deleted can still be named after the fact — the declaration no longer
 mentions it, so nothing else can, until the ledger or the marker does. Saying
 `.absent` within the declaration does the same thing; `destroy` is `apply`

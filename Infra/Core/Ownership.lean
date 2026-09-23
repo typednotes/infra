@@ -268,6 +268,26 @@ structure Boundary where
       what bounds that, exactly as it bounds `fleetName := none`. Prefer a
       prefix nobody would pick by accident — a fleet name, not `db-`. -/
   namePrefix : Option String := none
+  /-- Further prefixes, each claiming by name exactly as `namePrefix` does.
+
+      For a fleet whose untaggable resources were not all named under one
+      prefix — the case that forced it: a fleet that already owns a
+      `secrets-db` and now declares a second database for other services.
+      infra never renames, so the old name cannot be brought under a new
+      prefix, and the new database should not be named after a service it
+      does not belong to. Listing both is the honest answer.
+
+      The union of this and `namePrefix` is what is checked
+      (`Boundary.prefixes`); every rule of the single prefix holds for each
+      entry — an empty one claims nothing, and a prefix is a prefix, not a
+      substring. More prefixes is more surface for a stranger's name to
+      collide with, so list only the ones the declaration actually uses. -/
+  namePrefixes : List String := []
+
+/-- Every prefix this boundary claims by name: `namePrefix` then
+    `namePrefixes`, in that order. -/
+def Boundary.prefixes (b : Boundary) : List String :=
+  b.namePrefix.toList ++ b.namePrefixes
 
 /-- Whether the marker is present *and* claimed by this fleet, given the tags
     a listing reported.
@@ -298,6 +318,12 @@ def markedByName (prefix' : Option String) (name : String) : Bool :=
   | none   => false
   | some p => !p.isEmpty && name.startsWith p
 
+/-- `markedByName` over several prefixes: claimed if *any* non-empty one is
+    a prefix of the name. No prefixes claims nothing, and an empty entry
+    contributes nothing — never "matches everything". -/
+def markedByAnyName (prefixes : List String) (name : String) : Bool :=
+  prefixes.any fun p => markedByName (some p) name
+
 /-- The decision.
 
     Marker first, then exclusions, and the order is the safety property: the
@@ -325,7 +351,7 @@ def ownershipOf (b : Boundary) (cloud : ProviderId) (k : Kind) (name : String)
     -- rung a `(cloud, kind)` is on is the backend's business, not this rule's.
     let claimed := match e with
       | .tags ts _  => markedBy b.fleetName ts
-      | .named nm _ => markedByName b.namePrefix nm
+      | .named nm _ => markedByAnyName b.prefixes nm
       | .unreadable => false
     if !claimed then
       .foreign
@@ -366,13 +392,18 @@ def describeVerdict (b : Boundary) (e : Evidence) : Ownership → String
     match e with
     | .tags _ _   => s!"not carrying the '{markerKey}' tag, so not ours"
     | .named nm _ =>
-      match b.namePrefix with
-      | some pre => s!"named '{nm}', which does not start with this fleet's \
+      match b.prefixes with
+      | [pre] => s!"named '{nm}', which does not start with this fleet's \
 `namePrefix` '{pre}' — and this cloud cannot tag this kind, so the name is the \
 only marker there is"
-      | none     => s!"of a kind this cloud cannot tag, and no `namePrefix` is \
+      | []    => s!"of a kind this cloud cannot tag, and no `namePrefix` is \
 set on this fleet's boundary, so there is no marker to check. Set one, and name \
 this resource with it"
+      | pres  =>
+        let quoted := String.intercalate ", " (pres.map fun p => s!"'{p}'")
+        s!"named '{nm}', which starts with none of this fleet's name prefixes \
+({quoted}) — and this cloud cannot tag this kind, so the name is the only \
+marker there is"
     | .unreadable => "of a kind whose marker this backend cannot read, so \
 unverifiable"
 
@@ -520,6 +551,23 @@ private def tagged (ts : List (String × String)) : Evidence := .tags ts none
 #guard ownershipOf { namePrefix := some "tn-", since := some "2026-09-01T00:00:00Z" }
          .scaleway .postgres "tn-db" (.named "tn-db" (some "2026-09-15T00:00:00Z")) = .managed
 
+/- Several prefixes: each claims as a single one would, and the union is all
+   that is claimed. The case this exists for — a fleet that owns `secrets-db`
+   and declares `typednotes-db` next to it — is the first pair; a third name
+   under neither prefix stays foreign, a prefix is still not a substring, and
+   an empty entry still claims nothing even alongside real ones. -/
+private def bTwo : Boundary := { namePrefix := some "secrets-", namePrefixes := ["typednotes-"] }
+#guard ownershipOf bTwo .scaleway .postgres "secrets-db" (.named "secrets-db" none) = .managed
+#guard ownershipOf bTwo .scaleway .postgres "typednotes-db" (.named "typednotes-db" none) = .managed
+#guard ownershipOf bTwo .scaleway .postgres "reports-db" (.named "reports-db" none) = .foreign
+#guard ownershipOf bTwo .scaleway .postgres "old-typednotes-db"
+         (.named "old-typednotes-db" none) = .foreign
+#guard ownershipOf { namePrefixes := ["", "tn-"] } .scaleway .postgres "anything"
+         (.named "anything" none) = .foreign
+#guard ownershipOf { namePrefixes := ["", "tn-"] } .scaleway .postgres "tn-db"
+         (.named "tn-db" none) = .managed
+#guard bTwo.prefixes = ["secrets-", "typednotes-"]
+
 /- The two rungs do not leak into one another. A prefix must not rescue a
    resource whose tags say it is somebody else's, and a marker tag must not
    rescue a name-only resource that is misnamed — otherwise the ladder would be
@@ -555,6 +603,11 @@ private def bPre : Boundary := { namePrefix := some "tn-" }
 #guard describeVerdict b0 (.named "x" none) .foreign
      != describeVerdict bPre (.named "x" none) .foreign
 #guard describeVerdict b0 .unreadable .foreign != describeVerdict b0 (tagged []) .foreign
+
+/- A boundary claiming by several prefixes names all of them in the warning,
+   so the reader sees every name they could have used — not just the first. -/
+#guard ((describeVerdict bTwo (.named "x" none) .foreign).splitOn "'typednotes-'").length > 1
+#guard ((describeVerdict bTwo (.named "x" none) .foreign).splitOn "'secrets-'").length > 1
 
 /- The two unowned verdicts must not read the same: "nobody told us about
    this" and "we were told to leave it alone" call for different actions from

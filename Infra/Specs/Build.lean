@@ -108,13 +108,15 @@ def postgresClassic (name : Expr K String) (masterUsername : Expr K String)
     version storageGb
 
 /-- A declared migration set. `migrations` is the full history, newest last —
-    the same order `ledger`'s `sql/NNNN_*.sql` files apply in. Check the
+    the same order `ledger`'s `sql/NNNN_*.sql` files apply in. `after` names
+    the histories that must apply first (omit it for none). Check the
     fleet's soundness with `Plan.migrationsAreSound`, the way the `fleet`
     command checks `secretsAreSound`. -/
 def postgresMigrations (name database connectionSecret observerSecret schema :
-    Expr K String) (migrations : Expr K (List Migration)) :
+    Expr K String) (migrations : Expr K (List Migration))
+    (after : Partial (Expr K (List String)) := .unknown) :
     PostgresMigrationsSpec K Partial (Expr K) :=
-  { name, database, connectionSecret, observerSecret, schema, migrations }
+  { name, database, connectionSecret, observerSecret, schema, migrations, after }
 
 def s3Bucket (name : Expr K String)
     (versioning : Partial (Expr K Bool) := .unknown)
@@ -203,7 +205,7 @@ def scalewayContainer (name : Expr K String)
                             PostgresSpec K Partial (Expr K) := @postgres; ()
   | .postgresMigrations =>
       let _ : ∀ {K}, Expr K String → Expr K String → Expr K String → Expr K String →
-                  Expr K String → Expr K (List Migration) →
+                  Expr K String → Expr K (List Migration) → _ →
                   PostgresMigrationsSpec K Partial (Expr K) := @postgresMigrations; ()
   | .s3Bucket          => let _ : ∀ {K}, Expr K String → _ → _ →
                             S3BucketSpec K Partial (Expr K) := @s3Bucket; ()

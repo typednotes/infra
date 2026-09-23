@@ -282,7 +282,11 @@ them; see docs/migrations.md")
              connectionSecret := route.connectionSecret
              observerSecret := route.observerSecret
              schema := route.schema
-             migrations }
+             migrations
+             -- An ordering edge, not state: nothing in the database records
+             -- it, so it is reported unknown and `Divergent` never compares
+             -- it — `ScalewayContainerSpec.migrations`' reading.
+             after := .unknown }
 
 -- ────────────────────────────────────────────────────────────────────
 -- Apply: the one body behind `create` and `update`

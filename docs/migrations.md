@@ -254,6 +254,43 @@ proposal is one optional field — `Field .optional o f (K p .postgresMigrations
 change beyond the kind itself, and it is what turns "migrate, then roll out"
 from a runbook step into the plan's topological order.
 
+**Ordering between histories** (0.14.0). Two services on one database can
+depend on each other's schema: `ledger`'s `usage_events` carries
+`references orgs(id)`, and `orgs` is created by the app that owns users and
+orgs. Both histories name the same database and URL secrets, so as of 0.13.0
+they became ready in the same scheduling wave and ran in *declaration
+order* — correct only if the fleet happened to declare them in dependency
+order, and the kind of accident `Engine.impliedByName`'s note exists to
+remove. `after : List String` is the edge: the fleet names of the histories
+whose pending migrations must apply first.
+
+```lean
+resource scaleway postgresMigrations "typednotes-ledger-history"
+  { database := "typednotes-db", …, schema := "ledger",
+    after := ["typednotes-core-history"],
+    migrations := … }
+```
+
+- **Name-based, same cloud**, like every other name this kind carries, and
+  wired through `impliedByName` like them.
+- **Refused when it names nothing.** The scheduler ignores an edge to a slot
+  no action touches — right for an identity a fleet does not manage, wrong
+  here, where a misspelt name would silently drop the ordering. So
+  `Plan.migrationsAreSound` checks that every `after` name is a history the
+  plan declares present, and `historyIsSound` refuses a history naming
+  itself. A longer cycle is refused at plan time by `orderActions`
+  ("dependency cycle among: …").
+- **Never compared.** Nothing in the database records the edge, so it is
+  reported `unknown` and `Divergent` ignores it: editing it can only reorder
+  future work, never propose an update of its own.
+- **A failure still stops what follows.** An apply stops at the first failed
+  action, so a history whose dependency failed never runs against a
+  half-migrated schema.
+
+`example/PostgresMigrations.lean` declares the dependent history *first*, so
+its `runsBefore` guard can only pass because of the edge — checked by
+removing the edge and watching the guard fail.
+
 ## Ownership
 
 The ladder applied honestly, because a kind that answers "I cannot tell you"

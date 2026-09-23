@@ -15,7 +15,8 @@ import Infra
   plan names the resource, the apply runs the pending suffix, and a failed
   migration stops the rollout because the rollout is ordered after it.
 
-  The whole fleet is eight resources and one apply:
+  The whole fleet is eleven resources and one apply (two of them histories,
+  one ordered after the other — see "One history after another" below):
 
       iam migrator-app ──┐  (ServerlessSQLDatabaseReadWrite: DDL)
       iam observer-app ──┤  (ServerlessSQLDatabaseReadOnly: SELECT only)
@@ -100,6 +101,27 @@ fleet migrationsStack in paris where
         expr!"postgres://{principalOf observerKey}:{secretValueOf observerKey}\
 @{endpointOf svcDb}/tn-svc-db?sslmode=require" }
 
+  -- A second service's history on the same database, whose schema points
+  -- into the first's: `references svc.events(id)` fails against a database
+  -- where `svc.events` does not exist yet. Both histories are ready in the
+  -- same scheduling wave — same database, same secrets — so without
+  -- `after` they would run in declaration order, which is an accident.
+  --
+  -- **Declared first on purpose**: declaration order is the wrong order
+  -- here, so the `runsBefore` guard below can only pass because of the
+  -- edge. `migrationsAreSound` refuses an `after` name that is not a
+  -- declared history (see `badAfter` below).
+  resource scaleway postgresMigrations "tn-svc-audit-history"
+    { database := "tn-svc-db",
+      connectionSecret := "tn-svc-migrator-url",
+      observerSecret := "tn-svc-observer-url",
+      schema := "audit",
+      after := ["tn-svc-history"],
+      migrations := ([{
+        id := "0001",
+        sql := "CREATE TABLE IF NOT EXISTS audit.seen \
+(event text NOT NULL REFERENCES svc.events(id))" }] : List Migration) }
+
   -- The declared history. `id` is the application order, matching
   -- `ledger`'s `sql/0001_…` convention; the SQL is carried verbatim
   -- because the declaration is the review surface.
@@ -139,13 +161,14 @@ def migrationsBoundary : Boundary :=
    applying in an order nobody wrote down. -/
 #guard migrationsStack.plan.migrationsAreSound
 
-/- Eight resources, one apply. The two `iam` applications exist because
+/- Eleven resources, one apply. The two `iam` applications exist because
    Serverless SQL is IAM-only; the two key secrets mint their keys; the two
-   URL secrets compose them with the database's endpoint. -/
+   URL secrets compose them with the database's endpoint; two services each
+   own a history on the one database. -/
 #guard migrationsStack.keys.count .scaleway .iam = 2
 #guard migrationsStack.keys.count .scaleway .secrets = 4
 #guard migrationsStack.keys.count .scaleway .postgres = 1
-#guard migrationsStack.keys.count .scaleway .postgresMigrations = 1
+#guard migrationsStack.keys.count .scaleway .postgresMigrations = 2
 #guard migrationsStack.keys.count .scaleway .scalewayContainerNamespace = 1
 #guard migrationsStack.keys.count .scaleway .scalewayContainer = 1
 
@@ -173,6 +196,52 @@ private def runsBefore (a b : String) : Bool :=
 #guard runsBefore "scaleway/postgres/tn-svc-db" "scaleway/postgres-migrations/tn-svc-history"
 #guard runsBefore "scaleway/secrets/tn-svc-observer-url" "scaleway/postgres-migrations/tn-svc-history"
 #guard runsBefore "scaleway/postgres-migrations/tn-svc-history" "scaleway/scaleway-container/tn-svc-api"
+
+/- One history after another: `tn-svc-audit-history` is declared *before*
+   `tn-svc-history` and is still scheduled after it, because its `after`
+   names it. Declaration order would have run the `REFERENCES` first. -/
+#guard runsBefore "scaleway/postgres-migrations/tn-svc-history"
+  "scaleway/postgres-migrations/tn-svc-audit-history"
+
+/- The name check `migrationsAreSound` adds for `after`: a misspelt history
+   is refused at compile time rather than read as "no edge" by the
+   scheduler, which ignores edges to slots nothing touches. -/
+fleet badAfter in paris where
+  resource scaleway postgresMigrations "tn-bad-history"
+    { database := "tn-bad-db",
+      connectionSecret := "tn-bad-url",
+      observerSecret := "tn-bad-url",
+      schema := "bad",
+      after := ["tn-bad-histroy"],
+      migrations := ([{ id := "0001", sql := "SELECT 1" }] : List Migration) }
+
+#guard !badAfter.plan.migrationsAreSound
+
+/- A history that names itself is a one-node cycle; refused per resource by
+   `historyIsSound`, before the scheduler would have to. -/
+fleet selfAfter in paris where
+  resource scaleway postgresMigrations "tn-self-history"
+    { database := "tn-self-db",
+      connectionSecret := "tn-self-url",
+      observerSecret := "tn-self-url",
+      schema := "self",
+      after := ["tn-self-history"],
+      migrations := ([{ id := "0001", sql := "SELECT 1" }] : List Migration) }
+
+#guard !selfAfter.plan.migrationsAreSound
+
+/- Regression: before 0.14.0 the empty-`sql` check sat inside the lambda of
+   the pairwise-order check, so a *one*-migration history — no pairs — was
+   never checked at all, and this fleet passed. -/
+fleet emptySql in paris where
+  resource scaleway postgresMigrations "tn-empty-history"
+    { database := "tn-empty-db",
+      connectionSecret := "tn-empty-url",
+      observerSecret := "tn-empty-url",
+      schema := "empty",
+      migrations := ([{ id := "0001", sql := "" }] : List Migration) }
+
+#guard !emptySql.plan.migrationsAreSound
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "postgres-migrations" migrationsStack

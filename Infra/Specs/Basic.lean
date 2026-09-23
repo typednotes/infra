@@ -369,7 +369,19 @@ structure Migration where
     Neither is compared by `Divergent`: which secret holds a URL is this
     tool's bookkeeping, and rotating one (delete the secret, apply, declare
     the new name) must not propose a replace — the same reading
-    `SecretsSpec.valueFrom` gets. -/
+    `SecretsSpec.valueFrom` gets.
+
+    `after` is the one edge between two histories: the fleet names of other
+    `postgresMigrations` resources whose pending migrations must apply
+    first — the service whose schema carries `references orgs(id)` names the
+    service that creates `orgs`. Without it, two histories on one database
+    are ready in the same scheduling wave and run in declaration order,
+    which is an accident rather than a guarantee. Ordering is its whole job,
+    like `ScalewayContainerSpec.migrations`: nothing cloud-side reports it,
+    so it is reported `unknown` and never compared. `Plan.migrationsAreSound`
+    refuses a name that is not a declared history of the same cloud, since
+    an edge to an unmanaged slot constrains nothing and a typo here would
+    silently drop the ordering it was written to guarantee. -/
 structure PostgresMigrationsSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
   name             : Field .required o f String
@@ -388,6 +400,20 @@ structure PostgresMigrationsSpec (K : ProviderId → Kind → Type) (o : Type u 
       enforced at plan time by `Plan.migrationsAppendOnly`, and again by the
       backend before it applies anything. -/
   migrations       : Field .required o f (List Migration)
+  /-- Fleet names of other `postgresMigrations` resources, same cloud, whose
+      pending migrations apply before this one's. Unsaid means none. See the
+      structure's doc comment. -/
+  after            : Field .optional o f (List String)
+
+/-- The `after` names, when they are written as a literal — unsaid reads as
+    `some []`, and `none` means an expression nobody can read offline, which
+    `historyIsSound` refuses for the same reason it refuses a non-literal
+    history: an ordering edge is schema, not a post-apply value. -/
+def PostgresMigrationsSpec.afterNames {K : ProviderId → Kind → Type}
+    (s : PostgresMigrationsSpec K Partial (Expr K)) : Option (List String) :=
+  match s.after with
+  | .unknown => some []
+  | .known e => e.asLit
 
 /-- A schema name the backend can quote safely. Checked rather than escaped
     past: the decidable tier of the design rule, so the backend's quoting is
@@ -403,21 +429,32 @@ def isSimpleIdent (s : String) : Bool :=
 /-- Whether this declared history is internally sound, at the decidable tier:
 
     ids strictly increasing (so list order *is* lexicographic application
-    order, `ledger`'s convention), no empty `sql`, and a quotable `schema`.
+    order, `ledger`'s convention), no empty `sql`, a quotable `schema`, and
+    an `after` list of non-empty names that does not name the resource
+    itself (a self-edge is a one-node cycle the scheduler would refuse
+    anyway, later and less legibly).
 
     Everything here is decidable from the authored value alone, like
     `SecretsSpec.sourceIsSound`; lift it fleet-wide with
-    `Plan.migrationsAreSound`. A non-literal `migrations` or `schema` is
-    *unsound*: migration content is schema, not a post-apply value, and a
-    history nobody can read offline is a history nobody can check. -/
+    `Plan.migrationsAreSound`, which also checks that every `after` name is
+    a declared history — the part that needs the fleet. A non-literal
+    `migrations`, `schema` or `after` is *unsound*: migration content is
+    schema, not a post-apply value, and a history nobody can read offline is
+    a history nobody can check. -/
 def PostgresMigrationsSpec.historyIsSound {K : ProviderId → Kind → Type}
     (s : PostgresMigrationsSpec K Partial (Expr K)) : Bool :=
-  match s.schema.asLit, s.migrations.asLit with
-  | some schema, some ms =>
+  match s.schema.asLit, s.migrations.asLit, s.afterNames with
+  | some schema, some ms, some after =>
+      -- Each `all` is parenthesised: a `fun` body extends as far right as it
+      -- can, so without them every later conjunct ends up *inside* the
+      -- previous lambda — which is how, before 0.14.0, the empty-`sql`
+      -- check sat inside the pairwise-order lambda and was never evaluated
+      -- for a one-migration history (no pairs, so nothing ran).
       isSimpleIdent schema
-      && (ms.zip (ms.drop 1)).all fun (a, b) => a.id < b.id
-      && ms.all fun m => !m.id.isEmpty && !m.sql.isEmpty
-  | _, _ => false
+      && (ms.zip (ms.drop 1)).all (fun (a, b) => a.id < b.id)
+      && ms.all (fun m => !m.id.isEmpty && !m.sql.isEmpty)
+      && after.all (fun nm => !nm.isEmpty && some nm != s.name.asLit)
+  | _, _, _ => false
 
 #guard isSimpleIdent "ledger"
 #guard isSimpleIdent "usage_events_2"
@@ -670,11 +707,12 @@ instance : Fillable PostgresSpec where
       minCapacity          := s.minCapacity.getD (.lit 0)
       maxCapacity          := s.maxCapacity.getD (.lit 0) }
 
-/-- Every field is required, so `fill` copies field for field with no
-    defaults to fill: a target with a missing field was a structure-literal
-    error before it ever reached here. The existence of this instance is
-    the compile-time certificate that any well-typed `postgresMigrations`
-    target is creatable. -/
+/-- Every field but `after` is required, so `fill` copies field for field:
+    a target with a missing required field was a structure-literal error
+    before it ever reached here. `after` defaults to `[]` — "said: nothing",
+    no ordering edge. The existence of this instance is the compile-time
+    certificate that any well-typed `postgresMigrations` target is
+    creatable. -/
 instance : Fillable PostgresMigrationsSpec where
   fill s :=
     { name := s.name
@@ -682,7 +720,8 @@ instance : Fillable PostgresMigrationsSpec where
       connectionSecret := s.connectionSecret
       observerSecret := s.observerSecret
       schema := s.schema
-      migrations := s.migrations }
+      migrations := s.migrations
+      after := s.after.getD (.lit []) }
 
 instance : Fillable S3BucketSpec where
   fill s :=

@@ -1,7 +1,7 @@
-# Coverage in 0.13.0
+# Coverage in 0.14.0
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-21.
+been exercised. Everything below is the state on 2026-09-23.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
@@ -57,6 +57,15 @@ are one design decision, not two coincidences. Ownership is inherited from
 the parent `postgres` resource (`.unreadable` when there is no route to
 read a parent through). The design, the three hard edges and their
 trade-offs: `docs/migrations.md`.
+
+Since 0.14.0 one history can be ordered after another (`after`), for two
+services on one database whose schemas reference each other's tables —
+before that, both were ready in the same scheduling wave and ran in
+declaration order. `Plan.migrationsAreSound` refuses an `after` name that is
+not a declared history, and a history naming itself; the scheduler refuses a
+longer cycle. Offline only, like the rest of the kind: the ordering is pinned
+by `example/PostgresMigrations.lean`'s guards, whose dependent history is
+declared first so that only the edge can put it second.
 
 Two of the kinds — `objectStore` and `queues` — need no per-cloud code
 *between AWS and Scaleway*, because Scaleway's endpoints are S3- and
@@ -997,6 +1006,14 @@ deliberate too.
 `foreign`: never adopted, never deleted as an orphan — exactly where those two
 kinds were before, so no existing fleet changes behaviour. Set, a resource of
 such a kind is ours when its name starts with the prefix.
+
+`Boundary.namePrefixes` (0.14.0) adds further prefixes, each claiming exactly
+as `namePrefix` does; the union is checked. It exists because infra never
+renames: a fleet that already owns `secrets-db` and declares a second
+database for other services cannot bring the old name under a new prefix,
+and should not name the new database after a service it does not belong to.
+Every rule of the single prefix holds per entry — an empty entry claims
+nothing even beside real ones — and the guards in `Ownership.lean` pin it.
 
 Two honest limits. infra **verifies, it does not rename**: a fleet key is the
 cloud-side name, so rewriting it would break that identity everywhere, and a

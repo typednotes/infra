@@ -232,6 +232,7 @@ instance : HasDeps PostgresSpec where
 instance : HasDeps PostgresMigrationsSpec where
   deps s := depsReq s.name ++ depsReq s.database ++ depsReq s.connectionSecret
             ++ depsReq s.observerSecret ++ depsReq s.schema ++ depsReq s.migrations
+            ++ depsOpt s.after
 
 instance : HasDeps S3BucketSpec where
   deps s := depsReq s.name ++ depsOpt s.versioning ++ depsOpt s.objectLock
