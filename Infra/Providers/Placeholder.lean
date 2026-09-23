@@ -94,6 +94,7 @@ def placeholderBackend (who : String) : Backend where
   create k _ := pure (placeholderObserved k s!"{who}-placeholder-id")
   update k h _ := pure (placeholderObserved k h.raw)
   delete _ _ := pure ()
+  release _ _ := pure ()
   -- A canary rather than `""`: the offline self-checks assert this string
   -- never appears in plan output, apply logs, or a `dump`, which is
   -- how "a composed secret's value does not leak" is actually tested.

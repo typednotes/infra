@@ -25,6 +25,14 @@ inductive Action (κ : Keys) where
       for it. `Backend.delete` takes a `Handle k`, which wraps the name, and
       `region` — where it was found — routes the call. -/
   | deleteOrphan (p : ProviderId) (k : Kind) (name : String) (region : String) : Action κ
+  /-- Remove this fleet's marker from a resource the declaration `forget`s,
+      so it stops being this fleet's without being destroyed — after which
+      the `forget` line can be deleted. Addressed like `deleteOrphan`, for the
+      same reason: a forgotten name has no key. Only planned for a resource
+      that still carries the marker on a rung that can be rewritten (a tag, a
+      description); a name-only resource cannot be unmarked, and its `forget`
+      line stays. See `Engine.claimUndeclared`. -/
+  | release (p : ProviderId) (k : Kind) (name : String) (region : String) : Action κ
 
 /-- The resource an action points at, outside the key family.
 
@@ -34,7 +42,7 @@ inductive Action (κ : Keys) where
 def Action.address {κ : Keys} : Action κ → ProviderId × Kind × String
   | .create p k key | .update p k key | .replace p k key | .delete p k key =>
     (p, k, κ.name p k key)
-  | .deleteOrphan p k nm _ => (p, k, nm)
+  | .deleteOrphan p k nm _ | .release p k nm _ => (p, k, nm)
 
 /-- The environment a plan's expressions resolve against: whatever already
     exists in the world.
@@ -95,9 +103,10 @@ def actionsOrphaned (κ : Keys) (orphans : List Orphan) : List (Action κ) :=
     the orphans. `orphans` defaults to empty so that a pure question about a
     declaration alone — which is what every `#guard` in `example/` asks —
     needs none. -/
-def actions {κ : Keys} (T : Plan κ) (W : World κ) (orphans : List Orphan := []) :
-    List (Action κ) :=
-  actionsDeclared T W ++ actionsOrphaned κ orphans
+def actions {κ : Keys} (T : Plan κ) (W : World κ) (orphans : List Orphan := [])
+    (releases : List Orphan := []) : List (Action κ) :=
+  actionsDeclared T W ++ actionsOrphaned κ orphans ++
+    releases.map fun r => .release r.cloud r.kind r.name r.region
 
 /-- The dependency edges of the creation graph.
 

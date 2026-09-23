@@ -1,6 +1,7 @@
 import Infra.Providers.Kinds.Secrets
 import Infra.Core.Stage
 import Infra.Core.Ownership
+import Infra.Providers.Marker
 
 /-
   Managed PostgreSQL.
@@ -146,22 +147,39 @@ private def arnOf (creds : Credentials) (ep : Endpoint) (name : String) : IO (Op
     [("DBInstanceIdentifier", name)]
   return (instances root "DescribeDBInstancesResult").head?.bind (·.childText "DBInstanceArn")
 
+/-- One instance's tags, by ARN. -/
+private def tagsOfArn (creds : Credentials) (ep : Endpoint) (arn : String) :
+    IO (List (String × String)) := do
+  let root ← Query.call creds ep "ListTagsForResource" version [("ResourceName", arn)]
+  return match root.child "ListTagsForResourceResult" with
+    | some r => (Query.listItems r "TagList" "Tag").filterMap fun t =>
+        match t.childText "Key", t.childText "Value" with
+        | some k, some v => some (k, v)
+        | _, _           => none
+    | none => []
+
 /-- Tags, for `Ownership.ownershipOf`. `createdAt` is left `none`, matching
     every other kind's first tranche, though `InstanceCreateTime` is available
     on the instance if a later pass wants it. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
     IO Evidence := do
   match ← arnOf creds ep name with
-  | none => return .unreadable
+  | none     => return .unreadable
+  | some arn => return .tags (← tagsOfArn creds ep arn) none
+
+/-- Take this fleet's ownership marker off the instance, leaving its other
+    tags.
+
+    `RemoveTagsFromResource` removes by key alone (RDS API reference:
+    `ResourceName`, `TagKeys.member.N`), so the value is checked first against
+    a fresh `ListTagsForResource`. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : IO Unit := do
+  match ← arnOf creds ep name with
+  | none     => pure ()
   | some arn =>
-    let root ← Query.call creds ep "ListTagsForResource" version [("ResourceName", arn)]
-    let tags := match root.child "ListTagsForResourceResult" with
-      | some r => (Query.listItems r "TagList" "Tag").filterMap fun t =>
-          match t.childText "Key", t.childText "Value" with
-          | some k, some v => some (k, v)
-          | _, _           => none
-      | none => []
-    return .tags tags none
+    if (Marker.releaseTags fleet (← tagsOfArn creds ep arn)).isSome then
+      discard <| Query.call creds ep "RemoveTagsFromResource" version
+        [("ResourceName", arn), ("TagKeys.member.1", markerKey)]
 
 /-- Only the settings RDS can change in place. Storage can grow but not shrink;
     `ApplyImmediately` avoids the change sitting in a maintenance window where
@@ -262,6 +280,29 @@ def modify (creds : Credentials) (name nodeType : String) : IO Unit := do
   let id ← requireId creds name
   discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/instances/{id}")
     (payload := some (.object [("node_type", .string nodeType)]))
+
+/-- Whether a Managed Database instance by this name exists — how `release`
+    tells this product (tag rung) from Serverless SQL (name rung) behind one
+    `Handle`, the same try-this-one-first `ownershipInfo` does. -/
+def hasInstance (creds : Credentials) (name : String) : IO Bool := do
+  return ((← listRaw creds).find? (·.1 == name)).isSome
+
+/-- Take this fleet's ownership marker off the instance, leaving every other
+    tag byte-for-byte.
+
+    `PATCH /instances/{id}` — the endpoint `modify` already uses — with the
+    full new `tags` list: `UpdateInstanceRequest` carries `Tags *[]string`
+    (Scaleway SDK, `api/rdb/v1`), and a list replaces the old one. Nothing
+    else is sent, so node type, volume and settings are untouched. -/
+def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | none                  => pure ()
+  | some (_, id, _, tags) =>
+    match Scaleway.dropTag (markerKey, fleet) tags with
+    | none      => pure ()
+    | some rest =>
+      discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/instances/{id}")
+        (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
 
 def delete (creds : Credentials) (name : String) : IO Unit := do
   let id ← requireId creds name

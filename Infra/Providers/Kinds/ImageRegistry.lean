@@ -2,6 +2,7 @@ import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Infra.Core.Stage
 import Infra.Core.Ownership
+import Infra.Providers.Marker
 
 /-
   Container image registries.
@@ -88,6 +89,16 @@ def create (creds : Credentials) (ep : Endpoint) (name markerValue : String)
   | some r => return (stringField r "repositoryUri").getD ""
   | none   => return ""
 
+/-- One repository's tags, by ARN. -/
+private def tagsOfArn (creds : Credentials) (ep : Endpoint) (arn : String) :
+    IO (List (String × String)) := do
+  let tagged ← Json.call creds ep (target "ListTagsForResource")
+    (.object [("resourceArn", .string arn)])
+  return (arrayField tagged "tags").filterMap fun t =>
+    match stringField t "Key", stringField t "Value" with
+    | some k, some v => some (k, v)
+    | _,      _      => none
+
 /-- Tags, for `Ownership.ownershipOf`.
 
     Two calls, because ECR's tags hang off an ARN and `DescribeRepositories`
@@ -99,13 +110,23 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) : IO Evi
   | .ok reply =>
     match (arrayField reply "repositories").head?.bind (stringField · "repositoryArn") with
     | none     => return .unreadable
-    | some arn =>
-      let tagged ← Json.call creds ep (target "ListTagsForResource")
-        (.object [("resourceArn", .string arn)])
-      return .tags ((arrayField tagged "tags").filterMap fun t =>
-        match stringField t "Key", stringField t "Value" with
-        | some k, some v => some (k, v)
-        | _,      _      => none) none
+    | some arn => return .tags (← tagsOfArn creds ep arn) none
+
+/-- Take this fleet's ownership marker off the repository, leaving its other
+    tags.
+
+    `UntagResource` removes by key alone (ECR API reference, `UntagResource`:
+    `resourceArn`, `tagKeys`), so the value is checked first against a fresh
+    `ListTagsForResource` — the same describe-then-fetch as `readOwnership`. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : IO Unit := do
+  let reply ← Json.call creds ep (target "DescribeRepositories")
+    (.object [("repositoryNames", .array #[.string name])])
+  match (arrayField reply "repositories").head?.bind (stringField · "repositoryArn") with
+  | none     => pure ()
+  | some arn =>
+    if (Marker.releaseTags fleet (← tagsOfArn creds ep arn)).isSome then
+      discard <| Json.call creds ep (target "UntagResource")
+        (.object [("resourceArn", .string arn), ("tagKeys", .array #[.string markerKey])])
 
 def setImmutable (creds : Credentials) (ep : Endpoint) (name : String) (immutable : Bool) :
     IO Unit := do
@@ -188,6 +209,26 @@ def putMarker (creds : Credentials) (name markerValue : String) : IO Unit := do
   let id ← requireId creds name
   discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/namespaces/{id}")
     (payload := some (.object [("description", .string (encodeMarkerText markerValue))]))
+
+/-- Take this fleet's ownership marker back out of the namespace's
+    description — the description rung's release.
+
+    The inverse of `create`/`putMarker`, which write the whole description as
+    `encodeMarkerText fleet`: `Marker.stripMarkerText` gives back what was
+    there before, the empty description, and leaves any other text (a human's,
+    another fleet's marker) exactly as it is, in which case nothing is written.
+    Same `PATCH /namespaces/{id}` as `putMarker`, carrying `description` only,
+    so nothing else about the namespace changes. -/
+def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match ← idOf creds name with
+  | none    => pure ()
+  | some id =>
+    let n ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/namespaces/{id}")
+    let description := (stringField n "description").getD ""
+    let stripped := Marker.stripMarkerText fleet description
+    if stripped != description then
+      discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/namespaces/{id}")
+        (payload := some (.object [("description", .string stripped)]))
 
 def delete (creds : Credentials) (name : String) : IO Unit := do
   let id ← requireId creds name

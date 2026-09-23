@@ -1,6 +1,6 @@
 # Object Persistence
 
-## Current state (0.16.0)
+## Current state (0.17.0)
 
 **Nothing is stored locally.** infra keeps no ledger and no cache: there is no
 `.infra/` directory, nothing to gitignore, and nothing a machine can lose or
@@ -8,10 +8,12 @@ disagree about. Every run asks the cloud.
 
 - **Membership is the markers.** What a fleet manages is decided only by the
   ownership evidence on the resources themselves — the ladder of tag, then
-  description marker, then name prefix (`Boundary.namePrefix` /
-  `namePrefixes`; see `Infra.Core.Ownership`) — read on every run. `plan`,
-  `apply` and `destroy` call `Engine.claimUndeclared`, which lists every region
-  the fleet uses and every kind that exists on those clouds, and returns the
+  description marker, then name prefix (`<fleet name>-` by default, or
+  `Boundary.namePrefix` / `namePrefixes`; see `Infra.Core.Ownership`) — read
+  on every run. Every fleet has a name (0.17.0), and the marker's value is
+  that name. `plan`, `apply` and `destroy` call `Engine.claimUndeclared`,
+  which lists every region the fleet uses, on every cloud it declares or its
+  `accounts` names, and every kind that exists there, and returns the
   resources carrying this fleet's marker that the declaration does not name;
   `push` destroys them. It changes or destroys nothing that does not carry the
   marker (`Engine.foreignDeclared`). So a laptop and a fresh CI runner reach
@@ -19,8 +21,9 @@ disagree about. Every run asks the cloud.
 - **`dump` is the snapshot, when one is wanted.** `infra dump [FILE]` writes
   JSON (`Infra.Providers.Snapshot`): every resource with its cloud, kind,
   name, region, ownership evidence and observed state; the `undeclared` slots
-  the next apply would destroy; the `foreign` ones; the warnings. It is a
-  record produced on request, never an input to a plan.
+  the next apply would destroy; the `released` slots it would unmark; the
+  `foreign` ones; the warnings. It is a record produced on request, never an
+  input to a plan.
 - **Snapshots double as test fixtures.** `Snapshot.load` and
   `Snapshot.backends` replay a snapshot as in-memory backends, so a real
   account can be dumped once and planned, applied and destroyed against
@@ -243,40 +246,65 @@ that cloud, except `postgresMigrations`, which is rows in a database rather
 than a cloud object. "Undeclared" is about the physical resource: kinds that
 list the same thing share a class (`Engine.physicalClass` — an S3 bucket is
 both `objectStore` and `s3Bucket`), so declaring it under either kind is
-declaring it. Two limits follow from asking the cloud rather than a record:
-only clouds whose credentials are loaded are asked, and a cloud the
-declaration no longer names at all is not scanned. Retire a cloud with
-`destroy` before deleting its last line.
+declaring it. One limit follows from asking the cloud rather than a record:
+something has to say which clouds to ask. Since 0.17.0 that is the declared
+clouds plus every cloud named in `accounts` (`Infra.Cli.Accounts`). A cloud
+named there but no longer declared is still loaded, account-checked and
+scanned — in the fleet's region for it (`in paris`), else the credentials' —
+so removing a cloud's last line destroys what it held, provided the cloud
+stays in `accounts` until that apply; drop it from `accounts` afterwards. If
+such a cloud has no credentials on this machine, or no region, a note says it
+is not scanned. A cloud named in neither place is not scanned at all. (Before
+0.17.0 only declared clouds were scanned, and a cloud had to be retired with
+`destroy` before its last line was deleted.)
+
+Why not scan every cloud whose credentials happen to be loaded? Because a
+laptop often holds credentials for unrelated accounts, and "whatever this
+machine can reach" is not a statement about the fleet. `accounts` is: it is
+written by a human, and every live command checks it before listing anything.
 
 **Two fleets in one account, and the marker's value.** The marker's *key* is
-constant, and its *value* is where a fleet writes its own name
-(`Boundary.fleetName`, threaded to the backends by `Infra.Cli.liveFor` so the
-write and the check are one setting). Unset — the default — the value is not
-read when judging a declared resource, which is the behaviour that existed
-before the field. Set, a resource carrying another fleet's name reads as
-`foreign`, and foreign resources are left alone.
+constant, and its *value* is the fleet's name. Every fleet has one (0.17.0):
+the `fleet NAME in … where` command sets `Fleet.name` from the identifier in
+kebab-case (`fleet typednotes` → `typednotes`, `fleet crossCloud` →
+`cross-cloud`), and `Boundary.fleetName` overrides it. `Infra.Cli.run`
+resolves the two once and threads the result to the backends through
+`Infra.Cli.liveFor`, so the write and the check are one setting. A resource
+carrying another fleet's name reads as `foreign`, and foreign resources are
+left alone — whether the declaration names it or not, so
+`Ownership.claimsUndeclared` is now the same verdict as `ownershipOf`.
 
-Destroying a resource the declaration does *not* name asks more
-(`Ownership.claimsUndeclared`): the marker must name this fleet. With
-`fleetName := some me`, only the tag value `me` licenses it. A fleet with no
-`fleetName` destroys no undeclared resource on the strength of a tag at all —
-it cannot tell its resources from another fleet's in a shared account, and
-"destroy everything marked" is what `infra`'s own live tests would otherwise
-have done to `typednotes-infra`. Such resources are warned about by name,
-never destroyed. The name rung still claims by prefix, since the prefix *is*
-the declaration's claim.
+Because the name is written on every cloud, a live command first checks it is
+a valid value on all of them (`Ownership.validFleetName`: 1–63 characters,
+lowercase letters, digits, `-` and `_`, starting with a letter — a GCP label
+value, the strictest rule of the three), and refuses otherwise, saying whether
+to rename the declaration or fix `fleetName`. And because the name comes from
+the declaration, **renaming the declaration renames the fleet**: its
+resources then carry a name that is no longer its own, read as foreign, and
+are left alone — never destroyed — until `fleetName` pins the old name.
 
-Three honest limits on it. It is **opt-in on both sides**: a fleet that names
-itself is protected from one that does not, not the reverse, so isolation needs
-both to set it. It is **one string, not an identity** — nothing stops a second
-fleet writing the same name, so it separates fleets that agree to be separate,
-and `Accounts` is still the hard container. And the old value `true` is
-**grandfathered for ever** for declared resources: one tagged before the name
-existed matches every fleet, because the alternative is that naming your fleet
-turns your whole estate foreign in one step. `Ownership.legacyMarkerValue`
-records that, and `Main.lean`'s `checkFleetIsolation` asserts it. An
-*undeclared* resource carrying `true` is warned about and never destroyed,
-because that value cannot say whose it is.
+Two honest limits on it. It is **one string, not an identity** — nothing stops
+a second fleet writing the same name, so it separates fleets that agree to be
+separate, and `Accounts` is still the hard container. And it is only as
+isolating as the names are distinct: two declarations both called `app` in
+two repositories are one fleet as far as the marker can tell.
+
+*History.* Before 0.17.0 the name was opt-in. A fleet without one wrote the
+value `true` and accepted any value on a declared resource, and `true` was
+"grandfathered" — accepted by every fleet for a declared resource, and refused
+only for destroying an undeclared one — so that naming a fleet could not turn
+its estate foreign. That made isolation opt-in on both sides: a named fleet
+was protected from an unnamed one, not the reverse. The value is now
+**retired** (`Ownership.retiredMarkerValue` exists only for warnings): nothing
+writes it and nothing accepts it. A declared resource carrying `true` is
+foreign, and the warning names it with the fix — retag it
+`managed-by-infra=<name>`. An undeclared one is warned about, since it is most
+likely this fleet's and awaiting a retag, and never destroyed.
+`Main.lean`'s `checkFleetIsolation` asserts both.
+
+A `Boundary` with `fleetName := none` still exists as a value, reachable only
+by calling the engine directly with a hand-built boundary; it claims nothing
+by tag.
 
 The key stays constant deliberately: it is what makes "what did this tool
 create in this account?" answerable at all, which is what
@@ -296,8 +324,9 @@ rungs, and `docs/coverage.md` has the table of which pair is on which:
    field, and the marker is serialised into it. Identical semantics: what
    reaches `ownershipOf` is the same tag list either way;
 3. **the name** — Scaleway's Serverless SQL Database and its Queues have
-   neither, so ownership rests on `Boundary.namePrefix`, and infra *verifies*
-   the name rather than writing it.
+   neither, so ownership rests on the name's prefix (`Boundary.prefixes`: the
+   fleet's name and a hyphen, unless `namePrefix`/`namePrefixes` replace it),
+   and infra *verifies* the name rather than writing it.
 
 There is no "not migrated" state left. A backend that cannot answer at all
 (`.unreadable`) is refused rather than falling back to the older rule, which
@@ -325,12 +354,12 @@ sweep`; the procedure is in [`../ci/README.md`](../ci/README.md)). `dump`
 lists it under `foreign`.
 
 The sentence after the comma differs by rung, because the fix does. A tagged
-kind is told it is "not carrying the 'managed-by-infra' tag". A name-rung
-resource in a fleet with a prefix set is told its name "does not start with
-this fleet's `namePrefix`", and one in a fleet without is told there is no
-prefix set and to set one. Three remedies, three sentences — a reader told to
-retag a resource on a cloud that cannot tag it has been sent to fix the wrong
-thing.
+kind is told it is "not carrying the 'managed-by-infra' tag" — or, if it
+carries another value, whether that is another fleet's name or the retired
+`true`, with the retag to perform. A name-rung resource is told its name
+"does not start with this fleet's `namePrefix`" (or none of its prefixes).
+Different remedies, different sentences — a reader told to retag a resource on
+a cloud that cannot tag it has been sent to fix the wrong thing.
 
 Refusing to claim it is deliberate — a marker is the *only* positive evidence
 of ownership, and adopting on a name match is how you delete a stranger's
@@ -372,27 +401,46 @@ rest of the plan, and fails the apply if it never clears.
 
 ### Leaving management without being destroyed
 
-`forget` in a declaration releases a resource from management and does not
-touch the cloud. It is the counterpart of Terraform's `removed { … lifecycle {
+`forget` in a declaration releases a resource from management without
+destroying it. It is the counterpart of Terraform's `removed { … lifecycle {
 destroy = false } }`, and it is spelled as a declaration rather than a command
 for the reason HashiCorp gives for preferring `removed` over `terraform state
 rm`: it is in the declaration, so it shows up in a diff when it is reviewed.
 
-There is no FORGET action for it any more — there is no row to drop. A
-forgotten name is simply skipped by `claimUndeclared`. The consequence is that
-the `forget` line must **stay** in the declaration for as long as the resource
-exists: the resource still carries the marker, so deleting the line makes it
-an orphan again, and the next apply destroys it. (Before 0.16.0, `forget`
-dropped a ledger row once and could then be deleted.)
+With no local record, "released" has to be written where membership lives:
+on the resource. So a forgotten name is never an orphan, and if it still
+carries this fleet's marker on a rung that can be rewritten — tags, labels, a
+description — the next apply **removes the marker** (`Backend.release`),
+leaving every other tag and the resource itself as they were. The plan shows
+it as `RELEASE cloud/kind/name`, in blue like `FORGET`, because nothing is
+destroyed; `destroy` performs pending releases too, since a fleet that is gone
+should keep no claims; and `dump` lists them under `released`. The marker is
+read again just before the call, as for an orphan's delete: a resource that no
+longer carries this fleet's marker is reported "already not this fleet's"
+and never unmarked, since removing a marker that is not ours would unmark
+somebody else's resource. After the release the resource is no fleet's, and
+the `forget` line can be deleted.
+
+The exception is the name rung (Scaleway Serverless SQL, Scaleway queues):
+the name is the marker and cannot be unwritten, so nothing is released, and
+the `forget` line must **stay** for as long as the resource exists —
+deleting it makes the resource an orphan again, and the next apply destroys
+it.
+
+Releasing is implemented for every taggable `(cloud, kind)` pair. The Scaleway
+calls have been run against a real account; the AWS and GCP ones are checked
+offline only, until the live suite runs them in CI. (Before 0.17.0 `forget`
+only made the scan skip the name, so every `forget` line had to stay; before
+0.16.0 it dropped a ledger row once and could then be deleted.)
 
 ### Concurrency, stated rather than solved
 
 Nothing here locks. Two applies at once against one account can interleave.
 What keeps that from being silent is that there is no local record for either
 to disagree with: each reads the markers, and the next run of either sees what
-the other did. The exception is a resource on the name rung in a fleet with no
-`namePrefix`, where there is no marker at all, so nothing can claim it once
-it is undeclared (see `docs/coverage.md`). Remote state with a lock remains
+the other did. The exception is a resource on the name rung named outside the
+fleet's prefixes, where there is no marker at all, so nothing can claim it
+once it is undeclared (see `docs/coverage.md`). Remote state with a lock remains
 available as the answer if two operators applying at the same moment becomes
 a real pattern.
 

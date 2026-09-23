@@ -89,25 +89,45 @@ could never see. See docs/migrations.md")
     Returns the credentials alongside the backends, because `checkAccounts`
     needs them and loading twice would prompt a keychain twice.
 
-    `fleet` is `Ownership.Boundary.fleetName`, and it reaches the backends here
+    `fleet` is the fleet's resolved name (see `run`), and it reaches the backends here
     because this is the only place they are built. It is the *write* half of
     the marker — the value stamped on what gets created — while the boundary
     itself is the *read* half. `run` passes one field to both, deliberately: a
     fleet that wrote one name and required another would refuse to manage
     everything it had just created. -/
 def liveFor (κ : Keys) (regions : Regions := {})
-    (fleet : Option String := none)
+    (fleet : String)
     (routes : ProviderId → List Infra.Providers.Kinds.Migrations.MigrationRoute :=
-      fun _ => []) :
+      fun _ => [])
+    (extra : List ProviderId := []) :
     IO (Backends × (ProviderId → Option Credentials)) := do
   let mut creds : List (ProviderId × Credentials) := []
-  for p in κ.providers do
+  -- The declared clouds, then the `extra` ones — clouds the fleet's
+  -- `Accounts` names without declaring anything there. Those are loaded only
+  -- to be scanned: a cloud the fleet has just emptied must still be asked for
+  -- what it left behind (see `Infra.Cli.run`).
+  let clouds := κ.providers ++ extra.filter (!κ.providers.contains ·)
+  for p in clouds do
     -- Not `Credentials.load`: GCP has a fourth source that cannot live there
     -- (minting a token from a service-account key needs HTTP, and HTTP needs
     -- `Credentials`), and `loadWithKeyFile` is the one place that adds it — so
     -- every front end offers the same sources rather than this one being
     -- special. See `Infra.Core.GcpAuth.loadWithKeyFile`.
-    let c ← Infra.Core.GcpAuth.loadWithKeyFile p
+    let declared := κ.providers.contains p
+    -- A cloud named only in `Accounts` is scanned if its credentials are
+    -- there, and said out loud if they are not: nothing is declared on it, so
+    -- nothing *needs* it — but whatever this fleet left there is not looked
+    -- for, and that should not be silent.
+    let some c ← (if declared then some <$> Infra.Core.GcpAuth.loadWithKeyFile p
+        else do
+          match ← (Infra.Core.GcpAuth.loadWithKeyFile p).toBaseIO with
+          | .ok c => pure (some c)
+          | .error _ =>
+            IO.eprintln s!"note: {p.name} is named in this fleet's accounts but declares \
+nothing and has no credentials here, so it is not scanned: anything this fleet left \
+there is not found. Load its credentials, or drop it from `accounts` once it is empty."
+            pure none)
+      | continue
     -- Every endpoint is built from the region, so an empty one produces a
     -- malformed host (`ec2..amazonaws.com`) and surfaces as
     -- "hostname resolution failed" — an error that says nothing about the
@@ -120,6 +140,16 @@ def liveFor (κ : Keys) (regions : Regions := {})
     -- exactly when the credentials have to supply one. A fully placed fleet
     -- has already answered the question and never reaches the check.
     unless regions.coversSlotsIn κ p do discard <| c.requireRegion p
+    -- A cloud with nothing declared on it is scanned in the fleet's own
+    -- region for it (`in paris`), else the credentials'.
+    let c := if declared then c else
+      match regions.region p with
+      | some r => { c with region := r.code }
+      | none   => c
+    if !declared && c.region.isEmpty then
+      IO.eprintln s!"note: {p.name} is named in this fleet's accounts but declares nothing, \
+and neither the fleet nor the credentials say which region to scan, so it is not scanned."
+      continue
     creds := (p, c) :: creds
   let lookup := fun p => (creds.find? fun c => c.1 == p).map (·.2)
   -- One backend per (cloud, region). Cheap: a `Backend` is a record of
@@ -152,7 +182,9 @@ def liveFor (κ : Keys) (regions : Regions := {})
               backendIn p (if code.isEmpty then fallback p else code)
             -- Every region the fleet uses on this cloud, across all kinds —
             -- or the credentials' own if it places nothing there explicitly.
+            -- A cloud with no credentials loaded is not scanned at all.
             scanners   := fun p =>
+              if (lookup p).isNone then [] else
               let codes := (Finite.elems (α := Kind)).foldl (init := []) fun acc k =>
                 (regions.used κ p k (fallback p)).foldl (init := acc) fun acc c =>
                   if acc.contains c then acc else acc ++ [c]
@@ -205,10 +237,12 @@ def Accounts.fromEnv : IO Accounts := do
     failure, never a pass. -/
 def checkAccounts (κ : Keys) (want : Accounts) (creds : ProviderId → Option Credentials)
     (colour : Bool := false) : IO Unit := do
-  for p in κ.providers do
+  for p in Finite.elems (α := ProviderId) do
     let some expected := want.expect p | continue
     let some c := creds p
-      | throw (IO.userError s!"{p.name} is declared but has no credentials")
+      | if κ.providers.contains p then
+          throw (IO.userError s!"{p.name} is declared but has no credentials")
+        else continue
     -- Per-cloud only in *how* the answer is obtained: AWS asks STS, Scaleway
     -- reads the API key's own record. Both answer the same question, and
     -- "could not establish" is a failure for both.
@@ -363,10 +397,12 @@ histories their SQL implies, and their content, are checked by `plan`.")
 
     A snapshot, not a record: nothing reads it back unless a test does. -/
 def dumpJson (resources : Infra.Providers.Snapshot.Snapshot) (orphans : List Orphan)
-    (foreign : List (String × String)) (warnings : List String) : Lean.Json :=
+    (foreign : List (String × String)) (warnings : List String)
+    (releases : List Orphan := []) : Lean.Json :=
   Lean.Json.mkObj
     [ ("resources", Lean.toJson resources)
     , ("undeclared", Lean.toJson (orphans.map (·.slot)))
+    , ("released", Lean.toJson (releases.map (·.slot)))
     , ("foreign", Lean.Json.arr (foreign.map fun (slot, why) => Lean.Json.mkObj
         [ ("slot", Lean.Json.str slot), ("reason", Lean.Json.str why) ]).toArray)
     , ("warnings", Lean.toJson warnings) ]
@@ -438,19 +474,19 @@ def usage (exe : String) : String := String.intercalate "\n"
     `boundary` is the realm and exclusion legs of the ownership model
     (`Infra.Core.Ownership.Boundary`): exclusions, an optional cutoff date
     below which an unmarked-but-old resource is treated as pre-dating `infra`
-    rather than foreign, and `fleetName` — this fleet's own name, which is written
-    into the marker's value and required back out of it, and `namePrefix` —
-    the marker of last resort, for the kinds a cloud offers no writable field
-    to tag (`Infra.Core.Ownership`'s ladder). Empty by default,
-    which is the same as not having the model at all for a fleet that never
-    sets it.
+    rather than foreign, `fleetName` — an override of the fleet's name — and
+    `namePrefix` — the marker of last resort, for the kinds a cloud offers no
+    writable field to tag (`Infra.Core.Ownership`'s ladder).
 
-    `fleetName` is what makes two fleets in one account safe rather than merely
-    refused, and it is one field feeding both directions: `liveFor` stamps it
-    on everything created, `ownershipOf` requires it back. Setting it to
-    `some exe` is the obvious choice and is deliberately *not* the default —
-    see `Ownership.legacyMarkerValue` for what that would do to an estate
-    tagged before the name existed.
+    **The fleet's name** is `boundary.fleetName` if set, else `F.name` — the
+    `fleet` command's identifier. It is resolved here, once, and is one value
+    feeding both directions: `liveFor` stamps it on everything created,
+    `ownershipOf` requires it back. It must be a valid marker value on every
+    cloud (`Ownership.validFleetName`), checked before any live command —
+    `fleet myFleet` fails there with a message saying to set `fleetName`.
+    Renaming the declaration renames the fleet: its resources then carry
+    another name, read as foreign and are left alone (never destroyed) until
+    `fleetName` pins the old one.
 
     The releases (`F.forgets`) reach the engine because they are part of the
     declaration rather than an argument someone has to remember — see
@@ -468,9 +504,26 @@ def run (exe : String) (F : Fleet)
   -- Resolved once, at the edge: whether stdout is a terminal is a property of
   -- this invocation, not of a plan, so the engine is told rather than asking.
   let colour ← Ansi.wanted
+  -- The fleet's name: the override if given, else the declaration's own.
+  -- Resolved into the boundary so that every reader downstream sees `some`.
+  let override := boundary.fleetName
+  let name := override.getD F.name
+  let boundary := { boundary with fleetName := some name }
   let withLive (act : Backends → IO Unit) : IO Unit := do
-    let (bs, creds) ← liveFor F.keys F.regions boundary.fleetName
-      (← migrationRoutesOf F.keys F.plan)
+    unless validFleetName name do
+      let fix := match override with
+        | none => s!"It comes from the declaration (`fleet {F.name}`): rename the declaration, \
+or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
+        | some _ => "Fix `fleetName` in the boundary passed to `Infra.Cli.run`."
+      throw (IO.userError (s!"'{name}' cannot be this fleet's name: it is the value of the \
+'{markerKey}' marker on every cloud, so it must be 1-63 characters of lowercase letters, digits, \
+'-' and '_', starting with a letter. " ++ fix))
+    -- Every cloud `accounts` names is scanned, declared or not: removing a
+    -- cloud's last line must still destroy what is left there, and the
+    -- account check below is what makes scanning an undeclared cloud safe.
+    let named := (Finite.elems (α := ProviderId)).filter (accounts.expect · |>.isSome)
+    let (bs, creds) ← liveFor F.keys F.regions name
+      (← migrationRoutesOf F.keys F.plan) (extra := named)
     checkAccounts F.keys accounts creds colour
     act bs
   -- Failures are reported, not thrown out of `main`. An escaping exception
@@ -480,10 +533,10 @@ def run (exe : String) (F : Fleet)
   -- The undeclared resources carrying this fleet's marker, found by asking
   -- the cloud (`Engine.claimUndeclared`); warnings for what it saw but may
   -- not claim go to stderr.
-  let orphansIn (bs : Backends) : IO (List Orphan) := do
+  let discover (bs : Backends) : IO Discovered := do
     let found ← claimUndeclared (κ := F.keys) bs boundary F.forgets
     for w in found.warnings do IO.eprintln w
-    return found.orphans
+    return found
   let reporting (act : IO Unit) : IO UInt32 := do
     match ← act.toBaseIO with
     | .ok _    => return 0
@@ -500,7 +553,7 @@ def run (exe : String) (F : Fleet)
       let foreign ← foreignDeclared bs F.plan (worldOf entries) boundary
       let found ← claimUndeclared (κ := F.keys) bs boundary F.forgets
       let snap ← snapshotOf bs F.regions entries found.orphans
-      let out := (dumpJson snap found.orphans foreign found.warnings).pretty
+      let out := (dumpJson snap found.orphans foreign found.warnings found.releases).pretty
       match args with
       | ["dump", path] => IO.FS.writeFile path (out ++ "\n"); IO.eprintln s!"wrote {path}"
       | _              => IO.println out
@@ -516,7 +569,9 @@ def run (exe : String) (F : Fleet)
     reporting <| withLive fun bs => do
       let entries ← pullEntries (κ := F.keys) bs
       let world := worldOf entries
-      let orphans ← orphansIn bs
+      -- The forgotten resources still marked as this fleet's are released on
+      -- a teardown too: a fleet that is gone should not keep claims.
+      let found ← discover bs
       -- `Plan.absent` is the empty declaration: the same keys, every one
       -- `.absent`. So `destroy` is not a second teardown mechanism, it is
       -- this one with an empty target, and the guard below checks that.
@@ -533,8 +588,9 @@ def run (exe : String) (F : Fleet)
       -- `edges := F.plan` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
       -- order deletions by. See `orderActions`.
-      for line in ← push bs wanted world opts (edges := resolved) (orphans := orphans)
-                        (boundary := boundary) (seen := some entries) do
+      for line in ← push bs wanted world opts (edges := resolved) (orphans := found.orphans)
+                        (boundary := boundary) (seen := some entries)
+                        (releases := found.releases) do
         IO.println line
   | _ =>
     IO.eprintln (usage exe)

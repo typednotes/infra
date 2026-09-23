@@ -120,4 +120,23 @@ def decodeTag (s : String) : String × String :=
 #guard decodeTag "just-a-label" = ("just-a-label", "")
 #guard decodeTag "a=b=c" = ("a", "b=c")
 
+/-- A resource's raw flat tag list with one encoded pair taken out, or `none`
+    when that exact pair is not there — the Scaleway half of
+    `Backend.release`, where `t` is `(markerKey, fleet)`.
+
+    Works on the **raw** strings rather than on decoded pairs, so every other
+    tag goes back byte-for-byte as it came: `encodeTag ∘ decodeTag` is not the
+    identity (`"just-a-label"` would come back as `"just-a-label="`), and a
+    release must not rewrite tags it was not asked about. Matching the whole
+    encoded string also matches the value, so another fleet's marker —
+    same key, different value — is never removed. -/
+def dropTag (t : String × String) (tags : List String) : Option (List String) :=
+  if tags.contains (encodeTag t) then some (tags.filter (· != encodeTag t)) else none
+
+#guard dropTag ("managed-by-infra", "me") ["team=infra", "managed-by-infra=me", "just-a-label"]
+     = some ["team=infra", "just-a-label"]
+#guard dropTag ("managed-by-infra", "me") ["managed-by-infra=me"] = some []
+#guard dropTag ("managed-by-infra", "me") ["managed-by-infra=other", "team=infra"] = none
+#guard dropTag ("managed-by-infra", "me") [] = none
+
 end Infra.Providers.Scaleway

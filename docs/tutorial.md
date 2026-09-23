@@ -31,18 +31,26 @@ Two consequences worth internalising before you start:
   this fleet's marker that the declaration no longer names — and destroys
   them. Nothing is stored locally, so this works the same from your laptop and
   from a fresh CI runner. If you want to keep a resource and stop managing it,
-  say `forget <cloud> <kind> "<name>"` instead, and **leave that line in** for
-  as long as the resource exists: it still carries the marker, so deleting the
-  `forget` makes it an orphan again. Resources without this fleet's marker are
-  never changed or destroyed, declared or not. Give the fleet a name
-  (`Boundary.fleetName`): a fleet without one destroys no undeclared tagged
-  resource at all, because it cannot tell its own from another fleet's.
+  say `forget <cloud> <kind> "<name>"` instead: the next `apply` removes the
+  marker (the plan shows `RELEASE`) and leaves the resource standing, after
+  which it is no fleet's and the `forget` line can go. The exception is the
+  two Scaleway kinds whose *name* is the marker (Serverless SQL databases and
+  queues): a name cannot be removed, so their `forget` line stays for as long
+  as the resource exists. Resources without this fleet's marker are never
+  changed or destroyed, declared or not.
+- **The marker carries the fleet's name, and the name comes from the
+  declaration.** `fleet myFleet` is the fleet `my-fleet`: the identifier, in
+  kebab-case. So two fleets in one account keep apart as long as their names
+  differ, and **renaming the declaration renames the fleet** — its resources
+  then read as another fleet's and are left alone (never destroyed) until you
+  pin the old name with `boundary := { fleetName := some "my-fleet" }`.
 - **A bare invocation is offline.** It plans against placeholder backends: no
   credentials, no network, no charges. You have to ask for the real thing.
 
-> **Before you invest much in it:** this is early software. Two clouds, 14
-> resource kinds, and a maturity that varies a lot by kind — notably, *no AWS
-> call in this library has ever been made against a real account*.
+> **Before you invest much in it:** this is early software. Three clouds, 15
+> resource kinds, and a maturity that varies a lot by kind — notably, some
+> kinds (AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP
+> Cloud SQL) *have never been run against a real account*.
 > [`coverage.md`](coverage.md) is the honest breakdown, and worth two minutes
 > before you go further.
 
@@ -70,7 +78,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.16.0"
+require infra from git "https://github.com/typednotes/infra" @ "v0.17.0"
 
 @[default_target]
 lean_exe «my-infra» where
@@ -123,7 +131,11 @@ Nothing was contacted and nothing was charged. Read the four pieces:
 - `fleet myFleet` declares the fleet. It generates `myFleet.keys`,
   `myFleet.plan`, `myFleet.regions` and `myFleet.forgets`, and `myFleet`
   itself — the four of them as one value, which is what you hand to
-  `Infra.Cli.run`.
+  `Infra.Cli.run`. It also names the fleet: `my-fleet`, the identifier in
+  kebab-case, which is the value of the ownership marker on everything it
+  creates. A live command refuses a name that cannot be a marker value on
+  every cloud (1–63 lowercase letters, digits, `-` or `_`, starting with a
+  letter) and says what to change.
 - `in paris` says where it lives — see §5.
 - `provider scaleway where` names the cloud once for everything under it.
 - `resource objectStore "my-first-bucket"` is one resource: its **kind**, its
@@ -151,9 +163,10 @@ export AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…
 You do **not** need `AWS_REGION` or `SCW_DEFAULT_REGION` if your fleet declares
 where it is, which the one above does.
 
-Only the clouds your fleet actually uses are authenticated. A Scaleway-only
-fleet never reads AWS credentials and never calls AWS — that falls out of the
-key family, not from a flag.
+Only the clouds your fleet actually uses are authenticated — the ones it
+declares resources on, plus any you name in `accounts` (below). A Scaleway-only
+fleet that names no AWS account never reads AWS credentials and never calls
+AWS — that falls out of the key family, not from a flag.
 
 ### Refusing to run in the wrong account
 
@@ -176,6 +189,15 @@ belong in the repo that declares the fleet. If you cannot hardcode them, use
 `← Infra.Cli.Accounts.fromEnv`, which reads `INFRA_EXPECT_AWS_ACCOUNT` and
 `INFRA_EXPECT_SCALEWAY_ORG`.
 
+`accounts` is also the list of clouds searched for what the fleet left
+behind. Every cloud named there is scanned for resources carrying this fleet's
+marker, whether or not the declaration still has anything on it — which is
+what makes retiring a cloud work (§4). A cloud named there with no
+credentials on this machine gets a note and is not scanned; a cloud named
+neither there nor in the declaration is never looked at. It is deliberately
+not "every cloud this machine has credentials for": a laptop often holds keys
+for accounts that have nothing to do with this fleet.
+
 ## 4. The five commands
 
 ```
@@ -195,14 +217,18 @@ as deleting every line, not a second one.
 Nothing is written to disk: there is no state directory to gitignore or lose.
 `dump [FILE]` writes a snapshot when you want one — each resource with its
 region, ownership evidence and observed state, plus the undeclared resources
-the next `apply` would destroy and the declared ones that are not this
-fleet's. A dump also replays offline as test backends (`Snapshot.load`).
+the next `apply` would destroy, the forgotten ones it would release, and the
+declared ones that are not this fleet's. A dump also replays offline as test
+backends (`Snapshot.load`).
 
 `apply` refuses a plan that would destroy more than half of what the fleet
-manages while still declaring other things; `--force` overrides it. And retire
-a cloud with `destroy` *before* deleting its last line: a cloud the
-declaration no longer names is not scanned, so its resources would be left
-standing.
+manages while still declaring other things; `--force` overrides it.
+
+To retire a cloud, delete its lines but **keep it in `accounts`** until the
+`apply` that empties it: that cloud is still scanned, so what the fleet left
+there is found and destroyed. Then drop it from `accounts`. A cloud named
+neither in the declaration nor in `accounts` is not scanned, so anything
+still on it would be left standing.
 
 ## 5. Where it runs
 

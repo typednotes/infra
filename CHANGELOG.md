@@ -121,6 +121,84 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.17.0] — 2026-09-23
+
+Five simplifications, each removing an exception to "the marker decides".
+
+### Changed: every fleet has a name; the `true` marker is retired
+
+**Breaking.** `Infra.Core.Fleet` has a required `name`. The `fleet` command
+sets it from the identifier in kebab-case (`fleetNameOfIdent`: `fleet
+typednotes` → `typednotes`, `fleet crossCloud` → `cross-cloud`), and
+`Boundary.fleetName` is now an override of it. `Infra.Cli.run` resolves the
+name once and, before any live command, checks it is a valid marker value on
+every cloud (`validFleetName`: 1–63 lowercase letters, digits, `-`, `_`,
+starting with a letter), saying whether to rename the declaration or fix
+`fleetName`. Renaming a declaration renames its fleet; pin the old name with
+`fleetName` to keep what it created.
+
+The value `true`, which unnamed fleets wrote and every fleet accepted, is
+gone: nothing writes it, and nothing accepts it (`retiredMarkerValue` exists
+only to warn). A declared resource carrying it is foreign — not changed, and
+the warning says to retag it `managed-by-infra=<name>`; an undeclared one is
+warned about and never destroyed. With it go `legacyMarkerValue`, the
+grandfathering rule, and the "an unnamed fleet claims nothing undeclared"
+rule. `claimsUndeclared` is now the same verdict as `ownershipOf`.
+`liveBackend`, `live`, `liveFromEnvironment` and `Infra.Cli.liveFor` take the
+fleet's name as a required `String`.
+
+### Changed: the name prefix defaults to the fleet's name
+
+`Boundary.prefixes` is `[fleetName ++ "-"]` when neither `namePrefix` nor
+`namePrefixes` is set (setting either replaces the default). So a name-rung
+resource — a Scaleway Serverless SQL database or queue — named `<fleet>-…` is
+managed, and destroyed once undeclared, without configuration.
+`example/ScalewayQueue.lean`'s queue is renamed `example-queue-jobs` to match.
+
+### Changed: clouds named in `accounts` are scanned too
+
+Before, a cloud the declaration no longer named was not scanned, so its last
+resources had to be removed with `destroy` before the last line went. Now the
+scan covers every cloud the fleet declares **or names in `accounts`**: those
+are loaded, account-checked (`checkAccounts` covers every named cloud) and
+scanned in the fleet's region for them. A named cloud without credentials
+here is reported and skipped; a declared one still fails. Retire a cloud by
+removing its lines and keeping it in `accounts` until the apply that empties
+it. Deliberately not "every cloud whose credentials are loaded": a laptop
+holds credentials for unrelated accounts, and `accounts` is the checked
+statement of where the fleet lives. `claimUndeclared` scans every cloud the
+backends give scanners for; `liveFor` takes `extra` clouds and gives none to
+a cloud without credentials.
+
+### Added: `forget` releases the resource
+
+A resource named in `forget` that still carries this fleet's marker on a rung
+that can be rewritten — tags, labels, a description — has the marker removed
+on the next apply (and on `destroy`): `RELEASE cloud/kind/name` in the plan,
+not destructive. It is then no fleet's, and the `forget` line can be deleted.
+New: `Action.release`, `Backend.release` (the default refuses),
+`Discovered.releases`, `push (releases := …)`, and `released` in `dump`. The
+marker is re-checked just before releasing, and every per-cloud
+implementation removes it only if it names this fleet, keeping every other
+tag, label and word of the description. Implemented for every taggable
+`(cloud, kind)` pair on AWS, GCP and Scaleway. A name cannot be unwritten, so
+Scaleway queues and Serverless SQL databases keep their `forget` line.
+Verified live on Scaleway (a secret and a container namespace: released,
+then left alone once their lines were removed); the AWS and GCP calls are
+checked offline only until the live suite runs.
+
+### Changed: the Scaleway Queues credential is shared through Secret Manager
+
+The minted SQS credential is also stored as the Scaleway secret
+`infra-sqs-credential` in the same project and region, tagged
+`infra-internal=sqs-credential` and carrying **no** ownership marker, so no
+fleet claims or destroys it. The lookup is memo → keychain → this copy (each
+verified against the project's credentials) → mint, then store in both. So CI
+runners, which have no keychain, reuse one credential instead of minting a
+new one (and invalidating everyone else's) on every run. It is a cache;
+deleting it costs one mint. It is the only secret value infra reads back.
+Verified live.
+
 ## [0.16.0] — 2026-09-23
 
 ### Removed: the ledger and the observed-state cache — there is no local state

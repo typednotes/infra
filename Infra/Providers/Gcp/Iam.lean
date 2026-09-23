@@ -1,4 +1,5 @@
 import Infra.Providers.Gcp.Rest
+import Infra.Providers.Marker
 import Infra.Core.Stage
 import Infra.Core.Ownership
 import Linen.Data.Base64
@@ -312,6 +313,25 @@ def putMarker (creds : Credentials) (project accountId markerValue : String) : I
       [ ("serviceAccount", .object
           [("description", .string (encodeMarkerText markerValue))])
       , ("updateMask", .string "description") ]))
+
+/-- Take this fleet's ownership marker back out of the account's description
+    — the description rung's release.
+
+    The inverse of `create`/`putMarker`, which write the whole description as
+    `encodeMarkerText fleet`: `Marker.stripMarkerText` gives back what was
+    there before, the empty description, and leaves any other text (a human's,
+    another fleet's marker) as it is, in which case nothing is written. Same
+    `PATCH` with `updateMask=description` as `putMarker`, so `displayName` and
+    everything else stay. -/
+def releaseMarker (creds : Credentials) (project accountId fleet : String) : IO Unit := do
+  let sa ← Gcp.call creds "GET" host (saPath project accountId)
+  let description := (stringField sa "description").getD ""
+  let stripped := Marker.stripMarkerText fleet description
+  if stripped != description then
+    discard <| Gcp.call creds "PATCH" host (saPath project accountId)
+      (payload := some (.object
+        [ ("serviceAccount", .object [("description", .string stripped)])
+        , ("updateMask", .string "description") ]))
 
 /-! ### Service-account keys
 

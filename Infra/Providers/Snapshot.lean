@@ -122,18 +122,34 @@ private def removedBy (r : Resource) (gone : String) : Bool :=
     `deleted` collects every slot `delete` is asked for, in order — the thing
     a test asserts on — and a deleted resource stops being listed under any
     kind that shows it, so a second pass sees the account as the first left
-    it. `create` and `update` answer like the placeholder. -/
-def backends (snap : Snapshot) (deleted : IO.Ref (List String)) : Backends where
+    it. `released`, if given, does the same for `release`: the resource then
+    reports its tags without the marker. `create` and `update` answer like
+    the placeholder. -/
+def backends (snap : Snapshot) (deleted : IO.Ref (List String))
+    (released : Option (IO.Ref (List String)) := none) : Backends where
   backend p :=
     { placeholderBackend p.name with
         list := fun k => do
           let gone ← deleted.get
           return (snap.filter fun r => r.cloud == p && r.kind == k
               && !gone.any (removedBy r)).map (observedOf · k)
-        ownershipInfo := fun k h =>
-          pure ((snap.find? fun r => r.cloud == p && r.kind == k && r.name == h.raw).map
-            (·.evidence) |>.getD .unreadable)
-        delete := fun k h => deleted.modify (· ++ [slotId p k h.raw]) }
+        -- A released resource reports its tags without the marker, as the
+        -- cloud would after `release`.
+        ownershipInfo := fun k h => do
+          let freed ← match released with
+            | some ref => ref.get
+            | none     => pure []
+          let ev := (snap.find? fun r => r.cloud == p && r.kind == k && r.name == h.raw).map
+            (·.evidence) |>.getD .unreadable
+          return match ev with
+            | .tags ts at' =>
+              if freed.contains (slotId p k h.raw) then .tags (ts.filter (·.1 != markerKey)) at'
+              else ev
+            | _ => ev
+        delete := fun k h => deleted.modify (· ++ [slotId p k h.raw])
+        release := fun k h => match released with
+          | some ref => ref.modify (· ++ [slotId p k h.raw])
+          | none     => pure () }
 
 /-- The snapshot inside a `dump` file (its `resources` array). -/
 def ofDump (j : Json) : Except String Snapshot := do

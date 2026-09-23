@@ -96,14 +96,34 @@ needs a *dedicated* credential, minted by calling Scaleway's own API
 credential is cached under keychain service `infra`, account
 `scaleway-sqs/<project>/<region>` — one entry per project and region, since a
 credential belongs to exactly one of each, and separate from the `scaleway`
-entry above — so it is provisioned once per machine rather than on every run.
-A cached entry is used only after checking, read-only, that its access key is
-still one of that project's credentials. (Before 0.16.0 the account was the
-constant `scaleway-sqs`, so every project on a machine signed its queue calls
-with whichever project's credential was minted first; that entry is no longer
-read and can be deleted.) See
-`Infra.Providers.Scaleway.Sqs` and `docs/providers.md`'s "verified against a
-real account" note.
+entry above. A cached entry is used only after checking, read-only, that its
+access key is still one of that project's credentials. (Before 0.16.0 the
+account was the constant `scaleway-sqs`, so every project on a machine signed
+its queue calls with whichever project's credential was minted first; that
+entry is no longer read and can be deleted.)
+
+A keychain is per machine, and a CI runner has none. Minting reclaims the name
+`infra`, so before 0.17.0 every CI run minted a fresh credential and thereby
+invalidated the laptop's cached one, which minted again on its next run. Since
+0.17.0 the credential is **also** stored in Scaleway Secret Manager, as a
+secret named `infra-sqs-credential` in the same project and region, tagged
+`infra-internal=sqs-credential` and deliberately carrying **no** ownership
+marker — it is infra's, not any fleet's, so no fleet claims or destroys it.
+The lookup order is:
+
+1. this process's memo;
+2. the keychain entry, verified against the project's credential list;
+3. the Secret Manager copy, verified the same way (and then written to the
+   keychain);
+4. a fresh mint, which reclaims the `infra` name and is stored in both.
+
+So every machine that can reach the project — CI runners included — reuses
+one credential. The copy is a cache like the keychain: deleting it costs one
+mint, never a different result. It is the only secret *value* infra ever reads
+back. Using it needs Secret Manager read and write rights for the main key
+(`docs/permissions.md`); without them, the failure is a note and infra falls
+back to minting, as before. See `Infra.Providers.Scaleway.Sqs` and
+`docs/providers.md`'s "verified against a real account" note.
 
 ### Failure names every place it looked
 
@@ -211,9 +231,12 @@ Identity Center session. Scaleway has no equivalent, so the organization comes
 from the API key's own record, falling back to `default_organization_id`.
 
 A claim that cannot be *established* is a failure, never a pass — the check is
-never silently skipped. Only the clouds a fleet uses are checked, and only
-those it names an id for, so it costs one call per cloud per run and nothing
-for a fleet that opts out. `infra` itself names no accounts: whose they are is
+never silently skipped. Every cloud the fleet names an id for is checked —
+since 0.17.0 including a cloud it no longer declares anything on, because such
+a cloud is still scanned for what the fleet left there (a declared cloud
+without credentials fails; an undeclared one without credentials here is noted
+and skipped). It costs one call per cloud per run and nothing for a fleet
+that opts out. `infra` itself names no accounts: whose they are is
 the declaring repo's business, and neither id is a secret (an account id
 appears in every ARN, an organization id in the console URL).
 

@@ -1,4 +1,5 @@
 import Infra.Providers.Gcp.Rest
+import Infra.Providers.Marker
 import Infra.Core.Stage
 
 /-
@@ -123,6 +124,23 @@ def patchBucket (creds : Credentials) (bucket : String)
     (versioning : Bool) (labels : List (String × String)) : IO Unit := do
   discard <| Gcp.call creds "PATCH" host (bucketPath bucket)
     (payload := some (.object [versioningObject versioning, labelsObject labels]))
+
+/-- Take this fleet's ownership marker off the bucket, leaving every other
+    label.
+
+    A `PATCH` with the one label set to `null`: bucket `PATCH` merges the
+    `labels` map rather than replacing it, and a `null` value is how a key is
+    deleted (Cloud Storage JSON API, `buckets` resource: "labels … To delete a
+    label, set its value to null" under patch semantics). So nothing else on
+    the bucket is sent, and no other label can be lost. The value is checked
+    first against a fresh read, because the delete names the key alone. -/
+def releaseMarker (creds : Credentials) (bucket fleet : String) : IO Unit := do
+  match ← readLabels creds bucket with
+  | .unknown      => pure ()
+  | .known labels =>
+    if (Marker.releaseTags fleet labels).isSome then
+      discard <| Gcp.call creds "PATCH" host (bucketPath bucket)
+        (payload := some (.object [("labels", .object [(markerKey, .null)])]))
 
 /-- Delete a bucket. Already gone is not an error; **not empty** is.
 

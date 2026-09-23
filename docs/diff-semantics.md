@@ -584,18 +584,21 @@ before applying anything. Cheap at every tier, fatal at none.
   replaced by `Infra.Core.Ownership` (a marker plus a human-authored realm
   and exclusion list). What survives a resource's line being deleted is the
   marker on the resource: `plan`, `apply` and `destroy` ask every region the
-  fleet uses for undeclared resources carrying it (`Engine.claimUndeclared`),
-  which is what makes deleting that line destroy the resource, from any
-  machine. Nothing is stored locally. `forget` releases a resource without
-  deleting it, for as long as the `forget` line stays.
+  fleet uses, on every cloud it declares or names in `accounts`, for
+  undeclared resources carrying it (`Engine.claimUndeclared`), which is what
+  makes deleting that line destroy the resource, from any machine. Nothing is
+  stored locally. `forget` releases a resource without deleting it: the next
+  apply removes the marker (`RELEASE`), after which the line can go — except
+  on the name rung, where the name is the marker and the line stays.
 
   Every `(cloud, kind)` pair reports evidence now, on one of three rungs —
   tags, a marker in the object's one writable free-text field, or the
-  resource's own name against `Boundary.namePrefix` for the two Scaleway
-  products with neither. `docs/coverage.md` has the table. What is left is the
-  name rung's honest weakness: it is the one rung whose evidence the
-  declaration wrote rather than this tool, so a stranger using the same prefix
-  in the same project is indistinguishable from us, and a fleet that sets no
+  resource's own name against the fleet's prefix (`<fleet name>-` by default,
+  or `Boundary.namePrefix`/`namePrefixes`) for the two Scaleway products with
+  neither. `docs/coverage.md` has the table. What is left is the name rung's
+  honest weakness: it is the one rung whose evidence the declaration wrote
+  rather than this tool, so a stranger using the same prefix in the same
+  project is indistinguishable from us, and a resource named outside the
   prefix gets no evidence there at all.
 
   What the replacement does *not* record is references, and that is a choice

@@ -1,5 +1,6 @@
 import Infra.Providers.Aws.Protocols
 import Infra.Core.Stage
+import Infra.Providers.Marker
 import Linen.Text.Pandoc.XML
 
 /-
@@ -126,6 +127,22 @@ def putTags (creds : Credentials) (ep : Endpoint) (bucket : String)
     let body := ("<Tagging xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><TagSet>" ++
                  entries ++ "</TagSet></Tagging>").toUTF8
     discard <| S3.call creds ep "PUT" (some bucket) [("tagging", none)] body
+
+/-- Take this fleet's ownership marker off a bucket, leaving every other tag.
+
+    S3 has no per-key tag delete: `PutBucketTagging` replaces the whole set
+    (which is why `update` re-merges the marker), so this is read, filter,
+    write back — through `putTags`, which turns an empty remainder into
+    `DeleteBucketTagging`, since S3 rejects an empty `TagSet`. A bucket that
+    does not carry *this* fleet's marker is not written at all. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (bucket fleet : String) :
+    IO Unit := do
+  match ← readTags creds ep bucket with
+  | .unknown    => pure ()
+  | .known tags =>
+    match Marker.releaseTags fleet tags with
+    | none      => pure ()
+    | some rest => putTags creds ep bucket rest
 
 def deleteBucket (creds : Credentials) (ep : Endpoint) (bucket : String) : IO Unit := do
   discard <| S3.call creds ep "DELETE" (some bucket)

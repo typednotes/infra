@@ -3,6 +3,7 @@ import Infra.Providers.Scaleway.Rest
 import Infra.Providers.Gcp.SecretManager
 import Infra.Core.Stage
 import Infra.Core.Ownership
+import Infra.Providers.Marker
 import Linen.Data.Base64
 import Linen.Data.Time.Clock
 
@@ -234,8 +235,8 @@ private def requestToken : IO String := do
     (String.ofList (List.replicate (width - min width digits.length) '0')) ++ digits
   return hex now.nanosSinceEpoch 24 ++ hex hi 8
 
-/-- `markerValue` is the ownership marker's own value (the fleet's name, or
-    `legacyMarkerValue`) — see `Infra.Core.Ownership`. Written as a real AWS
+/-- `markerValue` is the ownership marker's own value, the fleet's name —
+    see `Infra.Core.Ownership`. Written as a real AWS
     tag at creation, the same way `Ec2.Instance'.create` does it, so a later
     `push` can tell this fleet's secret apart from one that merely happens to
     share the name (see the 2026-09-10 incident in `AGENTS.md`). -/
@@ -265,6 +266,19 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
       (.object [("SecretId", .string name)])).toBaseIO with
   | .error _  => return .unreadable
   | .ok reply => return .tags (tagsOf reply) none
+
+/-- Take this fleet's ownership marker off the secret, leaving its other tags
+    — the API-key back-reference included, which is what still lets somebody
+    find the key a minted secret holds.
+
+    `UntagResource` removes by key alone (Secrets Manager API reference,
+    `UntagResource`: `SecretId`, `TagKeys`), so the value is checked first
+    against a fresh `DescribeSecret`. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : IO Unit := do
+  let reply ← Json.call creds ep (target "DescribeSecret") (.object [("SecretId", .string name)])
+  if (Marker.releaseTags fleet (tagsOf reply)).isSome then
+    discard <| Json.call creds ep (target "UntagResource")
+      (.object [("SecretId", .string name), ("TagKeys", .array #[.string markerKey])])
 
 def putValue (creds : Credentials) (ep : Endpoint) (name value : String) : IO String := do
   let reply ← Json.call creds ep (target "PutSecretValue")
@@ -362,6 +376,23 @@ def create (creds : Credentials) (name value markerValue : String)
 
 def putValue (creds : Credentials) (name value : String) : IO String := do
   addVersion creds (← requireId creds name) value
+
+/-- Take this fleet's ownership marker off the secret, leaving every other tag
+    byte-for-byte (the API-key back-reference included).
+
+    `PATCH /secrets/{id}` with the full new `tags` list: `UpdateSecretRequest`
+    carries `Tags *[]string` (Scaleway SDK, `api/secret/v1beta1`), and a list
+    replaces the old one. Nothing else is sent, so name, description and
+    versions are untouched. -/
+def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | none               => pure ()
+  | some (_, id, tags) =>
+    match Scaleway.dropTag (markerKey, fleet) tags with
+    | none      => pure ()
+    | some rest =>
+      discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/secrets/{id}")
+        (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
 
 def delete (creds : Credentials) (name : String) : IO Unit := do
   let id ← requireId creds name

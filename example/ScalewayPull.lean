@@ -79,7 +79,9 @@ def main : IO Unit := do
   let creds ← Credentials.load .scaleway
   IO.println s!"authenticated (region {creds.region})"
 
-  let backend := Infra.Providers.liveBackend .scaleway creds
+  -- Only `list` is called, which writes nothing, so the name stamped on what
+  -- `create` would write is never used; it is required all the same.
+  let backend := Infra.Providers.liveBackend .scaleway creds "scaleway-pull"
   IO.FS.createDirAll outDir
 
   let mut total := 0

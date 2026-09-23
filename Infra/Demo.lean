@@ -143,8 +143,11 @@ def demoPlan : Plan demoKeys where
     Written out by hand because `demoPlan` is: the `fleet` command builds this
     value for a declared fleet, and everything it puts in it is available to a
     hand-written one. `forgets := []` is not boilerplate — the field has no
-    default precisely so that a fleet with releases cannot omit them. -/
+    default precisely so that a fleet with releases cannot omit them — and
+    neither is `name`: every fleet has one (the `fleet` command uses the
+    declaration's identifier). -/
 def demoFleet : Fleet where
+  name    := "demo"
   keys    := demoKeys
   plan    := demoPlan
   forgets := []
@@ -814,7 +817,7 @@ private def dagDeps (T : Plan dagFleet.keys) : Action dagFleet.keys → List Str
     | _ => []
   -- An orphan carries no key, so it has no spec to read edges from. This
   -- checker is about the declared graph. See `Engine.stepOf`.
-  | .deleteOrphan .. => []
+  | .deleteOrphan .. | .release .. => []
 
 /-- Every dependency that is itself scheduled appears strictly earlier.
 
@@ -1041,7 +1044,8 @@ private def orphan (k : Kind) (nm : String) : Orphan :=
       than an argument to the front end, and the field has no default, so a
       hand-written `Fleet` that leaves them out does not elaborate:
 
-          example : Fleet := { keys := forgetFleet.keys, plan := forgetFleet.plan }
+          example : Fleet :=
+            { name := "f", keys := forgetFleet.keys, plan := forgetFleet.plan }
 
           Fields missing: `forgets`
 
@@ -1056,7 +1060,7 @@ private def orphan (k : Kind) (nm : String) : Orphan :=
       declarations:
 
           example : Fleet :=
-            { keys := forgetFleet.keys, plan := dagFleet.plan
+            { name := "f", keys := forgetFleet.keys, plan := dagFleet.plan
               forgets := forgetFleet.forgets }
 
           Type mismatch

@@ -100,6 +100,26 @@ private def notOnGcp {α : Type} (kind : String) : IO α :=
 counterpart; declare it on the cloud it belongs to. See docs/architecture.md \
 on provider-local kinds.")
 
+/-- A release asked of an AWS-local kind on Scaleway: there is no such
+    resource there, so there is no marker to remove. -/
+private def awsOnly {α : Type} (kind name : String) : IO α :=
+  throw (IO.userError s!"{kind}/{name}: {kind} is an AWS-only kind; there is no \
+Scaleway resource of it whose ownership marker could be removed")
+
+/-- The same for a Scaleway-local kind on AWS. -/
+private def scalewayOnly {α : Type} (kind name : String) : IO α :=
+  throw (IO.userError s!"{kind}/{name}: {kind} is a Scaleway-only kind; there is no \
+AWS resource of it whose ownership marker could be removed")
+
+/-- A release asked of a pair on the **name rung**: the resource's name is the
+    whole of its ownership evidence, and a name cannot be unwritten. The engine
+    never plans this (`.named` evidence is never released); refusing, rather
+    than returning as if done, is what keeps a report of "released" true. -/
+private def nameRung {α : Type} (kind name why : String) : IO α :=
+  throw (IO.userError s!"{kind}/{name}: cannot remove the ownership marker — {why}, \
+so the marker is the name itself (the name rung) and cannot be unwritten. Rename or \
+recreate it outside infra, or narrow the fleet's `namePrefix` so it no longer matches.")
+
 /-! ## There is no `noGcp` any more
 
   There was, for every kind GCP could not talk to, and `grep noGcp` was the
@@ -161,8 +181,8 @@ private def secretOwnership (provider : ProviderId) (creds : Credentials) (name 
     Additive rather than a fixed pair, so a declaration's own tags survive
     untouched — the marker is bookkeeping, not part of what was declared.
 
-    `value` is the fleet's own name where it has one and `legacyMarkerValue`
-    where it does not (`Ownership.Boundary.fleetName`). A tag the declaration
+    `value` is the fleet's name (`Fleet.name`, or `Boundary.fleetName` where
+    that overrides it) — there is no fleet without one. A tag the declaration
     itself wrote under `markerKey` is left exactly as it is rather than
     overwritten: a declaration is not the place to set this, but silently
     rewriting what it says would be worse than honouring it. -/
@@ -198,7 +218,7 @@ private def withoutMarker :
 #guard withoutMarker (.known (withMarker "me" [])) = .known []
 /- Whatever the fleet is called, the marker is hidden by key alone — otherwise
    renaming a fleet would make its own old resources look like drift. -/
-#guard withoutMarker (.known (withMarker legacyMarkerValue [])) = .known []
+#guard withoutMarker (.known (withMarker "some-fleet" [])) = .known []
 #guard withoutMarker .unknown = (.unknown : Partial (List (String × String)))
 /- And a marker somebody wrote by hand, with a different value, is still
    hidden: `ownershipOf` only ever checks the key, so the read must not
@@ -436,7 +456,7 @@ def liveRead (provider : ProviderId) (creds : Credentials)
     `match` inside `do`: the result type is `ObservedOf k`/`Reported k`, so the
     equation compiler has to refine it per branch. -/
 def liveBackend (provider : ProviderId) (creds : Credentials)
-    (fleet : Option String := none)
+    (fleet : String)
     (routes : List Migrations.MigrationRoute := []) : Backend where
   list
     | .objectStore => do
@@ -622,19 +642,19 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
       -- versioning and labels in the insert body.
       | .gcp =>
         let project ← Gcp.requireProject creds
-        Gcp.Storage.createBucket creds project spec.name spec.versioning (withMarker (fleet.getD legacyMarkerValue) spec.tags)
+        Gcp.Storage.createBucket creds project spec.name spec.versioning (withMarker (fleet) spec.tags)
         return { handle := ⟨spec.name⟩, url := Gcp.Storage.bucketUrl spec.name }
       | .aws | .scaleway =>
         let ep := s3For provider creds
         ObjectStore.createBucket creds ep spec.name
         ObjectStore.putVersioning creds ep spec.name spec.versioning
-        ObjectStore.putTags creds ep spec.name (withMarker (fleet.getD legacyMarkerValue) spec.tags)
+        ObjectStore.putTags creds ep spec.name (withMarker (fleet) spec.tags)
         return { handle := ⟨spec.name⟩, url := ObjectStore.bucketUrl ep spec.name }
     | .securityGroup, spec => do
       -- `CreateSecurityGroup` does not report the VPC, so that stays blank
       -- until the next `pull` observes it.
       let groupId ← Ec2.SecurityGroup.create creds (ec2For creds)
-        spec.name spec.description (fleet.getD legacyMarkerValue) spec.ingress
+        spec.name spec.description (fleet) spec.ingress
       return { handle := ⟨spec.name⟩, groupId, vpcId := "" }
     | .awsInstance, spec => do
       -- `spec.securityGroup` is a settled `Handle .securityGroup`, i.e. the
@@ -664,7 +684,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
         else pure spec.imageId
       let r ← Ec2.Instance'.create creds (ec2For creds)
         spec.name imageId itype.name group.raw
-        spec.keyName spec.subnetId (fleet.getD legacyMarkerValue)
+        spec.keyName spec.subnetId (fleet)
       return { handle := ⟨spec.name⟩, instanceId := r.1
                privateIp := r.2.1, state := r.2.2 }
     | .s3Bucket, spec => do
@@ -676,14 +696,14 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
       -- `.objectStore` there is no `tags` field on the spec to merge with, so
       -- the whole tag set is the marker — and, for the same reason, nothing
       -- compares tags here, so writing it cannot create drift.
-      ObjectStore.putTags creds ep spec.name [(markerKey, fleet.getD legacyMarkerValue)]
+      ObjectStore.putTags creds ep spec.name [(markerKey, fleet)]
       return { handle := ⟨spec.name⟩, arn := s!"arn:aws:s3:::{spec.name}", region := ep.region }
     | .queues, spec => do
       match provider with
       | .gcp =>
         let project ← Gcp.requireProject creds
         let resource ← Gcp.PubSub.createTopic creds project spec.name
-                         (fleet.getD legacyMarkerValue)
+                         (fleet)
         return { handle := ⟨spec.name⟩, url := resource }
       | .aws | .scaleway =>
         let ep := sqsFor provider creds
@@ -692,12 +712,12 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
         -- to send there; ownership for them is on the name rung instead —
         -- see `Queues.readOwnershipByName`.
         let tags := match provider with
-          | .aws => [(markerKey, fleet.getD legacyMarkerValue)]
+          | .aws => [(markerKey, fleet)]
           | _    => []
         let url ← Queues.createQueue sqsCreds ep spec.name spec.visibilityTimeoutSec tags
         return { handle := ⟨spec.name⟩, url }
     | .imageRegistry, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       let uri ← match provider with
         | .gcp      =>
           Gcp.ArtifactRegistry.create creds (← Gcp.requireProject creds) creds.region
@@ -720,7 +740,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
       -- compose with; and a back-reference in the secret's own tags, which is
       -- how `delete` finds the credential again once the declaration naming
       -- it is gone. See `Kinds.Secrets`' module note.
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       let (value, accessKey, principal, extra) ← match spec.valueFrom with
         | .fromEnv v  => do pure (← Secrets.valueFromEnv v, "", "", [])
         | .composed v => pure (v, "", "", [])
@@ -752,7 +772,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
         | .scaleway => Secrets.Scw.create creds spec.name value marker extra
       return { handle := ⟨spec.name⟩, version, accessKey, principal }
     | .compute, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       match provider with
       | .gcp =>
         Gcp.CloudRun.create creds (← Gcp.requireProject creds) creds.region
@@ -764,7 +784,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
                        spec.namespace' marker spec.memoryMb spec.timeoutSec spec.env
       return { handle := ⟨spec.name⟩, status := "creating" }
     | .iam, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       match provider with
       | .gcp =>
         -- The marker goes in the service account's `description`: no labels
@@ -779,7 +799,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
         let id ← Iam.Scw.create creds spec.name marker spec.policies
         return { handle := ⟨spec.name⟩, arn := id }
     | .postgres, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       -- Routed on `instanceClass` being set, not on a separate spec flag: `Fillable`'s `""`
       -- sentinel is what `PostgresSpec.serverless` leaves behind, same convention as every
       -- other "said: nothing" default in this codebase.
@@ -817,18 +837,18 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
                            spec.masterUsername password spec.version marker spec.storageGb
       return { handle := ⟨spec.name⟩, endpoint := host }
     | .scalewayFunctionNamespace, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       let (i, _) ← Compute.Functions.createNamespace creds spec.name spec.description marker
       return { handle := ⟨spec.name⟩, namespaceId := i }
     | .scalewayContainerNamespace, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       -- The registry endpoint comes back from the create call: making a
       -- containers namespace implicitly makes a Container Registry namespace,
       -- and that is where its images have to be pushed.
       let (i, reg) ← Compute.Containers.createNamespace creds spec.name spec.description marker
       return { handle := ⟨spec.name⟩, namespaceId := i, registryEndpoint := reg }
     | .scalewayFunction, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       let ns : Handle .scalewayFunctionNamespace := spec.namespace'
       -- Refused here rather than deployed empty. Serverless Functions will
       -- accept a function with no code and then fail every invocation, which
@@ -850,7 +870,7 @@ invocation, which is a worse failure than this one")
         (Infra.Providers.Zip.archive [⟨file, spec.code.toUTF8⟩])
       return { handle := ⟨spec.name⟩, url }
     | .scalewayContainer, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       -- The one place a `.scalewayContainer` reads a secret's value; see
       -- `Kinds.Secrets.fetchValue`.
       let secretVals ← spec.secretEnv.mapM fun (name, h) => do
@@ -866,7 +886,7 @@ invocation, which is a worse failure than this one")
     | .objectStore, h, spec => do
       match provider with
       | .gcp =>
-        Gcp.Storage.patchBucket creds h.raw spec.versioning (withMarker (fleet.getD legacyMarkerValue) spec.tags)
+        Gcp.Storage.patchBucket creds h.raw spec.versioning (withMarker (fleet) spec.tags)
         return { handle := h, url := Gcp.Storage.bucketUrl h.raw }
       | .aws | .scaleway =>
         let ep := s3For provider creds
@@ -875,7 +895,7 @@ invocation, which is a worse failure than this one")
         -- additive), so the marker has to be re-merged here too — otherwise
         -- the first tag edit after creation would silently un-manage the
         -- bucket.
-        ObjectStore.putTags creds ep h.raw (withMarker (fleet.getD legacyMarkerValue) spec.tags)
+        ObjectStore.putTags creds ep h.raw (withMarker (fleet) spec.tags)
         return { handle := h, url := ObjectStore.bucketUrl ep h.raw }
     | .securityGroup, h, spec => do
       -- Additive: a rule present in the cloud but absent from the target is
@@ -890,7 +910,7 @@ invocation, which is a worse failure than this one")
           s!"instance '{h.raw}' disappeared between plan and apply")
       | some (instanceId, privateIp, state) =>
         Ec2.Instance'.update creds ep instanceId spec.name group.raw
-          (fleet.getD legacyMarkerValue)
+          (fleet)
         return { handle := ⟨spec.name⟩, instanceId, privateIp, state }
     | .s3Bucket, h, spec => do
       let ep := s3For provider creds
@@ -927,7 +947,7 @@ invocation, which is a worse failure than this one")
         -- different matter: it lives in the description, and re-asserting it
         -- is what stops a description cleared by hand from un-managing the
         -- namespace for ever.
-        ImageRegistry.Scw.putMarker creds h.raw (fleet.getD legacyMarkerValue)
+        ImageRegistry.Scw.putMarker creds h.raw (fleet)
         return { handle := h, repositoryUri := "" }
     | .secrets, h, spec => do
       let value ← match spec.valueFrom with
@@ -953,7 +973,7 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
       match provider with
       | .gcp =>
         Gcp.CloudRun.update creds (← Gcp.requireProject creds) creds.region
-          h.raw spec.image (fleet.getD legacyMarkerValue) spec.memoryMb spec.timeoutSec spec.env
+          h.raw spec.image (fleet) spec.memoryMb spec.timeoutSec spec.env
           spec.executionRole
       | .aws => Compute.Lambda.update creds (lambdaFor creds) h.raw spec.image
                   spec.executionRole spec.memoryMb spec.timeoutSec spec.env
@@ -961,7 +981,7 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
                        spec.memoryMb spec.timeoutSec spec.env
       return { handle := h, status := "updating" }
     | .iam, h, spec => do
-      let marker := fleet.getD legacyMarkerValue
+      let marker := fleet
       match provider with
       | .gcp =>
         let project ← Gcp.requireProject creds
@@ -1073,7 +1093,7 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
       | .aws      => Iam.Aws'.delete creds h.raw
       -- Takes the marker because it also removes the policy this tool
       -- attached, and only that one: see `Iam.Scw.delete`.
-      | .scaleway => Iam.Scw.delete creds h.raw (fleet.getD legacyMarkerValue)
+      | .scaleway => Iam.Scw.delete creds h.raw (fleet)
     | .postgres, h =>
       match provider with
       | .gcp      => do Gcp.CloudSql.delete creds (← Gcp.requireProject creds) h.raw
@@ -1183,6 +1203,152 @@ history left in place"
       | .scaleway =>
         Queues.readOwnershipByName (← Scaleway.Sqs.credentialsFor provider creds)
           (sqsFor provider creds) h.raw
+  /- ── Releasing the marker, one rung per `(cloud, kind)` ──
+
+     `Backend.release`: take this fleet's marker off one resource and leave
+     everything else — other tags, other labels, the rest of a description —
+     exactly as it was. Every per-cloud function re-reads the resource and
+     writes **only** if the marker is there with *this* fleet's name
+     (`Marker.releaseTags`, `Marker.stripMarkerText`, `Scaleway.dropTag`), so
+     another fleet's marker is never stripped, and a marker already gone is a
+     no-op rather than an error. A resource that has vanished is likewise left
+     alone: there is nothing left to unmark.
+
+     Every pair, by cloud:
+
+     AWS — tags:
+       * objectStore, s3Bucket — S3 tagging is replace-the-set: read, filter,
+         `PutBucketTagging`, or `DeleteBucketTagging` when nothing is left.
+       * securityGroup, awsInstance — EC2 `DeleteTags` with Key *and* Value.
+       * queues — SQS `UntagQueue`.
+       * imageRegistry — ECR `UntagResource`.
+       * secrets — Secrets Manager `UntagResource`.
+       * compute — Lambda `UntagResource` (`DELETE /2017-03-31/tags/{arn}`).
+       * iam — IAM `UntagUser`.
+       * postgres — RDS `RemoveTagsFromResource` (classic instances; a
+         serverless declaration on AWS is refused at create, so none exists).
+       * the four Scaleway kinds — no AWS counterpart; refused.
+
+     GCP — labels, one description:
+       * objectStore — Storage bucket `PATCH`, the label set to `null`.
+       * queues — Pub/Sub `topics.patch`, `updateMask=labels`.
+       * imageRegistry — Artifact Registry `PATCH`, `updateMask=labels`.
+       * secrets — Secret Manager `PATCH`, `updateMask=labels`.
+       * compute — Cloud Run v2 `PATCH`, `updateMask=labels` (an LRO).
+       * postgres — Cloud SQL `PATCH` of `settings.userLabels`, key → `null`.
+       * iam — the **description rung**: service-account `PATCH`,
+         `updateMask=description`, with the encoded marker stripped back out.
+       * s3Bucket, securityGroup, awsInstance, and the four Scaleway kinds —
+         provider-local elsewhere; refused (`notOnGcp`).
+
+     Scaleway — flat `key=value` tags, rewritten whole by the resource's own
+     `PATCH` with the full remaining `tags` list:
+       * compute, scalewayContainer — `PATCH /containers/{id}`.
+       * scalewayContainerNamespace — containers `PATCH /namespaces/{id}`.
+       * scalewayFunction — `PATCH /functions/{id}`.
+       * scalewayFunctionNamespace — functions `PATCH /namespaces/{id}`.
+       * secrets — Secret Manager `PATCH /secrets/{id}`.
+       * iam — IAM `PATCH /applications/{id}`.
+       * postgres, Managed Database — RDB `PATCH /instances/{id}`.
+       * objectStore, s3Bucket — S3-compatible tagging, as on AWS.
+       * imageRegistry — the **description rung**: registry
+         `PATCH /namespaces/{id}` with the encoded marker stripped back out.
+       * **cannot**: queues and postgres on Serverless SQL are on the **name
+         rung** — the marker *is* the name, and a name cannot be unwritten.
+         The engine never plans a release for `.named` evidence; asked anyway,
+         these refuse and say why.
+       * securityGroup, awsInstance — AWS-only kinds; refused.
+
+     Every cloud — postgresMigrations: **cannot**. Its evidence is its parent
+     database's marker, and it has none of its own to remove; release the
+     `postgres` resource instead. -/
+  release
+    | .objectStore, h => do
+      match provider with
+      | .gcp             => Gcp.Storage.releaseMarker creds h.raw fleet
+      | .aws | .scaleway => ObjectStore.releaseMarker creds (s3For provider creds) h.raw fleet
+    -- Mirrors `ownershipInfo`, which reads this kind through the S3 client on
+    -- both S3-speaking clouds.
+    | .s3Bucket, h => do
+      match provider with
+      | .gcp             => notOnGcp "s3Bucket"
+      | .aws | .scaleway => ObjectStore.releaseMarker creds (s3For provider creds) h.raw fleet
+    | .securityGroup, h => do
+      match provider with
+      | .aws      => Ec2.SecurityGroup.releaseMarker creds (ec2For creds) h.raw fleet
+      | .gcp      => notOnGcp "securityGroup"
+      | .scaleway => awsOnly "securityGroup" h.raw
+    | .awsInstance, h => do
+      match provider with
+      | .aws      => Ec2.Instance'.releaseMarker creds (ec2For creds) h.raw fleet
+      | .gcp      => notOnGcp "awsInstance"
+      | .scaleway => awsOnly "awsInstance" h.raw
+    | .queues, h => do
+      match provider with
+      | .gcp      => Gcp.PubSub.releaseMarker creds (← Gcp.requireProject creds) h.raw fleet
+      | .aws      => Queues.releaseMarker creds (sqsFor provider creds) h.raw fleet
+      | .scaleway =>
+        nameRung "queues" h.raw "Scaleway's SQS-compatible queues implement no tagging at all"
+    | .imageRegistry, h => do
+      match provider with
+      | .gcp      =>
+        Gcp.ArtifactRegistry.releaseMarker creds (← Gcp.requireProject creds)
+          creds.region h.raw fleet
+      | .aws      => ImageRegistry.Ecr.releaseMarker creds (ecrFor creds) h.raw fleet
+      | .scaleway => ImageRegistry.Scw.releaseMarker creds h.raw fleet
+    | .secrets, h => do
+      match provider with
+      | .gcp      =>
+        Gcp.SecretManager.releaseMarker creds (← Gcp.requireProject creds) h.raw fleet
+      | .aws      => Secrets.Asm.releaseMarker creds (asmFor creds) h.raw fleet
+      | .scaleway => Secrets.Scw.releaseMarker creds h.raw fleet
+    | .compute, h => do
+      match provider with
+      | .gcp      =>
+        Gcp.CloudRun.releaseMarker creds (← Gcp.requireProject creds) creds.region h.raw fleet
+      | .aws      => Compute.Lambda.releaseMarker creds (lambdaFor creds) h.raw fleet
+      | .scaleway => Compute.Containers.releaseMarker creds h.raw fleet
+    | .iam, h => do
+      match provider with
+      | .gcp      => Gcp.Iam.releaseMarker creds (← Gcp.requireProject creds) h.raw fleet
+      | .aws      => Iam.Aws'.releaseMarker creds h.raw fleet
+      | .scaleway => Iam.Scw.releaseMarker creds h.raw fleet
+    | .postgres, h => do
+      match provider with
+      | .gcp      => Gcp.CloudSql.releaseMarker creds (← Gcp.requireProject creds) h.raw fleet
+      | .aws      => Postgres.Rds.releaseMarker creds (rdsFor creds) h.raw fleet
+      -- Managed Database first, as `postgresEvidence` does: a name it does
+      -- not hold is a Serverless SQL Database, on the name rung.
+      | .scaleway =>
+        if ← Postgres.Rdb.hasInstance creds h.raw then
+          Postgres.Rdb.releaseMarker creds h.raw fleet
+        else
+          nameRung "postgres" h.raw
+            "a Scaleway Serverless SQL Database has no writable field but its name"
+    | .scalewayFunctionNamespace, h => do
+      match provider with
+      | .scaleway => Compute.Functions.releaseNamespaceMarker creds h.raw fleet
+      | .gcp      => notOnGcp "scalewayFunctionNamespace"
+      | .aws      => scalewayOnly "scalewayFunctionNamespace" h.raw
+    | .scalewayContainerNamespace, h => do
+      match provider with
+      | .scaleway => Compute.Containers.releaseNamespaceMarker creds h.raw fleet
+      | .gcp      => notOnGcp "scalewayContainerNamespace"
+      | .aws      => scalewayOnly "scalewayContainerNamespace" h.raw
+    | .scalewayFunction, h => do
+      match provider with
+      | .scaleway => Compute.Functions.releaseMarker creds h.raw fleet
+      | .gcp      => notOnGcp "scalewayFunction"
+      | .aws      => scalewayOnly "scalewayFunction" h.raw
+    | .scalewayContainer, h => do
+      match provider with
+      | .scaleway => Compute.Containers.releaseMarker creds h.raw fleet
+      | .gcp      => notOnGcp "scalewayContainer"
+      | .aws      => scalewayOnly "scalewayContainer" h.raw
+    | .postgresMigrations, h =>
+      throw (IO.userError s!"postgres-migrations/{h.raw}: has no ownership marker of its \
+own to remove — its evidence is the parent database's. Release the `postgres` resource \
+instead; the schema and history stay in place either way.")
 
 /-- Every cloud, live, using each one's own credentials.
 
@@ -1194,7 +1360,7 @@ history left in place"
     the same string `Ownership.Boundary.fleetName` requires back out of it — one
     setting for both sides, threaded from `Infra.Cli.run` so a fleet cannot
     claim one name and write another. -/
-def live (aws scaleway gcp : Credentials) (fleet : Option String := none) :
+def live (aws scaleway gcp : Credentials) (fleet : String) :
     Backends where
   backend
     | .aws      => liveBackend .aws aws fleet
@@ -1207,7 +1373,7 @@ def live (aws scaleway gcp : Credentials) (fleet : Option String := none) :
     service-account key works here too: this is the entry point a consumer's
     own code uses, and it offered one source fewer than the CLI did until the
     chain moved to one place. -/
-def liveFromEnvironment (fleet : Option String := none) : IO Backends := do
+def liveFromEnvironment (fleet : String) : IO Backends := do
   let load := Infra.Core.GcpAuth.loadWithKeyFile
   return live (← load .aws) (← load .scaleway) (← load .gcp) fleet
 

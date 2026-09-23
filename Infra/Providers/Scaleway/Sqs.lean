@@ -1,6 +1,7 @@
 import Infra.Providers.Scaleway.Rest
 import Linen.System.Keychain
 import Linen.Data.Ini
+import Linen.Data.Base64
 
 /-
   Scaleway Queues' own credentials.
@@ -230,6 +231,81 @@ private def mint (creds : Credentials) (region project : String) : IO Credential
   | _, _ => throw (IO.userError
       "scaleway sqs-credentials: no access_key/secret_key in the response")
 
+/-! ## The shared copy, in Secret Manager
+
+  A keychain is per machine, and a CI runner has none — so before 0.17.0 every
+  CI run minted a fresh credential, and since the name `infra` is an identity
+  (`reclaim`), each mint deleted the one before it: the laptop's cached copy
+  included, so the next local run minted again, deleting CI's. Correct, and
+  constant churn.
+
+  So the credential is also kept where every machine that can reach the
+  project can read it: a Scaleway secret named `infra-sqs-credential` in the
+  same project and region. It is a **cache**, like the keychain: deleting it
+  costs one mint, never a different result — and every copy is verified
+  against the project's credential list before use (`belongsTo`).
+
+  It carries **no ownership marker**, deliberately: it belongs to `infra`, not
+  to a fleet, and a marked copy would be an undeclared resource of whichever
+  fleet's name it carried — destroyed on that fleet's next apply. Unmarked, a
+  fleet's scan reads it as foreign and leaves it alone. It is tagged
+  `infra-internal=sqs-credential` so a human can tell what it is.
+
+  This is the one secret *value* `infra` reads back; every other secret is
+  write-only here. It is `infra`'s own credential, read with the same key that
+  minted it. -/
+
+/-- The name of the shared copy. -/
+private def storedName : String := "infra-sqs-credential"
+
+private def secretsPrefix (region : String) : String :=
+  Scaleway.regionalPrefix "secret-manager" "v1beta1" region
+
+/-- The shared copy's secret id, if there is one. -/
+private def storedId (creds : Credentials) (region project : String) : IO (Option String) := do
+  let reply ← Scaleway.call creds "GET" (secretsPrefix region ++ "/secrets")
+    (query := [("project_id", project), ("name", storedName)])
+  return (arrayField reply "secrets").findSome? fun x =>
+    if stringField x "name" == some storedName then stringField x "id" else none
+
+/-- The same text the keychain holds (`storeInKeychainAccount`). -/
+private def renderStored (c : Credentials) : String :=
+  Data.Ini.render { globals :=
+    [("access_key", c.accessKey), ("secret_key", c.secretKey), ("region", c.region)] }
+
+/-- Read the shared copy: `none` if there is none or it cannot be parsed. -/
+private def fromSecretManager (creds : Credentials) (region project : String) :
+    IO (Option Credentials) := do
+  let some id ← storedId creds region project | return none
+  let reply ← Scaleway.call creds "GET"
+    (secretsPrefix region ++ s!"/secrets/{id}/versions/latest/access")
+  let some data := stringField reply "data" | return none
+  let some bytes := Data.Base64.decode data | return none
+  let some text := String.fromUTF8? bytes | return none
+  let .ok ini := Data.Ini.parse text | return none
+  let some accessKey := ini.lookupGlobal "access_key" | return none
+  let some secretKey := ini.lookupGlobal "secret_key" | return none
+  return some { accessKey, secretKey, region }
+
+/-- Write the shared copy: a new version of the secret, creating it first if
+    it does not exist. -/
+private def toSecretManager (creds : Credentials) (region project : String)
+    (c : Credentials) : IO Unit := do
+  let id ← match ← storedId creds region project with
+    | some id => pure id
+    | none =>
+      let reply ← Scaleway.call creds "POST" (secretsPrefix region ++ "/secrets")
+        (payload := some (.object
+          [ ("name", .string storedName), ("project_id", .string project)
+          , ("tags", .array #[.string (Scaleway.encodeTag ("infra-internal", "sqs-credential"))])
+          , ("description", .string "The Queues (SQS) credential infra minted for this \
+project, shared by every machine that runs infra here. A cache: deleting it costs one mint.") ]))
+      match stringField reply "id" with
+      | some id => pure id
+      | none => throw (IO.userError "scaleway secrets: create returned no id")
+  discard <| Scaleway.call creds "POST" (secretsPrefix region ++ s!"/secrets/{id}/versions")
+    (payload := some (.object [("data", .string (Data.Base64.encode (renderStored c).toUTF8))]))
+
 /-- The credentials to sign a Queues request with.
 
     AWS needs no separate step: its SQS accepts the same credentials as
@@ -264,6 +340,23 @@ def credentialsFor (provider : ProviderId) (creds : Credentials) : IO Credential
 minting a new one"
           pure none
       | none => pure none
+    -- Then the shared copy, which is what a CI runner — no keychain — finds.
+    -- Best-effort, like the keychain: a key without Secret Manager rights
+    -- just mints, as it did before the copy existed.
+    let cached ← match cached with
+      | some c => pure (some c)
+      | none =>
+        match ← (fromSecretManager creds creds.region project).toBaseIO with
+        | .ok (some c) =>
+          if ← belongsTo creds creds.region project c.accessKey then
+            discard <| (storeInKeychainAccount account c).toBaseIO
+            pure (some c)
+          else pure none
+        | .ok none => pure none
+        | .error e =>
+          IO.eprintln s!"note: could not read the shared Scaleway SQS credential \
+({storedName}) in project {project}: {e}"
+          pure none
     match cached with
     | some c =>
       mintedThisRun.modify ((key, c) :: ·)
@@ -310,14 +403,24 @@ be retrieved; replacing it"
       -- able to fail the operation it is optimising. A CI runner has no
       -- keychain daemon, so this throws there — after a successful mint, which
       -- would waste the credential and report a confusing error.
-      match ← (storeInKeychainAccount account c).toBaseIO with
-      | .ok _ => pure ()
-      | .error e =>
-        -- Said out loud, but no longer alarming: the memo above means this
-        -- costs one extra mint per *run*, not per call.
+      -- Then both caches beyond this process, each optional: neither may
+      -- fail the operation it is optimising. A CI runner has no keychain
+      -- daemon, so that store throws there — which is what the shared copy
+      -- is for.
+      let keychain ← (storeInKeychainAccount account c).toBaseIO
+      let shared ← (toSecretManager creds creds.region project c).toBaseIO
+      match keychain, shared with
+      | _, .ok _ => pure ()
+      | .ok _, .error e =>
+        IO.eprintln s!"note: minted a Scaleway SQS credential and cached it in this \
+machine's keychain, but could not share it in Secret Manager ({e}); other machines \
+will mint their own"
+      | .error k, .error e =>
+        -- Said out loud, but not alarming: the memo above means this costs
+        -- one extra mint per *run*, not per call.
         IO.eprintln s!"warning: minted a Scaleway SQS credential but could not \
-cache it beyond this process ({e}); the next run will mint again — see \
-docs/providers.md"
+cache it beyond this process (keychain: {k}; Secret Manager: {e}); the next run will \
+mint again — see docs/providers.md"
       return c
 
 /-! ## Self-check: the memo short-circuits

@@ -2,6 +2,7 @@ import Infra.Providers.Aws.Protocols
 import Infra.Core.Stage
 import Infra.Providers.JsonRead
 import Infra.Core.Ownership
+import Infra.Providers.Marker
 
 /-
   Queues, over the SQS API.
@@ -93,6 +94,18 @@ def createQueue (creds : Credentials) (ep : Endpoint) (name : String)
   | some u => return u
   | none   => throw (IO.userError s!"CreateQueue: no URL returned for '{name}'")
 
+/-- A queue's tags, from `ListQueueTags`. -/
+private def queueTags (creds : Credentials) (ep : Endpoint) (url : String) :
+    IO (List (String × String)) := do
+  let reply ← Json.call creds ep (target "ListQueueTags")
+    (.object [("QueueUrl", .string url)]) protocolVersion
+  return match field reply "Tags" with
+    | some (.object fields) => fields.filterMap fun (k, v) =>
+        match v with
+        | .string s => some (k, s)
+        | _         => none
+    | _ => []
+
 /-- Tags, for `Ownership.ownershipOf` — AWS SQS only. `ListQueueTags` is a
     separate call keyed by `QueueUrl`, same gap as EC2/RDS/IAM.
     `createdAt` is left `none`, matching every other kind's first tranche.
@@ -103,16 +116,21 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
   let attempt ← (queueUrl creds ep name).toBaseIO
   match attempt with
   | .error _ => return .unreadable
-  | .ok url =>
-    let reply ← Json.call creds ep (target "ListQueueTags")
-      (.object [("QueueUrl", .string url)]) protocolVersion
-    let tags := match field reply "Tags" with
-      | some (.object fields) => fields.filterMap fun (k, v) =>
-          match v with
-          | .string s => some (k, s)
-          | _         => none
-      | _ => []
-    return .tags tags none
+  | .ok url  => return .tags (← queueTags creds ep url) none
+
+/-- Take this fleet's ownership marker off a queue, leaving its other tags —
+    **AWS SQS only**: a Scaleway queue carries no marker to remove (see
+    `readOwnershipByName`).
+
+    `UntagQueue` removes by key alone (SQS API reference, `UntagQueue`:
+    `QueueUrl`, `TagKeys`), so the value is checked first against a fresh
+    `ListQueueTags`. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : IO Unit := do
+  let url ← queueUrl creds ep name
+  if (Marker.releaseTags fleet (← queueTags creds ep url)).isSome then
+    discard <| Json.call creds ep (target "UntagQueue")
+      (.object [("QueueUrl", .string url), ("TagKeys", .array #[.string markerKey])])
+      protocolVersion
 
 /-- Ownership for a **Scaleway** queue, which has no marker to carry.
 

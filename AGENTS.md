@@ -34,17 +34,26 @@ partial scope before shipping it, rather than deciding unilaterally that
 **The marker decides what a fleet manages — never local state, never a name.**
 This is the principle everything else rests on, and it cuts both ways:
 
-1. **Every resource `infra` creates carries the fleet's marker** — a tag, the
-   description rung, or the name prefix (the ladder below) — naming the fleet
-   when `Boundary.fleetName` is set.
+1. **Every fleet has a name, and every resource it creates carries it** — in
+   a tag, the description rung, or the name prefix (the ladder below). The
+   name is the `fleet` declaration's identifier in kebab-case
+   (`Fleet.name`), overridable with `Boundary.fleetName`; `Infra.Cli.run`
+   resolves it once and checks it is a valid marker value on every cloud.
+   The name prefix defaults to the name and a hyphen. There is no unnamed
+   fleet and no marker that matches every fleet: the old value `true` is
+   retired (`retiredMarkerValue`) and matches none — a resource carrying it
+   is warned about, never touched.
 2. **A resource carrying this fleet's marker that the declaration no longer
    names is destroyed on the next apply — on any machine.** Deleting a line
    must destroy the resource from a fresh CI runner exactly as from the
    laptop that created it. `push`'s callers
    find these by asking the cloud (`Engine.claimUndeclared`), across every
-   region and every kind the fleet's clouds offer — including a kind the
-   declaration no longer has anything of, which is exactly the case where the
-   last resource of it was just removed.
+   region and every kind of every cloud the fleet declares *or names in
+   `accounts`* — including a kind, or a cloud, the declaration no longer has
+   anything of, which is exactly the case where the last resource of it was
+   just removed. `accounts`, not "whatever credentials are loaded", because a
+   laptop holds credentials for unrelated accounts and `accounts` is the
+   checked statement of where the fleet lives.
 3. **Only a resource carrying this fleet's marker is changed or destroyed.** A
    declared name is not evidence: a resource holding a declared name without
    the marker is warned about by name and left alone — `update`, `replace` and
@@ -62,29 +71,30 @@ This is the principle everything else rests on, and it cuts both ways:
    container as `compute` and `scalewayContainer`) share a physical class
    (`Engine.physicalClass`); a resource declared under one is not an orphan of
    the other. Adding a kind means checking whether it overlaps an existing one.
-6. **Destroying needs a marker that names this fleet.** The grandfathered value
-   (`legacyMarkerValue`) matches every fleet, so it may let a fleet change a
-   declared resource but never license destroying an undeclared one
-   (`Ownership.claimsUndeclared`) — it is warned about instead. A fleet with no
-   `fleetName` destroys no undeclared resource by tag at all: in a shared
-   account it cannot tell its own from another fleet's. (The name rung still
-   applies, by prefix.)
-7. **`forget` lasts as long as its line.** A forgotten resource keeps its
-   marker, and nothing records that it was forgotten except the declaration;
-   remove the `forget` line and it is an orphan again, destroyed next apply.
+6. **Changing and destroying need a marker that names this fleet** — the same
+   test for both (`ownershipOf`, `claimsUndeclared`). A `Boundary` without a
+   name (only reachable by calling the engine directly) claims nothing by tag.
+7. **`forget` releases.** A forgotten resource that still carries this
+   fleet's marker on a rung that can be rewritten has the marker removed on
+   the next apply (`Action.release`, `Backend.release`, re-checked just
+   before) — after which it is no fleet's and the line can go. Every
+   taggable `(cloud, kind)` pair implements `release`; a name cannot be
+   unwritten, so a name-rung resource keeps its marker and its `forget` line
+   must stay while it exists.
 
 The cases this cannot cover are **enumerated, in `Engine.scannableUndeclared`
 and `docs/coverage.md`**, never left to a catch-all: `postgresMigrations` has
-nothing to find (its delete is a FORGET that does nothing); a cloud the
-declaration no longer names *at all* is not scanned — retire a cloud with
-`destroy` before removing its last line; a name-rung resource is only found
-when the fleet sets a prefix; and an undeclared resource carrying the
-grandfathered marker, or any tag in a fleet without `fleetName`, is warned
-about, not destroyed. Scaleway queues are no longer an exception: listing
-checks, read-only, whether Queues is enabled, and only then uses (and, the
-first time, mints) the dedicated `infra` SQS credential. Every change near this
-principle is tested against a snapshot of an account (`checkMarkerDecides`,
-`checkDumpReplays` in `Main.lean`) — never with remembered state, which hides
+nothing to find (its delete is a FORGET that does nothing); a cloud named
+neither in the declaration nor in `accounts` is not scanned, nor is a named
+one without credentials here (said out loud); a name-rung resource's `forget`
+line stays; a resource carrying the retired `true` is warned about, never
+touched. Scaleway queues are no exception: listing checks, read-only, whether
+Queues is enabled, and only then uses the dedicated `infra` SQS credential —
+shared between machines as the unmarked secret `infra-sqs-credential`, a cache
+that costs one mint to lose. Every change near this principle is tested
+against a snapshot of an account (`checkMarkerDecides`, `checkDumpReplays`,
+`checkRetiredCloud`, `checkForgetReleases` in `Main.lean`) — never with
+remembered state, which hides
 exactly the bug this section exists to prevent: before 0.15.0, removing a line
 from `typednotes-infra` left an IAM application and its live API key standing
 after a CI apply, because only the laptop's ledger knew they existed.
@@ -106,8 +116,8 @@ strongest rung the object supports, and say in the code which rung it is on:
 Rung 3 is weaker than the other two and must stay opt-in and *verifying*: the
 evidence is something the declaration wrote rather than something this tool
 did, and renaming a resource to fit is not infra's to do — a fleet key is the
-cloud-side name. Unset, such a resource is `foreign`: never changed, never
-deleted as an orphan. Never treat an empty prefix as matching everything.
+cloud-side name. By default the prefix is the fleet's name and a hyphen; a
+resource outside it is `foreign`: never changed, never deleted as an orphan. Never treat an empty prefix as matching everything.
 
 Two rules that come out of the 2026-09-19 pass over this:
 

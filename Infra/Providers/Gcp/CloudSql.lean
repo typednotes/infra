@@ -1,4 +1,5 @@
 import Infra.Providers.Gcp.Rest
+import Infra.Providers.Marker
 import Infra.Core.Stage
 import Infra.Core.Ownership
 
@@ -138,6 +139,25 @@ def readOwnership (creds : Credentials) (project name : String) :
           | _         => none
       | _ => []
     return .tags tags none
+
+/-- Take this fleet's ownership marker off the instance, leaving every other
+    label and setting.
+
+    A `PATCH` of `settings.userLabels` with the one key set to `null`: instance
+    `PATCH` merges, so unmentioned settings stay (as `update` relies on), and a
+    `null` label value is how Cloud SQL deletes a label (Cloud SQL docs,
+    "Label instances" → removing a label with the Admin API). The value is
+    checked first against a fresh read, because the delete names the key
+    alone. -/
+def releaseMarker (creds : Credentials) (project name fleet : String) : IO Unit := do
+  match ← readOwnership creds project name with
+  | .tags labels _ =>
+    if (Marker.releaseTags fleet labels).isSome then
+      let started ← Gcp.call creds "PATCH" host (instancePath project name)
+        (payload := some (.object
+          [("settings", .object [("userLabels", .object [(markerKey, .null)])])]))
+      Gcp.awaitSqlOperation creds project started s!"cloud sql: release {name}"
+  | _ => pure ()
 
 /-- Refuse a serverless declaration, and say what to write instead. -/
 def createServerless (name : String) : IO String := do

@@ -2,6 +2,7 @@ import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Infra.Core.Stage
 import Infra.Core.Ownership
+import Infra.Providers.Marker
 
 /-
   Serverless compute, from a container image.
@@ -89,6 +90,15 @@ private def requireRole (name role : String) : IO String := do
       s!"compute '{name}' on aws needs executionRole: Lambda requires an execution role ARN")
   return role
 
+/-- A `GetFunction` reply's top-level `Tags` map, as pairs. -/
+private def tagsOf (whole : Value) : List (String × String) :=
+  match field whole "Tags" with
+  | some (.object fields) => fields.filterMap fun (k, v) =>
+      match v with
+      | .string s => some (k, s)
+      | _         => none
+  | _ => []
+
 /-- `markerValue` is the ownership marker's value, written as a Lambda tag at
     create — `Tags` here is a `{key: value}` map, unlike every other kind's
     list-of-pairs, because that is the shape `CreateFunction` actually takes.
@@ -114,13 +124,37 @@ def create (creds : Credentials) (ep : Endpoint) (name image role markerValue : 
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
     IO Evidence := do
   let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
-  let tags := match field whole "Tags" with
-    | some (.object fields) => fields.filterMap fun (k, v) =>
-        match v with
-        | .string s => some (k, s)
-        | _         => none
-    | _ => []
-  return .tags tags none
+  return .tags (tagsOf whole) none
+
+/-- Take this fleet's ownership marker off the function, leaving its other
+    tags.
+
+    `UntagResource` is `DELETE /2017-03-31/tags/{ARN}?tagKeys=…` (Lambda API
+    reference, `UntagResource`) and removes by key alone, so the value is
+    checked first against a fresh `GetFunction` — which is also where the ARN
+    comes from.
+
+    The one call in this library whose path carries characters outside the
+    unreserved set: an ARN's `:`s. SigV4 for every service but S3 signs each
+    path segment URI-encoded *twice*, the wire carrying it encoded once —
+    which is what an SDK sends (`arn%3Aaws%3Alambda…`). So the request is
+    signed over the raw path (`Crypto.SigV4.canonicalUri` double-encodes it)
+    and sent with the ARN segment encoded once. Every other call here has an
+    all-unreserved path, where the two spellings coincide. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : IO Unit := do
+  let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
+  if (Marker.releaseTags fleet (tagsOf whole)).isSome then
+    let cfg := (field whole "Configuration").getD whole
+    let some arn := stringField cfg "FunctionArn"
+      | throw (IO.userError s!"lambda '{name}': GetFunction reported no FunctionArn")
+    let signedPath := s!"/2017-03-31/tags/{arn}"
+    let req ← Aws.signedRequest creds ep "DELETE" signedPath [("tagKeys", some markerKey)]
+      (doubleEncodePath := true)
+    let wirePath :=
+      s!"/2017-03-31/tags/{Network.URI.escapeURIString Network.URI.isUnreserved arn}"
+    match ← (Http.sendChecked { req with path := wirePath }).toBaseIO with
+    | .ok _    => pure ()
+    | .error e => throw (IO.userError s!"lambda DELETE {signedPath}: {e}")
 
 /-- Configuration and code are separate endpoints, so an update is two calls. -/
 def update (creds : Credentials) (ep : Endpoint) (name image role : String)
@@ -250,6 +284,37 @@ def update (creds : Credentials) (name image : String)
 def delete (creds : Credentials) (name : String) : IO Unit := do
   let id ← requireId creds name
   discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/containers/{id}")
+
+/-- Take this fleet's ownership marker off a container (both `.compute` and
+    `.scalewayContainer` on Scaleway), leaving every other tag byte-for-byte.
+
+    `PATCH /containers/{id}` with the full new `tags` list — the endpoint
+    `update` already uses; `UpdateContainerRequest` carries `Tags *[]string`
+    (Scaleway SDK, `api/container/v1beta1`) and a list replaces the old one.
+    Only `tags` is sent, and `redeploy` is not, so nothing is rolled out. -/
+def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | none               => pure ()
+  | some (_, id, tags) =>
+    match Scaleway.dropTag (markerKey, fleet) tags with
+    | none      => pure ()
+    | some rest =>
+      discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/containers/{id}")
+        (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
+
+/-- The same for a containers namespace: `PATCH /namespaces/{id}` — the
+    endpoint `updateNamespace` uses — with the full new `tags` list
+    (`UpdateNamespaceRequest.Tags *[]string`, same SDK package). The
+    description is not sent, so it stays. -/
+def releaseNamespaceMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match (← listNamespacesRaw creds).find? (·.1 == name) with
+  | none               => pure ()
+  | some (_, id, tags) =>
+    match Scaleway.dropTag (markerKey, fleet) tags with
+    | none      => pure ()
+    | some rest =>
+      discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/namespaces/{id}")
+        (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
 
 /-! ### The richer surface `.scalewayContainer` needs
 
@@ -619,6 +684,37 @@ def update (creds : Credentials) (name : String)
 def delete (creds : Credentials) (name : String) : IO Unit := do
   let id ← requireId creds name
   discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/functions/{id}")
+
+/-- Take this fleet's ownership marker off a function, leaving every other tag
+    byte-for-byte.
+
+    `PATCH /functions/{id}` with the full new `tags` list — the endpoint
+    `update` already uses; `UpdateFunctionRequest` carries `Tags *[]string`
+    (Scaleway SDK, `api/function/v1beta1`) and a list replaces the old one.
+    Only `tags` is sent, and `redeploy` is not. -/
+def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | none               => pure ()
+  | some (_, id, tags) =>
+    match Scaleway.dropTag (markerKey, fleet) tags with
+    | none      => pure ()
+    | some rest =>
+      discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/functions/{id}")
+        (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
+
+/-- The same for a functions namespace: `PATCH /namespaces/{id}` — the
+    endpoint `updateNamespace` uses — with the full new `tags` list
+    (`UpdateNamespaceRequest.Tags *[]string`, same SDK package). The
+    description is not sent, so it stays. -/
+def releaseNamespaceMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match (← listNamespacesRaw creds).find? (·.1 == name) with
+  | none               => pure ()
+  | some (_, id, tags) =>
+    match Scaleway.dropTag (markerKey, fleet) tags with
+    | none      => pure ()
+    | some rest =>
+      discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/namespaces/{id}")
+        (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
 
 /-! ### Namespace CRUD
 

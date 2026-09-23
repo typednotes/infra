@@ -1,4 +1,5 @@
 import Infra.Core.Kind
+import Infra.Core.Bundle
 
 /-
   Scaffolding a declaration repository.
@@ -61,7 +62,7 @@ namespace Infra.Cli.New
     line `init` appends when converting a `lakefile.toml`, and into what
     `scaffold` prints when it keeps a lakefile it did not write — one string,
     so those three cannot disagree. -/
-private def infraRev : String := "v0.16.0"
+private def infraRev : String := "v0.17.0"
 
 /-- The dependency line a consumer's `lakefile.lean` needs, pinned to
     `infraRev`. -/
@@ -317,21 +318,19 @@ def accounts : Infra.Cli.Accounts where
 def main (args : List String) : IO UInt32 :=
   Infra.Cli.run \"" ++ name ++ "\" " ++ name ++ "
     (accounts := accounts)
-    -- The fleet's name is written into the marker on everything it creates
-    -- and required back out of it. It is what lets `apply` destroy a resource
-    -- whose line you removed — only a marker naming this fleet licenses that —
-    -- and what makes another fleet's resources in the same account read as
-    -- foreign. Keep it stable: renaming it orphans nothing, but strands
-    -- everything created under the old name.
+    -- The fleet's name is the declaration's identifier in kebab-case
+    -- (`fleet " ++ name ++ "` in `Fleet.lean`). It is written into the marker
+    -- on everything the fleet creates and required back out of it: it is
+    -- what lets `apply` destroy a resource whose line you removed, and what
+    -- makes another fleet's resources in the same account read as foreign.
+    -- Renaming the declaration renames the fleet; to rename one without
+    -- stranding what it created, pin the old name here:
+    --   (boundary := { fleetName := some \"" ++ Infra.Core.fleetNameOfIdent name ++ "\" })
     --
-    -- `namePrefix` is for the kinds a cloud offers nowhere to write a marker
-    -- — today, Scaleway's Serverless SQL Database and its queues. Such a
-    -- resource is claimed only if its name starts with this, and is left
-    -- strictly alone otherwise. It is checked, never applied: name those
-    -- resources with the prefix yourself, then uncomment it.
-    (boundary := { fleetName := some \"" ++ name ++ "\"
-                   -- namePrefix := some \"" ++ name ++ "-\"
-                 })
+    -- Kinds a cloud offers nowhere to write a marker (Scaleway's Serverless
+    -- SQL Database and its queues) are claimed by name instead: by default,
+    -- names starting with the fleet's name and a hyphen. Set `namePrefix` in
+    -- the boundary to use another prefix.
     (args := args)
 "
 

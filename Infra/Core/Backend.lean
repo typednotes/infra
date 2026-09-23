@@ -69,6 +69,19 @@ structure Backend where
       overrides this field is unaffected — and so that a kind added later is
       refused rather than silently claimed. -/
   ownershipInfo : (k : Kind) → Handle k → IO Evidence := fun _ _ => pure .unreadable
+  /-- Remove the ownership marker from one resource, leaving it — and every
+      other tag, label or word of its description — exactly as it was. What a
+      `forget` does on apply: the resource stops being any fleet's, and the
+      `forget` line can then be deleted.
+
+      Only asked of a resource whose marker is on a rung that can be
+      rewritten — tags, labels, a description. A name cannot be unwritten
+      (`Engine.claimUndeclared` never plans a release for a `.named`
+      resource). The default refuses, loudly, so that a kind nobody has
+      taught to release cannot report a release it did not do. -/
+  release : (k : Kind) → Handle k → IO Unit := fun k h =>
+    throw (IO.userError s!"{k.name}/{h.raw}: this backend cannot remove the ownership marker \
+from this kind")
 
 /-- Every cloud the engine can reach. Total over `ProviderId`, matching `Plan.assign`'s
     totality over the same index.

@@ -422,6 +422,8 @@ around it names a `{a.getId}` region; a region code belongs to one cloud"
     --    front end wants one value rather than three.
     cmds := cmds.push (← `(
       def $fleetName : Infra.Core.Fleet where
+        name    := $(Lean.Syntax.mkStrLit (Infra.Core.fleetNameOfIdent
+                      (fleetName.getId.eraseMacroScopes.toString (escape := false))))
         keys    := $keysId
         plan    := $planId
         regions := $regionsId

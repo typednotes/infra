@@ -482,7 +482,8 @@ things were wrong until this was exercised live:
   (`Infra.Providers.Aws.Protocols.sqsEndpoint`).
 - Scaleway's SQS-compatible API refuses the main Scaleway API key outright.
   It needs a *dedicated* credential, minted after a one-time activation call
-  and cached in the OS keychain — see `Infra.Providers.Scaleway.Sqs`.
+  and cached in the OS keychain and, since 0.17.0, in a shared Scaleway
+  secret — see below and `Infra.Providers.Scaleway.Sqs`.
 
 Since 0.16.0 queues are listed on every run, like every other kind, to find
 orphans. So that a `plan` never activates the product or mints a credential,
@@ -493,7 +494,24 @@ dedicated credential (`credentialsFor`, which mints or reclaims the one named
 `infra`). Scaleway Queues supports no tags — no `TagQueue`, no
 `ListQueueTags`, and `CreateQueue`'s `Tag` is unsupported (Scaleway, "Queues -
 Supported Actions", reviewed 2025-11-19) — and no free-text attribute, so a
-queue's ownership rests on its name (`Boundary.namePrefix`).
+queue's ownership rests on its name (`Boundary.prefixes`: the fleet's name and
+a hyphen unless `namePrefix`/`namePrefixes` replace it). For the same reason a
+queue cannot be *released*: a `forget` line for one has to stay for as long as
+the queue exists.
+
+**The credential's shared copy (0.17.0).** A keychain is per machine and a CI
+runner has none, and minting reclaims the name `infra` — so before 0.17.0 each
+CI run minted and so invalidated every other machine's cached credential. Now
+the minted credential is also stored as a Scaleway Secret Manager secret named
+`infra-sqs-credential` in the same project and region, tagged
+`infra-internal=sqs-credential`, with **no** ownership marker so that no
+fleet's scan claims or destroys it. `credentialsFor` looks in this process's
+memo, then the keychain (`scaleway-sqs/<project>/<region>`), then the shared
+copy, verifying each against the project's credential list, and only then
+mints, storing the result in both. The secret's value is read back —
+`GET …/secrets/{id}/versions/latest/access` — which makes it the one secret
+value infra ever reads. A key without Secret Manager rights gets a note and
+mints as before. Verified live on `typednotes-infra`'s project.
 
 Both were plausible-looking and both failed hard against the real API, which
 is exactly the risk this whole section exists to name for the other fifteen

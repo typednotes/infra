@@ -46,7 +46,11 @@ open Infra.Core
 open Infra.Specs
 
 fleet exampleQueue in paris where
-  resource scaleway queues "infra-example"
+  -- A queue can carry no tag, so its name is its marker: it starts with
+  -- the fleet's name and a hyphen (`example-queue-`, from `exampleQueue`),
+  -- which is the default `namePrefix`. So deleting this line — or `destroy` —
+  -- deletes the queue, like everything else a fleet manages.
+  resource scaleway queues "example-queue-jobs"
     { visibilityTimeoutSec := 30 }
 
 -- One cloud, so one region, and it is `fr-par`.

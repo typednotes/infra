@@ -30,6 +30,8 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │  myApp.forgets  : List (Released κ)                      │
   │                                                          │
   │  myApp          : Fleet     the four above, as one value │
+  │                             with name := "my-app" (the   │
+  │                             identifier, in kebab-case)   │
   └──────────────────────────────────────────────────────────┘
                  │
                  │  Everything above is a *value*. Nothing has run.
@@ -40,8 +42,12 @@ One apply, end to end. Each box is a real function; the names are searchable.
   Infra.Cli.run myApp                              Infra/Cli.lean
        │
        ├─ Ansi.wanted ......... colour on, only if stdout is a terminal
-       ├─ liveFor κ regions ... build Backends; authenticate ONLY the
-       │                        clouds κ declares resources in
+       ├─ name ................ boundary.fleetName.getD myApp.name, put
+       │                        back into the boundary; refused unless
+       │                        Ownership.validFleetName
+       ├─ liveFor κ regions ... build Backends; authenticate the clouds
+       │                        κ declares resources in, plus any cloud
+       │                        `accounts` names (scan only)
        └─ checkAccounts ....... refuse the wrong account before touching it
                  │
                  ▼
@@ -58,15 +64,17 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │                                                            │
   │  Engine.claimUndeclared            ... what is not         │
   │                                                            │
-  │    for each cloud κ names, each region in bs.scanners p,   │
-  │    each kind scannableUndeclared allows (all but           │
-  │    postgresMigrations):                                    │
+  │    for each cloud bs has scanners for, each region in      │
+  │    bs.scanners p, each kind scannableUndeclared allows     │
+  │    (all but postgresMigrations):                           │
   │      b.list k, skip names declared (any kind of the same   │
-  │      physicalClass) or forgotten, b.ownershipInfo k h      │
-  │      → Orphan if Ownership.claimsUndeclared, else a        │
-  │        warning if it only reads as ours                    │
+  │      physicalClass), b.ownershipInfo k h                   │
+  │      forgotten → a release if still ours on a tag rung     │
+  │      otherwise → Orphan if Ownership.claimsUndeclared,     │
+  │        else a warning if it carries the retired `true`     │
   │                                                            │
-  │  → List Orphan = {cloud, kind, name, region}               │
+  │  → orphans, releases : List Orphan                         │
+  │      (Orphan = {cloud, kind, name, region})                │
   │  Nothing is written to disk.                               │
   └───────────────────────────────────────────────────────────┘
                  │
@@ -78,6 +86,7 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │                                                            │
   │    actionsDeclared T W        ... over κ's keys            │
   │  ++ actionsOrphaned κ orphans ... over the scan's orphans  │
+  │  ++ .release per release     ... RELEASE, nothing deleted  │
   │                                                            │
   │  → List (Action κ)                                         │
   └───────────────────────────────────────────────────────────┘
@@ -102,7 +111,9 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │       still declaring things (T.declaresAnything)          │
   │    4. for each action: runStep. An orphan's marker is      │
   │       re-read (claimsUndeclared) before its delete; a      │
-  │       refused orphan delete is retried after the rest      │
+  │       refused orphan delete is retried after the rest.     │
+  │       A release re-reads it too, and reports "already not  │
+  │       this fleet's" rather than unmarking a stranger's     │
   └───────────────────────────────────────────────────────────┘
                  │
                  ▼
@@ -111,6 +122,19 @@ One apply, end to end. Each box is a real function; the names are searchable.
 
 `dump` runs the same OBSERVE box plus `foreignDeclared`, and prints the result
 as a `Snapshot` (`Infra.Cli.snapshotOf`, `dumpJson`) instead of diffing it.
+
+*The fleet's name.* `Fleet.name` has no default: the `fleet` command fills it
+from the identifier (`Infra.Core.fleetNameOfIdent`: `crossCloud` →
+`cross-cloud`, `myHTTPFleet` → `my-http-fleet`, a namespace dot → a hyphen).
+`Boundary.fleetName` is an override. `Infra.Cli.run` resolves
+`boundary.fleetName.getD F.name` once and writes it back into the boundary, so
+every reader downstream — `liveFor`, which stamps it on what is created, and
+`ownershipOf`, which requires it back — sees `some` and the same string.
+Before any live command (`plan`, `apply`, `destroy`, `dump`) the name is
+checked with `Ownership.validFleetName`, and the refusal says whether to
+rename the declaration or fix `fleetName`. A hand-built `Boundary` with
+`fleetName := none`, reachable only by calling the engine directly, claims
+nothing by tag.
 
 ## The type stack
 
@@ -189,7 +213,8 @@ elaboration and emits ordinary definitions.
      myApp.regions               : Regions       via Regions.covering
      myApp.plan                  : Plan          via assignFromNamed
      myApp.forgets               : List (Released myApp.keys)
-     myApp                       : Fleet         the four, bundled
+     myApp                       : Fleet         the four, bundled, and
+                                                 name := "my-app"
      a                           : myApp.keys.Key .aws .objectStore
 ```
 
@@ -285,7 +310,8 @@ distinction, because both are the same edge.
 ```
   actions ──▶ List (Action κ)
                    │
-                   ├─ builds (create/update/replace)      
+                   ├─ builds (create/update/replace, and
+                   │      release, which has no edges)
                    │      stepOf ── dependsOn ── HasDeps
                    │         │
                    │         ▼
@@ -403,16 +429,27 @@ Three cases, decided per resource on every run:
               The marker is re-checked at delete time (runStep).
 
   FORGOTTEN `forget <cloud> <kind> "<name>"` in the declaration
-            → skipped by the scan; the cloud is untouched. The line
-              must stay while the resource exists: it still carries
-              the marker, so removing the line re-orphans it.
+            → never an orphan. If it still carries this fleet's
+              marker on a tag or description rung: Action.release
+              (RELEASE, blue — Backend.release removes the marker,
+              nothing else), re-checked at release time; afterwards
+              it is no fleet's and the line can go. On the name rung
+              nothing can be removed, so nothing is planned and the
+              line must stay while the resource exists.
 ```
 
-A marker names this fleet only if `Boundary.fleetName` is set and the tag
-value equals it. The grandfathered value `true` and any tag in a fleet with no
-`fleetName` read as ours for a *declared* resource, but never license
-destroying an undeclared one: `claimUndeclared` warns about those by name.
-The name rung claims by prefix, as it does everywhere.
+A marker names this fleet only if its value equals the fleet's name — the
+resolved `Boundary.fleetName`, which `Infra.Cli.run` always sets. That is one
+rule for declared and undeclared resources alike, so `claimsUndeclared` now
+returns `ownershipOf`'s verdict. The retired value `true` (written by unnamed
+fleets before 0.17.0) matches no fleet: a declared resource carrying it is
+foreign and `foreignDeclared` warns with the retag to perform; an undeclared
+one gets a warning from `claimUndeclared` and is never destroyed. The name
+rung claims by prefix, as it does everywhere.
+
+`destroy` passes the releases to `push` as well: a fleet being torn down
+should not leave claims on the resources it forgot. `dump` lists them under
+`released`.
 
 The five-stage live test is this mechanism as a sequence (AWS's counts; see
 `test/Live.lean`):
@@ -442,12 +479,13 @@ create, plus a realm and an exclusion list — and it is read where it lives.
 Every `(cloud, kind)` pair reports evidence, on one of three rungs: real tags,
 a marker serialised into the object's one writable free-text field, or — for
 the two Scaleway products with neither (Serverless SQL Database and Queues) —
-the resource's own name, checked against `Boundary.namePrefix` (and any
-`namePrefixes`; `Boundary.prefixes` is the union). `docs/coverage.md` has the
-table of which pair is on which rung. A fleet that has not set a `namePrefix`
-gets nothing from the third rung, which is why `lake test -- <cloud> sweep`
-remains what finds debris no marker names: it asks the account, matching on
-the `ci-tests-infra-` prefix. The
+the resource's own name, checked against `Boundary.prefixes` — the fleet's
+name and a hyphen by default, or `namePrefix` then `namePrefixes` when either
+is set, which replaces the default. `docs/coverage.md` has the table of which
+pair is on which rung. No marker names debris that a create left without its
+marker, or a resource named outside the prefix, which is why `lake test --
+<cloud> sweep` remains what finds such debris: it asks the account, matching
+on the `ci-tests-infra-` prefix. The
 procedure — that verb versus `destroy`, the Cleanup workflow and its review
 gate, and the three things a sweep structurally cannot reach — is in
 [`../ci/README.md`](../ci/README.md).
@@ -471,7 +509,8 @@ gate, and the three things a sweep structurally cannot reach — is in
                  what is in it, and its answers must be matched only
                  against the slots placed there.
     scanners   : ProviderId → List (String × Backend)
-                 one entry per region the fleet uses, with its code.
+                 one entry per region the fleet uses, with its code;
+                 none for a cloud whose credentials were not loaded.
                  For claimUndeclared, which has no slots at all: it
                  asks each region for everything, and records the
                  region an orphan was found in for backendAt.
@@ -540,8 +579,14 @@ deriving any action.
 ### Which clouds get authenticated, and the hole that leaves
 
 `Infra.Cli.liveFor` builds all four of those from **`κ.providers`** — the
-clouds the declaration's key family names. That is what lets an all-Scaleway
-fleet run without AWS credentials, and it is deliberate.
+clouds the declaration's key family names — plus, since 0.17.0, the `extra`
+clouds `Infra.Cli.run` passes: every cloud the fleet's `accounts` names
+(`Accounts.expect p = some _`). That is what lets an all-Scaleway fleet run
+without AWS credentials, and it is deliberate. A declared cloud without
+credentials is an error; an extra one without credentials (or without a
+region — it is scanned in the fleet's region for that cloud, else the
+credentials') gets a note and is skipped, and `scanners` gives it nothing.
+`checkAccounts` covers every cloud `accounts` names, declared or not.
 
 The consequence is not: a provider `κ` does not name gets
 `Infra.Providers.placeholderBackend`, whose `delete` returns `()` and whose
@@ -559,12 +604,21 @@ workflow's backstop sweep deleted the twelve resources the teardown had not.
 been removed; see below.)
 
 With no ledger, that failure has nothing left to feed on. Orphans come only
-from `claimUndeclared`, which scans `κ.providers` — the clouds whose
-credentials were loaded — so a placeholder is never asked for orphans and
-never "deletes" one. The price is the mirror image, and it is stated rather
-than hidden: **a cloud the declaration no longer names at all is not scanned**,
-so its resources are left standing rather than destroyed. Retire a cloud with
-`destroy` (or `plan --destroy` first) *before* deleting its last line.
+from `claimUndeclared`, which scans every cloud the backends give scanners for
+— the clouds whose credentials were loaded — so a placeholder is never asked
+for orphans and never "deletes" one. The price is the mirror image, and it is
+stated rather than hidden: **a cloud named neither by the declaration nor by
+`accounts` is not scanned**, so its resources are left standing rather than
+destroyed. To retire a cloud, delete its lines but keep it in `accounts` until
+the apply that empties it, then drop it from `accounts`. (Before 0.17.0 only
+`κ.providers` was scanned, and a cloud had to be retired with `destroy`
+before its last line went.)
+
+Why `accounts`, and not every cloud whose credentials happen to load: a
+laptop often holds credentials for unrelated accounts, and scanning those
+would put a stranger's estate one marker-collision away from a fleet's
+deletes. `accounts` is the checked statement of where the fleet lives, and
+`checkAccounts` verifies it before anything is listed.
 
 The other half of the old fix is still load-bearing, in the test driver:
 `Live.emptyStage` builds its teardown as `Plan.absent κ` over the cloud's *own*
@@ -592,6 +646,7 @@ again. When a record is wanted, `dump` writes one:
     resources   cloud, kind, name, region, ownership evidence,
                 observed state — declared-and-existing, plus orphans
     undeclared  the slots the next apply destroys
+    released    forgotten slots the next apply unmarks
     foreign     declared names that exist but are not ours
     warnings    what the scan saw but may not claim
 ```
@@ -603,7 +658,10 @@ A snapshot cannot hold a secret. `SecretsObserved` is a handle and a version,
 no `ObservedOf` has a value field, and `Backend.read` for `.secrets`
 deliberately never fetches one — `Backend.secretValue` is the only inbound
 plaintext path, its result goes straight to one create call, and it is never
-stored.
+stored. (One other secret value is read back, below the engine: infra's own
+Scaleway Queues credential, from its shared `infra-sqs-credential` copy —
+`Infra.Providers.Scaleway.Sqs`. It signs queue calls and never reaches a
+sighting or a snapshot.)
 
 ## The CLI verbs
 
@@ -616,7 +674,7 @@ stored.
   destroy    apply against Plan.absent, which is the empty declaration.
              Not a second mechanism: `.delete` and `.deleteOrphan`
              share one body and one `Backend.delete` call, addressed
-             by name.
+             by name. Pending releases run too.
   dump       observe + claimUndeclared + foreignDeclared, written as a
              JSON Snapshot to FILE or stdout. Read-only, like plan.
 ```

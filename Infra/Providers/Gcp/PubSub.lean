@@ -1,4 +1,5 @@
 import Infra.Providers.Gcp.Rest
+import Infra.Providers.Marker
 import Infra.Core.Stage
 import Infra.Core.Ownership
 
@@ -88,6 +89,15 @@ def createTopic (creds : Credentials) (project name markerValue : String) : IO S
     (payload := some (.object [("labels", .object [(markerKey, .string markerValue)])]))
   return (stringField reply "name").getD (topicName project name)
 
+/-- A topic object's labels, as pairs. -/
+private def labelsOf (topic : Value) : List (String × String) :=
+  match field topic "labels" with
+  | some (.object fields) => fields.filterMap fun (k, v) =>
+      match v with
+      | .string s => some (k, s)
+      | _         => none
+  | _ => []
+
 /-- Tags, for `Ownership.ownershipOf`. Labels come back top-level on the
     topic object, so the existing `GET` (as in `readTopic`) is enough.
     `createdAt` is left `none`, matching every other kind's first tranche —
@@ -97,14 +107,26 @@ def readOwnership (creds : Credentials) (project name : String) :
   let attempt ← (Gcp.call creds "GET" host (topicPath project name)).toBaseIO
   match attempt with
   | .error _ => return .unreadable
-  | .ok reply =>
-    let tags := match field reply "labels" with
-      | some (.object fields) => fields.filterMap fun (k, v) =>
-          match v with
-          | .string s => some (k, s)
-          | _         => none
-      | _ => []
-    return .tags tags none
+  | .ok reply => return .tags (labelsOf reply) none
+
+/-- Take this fleet's ownership marker off the topic, leaving every other
+    label.
+
+    `topics.patch` takes an `UpdateTopicRequest` — `{topic, updateMask}` in
+    the body, not the query (Pub/Sub REST reference, `projects.topics.patch`)
+    — and a map field named in the mask is replaced wholesale, so the full
+    remaining map is sent. A topic not carrying this fleet's marker is not
+    written. -/
+def releaseMarker (creds : Credentials) (project name fleet : String) : IO Unit := do
+  let reply ← Gcp.call creds "GET" host (topicPath project name)
+  match Marker.releaseTags fleet (labelsOf reply) with
+  | none      => pure ()
+  | some rest =>
+    discard <| Gcp.call creds "PATCH" host (topicPath project name)
+      (payload := some (.object
+        [ ("topic", .object
+            [("labels", .object (rest.map fun (k, v) => (k, Value.string v)))])
+        , ("updateMask", .string "labels") ]))
 
 /-- A topic's resource name, or a failure if it is not there.
 

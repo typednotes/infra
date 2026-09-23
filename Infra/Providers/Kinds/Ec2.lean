@@ -1,6 +1,7 @@
 import Infra.Providers.Aws.Protocols
 import Infra.Core.Stage
 import Infra.Core.Ownership
+import Infra.Providers.Marker
 
 /-
   EC2: security groups and instances, over the Query protocol.
@@ -67,6 +68,20 @@ private def allTags (i : Text.XML.Element) : List (String × String) :=
     match t.childText "key", t.childText "value" with
     | some k, some v => some (k, v)
     | _, _           => none
+
+/-- Take this fleet's ownership marker off one EC2 resource, by id — the
+    `Backend.release` half shared by both kinds here.
+
+    `DeleteTags` with a `Value` deletes the tag only when its current value
+    matches (EC2 API reference, `DeleteTags`: "If you specify a tag key with a
+    tag value, we delete the tag only if its value matches"), so another
+    fleet's marker survives this call even if the caller's own check were
+    wrong. Every other tag is untouched: the call names one key. -/
+private def deleteMarkerTag (creds : Credentials) (ep : Endpoint)
+    (resourceId fleet : String) : IO Unit := do
+  let _ ← Query.call creds ep "DeleteTags" version
+    [ ("ResourceId.1", resourceId)
+    , ("Tag.1.Key", markerKey), ("Tag.1.Value", fleet) ]
 
 -- ══════════════════════════════════════════════════════════════
 -- Images
@@ -233,6 +248,20 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) : IO Evi
     | none   => return .unreadable
     | some g => return .tags (allTags g) none
 
+/-- Remove this fleet's marker from the group, by name. A group that is gone,
+    or that does not carry this fleet's marker, is left alone. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) :
+    IO Unit := do
+  let root ← Query.call creds ep "DescribeSecurityGroups" version [("GroupName.1", name)]
+  match (items root "securityGroupInfo").head? with
+  | none   => pure ()
+  | some g =>
+    if (Marker.releaseTags fleet (allTags g)).isSome then
+      match g.childText "groupId" with
+      | some gid => deleteMarkerTag creds ep gid fleet
+      | none     => throw (IO.userError
+          s!"security group '{name}': DescribeSecurityGroups reported no groupId")
+
 /-- Authorize any rule in the target that the cloud does not already have.
 
     Additive only: see the module note. Already-present rules are skipped
@@ -373,6 +402,28 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
   return match live.head? with
     | some i => .tags (allTags i) (i.childText "launchTime")
     | none   => .unreadable
+
+/-- Remove this fleet's marker from the live instance carrying this `Name`
+    tag. The `Name` tag itself stays — it is how anyone finds the instance, and
+    it is not the marker. No live instance, or one not carrying this fleet's
+    marker, is left alone. -/
+def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) :
+    IO Unit := do
+  let root ← Query.call creds ep "DescribeInstances" version
+    [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
+  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
+  let live := instances.filter fun i =>
+    match i.child "instanceState" with
+    | some st => (st.childText "name").getD "" != "terminated"
+    | none    => true
+  match live.head? with
+  | none   => pure ()
+  | some i =>
+    if (Marker.releaseTags fleet (allTags i)).isSome then
+      match i.childText "instanceId" with
+      | some id => deleteMarkerTag creds ep id fleet
+      | none    => throw (IO.userError
+          s!"instance '{name}': DescribeInstances reported no instanceId")
 
 /-- Launch one instance and tag it.
 

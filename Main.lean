@@ -13,21 +13,25 @@ private def mentions (haystack needle : String) : Bool :=
 private def slotIdx (lines : List String) (needle : String) : Option Nat :=
   lines.findIdx? fun l => mentions l needle
 
+/-- The boundary of the demo fleets, named `demo` — what `Infra.Cli.run`
+    resolves every fleet's boundary to (`Fleet.name`). -/
+private def demo : Boundary := { fleetName := some "demo" }
+
 /-- `Infra.Providers.all`, except every backend reports the marker — what a
-    real backend reports for resources this (unnamed) fleet created. The
+    real backend reports for resources the `demo` fleet created. The
     placeholder alone answers `.unreadable`, which `push` now treats as "not
     ours": it refuses to change or destroy a resource it cannot verify. -/
 private def ownedBackends : Backends where
   backend p :=
     { Infra.Providers.placeholderBackend p.name with
-        ownershipInfo := fun _ _ => pure (.tags [(markerKey, legacyMarkerValue)] none) }
+        ownershipInfo := fun _ _ => pure (.tags [(markerKey, "demo")] none) }
 
 /-- A `Backends` whose `.aws` backend answers `ownershipInfo` with a fixed
     verdict, rather than the placeholder default of `.unreadable`. This is what
     lets the checks below exercise `Ownership.ownershipOf` itself — the
     placeholder backends alone can only ever exercise the refusal path, since
     their `ownershipInfo` never reports any evidence. -/
-private def gatedBackends (marked : Bool) (value : String := legacyMarkerValue) :
+private def gatedBackends (marked : Bool) (value : String := "demo") :
     Backends where
   backend
     | .aws =>
@@ -56,21 +60,20 @@ private def namedBackends (nm : String) : Backends where
     says so by name; with the marker, the same drift is a replace. -/
 def checkOwnershipGate : IO Unit := do
   let (said, lines) ← IO.FS.withIsolatedStreams
-    (push (gatedBackends false) demoPlan immutableDriftWorld {})
+    (push (gatedBackends false) demoPlan immutableDriftWorld {} (boundary := demo))
   if lines.any (mentions · "REPLACE aws/s3-bucket/cold") then
     throw (IO.userError s!"replaced a bucket that does not carry the marker: {lines}")
   unless mentions said "aws/s3-bucket/cold" && mentions said markerKey do
     throw (IO.userError s!"an unmarked declared bucket was passed over silently: {said}")
-  let marked ← push (gatedBackends true) demoPlan immutableDriftWorld {}
+  let marked ← push (gatedBackends true) demoPlan immutableDriftWorld {} (boundary := demo)
   unless marked.any (mentions · "REPLACE aws/s3-bucket/cold") do
     throw (IO.userError s!"a marked bucket with drift was not replaced: {marked}")
   IO.println "ownership gate: ok (a declared name is changed only if it carries the marker)"
 
 /-- Two fleets, one account, one bucket name — the marker's *value* keeps them
-    apart. For a declared name: another fleet's value is as good as no marker;
-    this fleet's own, and the grandfathered one, are accepted; an unnamed
-    fleet accepts any value. (Undeclared resources are stricter still — see
-    `checkMarkerDecides`.) -/
+    apart. Only this fleet's own name is accepted: another fleet's value, and
+    the retired `true`, are as good as no marker — and say so by name — and a
+    boundary without a name accepts nothing. -/
 def checkFleetIsolation : IO Unit := do
   let changes (me : Option String) (tagValue : String) : IO Bool := do
     let (_, lines) ← IO.FS.withIsolatedStreams
@@ -81,12 +84,19 @@ def checkFleetIsolation : IO Unit := do
     throw (IO.userError "changed a bucket marked by another fleet")
   unless ← changes (some "mine") "mine" do
     throw (IO.userError "did not change a bucket carrying this fleet's own name")
-  unless ← changes (some "mine") legacyMarkerValue do
-    throw (IO.userError "did not change a declared bucket tagged before fleets had names")
-  unless ← changes none "anything-at-all" do
-    throw (IO.userError "an unnamed fleet stopped accepting a marked bucket")
-  IO.println "fleet isolation: ok (the marker's value separates fleets; the legacy value \
-still matches every fleet for a declared name)"
+  if ← changes (some "mine") retiredMarkerValue then
+    throw (IO.userError "changed a declared bucket carrying the retired marker value")
+  if ← changes none "anything-at-all" then
+    throw (IO.userError "a boundary without a name changed a marked bucket")
+  -- The retired value is not passed over silently: the warning names it and
+  -- says how to take the resource back.
+  let (said, _) ← IO.FS.withIsolatedStreams
+    (push (gatedBackends true retiredMarkerValue) demoPlan immutableDriftWorld {}
+      (boundary := { fleetName := some "mine" }))
+  unless mentions said s!"{markerKey}={retiredMarkerValue}" && mentions said s!"{markerKey}=mine" do
+    throw (IO.userError s!"the retired marker was not named, with its fix: {said}")
+  IO.println "fleet isolation: ok (only this fleet's own name is accepted; the retired \
+'true' matches no fleet, and says how to retag)"
 
 /-- An orphan's marker is re-checked at the moment of deleting it, on both
     rungs: gone, the delete is refused; present, it proceeds. -/
@@ -105,10 +115,12 @@ def checkOrphanRecheck : IO Unit := do
     throw (IO.userError "deleted an orphan whose marker is gone")
   unless ← deleted (gatedBackends true "me") me do
     throw (IO.userError "did not delete an orphan carrying this fleet's name")
-  -- A fleet that does not name itself cannot tell its orphans from another
-  -- fleet's, so it destroys none by tag — whatever the value says.
+  -- The retired value belongs to no fleet, and a boundary without a name
+  -- claims nothing by tag.
+  unless ← refused (gatedBackends true retiredMarkerValue) me do
+    throw (IO.userError "deleted an orphan carrying the retired marker value")
   unless ← refused (gatedBackends true) {} do
-    throw (IO.userError "an unnamed fleet deleted an undeclared resource by tag")
+    throw (IO.userError "a boundary without a name deleted an undeclared resource by tag")
   -- The name rung: no prefix, or a wrong one, refuses; a matching one deletes.
   unless ← refused (namedBackends "old-bucket") {} do
     throw (IO.userError "deleted a name-only orphan with no prefix configured")
@@ -116,7 +128,7 @@ def checkOrphanRecheck : IO Unit := do
     throw (IO.userError "deleted a name-only orphan outside the prefix")
   unless ← deleted (namedBackends "old-bucket") { namePrefix := some "old-" } do
     throw (IO.userError "did not delete a name-only orphan inside the prefix")
-  IO.println "orphan recheck: ok (a stripped marker, or an unnamed fleet, refuses the delete; this fleet's name lets it proceed)"
+  IO.println "orphan recheck: ok (a stripped or retired marker refuses the delete; this fleet's name lets it proceed)"
   IO.println "name rung: ok (no prefix and a wrong prefix both refuse; a matching one deletes)"
 
 /-- A refused orphan delete is retried, and only fails when it stops making
@@ -413,9 +425,9 @@ Signature=21cccf6f70b4372af8e137af9b15333d9485d91e393b87fc2b9e034f8ef7a77d"
   IO.println "signing: ok (S3 and Query vectors, Content-MD5, both error dialects)"
 
 /- The principle this library rests on, checked end to end: **the marker
-    decides what is managed, not the ledger.** With an *empty* ledger — every
-    CI runner — a resource carrying this fleet's name that the declaration no
-    longer names is found and destroyed; everything else is left alone. -/
+    decides what is managed.** A resource carrying this fleet's name that the
+    declaration no longer names is found and destroyed; everything else is
+    left alone. -/
 fleet markerFleet in paris where
   provider scaleway where
     resource secrets "kept" { valueFrom := Infra.Specs.fromEnv "X" }
@@ -425,13 +437,13 @@ fleet markerFleet in paris where
 open Infra.Providers.Snapshot in
 /-- The account `checkMarkerDecides` runs against, as data: what the fleet
     declares (`kept`, `app`, `ns`), what it no longer does (`old-*`), and what
-    is not its own — another fleet's, grandfathered, unmarked. The container
+    is not its own — another fleet's, the retired `true`, unmarked. The container
     is listed under both kinds that show Serverless Containers. -/
 private def markerAccount : Snapshot :=
   [ marked .scaleway .secrets "kept" "tn"
   , marked .scaleway .secrets "old-secret" "tn"
   , { cloud := .scaleway, kind := .secrets, name := "legacy-secret"
-      evidence := .tags [(markerKey, legacyMarkerValue)] none }
+      evidence := .tags [(markerKey, retiredMarkerValue)] none }
   , marked .scaleway .secrets "theirs" "another-fleet"
   , unmarked .scaleway .secrets "stranger"
   , marked .scaleway .compute "app" "tn", marked .scaleway .scalewayContainer "app" "tn"
@@ -458,7 +470,7 @@ def checkMarkerDecides : IO Unit := do
   -- same container, not an orphan.
   if slots.any (fun sl => (sl.splitOn "/app").length > 1 && (sl.splitOn "old-app").length == 1) then
     throw (IO.userError s!"a declared container was claimed as an orphan via another kind: {slots}")
-  -- The grandfathered marker cannot say which fleet it belongs to: warned, not claimed.
+  -- The retired marker belongs to no fleet: warned about (it is likely ours, awaiting a retag), not claimed.
   unless found.warnings.length == 1 && (found.warnings.head!.splitOn "legacy-secret").length > 1 do
     throw (IO.userError s!"expected one warning, about legacy-secret: {found.warnings}")
   -- Applied: every orphan is deleted, and nothing that is not this fleet's is
@@ -478,6 +490,85 @@ def checkMarkerDecides : IO Unit := do
   unless again.orphans.isEmpty do
     throw (IO.userError s!"orphans survived the apply: {again.orphans.map (·.slot)}")
   IO.println "marker: ok (what carries this fleet's name and is not declared is found and destroyed — every kind, queues included — and nothing else)"
+
+fleet releaseFleet in paris where
+  provider scaleway where
+    resource secrets "kept" { valueFrom := Infra.Specs.fromEnv "X" }
+    forget scaleway secrets "let-go"
+    forget scaleway postgres "tn-db"
+    forget scaleway secrets "already-free"
+
+open Infra.Providers.Snapshot in
+/-- `forget` releases: a forgotten resource still carrying this fleet's marker
+    has the marker removed on apply — not destroyed — and then reads as no
+    fleet's, so the `forget` line can go. A name-only resource cannot be
+    unmarked and is left alone (its line stays). One already unmarked needs
+    nothing. -/
+def checkForgetReleases : IO Unit := do
+  let account : Snapshot :=
+    [ marked .scaleway .secrets "kept" "tn"
+    , marked .scaleway .secrets "let-go" "tn"
+    , { cloud := .scaleway, kind := .postgres, name := "tn-db", evidence := .named "tn-db" none }
+    , unmarked .scaleway .secrets "already-free" ]
+  let deleted ← IO.mkRef []
+  let released ← IO.mkRef []
+  let bs := Infra.Providers.Snapshot.backends account deleted (some released)
+  let boundary : Boundary := { fleetName := some "tn" }
+  let found ← claimUndeclared (κ := releaseFleet.keys) bs boundary releaseFleet.forgets
+  unless found.orphans.isEmpty do
+    throw (IO.userError s!"a forgotten resource was treated as an orphan: {found.orphans.map (·.slot)}")
+  unless found.releases.map (·.slot) == ["scaleway/secrets/let-go"] do
+    throw (IO.userError s!"expected exactly let-go to be released, got {found.releases.map (·.slot)}")
+  let entries ← pullEntries (κ := releaseFleet.keys) bs
+  let dry ← push bs releaseFleet.plan (worldOf entries) {} (boundary := boundary)
+    (seen := some entries) (releases := found.releases)
+  unless dry.any (mentions · "would RELEASE scaleway/secrets/let-go") do
+    throw (IO.userError s!"the plan does not show the release: {dry}")
+  let _ ← push bs releaseFleet.plan (worldOf entries) { apply := true } (boundary := boundary)
+    (seen := some entries) (releases := found.releases)
+  unless (← released.get) == ["scaleway/secrets/let-go"] && (← deleted.get).isEmpty do
+    throw (IO.userError s!"released {← released.get}, deleted {← deleted.get}")
+  -- Afterwards it is no fleet's: nothing left to release, and nothing claims it.
+  let again ← claimUndeclared (κ := releaseFleet.keys) bs boundary releaseFleet.forgets
+  unless again.releases.isEmpty && again.orphans.isEmpty do
+    throw (IO.userError s!"after the release: releases {again.releases.map (·.slot)}, \
+orphans {again.orphans.map (·.slot)}")
+  IO.println "forget releases: ok (a marked forgotten resource is unmarked on apply, not destroyed; a name-only one is left, and its line stays)"
+
+open Infra.Providers.Snapshot in
+/-- A cloud the declaration no longer names is still scanned, when the
+    backends can scan it (the CLI loads every cloud `Accounts` names): the
+    `tn` fleet declares only Scaleway resources, and its bucket left on AWS
+    is found and destroyed — another fleet's bucket there is not. -/
+def checkRetiredCloud : IO Unit := do
+  let account : Snapshot := markerAccount ++
+    [ marked .aws .objectStore "tn-left-behind" "tn"
+    , marked .aws .objectStore "not-ours" "someone-else" ]
+  let found ← claimUndeclared (κ := markerFleet.keys)
+    (Infra.Providers.Snapshot.backends account (← IO.mkRef [])) { fleetName := some "tn" } []
+  let slots := found.orphans.map (·.slot)
+  unless slots.any (mentions · "tn-left-behind") do
+    throw (IO.userError s!"a marked resource on a cloud no longer declared was not found: {slots}")
+  if slots.any (mentions · "not-ours") then
+    throw (IO.userError s!"claimed another fleet's resource on the retired cloud: {slots}")
+  IO.println "retired cloud: ok (what this fleet left on a cloud it no longer declares is found; nothing else there is)"
+
+/-- Every fleet has a name, and it is checked before any cloud is asked: the
+    `fleet` command's identifier in kebab-case by default, `fleetName` when
+    set, and a name that cannot be a marker value on every cloud stops a live
+    command with a message saying which of the two to fix. -/
+def checkFleetName : IO Unit := do
+  unless markerFleet.name == "marker-fleet" do
+    throw (IO.userError s!"expected the identifier in kebab-case, got {markerFleet.name}")
+  let refusal (boundary : Boundary) : IO String := do
+    let (said, code) ← IO.FS.withIsolatedStreams
+      (Infra.Cli.run "t" markerFleet (boundary := boundary) (args := ["plan"]))
+    unless code == 1 do throw (IO.userError s!"an invalid fleet name was not refused: {said}")
+    return said
+  let said ← refusal { fleetName := some "Not_Valid" }
+  unless mentions said "'Not_Valid' cannot be this fleet's name" && mentions said "fleetName" do
+    throw (IO.userError s!"the refusal does not name the value and the fix: {said}")
+  IO.println "fleet name: ok (the identifier in kebab-case by default; an invalid name is refused before any cloud is asked)"
 
 /-- A `dump` is a snapshot, and a snapshot replays: dumping the account
     `checkMarkerDecides` uses, reading the file back and scanning the replay
@@ -533,12 +624,12 @@ def checkPush : IO Unit := do
   | _, _ => throw (IO.userError s!"expected both slots in the plan: {dry}")
 
   -- A resource that already matches drops out entirely.
-  let partial' ← push ownedBackends demoPlan partialWorld {}
+  let partial' ← push ownedBackends demoPlan partialWorld {} (boundary := demo)
   unless (partial'.filter (·.startsWith "would")).length == 7 do
     throw (IO.userError s!"expected 7 actions against partialWorld: {partial'}")
 
   -- An immutable field that disagrees is a replace, not an update.
-  let immutable ← push ownedBackends demoPlan immutableDriftWorld {}
+  let immutable ← push ownedBackends demoPlan immutableDriftWorld {} (boundary := demo)
   unless immutable.any (mentions · "REPLACE aws/s3-bucket/cold") do
     throw (IO.userError s!"expected a replace for the object-lock change: {immutable}")
   -- …but only of a resource this fleet can show is its own. The placeholder
@@ -641,7 +732,7 @@ def checkMintedKey : IO Unit := do
   -- Against a backend that reports the marker: a teardown deletes only what
   -- is verifiably this fleet's, and a placeholder cannot say.
   let down ← push ownedBackends (Plan.absent identityKeys) identityAppliedWorld
-    { apply := true } (edges := identityPlan)
+    { apply := true } (edges := identityPlan) (boundary := demo)
   match down.findIdx? (fun l => mentions l "secrets/app-key"),
         down.findIdx? (fun l => mentions l "iam/reports-app") with
   | some key, some app =>
@@ -680,7 +771,7 @@ def checkTeardown : IO Unit := do
     throw (IO.userError s!"tearing down an unapplied fleet should be a no-op: {onNothing}")
 
   -- Against a world where the referenced bucket exists, the delete appears…
-  let dry ← push ownedBackends (Plan.absent demoKeys) partialWorld {}
+  let dry ← push ownedBackends (Plan.absent demoKeys) partialWorld {} (boundary := demo)
   unless (dry.filter (·.startsWith "would DELETE")).length == 1 do
     throw (IO.userError s!"expected one delete against partialWorld: {dry}")
   -- …and does not, for a resource that is not verifiably ours: `destroy`
@@ -701,7 +792,7 @@ def checkTeardown : IO Unit := do
           reported := { name := "ingest", runtime := "python3.12"
                         namespace' := ⟨"demo"⟩, code := .unknown
                         handler := .unknown, sourceBucket := .unknown } }⟩ ]
-  let ordered ← push ownedBackends (Plan.absent demoKeys) both {}
+  let ordered ← push ownedBackends (Plan.absent demoKeys) both {} (boundary := demo)
   match slotIdx ordered "scaleway/scaleway-function/ingest",
         slotIdx ordered "aws/s3-bucket/cold" with
   | some fn, some bucket =>
@@ -841,6 +932,9 @@ def selfCheck : IO Unit := do
   checkSigning
   checkMarkerDecides
   checkDumpReplays
+  checkFleetName
+  checkRetiredCloud
+  checkForgetReleases
   checkPush
   checkTeardown
   checkSecretComposition

@@ -1,4 +1,5 @@
 import Infra.Providers.Gcp.Rest
+import Infra.Providers.Marker
 import Infra.Core.Stage
 import Infra.Core.Ownership
 
@@ -217,6 +218,15 @@ def update (creds : Credentials) (project location name image markerValue : Stri
     (payload := some (bodyOf image memoryMb timeoutSec env serviceAccount markerValue))
   discard <| Gcp.awaitLro creds host "v2" started s!"cloud run: update {name}"
 
+/-- A service object's top-level labels, as pairs. -/
+private def labelsOf (svc : Value) : List (String × String) :=
+  match field svc "labels" with
+  | some (.object fields) => fields.filterMap fun (k, v) =>
+      match v with
+      | .string s => some (k, s)
+      | _         => none
+  | _ => []
+
 /-- Tags, for `Ownership.ownershipOf`. Labels come back top-level on the
     service object, so the existing `GET` (as in `read`) is enough.
     `createdAt` is left `none`, matching every other kind's first tranche. -/
@@ -225,14 +235,30 @@ def readOwnership (creds : Credentials) (project location name : String) :
   let attempt ← (Gcp.call creds "GET" host (servicePath project location name)).toBaseIO
   match attempt with
   | .error _ => return .unreadable
-  | .ok svc =>
-    let tags := match field svc "labels" with
-      | some (.object fields) => fields.filterMap fun (k, v) =>
-          match v with
-          | .string s => some (k, s)
-          | _         => none
-      | _ => []
-    return .tags tags none
+  | .ok svc  => return .tags (labelsOf svc) none
+
+/-- Take this fleet's ownership marker off the service, leaving every other
+    label and the whole template.
+
+    Not `update`'s body: that `PATCH` replaces the template wholesale, which
+    is exactly what a release must not do. This one names
+    `updateMask=labels` (Cloud Run Admin API v2, `projects.locations.services.patch`,
+    query parameter `updateMask`), so only the labels map changes — replaced
+    wholesale, hence the full remaining map — and a service-level label is not
+    part of a revision, so nothing is redeployed. A long-running operation, as
+    every Cloud Run write is. A service not carrying this fleet's marker is not
+    written. -/
+def releaseMarker (creds : Credentials) (project location name fleet : String) :
+    IO Unit := do
+  let svc ← Gcp.call creds "GET" host (servicePath project location name)
+  match Marker.releaseTags fleet (labelsOf svc) with
+  | none      => pure ()
+  | some rest =>
+    let started ← Gcp.call creds "PATCH" host (servicePath project location name)
+      [("updateMask", some "labels")]
+      (payload := some (.object
+        [("labels", .object (rest.map fun (k, v) => (k, Value.string v)))]))
+    discard <| Gcp.awaitLro creds host "v2" started s!"cloud run: release {name}"
 
 /-- Delete the service and wait for it. Already gone is not an error. -/
 def delete (creds : Credentials) (project location name : String) : IO Unit := do

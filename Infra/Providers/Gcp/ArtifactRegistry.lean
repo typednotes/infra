@@ -1,4 +1,5 @@
 import Infra.Providers.Gcp.Rest
+import Infra.Providers.Marker
 import Infra.Core.Stage
 import Infra.Core.Ownership
 
@@ -88,6 +89,15 @@ def readImmutable (creds : Credentials) (project location name : String) :
     | some b => return .known b
     | none   => return .unknown
 
+/-- A repository object's labels, as pairs. -/
+private def labelsOf (r : Value) : List (String × String) :=
+  match field r "labels" with
+  | some (.object fields) => fields.filterMap fun (k, v) =>
+      match v with
+      | .string t => some (k, t)
+      | _         => none
+  | _ => []
+
 /-- Labels, for `Ownership.ownershipOf`. A repository carries them on the
     object itself, so `GET` is enough — the tag rung, like Cloud Storage and
     Secret Manager. `createTime` is reported but left unread, matching the
@@ -96,13 +106,27 @@ def readOwnership (creds : Credentials) (project location name : String) :
     IO Evidence := do
   match ← (Gcp.call creds "GET" host (repoPath project location name)).toBaseIO with
   | .error _ => return .unreadable
-  | .ok r    =>
-    return .tags (match field r "labels" with
-      | some (.object fields) => fields.filterMap fun (k, v) =>
-          match v with
-          | .string t => some (k, t)
-          | _         => none
-      | _ => []) none
+  | .ok r    => return .tags (labelsOf r) none
+
+/-- Take this fleet's ownership marker off the repository, leaving every other
+    label.
+
+    `PATCH` with `updateMask=labels` — the mask is required here, as
+    `setImmutable` found — and the full remaining map, since a map field named
+    in the mask is replaced wholesale (Artifact Registry REST reference,
+    `projects.locations.repositories.patch`, which returns the repository
+    rather than an operation). A repository not carrying this fleet's marker
+    is not written. -/
+def releaseMarker (creds : Credentials) (project location name fleet : String) :
+    IO Unit := do
+  let r ← Gcp.call creds "GET" host (repoPath project location name)
+  match Marker.releaseTags fleet (labelsOf r) with
+  | none      => pure ()
+  | some rest =>
+    discard <| Gcp.call creds "PATCH" host (repoPath project location name)
+      [("updateMask", some "labels")]
+      (payload := some (.object
+        [("labels", .object (rest.map fun (k, v) => (k, Value.string v)))]))
 
 /-- Create a Docker repository and wait for it. Returns its URI. -/
 def create (creds : Credentials) (project location name markerValue : String)

@@ -573,7 +573,7 @@ Two verbs, and picking the wrong one is why this section exists:
 
 | | What it deletes | When it is the right one |
 |---|---|---|
-| `lake test -- <cloud> destroy` | every resource carrying the live fleet's **marker** (`fleetName` `ci-tests-infra`, or the `ci-tests-infra-` name prefix where a kind can carry nothing else), then checks the account is clean | from any machine, a fresh runner included — the first thing to try |
+| `lake test -- <cloud> destroy` | every resource carrying the live fleet's **marker** (the fleet name `ci-tests-infra` — `liveFleet` in `test/Live.lean`, passed explicitly to `liveFor` and in `liveBoundary`'s `fleetName` — or the `ci-tests-infra-` name prefix where a kind can carry nothing else), then checks the account is clean | from any machine, a fresh runner included — the first thing to try |
 | `lake test -- <cloud> sweep` | every resource named `ci-tests-infra-*` the credentials can **list**, marker or not | when `destroy` leaves something standing, and in the Cleanup workflow |
 
 `destroy` is the live test's last stage on its own: an empty declaration run
@@ -659,10 +659,11 @@ concluding an account is clean:
   ```
 
   It defaults to `ci-tests-infra-`, and an empty value is refused rather than
-  read as "match everything" (`checkedPrefix`). The complementary fix is on the
-  *fleet* rather than the sweep: `boundary := { fleetName := some "…" }` puts
-  the fleet's name in the ownership marker, so two fleets in one account do not
-  claim each other's resources at all — see
+  read as "match everything" (`checkedPrefix`). The complementary protection is
+  on the *fleet* rather than the sweep: every fleet's name is in its ownership
+  marker (the declaration's identifier by default, `boundary := { fleetName :=
+  some "…" }` to override), so two fleets in one account with different names
+  do not claim each other's resources at all — see
   [`../docs/persistence.md`](../docs/persistence.md).
 - **Only kinds a lister covers, in regions the fleet declares.** A sweep
   enumerates `Kind` through `Backends.listers`, so a resource placed somewhere
@@ -672,6 +673,11 @@ concluding an account is clean:
   and logs a `note:` when it does — but it is permanent. Remove it by hand
   through the Queues console, or through the API the code itself uses:
   `GET`/`DELETE https://api.scaleway.com/mnq/v1beta1/regions/fr-par/sqs-credentials[/{id}]`.
+  Since 0.17.0 the same holds for its shared copy, the Secret Manager secret
+  `infra-sqs-credential` (tagged `infra-internal=sqs-credential`, no ownership
+  marker): outside the prefix, so no sweep touches it, and unmarked, so no
+  `destroy` does either. It is a cache — delete it by hand and the next run
+  mints once and writes it back.
 - **Unmarked resources are not the sweep's problem, but they look like it.**
   A resource that exists, matches a declared line and lacks the ownership
   marker is refused by `push` rather than adopted, so no teardown will remove

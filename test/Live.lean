@@ -1078,7 +1078,7 @@ def stage (label : String) (F : Fleet) : Stage where
     Nothing is forgotten in a teardown either: a `Released` name is one this
     fleet leaves standing, which is the opposite of what this stage is for. -/
 def emptyStage (F : Fleet) : Stage :=
-  stage "empty" { keys := F.keys, plan := Plan.absent F.keys
+  stage "empty" { name := F.name, keys := F.keys, plan := Plan.absent F.keys
                   regions := F.regions, forgets := [] }
 
 /-- Apply one stage, wait for it to settle, and check the account holds exactly
@@ -1091,7 +1091,7 @@ def emptyStage (F : Fleet) : Stage :=
     still carrying this fleet's marker that the stage does not declare is a
     resource abandoned rather than destroyed, and fails the stage. -/
 def runStage (name : String) (st : Stage) : IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions (some liveFleet)
+  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions liveFleet
   let found ← claimUndeclared (κ := st.κ) bs liveBoundary st.forgets
   progress s!"[{name}/{st.label}] applying ({st.declared.length} declared, \
 {found.orphans.length} undeclared to destroy)…"
@@ -1406,7 +1406,7 @@ def sweepUntilQuiet (bs : Backends) (p : ProviderId)
     or different, which `destroy` leaves alone by design. -/
 def liveSweep (name : String) (κ : Keys) (p : ProviderId) (regions : Regions)
     (debrisPrefix : String := ciPrefix) : IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor κ regions (some liveFleet)
+  let (bs, _) ← Infra.Cli.liveFor κ regions liveFleet
   progress s!"[{name}] sweeping for '{debrisPrefix}*'…"
   -- Fuel of eight: the deepest dependency chain this test can build is four
   -- (base → a → sink → tail), and a sweep needs one round per level plus a
@@ -1469,7 +1469,7 @@ def debrisAfterSettling (name : String) (bs : Backends) (p : ProviderId) :
     account for anything named like this test's debris, marked or not. -/
 def assertAccountClean (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
     IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor κ regions (some liveFleet)
+  let (bs, _) ← Infra.Cli.liveFor κ regions liveFleet
   let standing ← debrisAfterSettling name bs p
   unless standing.isEmpty do
     throw (IO.userError s!"[{name}] torn down, but the account is not clean: {standing.length} resource(s) named '{ciPrefix}*' are still standing — {String.intercalate ", " standing}. `lake test -- {name} sweep` removes them")
@@ -1489,7 +1489,7 @@ def assertAccountClean (name : String) (κ : Keys) (p : ProviderId) (regions : R
     that failed partway through a different stage. -/
 def liveTeardown (name : String) (κ : Keys) (p : ProviderId) (regions : Regions) :
     IO Unit := do
-  runStage name (emptyStage { keys := κ, plan := Plan.absent κ, regions := regions, forgets := [] })
+  runStage name (emptyStage { name := liveFleet, keys := κ, plan := Plan.absent κ, regions := regions, forgets := [] })
   progress s!"[{name}] torn down: nothing marked as this fleet's is left"
   -- And the whole account agrees, prefix and all.
   assertAccountClean name κ p regions
@@ -1611,7 +1611,7 @@ left the identity standing"
     | .error e2 => throw (IO.userError s!"{e}\nand teardown also failed: {e2}")
 
 def awsIdentityCheck : IO Unit := do
-  let (_, credsOf) ← Infra.Cli.liveFor awsIdentity.keys awsIdentity.regions
+  let (_, credsOf) ← Infra.Cli.liveFor awsIdentity.keys awsIdentity.regions liveFleet
   let some creds := credsOf .aws
     | throw (IO.userError "[aws-identity] no AWS credentials were loaded")
   identityCheck "aws" awsIdentity.keys .aws awsIdentity.regions
@@ -1621,7 +1621,7 @@ def awsIdentityCheck : IO Unit := do
     (Infra.Providers.Kinds.Iam.Aws'.listAccessKeys creds "ci-tests-infra-keyuser")
 
 def gcpIdentityCheck : IO Unit := do
-  let (_, credsOf) ← Infra.Cli.liveFor gcpIdentity.keys gcpIdentity.regions
+  let (_, credsOf) ← Infra.Cli.liveFor gcpIdentity.keys gcpIdentity.regions liveFleet
   let some creds := credsOf .gcp
     | throw (IO.userError "[gcp-identity] no GCP credentials were loaded")
   let project ← Infra.Providers.Gcp.requireProject creds
@@ -1677,7 +1677,7 @@ private def rungOf : Evidence → String
     which is what a create that forgot to write one looks like, and is
     indistinguishable from `.unreadable` in every consequence that matters. -/
 def assertOwnershipEvidence (name : String) (st : Stage) : IO Unit := do
-  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions (some liveFleet)
+  let (bs, _) ← Infra.Cli.liveFor st.κ st.regions liveFleet
   let mut seen : List String := []
   let mut unreadable : List String := []
   let mut unmanaged : List String := []
@@ -1845,7 +1845,7 @@ def deleteForeignContainer (creds : Credentials) : IO Unit := do
 
 def scalewayPerimeterCheck : IO Unit := do
   let name := "scaleway"
-  let (_, credsOf) ← Infra.Cli.liveFor scalewayFull.keys scalewayFull.regions
+  let (_, credsOf) ← Infra.Cli.liveFor scalewayFull.keys scalewayFull.regions liveFleet
   let some creds := credsOf .scaleway
     | throw (IO.userError s!"[{name}] perimeter check: no credentials were loaded")
   perimeterCheck name scalewayFull.keys .scaleway scwStages scalewayFull.regions
@@ -1901,7 +1901,7 @@ def deleteForeignSecretAws (creds : Credentials) : IO Unit :=
 
 def awsPerimeterCheck : IO Unit := do
   let name := "aws"
-  let (_, credsOf) ← Infra.Cli.liveFor awsFull.keys awsFull.regions
+  let (_, credsOf) ← Infra.Cli.liveFor awsFull.keys awsFull.regions liveFleet
   let some creds := credsOf .aws
     | throw (IO.userError s!"[{name}] perimeter check: no credentials were loaded")
   perimeterCheck name awsFull.keys .aws awsStages awsFull.regions
@@ -1934,7 +1934,7 @@ def deleteForeignSecretGcp (creds : Credentials) : IO Unit := do
 
 def gcpPerimeterCheck : IO Unit := do
   let name := "gcp"
-  let (_, credsOf) ← Infra.Cli.liveFor gcpFull.keys gcpFull.regions
+  let (_, credsOf) ← Infra.Cli.liveFor gcpFull.keys gcpFull.regions liveFleet
   let some creds := credsOf .gcp
     | throw (IO.userError s!"[{name}] perimeter check: no credentials were loaded")
   perimeterCheck name gcpFull.keys .gcp gcpStages gcpFull.regions

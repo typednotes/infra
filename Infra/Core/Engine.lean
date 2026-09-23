@@ -75,8 +75,8 @@ def pull {κ : Keys} (bs : Backends) : IO (World κ) :=
 
 /-- What would have to change for the world to realise the target. Pure: it
     decides, it does not act. -/
-def plan {κ : Keys} (T : Plan κ) (W : World κ) (orphans : List Orphan := []) :
-    List (Action κ) := actions T W orphans
+def plan {κ : Keys} (T : Plan κ) (W : World κ) (orphans : List Orphan := [])
+    (releases : List Orphan := []) : List (Action κ) := actions T W orphans releases
 
 /-! ## Which physical thing a listing shows
 
@@ -133,7 +133,26 @@ def declaredPhysically (κ : Keys) (p : ProviderId) (cls name : String) : Bool :
     warnings for what it saw but may not claim. -/
 structure Discovered where
   orphans  : List Orphan := []
+  /-- Resources the declaration `forget`s that still carry this fleet's
+      marker on a rung that can be rewritten: apply removes it
+      (`Action.release`), and the `forget` line can then go. -/
+  releases : List Orphan := []
   warnings : List String := []
+
+/-- Whether the evidence is a tag set carrying the retired marker value. -/
+def carriesRetiredMarker : Evidence → Bool
+  | .tags ts _ => ts.any fun t => t.1 == markerKey && t.2 == retiredMarkerValue
+  | _          => false
+
+/-- The warning for an undeclared resource carrying the retired marker value:
+    it is left alone, and this says what to do. (A *declared* one is reported
+    by `foreignDeclared`, through `describeVerdict`.) -/
+def retiredMarkerWarning (boundary : Boundary) (slot : String) : String :=
+  let me := boundary.fleetName.getD "<this fleet's name>"
+  let fix := s!"if it is this fleet's, retag it '{markerKey}={me}' and the next apply \
+destroys it, or delete it by hand; otherwise leave it"
+  s!"warning: {slot} is not declared and carries '{markerKey}={retiredMarkerValue}', the marker fleets without a \
+name wrote before infra 0.17.0. It matches no fleet now, so it is left alone: {fix}."
 
 /-- **Every resource marked as this fleet's that the declaration does not name,
     found by asking the cloud.**
@@ -149,14 +168,21 @@ structure Discovered where
     kind of its physical class, is not an orphan and is skipped. One orphan per
     physical resource, however many kinds list it.
 
-    A resource that reads as ours only through the grandfathered marker is not
-    claimed, and is warned about by name: which fleet it belongs to cannot be
-    told, so destroying it is not this fleet's call. -/
+    A resource carrying the retired marker value (`retiredMarkerValue`,
+    written by fleets without a name before 0.17.0) is not claimed — it
+    belongs to no fleet any more — and is warned about by name, because it is
+    most likely this fleet's own and waiting to be retagged. -/
 def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
     (forgets : List (Released κ)) : IO Discovered := do
   let mut found : List (String × Orphan) := []   -- (physical class, orphan)
+  let mut releases : List (String × Orphan) := []
   let mut warnings : List String := []
-  for p in κ.providers do
+  -- Every cloud the backends can scan — not only the declared ones. Which
+  -- clouds those are is the front end's decision (`Infra.Cli.liveFor` loads
+  -- the declared clouds and the ones `Accounts` names, and gives any other
+  -- cloud no scanners), so a cloud whose last line was just removed is still
+  -- asked for what it left behind.
+  for p in Finite.elems (α := ProviderId) do
     for (code, b) in bs.scanners p do
       for k in Finite.elems (α := Kind) do
         let declaresKind := !(Finite.elems (α := κ.Key p k)).isEmpty
@@ -169,21 +195,27 @@ def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
           let sameThing := fun (q : ProviderId) (k' : Kind) (n : String) =>
             q == p && physicalClass q k' == cls && n == nm
           if declaredPhysically κ p cls nm
-              || forgets.any (fun r => sameThing r.cloud r.kind r.name)
-              || found.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm) then
+              || found.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm)
+              || releases.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm) then
+            continue
+          -- A forgotten resource is never an orphan. If it still carries
+          -- this fleet's marker, and the marker is somewhere that can be
+          -- rewritten, apply removes it; a name-only one keeps its marker —
+          -- its name — and its `forget` line has to stay.
+          if forgets.any (fun r => sameThing r.cloud r.kind r.name) then
+            let evidence ← b.ownershipInfo k handle
+            if claimsUndeclared boundary p k nm evidence then
+              match evidence with
+              | .tags _ _ =>
+                releases := releases ++ [(cls, { cloud := p, kind := k, name := nm, region := code })]
+              | _ => pure ()
             continue
           let evidence ← b.ownershipInfo k handle
           if claimsUndeclared boundary p k nm evidence then
             found := found ++ [(cls, { cloud := p, kind := k, name := nm, region := code })]
-          else if (ownershipOf boundary p k nm evidence).isOurs then
-            let why := match boundary.fleetName with
-              | none   => s!"this fleet does not name itself (`Boundary.fleetName`), so its \
-'{markerKey}' marker cannot say the resource is this fleet's rather than another's"
-              | some _ => s!"it carries the grandfathered '{markerKey}={legacyMarkerValue}' \
-marker, which cannot say which fleet it belongs to"
-            warnings := warnings ++ [s!"warning: {slotId p k nm} is not declared, but {why} \
-— so it is not destroyed. Name the fleet (and let it retag what it manages), or `forget` it."]
-  return { orphans := found.map (·.2), warnings }
+          else if carriesRetiredMarker evidence then
+            warnings := warnings ++ [retiredMarkerWarning boundary (slotId p k nm)]
+  return { orphans := found.map (·.2), releases := releases.map (·.2), warnings }
 
 -- ══════════════════════════════════════════════════════════════
 -- Ordering
@@ -199,6 +231,7 @@ def Action.verb {κ : Keys} : Action κ → String
   -- plan must not read as if it did. See `docs/migrations.md`, hard edge 1.
   | .delete _ k _ => if k == .postgresMigrations then "FORGET" else "DELETE"
   | .deleteOrphan _ k _ _ => if k == .postgresMigrations then "FORGET" else "DELETE"
+  | .release .. => "RELEASE"
 
 /-- Whether this action removes a resource. Deletions are ordered against the
     transpose of the creation graph. -/
@@ -227,6 +260,8 @@ def Action.colour {κ : Keys} : Action κ → String
   -- Blue for a history's FORGET: it touches no cloud.
   | .delete _ k _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
   | .deleteOrphan _ k _ _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
+  -- Blue, like FORGET: nothing is destroyed; the resource stops being ours.
+  | .release .. => Ansi.blue
 
 /-- `render`, with the verb coloured. Identical to `render` when `colour` is
     off, which is what keeps a rendered plan matchable as plain text. -/
@@ -341,6 +376,8 @@ private def stepOf {κ : Keys} (T : Plan κ) : Action κ → Step κ
   -- group's delete with `DependencyViolation` until the instance is gone —
   -- which is why `push` retries a refused orphan delete after the rest.
   | a@(.deleteOrphan ..) => { action := a, id := a.slot, after := [] }
+  -- A release touches nothing but the marker, so it depends on nothing.
+  | a@(.release ..) => { action := a, id := a.slot, after := [] }
 
 /-- Kahn's algorithm, bounded by the number of steps.
 
@@ -537,6 +574,11 @@ private def runAction {κ : Keys} (bs : Backends) (T : Plan κ)
     inContext s!"{Action.verb ((.deleteOrphan p k nm region : Action κ))} {slotId p k nm}" do
     (bs.backendAt p region).delete k ⟨nm⟩
     return entries
+  -- Routed like an orphan: on the region it was found in.
+  | .release p k nm region =>
+    inContext s!"RELEASE {slotId p k nm}" do
+    (bs.backendAt p region).release k ⟨nm⟩
+    return entries
 
 /-- What one action left behind: the resources seen so far and the log lines,
     threaded from action to action — from two places, the main pass and the
@@ -562,6 +604,14 @@ private def runStep {κ : Keys} (bs : Backends) (T : Plan κ) (boundary : Bounda
       unless claimsUndeclared boundary p k nm evidence do
         throw (IO.userError s!"{slotId p k nm}: no longer carries this fleet's marker; \
 refusing to delete it")
+  -- A release re-checks too: removing a marker that is no longer this
+  -- fleet's would unmark somebody else's resource. Already unmarked is the
+  -- outcome asked for, so it is reported rather than refused.
+  | .release p k nm region =>
+    let evidence ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩
+    unless claimsUndeclared boundary p k nm evidence do
+      return { st with log := s!"{a.renderStyled opts.colour} \
+{Ansi.style opts.colour Ansi.dim "... already not this fleet's"}" :: st.log }
   | _ => pure ()
   let entries ← runAction bs T st.entries a
   return { entries
@@ -613,7 +663,8 @@ ownership cannot be verified")]
     writes, it never reaches them. -/
 def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     (opts : PushOptions := {}) (edges : Plan κ := T) (orphans : List Orphan := [])
-    (boundary : Boundary := {}) (seen : Option (List (Entry κ)) := none) :
+    (boundary : Boundary := {}) (seen : Option (List (Entry κ)) := none)
+    (releases : List Orphan := []) :
     IO (List String) := do
   -- The migrations contract, refused before any action is derived — so a
   -- plan shows the refusal exactly where it would have shown the work, and
@@ -631,7 +682,7 @@ a caller that builds its own backends must do the same (`Infra.Cli.fetchMigratio
     throw (IO.userError msg)
   if let some msg := T.migrationsAppendOnly W then
     throw (IO.userError msg)
-  let work ← match orderActions T (plan T W orphans) edges with
+  let work ← match orderActions T (plan T W orphans releases) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
   -- Only resources carrying this fleet's marker are changed or destroyed —

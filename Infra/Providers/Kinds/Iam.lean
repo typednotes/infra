@@ -2,6 +2,7 @@ import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Infra.Core.Stage
 import Infra.Core.Ownership
+import Infra.Providers.Marker
 
 /-
   Machine identities, their permissions, and their keys.
@@ -154,20 +155,20 @@ def tagsOfListUserTags (root : Text.XML.Element) : List (String × String) :=
 private def listUserTagsReply : String :=
   "<ListUserTagsResponse xmlns=\"https://iam.amazonaws.com/doc/2010-05-08/\">\
 <ListUserTagsResult><Tags>\
-<member><Key>managed-by-infra</Key><Value>true</Value></member>\
+<member><Key>managed-by-infra</Key><Value>my-fleet</Value></member>\
 <member><Key>team</Key><Value>infra</Value></member>\
 </Tags><IsTruncated>false</IsTruncated></ListUserTagsResult>\
 </ListUserTagsResponse>"
 
 #guard (match Text.XML.parse listUserTagsReply with
         | .ok root => tagsOfListUserTags root
-        | .error _ => []) = [("managed-by-infra", "true"), ("team", "infra")]
+        | .error _ => []) = [("managed-by-infra", "my-fleet"), ("team", "infra")]
 
 /- And the marker is then found in it, which is the question the engine
    actually asks. Pinning the parse alone would not catch a future change that
    parsed the tags and lost the key. -/
 #guard (match Text.XML.parse listUserTagsReply with
-        | .ok root => markedBy none (tagsOfListUserTags root)
+        | .ok root => markedBy (some "my-fleet") (tagsOfListUserTags root)
         | .error _ => false)
 
 /- A user with no tags parses to no tags, rather than to an error — which is a
@@ -188,6 +189,18 @@ def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
   match attempt with
   | .error _ => return .unreadable
   | .ok root => return .tags (tagsOfListUserTags root) none
+
+/-- Take this fleet's ownership marker off the user, leaving its other tags.
+
+    `UntagUser` removes by key alone (IAM API reference, `UntagUser`:
+    `TagKeys.member.N`), so the value is checked first against a fresh
+    `ListUserTags`; a user carrying another fleet's marker, or none, is not
+    written to. -/
+def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  let root ← Query.call creds Query.iamEndpoint "ListUserTags" version [("UserName", name)]
+  if (Marker.releaseTags fleet (tagsOfListUserTags root)).isSome then
+    discard <| Query.call creds Query.iamEndpoint "UntagUser" version
+      [("UserName", name), ("TagKeys.member.1", markerKey)]
 
 /-- Reconcile the attached set: detach what is no longer wanted, attach what is
     newly wanted. Sending the whole list blindly would fail on the ones already
@@ -346,6 +359,28 @@ def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
   match (← listRaw creds).find? (·.1 == name) with
   | some (_, _, tags) => return .tags (tags.map Scaleway.decodeTag) none
   | none              => return .unreadable
+
+/-- Take this fleet's ownership marker off the application, leaving every
+    other tag byte-for-byte.
+
+    `PATCH /applications/{id}` with the full new `tags` list —
+    `UpdateApplicationRequest` carries `Tags *[]string` (Scaleway SDK,
+    `api/iam/v1alpha1/iam_sdk.go`, the same file the note above cites), and a
+    list replaces the old one. Nothing else is sent, so name and description
+    stay as they are.
+
+    The policy this tool attached to the application keeps *its* marker: it is
+    a separate object, not this resource's ownership, and it is what lets a
+    later `setPolicies` tell the policy this tool wrote from one a human did. -/
+def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
+  match (← listRaw creds).find? (·.1 == name) with
+  | none              => pure ()
+  | some (_, id, tags) =>
+    match Scaleway.dropTag (markerKey, fleet) tags with
+    | none      => pure ()
+    | some rest =>
+      discard <| Scaleway.call creds "PATCH" (prefix' ++ s!"/applications/{id}")
+        (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
 
 -- ── Policies ──
 

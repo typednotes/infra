@@ -125,23 +125,43 @@ The two halves fail very differently:
 That asymmetry is why the read grants are listed here rather than left to be
 discovered: a run that is missing them looks like a run that is working.
 
+**A third grant, for `forget` (0.17.0).** A forgotten resource that still
+carries this fleet's marker has the marker *removed* on the next apply
+(`Backend.release`), which is an untag — or, where a cloud has no per-key
+delete, a tag write of the remaining set. It is only called for fleets that
+`forget` something, and missing it fails loudly, at that `RELEASE` line,
+naming the action. The per-product wildcards in both documents already cover
+it; the column below says which action it is, for anyone enumerating.
+
+## Every cloud named in `accounts` is listed
+
+Since 0.17.0 the clouds a fleet scans for orphans are the declared ones **plus
+every cloud its `accounts` names** — so that a cloud whose last line was just
+deleted is still cleaned up. So a credential for a cloud named there needs the
+listing and tag-read actions of every kind on that cloud even when the
+declaration has nothing left on it, until it is dropped from `accounts`.
+
 ## AWS, per kind
 
 Read off the call sites in `Infra/Providers/Kinds/` — the API each function
 calls is named in the source, so this table is derivable rather than
 remembered. Last checked against the code on 2026-09-19.
 
-| Kind | Actions | Tag write / read |
-|---|---|---|
-| `queues` | `sqs:CreateQueue`, `DeleteQueue`, `GetQueueUrl`, `GetQueueAttributes`, `SetQueueAttributes`, `ListQueues` | `sqs:TagQueue` / `sqs:ListQueueTags` |
-| `secrets` | `secretsmanager:CreateSecret`, `DeleteSecret`, `DescribeSecret`, `PutSecretValue`, `GetSecretValue`, `ListSecrets` | `secretsmanager:TagResource` / `DescribeSecret` carries them |
-| `imageRegistry` | `ecr:CreateRepository`, `DeleteRepository`, `DescribeRepositories`, `PutImageTagMutability` | `ecr:TagResource` (at create) / `ecr:ListTagsForResource` |
-| `objectStore`, `s3Bucket` | `s3:CreateBucket`, `DeleteBucket`, `PutBucketVersioning`, `GetBucketVersioning`, `PutBucketObjectLockConfiguration`, `GetBucketObjectLockConfiguration`, `ListAllMyBuckets` | `s3:PutBucketTagging` / `s3:GetBucketTagging` |
-| `securityGroup` | `ec2:CreateSecurityGroup`, `DeleteSecurityGroup`, `AuthorizeSecurityGroupIngress`, `DescribeSecurityGroups` | `ec2:CreateTags` / `DescribeSecurityGroups` carries them |
-| `awsInstance` | `ec2:RunInstances`, `TerminateInstances`, `ModifyInstanceAttribute`, `DescribeInstances`, `DescribeImages` | `ec2:CreateTags` / `DescribeInstances` carries them |
-| `iam` | `iam:CreateUser`, `DeleteUser`, `ListUsers`, `ListAttachedUserPolicies`, `AttachUserPolicy`, `DetachUserPolicy`, `ListAccessKeys`, `DeleteAccessKey` — **and `CreateAccessKey`, which the template denies**, for `apiKeyFor` only | `iam:TagUser` / `iam:ListUserTags` |
-| `compute` | `lambda:CreateFunction`, `DeleteFunction`, `GetFunction`, `ListFunctions`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, **plus `iam:PassRole`** on the execution role | `lambda:TagResource` / `GetFunction` carries them |
-| `postgres` | `rds:CreateDBInstance`, `DeleteDBInstance`, `ModifyDBInstance`, `DescribeDBInstances` | `rds:AddTagsToResource` / `rds:ListTagsForResource` |
+| Kind | Actions | Tag write / read | Release (`forget`) |
+|---|---|---|---|
+| `queues` | `sqs:CreateQueue`, `DeleteQueue`, `GetQueueUrl`, `GetQueueAttributes`, `SetQueueAttributes`, `ListQueues` | `sqs:TagQueue` / `sqs:ListQueueTags` | `sqs:UntagQueue` |
+| `secrets` | `secretsmanager:CreateSecret`, `DeleteSecret`, `DescribeSecret`, `PutSecretValue`, `GetSecretValue`, `ListSecrets` | `secretsmanager:TagResource` / `DescribeSecret` carries them | `secretsmanager:UntagResource` |
+| `imageRegistry` | `ecr:CreateRepository`, `DeleteRepository`, `DescribeRepositories`, `PutImageTagMutability` | `ecr:TagResource` (at create) / `ecr:ListTagsForResource` | `ecr:UntagResource` |
+| `objectStore`, `s3Bucket` | `s3:CreateBucket`, `DeleteBucket`, `PutBucketVersioning`, `GetBucketVersioning`, `PutBucketObjectLockConfiguration`, `GetBucketObjectLockConfiguration`, `ListAllMyBuckets` | `s3:PutBucketTagging` / `s3:GetBucketTagging` | `s3:PutBucketTagging` (the remaining set is written back; `DeleteBucketTagging` when none remain, which S3 authorises under the same action) |
+| `securityGroup` | `ec2:CreateSecurityGroup`, `DeleteSecurityGroup`, `AuthorizeSecurityGroupIngress`, `DescribeSecurityGroups` | `ec2:CreateTags` / `DescribeSecurityGroups` carries them | `ec2:DeleteTags` |
+| `awsInstance` | `ec2:RunInstances`, `TerminateInstances`, `ModifyInstanceAttribute`, `DescribeInstances`, `DescribeImages` | `ec2:CreateTags` / `DescribeInstances` carries them | `ec2:DeleteTags` |
+| `iam` | `iam:CreateUser`, `DeleteUser`, `ListUsers`, `ListAttachedUserPolicies`, `AttachUserPolicy`, `DetachUserPolicy`, `ListAccessKeys`, `DeleteAccessKey` — **and `CreateAccessKey`, which the template denies**, for `apiKeyFor` only | `iam:TagUser` / `iam:ListUserTags` | `iam:UntagUser` |
+| `compute` | `lambda:CreateFunction`, `DeleteFunction`, `GetFunction`, `ListFunctions`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, **plus `iam:PassRole`** on the execution role | `lambda:TagResource` / `GetFunction` carries them | `lambda:UntagResource` |
+| `postgres` | `rds:CreateDBInstance`, `DeleteDBInstance`, `ModifyDBInstance`, `DescribeDBInstances` | `rds:AddTagsToResource` / `rds:ListTagsForResource` | `rds:RemoveTagsFromResource` |
+
+The release column is read off the code like the rest, but no AWS release call
+has run against a real account yet — only offline, until the live suite runs
+it in CI.
 
 `sts:GetCallerIdentity` is called before anything else, to refuse to act
 against the wrong account (`Infra/Providers/Kinds/Identity.lean`). It needs no
@@ -216,11 +236,12 @@ statements with names — and with the per-product shape, that is now the *only*
 editing a fleet's evolution should ever need.
 
 The *listing* actions are the exception since 0.15.0. Every `plan`, `apply`
-and `destroy` lists every kind on each cloud the fleet uses, declared or not,
-to find undeclared resources carrying its marker (`Engine.claimUndeclared`) —
-that is how a kind whose last line was just deleted still gets cleaned up. A
-refused listing fails the run rather than reading as empty, so keep the list
-and tag-read actions of every kind, even the ones you have trimmed the writes
+and `destroy` lists every kind on each cloud the fleet declares or names in
+`accounts`, declared or not, to find undeclared resources carrying its marker
+(`Engine.claimUndeclared`) — that is how a kind, or since 0.17.0 a whole
+cloud, whose last line was just deleted still gets cleaned up. A refused
+listing fails the run rather than reading as empty, so keep the list and
+tag-read actions of every kind, even the ones you have trimmed the writes
 for.
 
 ## GCP and Scaleway
@@ -235,6 +256,18 @@ The mapping for both, along with the GCP services that must be *enabled* before
 any role matters, is in [`../ci/README.md`](../ci/README.md). It is written
 there for CI's identity, but the role and permission-set names are the same
 ones a real fleet needs; only the scope (`--project`, `project-ids`) differs.
+Releasing a `forget`ed resource on either cloud rewrites its labels, tags or
+description in place — an update call on that product, so it needs the same
+rights an `update` of that kind does, and nothing new.
+
+One Scaleway fact worth repeating here: **a fleet that uses Scaleway Queues
+wants Secret Manager read and write for its key**, even if it declares no
+secrets. The minted Queues credential is shared between machines as a Scaleway
+secret, `infra-sqs-credential` (0.17.0; see
+[`authentication.md`](authentication.md)), and reading it back and writing a
+new version of it are Secret Manager calls. Without them nothing fails — the
+run prints a note and mints a credential instead — but every machine without a
+keychain copy then mints its own, invalidating the others'.
 
 Two GCP facts worth repeating here because they cost time:
 

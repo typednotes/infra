@@ -97,20 +97,31 @@ namespace Infra.Core
     estate looking like it belonged to nobody. -/
 def markerKey : String := "managed-by-infra"
 
-/-- The value the marker carried before a fleet could name itself, and the
-    value written by any fleet that still does not.
+/-- The value the marker carried before every fleet had a name — written by
+    a fleet that did not set one, until 0.17.0.
 
-    It is **grandfathered**: a resource tagged with it matches every fleet, so
-    naming a fleet cannot orphan an estate that was tagged before the name
-    existed. Without that, setting `Boundary.fleetName` on an existing fleet would
-    turn every resource it already manages `foreign` in one step — a fleet that
-    warns about its whole estate and refuses to destroy any of it.
+    **Retired, and recognised only to say so.** It matched every fleet, so a
+    resource carrying it could be claimed by any fleet in the account. Now it
+    matches none: a resource tagged `true` is `foreign` like any other value
+    that is not this fleet's name, and it is never changed or destroyed. The
+    constant exists so that a warning can name the case and say what to do —
+    retag the resource with the fleet's name, or delete it by hand. -/
+def retiredMarkerValue : String := "true"
 
-    The grandfathering is permanent rather than a migration window, because
-    there is nothing to migrate *to* on a schedule: a resource is retagged when
-    it is next updated, and a resource nobody updates would otherwise become
-    unmanageable for having been created early. -/
-def legacyMarkerValue : String := "true"
+/-- Whether `name` can be a fleet's name, i.e. the marker's value on every
+    cloud: 1–63 characters, lowercase ASCII letters, digits, `-` and `_`,
+    starting with a letter. The strictest of the three clouds sets the rule —
+    a GCP label value — so a name that works on one works on all of them, and
+    a fleet cannot be valid until it first touches GCP. -/
+def validFleetName (name : String) : Bool :=
+  let ok (c : Char) := ('a' ≤ c && c ≤ 'z') || ('0' ≤ c && c ≤ '9') || c == '-' || c == '_'
+  match name.toList with
+  | [] => false
+  | c :: _ => name.length ≤ 63 && 'a' ≤ c && c ≤ 'z' && name.toList.all ok
+
+#guard validFleetName "typednotes" && validFleetName "ci-tests-infra" && validFleetName "a_b1"
+#guard !validFleetName "" && !validFleetName "myFleet" && !validFleetName "1st"
+#guard !validFleetName "a.b" && !validFleetName (String.mk (List.replicate 64 'a'))
 
 /-! ## The marker, written into a free-text field
 
@@ -226,20 +237,21 @@ structure Boundary where
       that a field a declaration author types must not be spelled like a
       command keyword.
 
-      `none` — the default — is exactly the behaviour that existed before this
-      field: the marker's presence decides and its value is not read, so one
-      account holding two fleets has them claiming each other's resources by
-      name, which is why `Accounts` refuses that arrangement in the first
-      place. Naming the fleet is what makes the arrangement *safe* rather than
-      merely refused: a resource marked `some other-fleet` reads as `foreign`,
-      and foreign resources are left alone.
+      **An override.** Every `Fleet` has a name (`Fleet.name`, the `fleet`
+      command's identifier), and `Infra.Cli.run` resolves this field to
+      `some (fleetName.getD F.name)` before anything reads it — so on every
+      path a user takes, it is `some`. Set it to keep a stable marker value
+      while renaming the Lean declaration, or to give two declarations one
+      name on purpose.
 
-      Two things it is honest to say about it. It is **opt-in on both sides**:
-      a fleet that names itself is protected from one that does not, but not
-      the reverse — the unnamed fleet still accepts any value it finds, so
-      isolation between two fleets needs both of them to set this. And it is
-      one string, not an identity: nothing stops a second fleet writing the
-      same name, so this separates *fleets that agree to be separate*. The
+      `none` is reachable only by calling the engine with a hand-built
+      `Boundary`, and it means **no tag is ours**: a boundary that does not
+      know its fleet's name cannot claim anything by marker. (Before 0.17.0,
+      `none` accepted any value and wrote `true`, which every fleet accepted
+      — see `retiredMarkerValue`.)
+
+      It is one string, not an identity: nothing stops a second fleet writing
+      the same name, so this separates *fleets that agree to be separate*. The
       realm (`Infra.Cli.Accounts`) is still the hard container. -/
   fleetName  : Option String := none
   /-- The prefix every resource of a kind that **cannot carry a marker** must
@@ -257,17 +269,20 @@ structure Boundary where
       this asks a question about the names already in the declaration, and
       `push` warns by name about every one that fails to answer it.
 
-      `none` — the default — means there is no marker to check, so such a
-      resource is `foreign`: never changed, and never deleted as an orphan.
-      That is exactly the behaviour these kinds had before this field existed,
-      which is what keeps an existing fleet unchanged until it opts in.
+      **Defaults to the fleet's name and a hyphen** (`Boundary.prefixes`): a
+      fleet named `typednotes` claims the untaggable resources named
+      `typednotes-…`, and destroys the ones it no longer declares. Setting
+      `namePrefix` or `namePrefixes` replaces the default rather than adding
+      to it. Before 0.17.0 the default was no prefix, which left such
+      resources unclaimable — never managed, never cleaned up — unless the
+      fleet opted in.
 
       Weaker than a tag, and worth being plain about how. A tag is written by
       this tool at create; a prefix is written by whoever typed the name, so a
       stranger who happens to use the same prefix in the same project is
       indistinguishable from us. The realm check (`Infra.Cli.Accounts`) is
-      what bounds that, exactly as it bounds `fleetName := none`. Prefer a
-      prefix nobody would pick by accident — a fleet name, not `db-`. -/
+      what bounds that. Prefer a prefix nobody would pick by accident — a
+      fleet name, which is why that is the default, not `db-`. -/
   namePrefix : Option String := none
   /-- Further prefixes, each claiming by name exactly as `namePrefix` does.
 
@@ -286,26 +301,24 @@ structure Boundary where
   namePrefixes : List String := []
 
 /-- Every prefix this boundary claims by name: `namePrefix` then
-    `namePrefixes`, in that order. -/
+    `namePrefixes`, in that order — or, if neither is set, the fleet's name and
+    a hyphen. (A boundary without a name and without prefixes claims nothing
+    by name.) -/
 def Boundary.prefixes (b : Boundary) : List String :=
-  b.namePrefix.toList ++ b.namePrefixes
+  match b.namePrefix.toList ++ b.namePrefixes with
+  | [] => b.fleetName.toList.map (· ++ "-")
+  | ps => ps
 
 /-- Whether the marker is present *and* claimed by this fleet, given the tags
     a listing reported.
 
-    Three cases, and the middle one is the whole point of the value:
-
-    - no `markerKey` at all: not ours, whoever we are.
-    - `markerKey` with `legacyMarkerValue`: ours, whatever fleet asks. See
-      that constant for why.
-    - `markerKey` with anything else: ours only if the fleet did not name
-      itself, or named itself this. -/
+    Ours exactly when `markerKey` carries this fleet's name. Any other value —
+    another fleet's, the retired `true` — is not ours, and a boundary that
+    does not know its name (`none`) claims nothing by marker. -/
 def markedBy (fleet : Option String) (tags : List (String × String)) : Bool :=
-  tags.any fun t =>
-    t.1 == markerKey &&
-      (match fleet with
-       | none    => true
-       | some me => t.2 == me || t.2 == legacyMarkerValue)
+  match fleet with
+  | none    => false
+  | some me => tags.any fun t => t.1 == markerKey && t.2 == me
 
 /-- The same question for a resource whose name is the only evidence there is.
 
@@ -369,20 +382,12 @@ def Ownership.isOurs : Ownership → Bool
 /-- Whether a resource the declaration does **not** name may be claimed —
     and so destroyed — on the marker's say-so alone.
 
-    `ownershipOf` decides whether a resource is ours; this is stricter in one
-    way, and deliberately. The grandfathered marker value (`legacyMarkerValue`)
-    matches *every* fleet, which is right for managing a resource the
-    declaration names (the name is corroboration) and wrong for destroying one
-    it does not: a resource tagged `true` by another, unnamed fleet in the same
-    account — `infra`'s own live tests, say — would read as ours and be deleted.
-    So only this fleet's own name in the marker claims an undeclared
-    resource — and a fleet that does not name itself (`Boundary.fleetName`)
-    claims none this way. It cannot tell its own resources from any other
-    fleet's in the same account, and "destroy everything marked" is exactly
-    what an unnamed fleet sharing a project with a named one would otherwise
-    do: `infra`'s own live tests would have destroyed `typednotes-infra`'s
-    fleet. `Accounts` cannot prevent that — it checks the account, not who
-    else deploys into it.
+    The same verdict as `ownershipOf`, now that the marker's only accepted
+    value is this fleet's own name. Until 0.17.0 it was stricter, because the
+    grandfathered value `true` matched every fleet: right for managing a
+    resource the declaration names, wrong for destroying one it does not.
+    With that value retired there is nothing left to be stricter about; the
+    function stays so that the call sites say which question they ask.
 
     The name rung (`Boundary.prefixes`, for the kinds nothing can be written
     on) claims as it does everywhere: the prefix *is* the declaration's claim,
@@ -390,11 +395,7 @@ def Ownership.isOurs : Ownership → Bool
     this fleet does not declare is destroyed. -/
 def claimsUndeclared (b : Boundary) (cloud : ProviderId) (k : Kind) (name : String)
     (e : Evidence) : Bool :=
-  (ownershipOf b cloud k name e).isOurs &&
-    match e, b.fleetName with
-    | .tags ts _, some me => ts.any fun t => t.1 == markerKey && t.2 == me
-    | .tags _ _,  none    => false
-    | _,          _       => true
+  (ownershipOf b cloud k name e).isOurs
 
 /-- The verdict, as a warning line's worth of English — and, when it is not
     ours, which rung of the ladder said so.
@@ -422,15 +423,24 @@ def describeVerdict (b : Boundary) (e : Evidence) : Ownership → String
   | .excluded => "excluded from management, by the boundary or a release"
   | .foreign  =>
     match e with
-    | .tags _ _   => s!"not carrying the '{markerKey}' tag, so not ours"
+    | .tags ts _  =>
+      let me := b.fleetName.getD "<unnamed>"
+      match ts.find? (·.1 == markerKey) with
+      | none => s!"not carrying the '{markerKey}' tag, so not ours"
+      | some (_, v) =>
+        if v == retiredMarkerValue then
+          s!"carrying '{markerKey}={v}', the marker fleets without a name wrote before \
+infra 0.17.0, which matches no fleet now. If it is this fleet's, retag it \
+'{markerKey}={me}' and the next run manages it again"
+        else
+          s!"carrying '{markerKey}={v}' — another fleet's name, not this fleet's '{me}'"
     | .named nm _ =>
       match b.prefixes with
       | [pre] => s!"named '{nm}', which does not start with this fleet's \
 `namePrefix` '{pre}' — and this cloud cannot tag this kind, so the name is the \
 only marker there is"
-      | []    => s!"of a kind this cloud cannot tag, and no `namePrefix` is \
-set on this fleet's boundary, so there is no marker to check. Set one, and name \
-this resource with it"
+      | []    => s!"of a kind this cloud cannot tag, and this boundary has neither \
+a name nor a `namePrefix`, so there is no marker to check"
       | pres  =>
         let quoted := String.intercalate ", " (pres.map fun p => s!"'{p}'")
         s!"named '{nm}', which starts with none of this fleet's name prefixes \
@@ -451,10 +461,13 @@ private def anyKind : Kind := .queues
     to say, written once so the rung under test is the visible part. -/
 private def tagged (ts : List (String × String)) : Evidence := .tags ts none
 
+/-- A fleet named `mine` — every fleet has a name (`Fleet.name`). -/
+private def mine : Boundary := { fleetName := some "mine" }
+
 /- The marker grants ownership, and its absence withholds it. -/
-#guard ownershipOf {} .aws anyKind "x" (tagged [(markerKey, "mine")]) = .managed
-#guard ownershipOf {} .aws anyKind "x" (tagged []) = .foreign
-#guard ownershipOf {} .aws anyKind "x" (tagged [("team", "infra")]) = .foreign
+#guard ownershipOf mine .aws anyKind "x" (tagged [(markerKey, "mine")]) = .managed
+#guard ownershipOf mine .aws anyKind "x" (tagged []) = .foreign
+#guard ownershipOf mine .aws anyKind "x" (tagged [("team", "infra")]) = .foreign
 
 /- *The* safety property: something nobody mentioned is not ours. An empty
    boundary claims nothing, so a first run against a populated account proposes
@@ -463,10 +476,11 @@ private def tagged (ts : List (String × String)) : Evidence := .tags ts none
 
 /- ### The fleet's own name, in the value
 
-   Unset, the value is not read at all — which is the behaviour that existed
-   before the field, and is what keeps this change from touching any fleet that
-   does not ask for it. -/
-#guard ownershipOf {} .aws anyKind "x" (tagged [(markerKey, "some-other-fleet")]) = .managed
+   A boundary that does not know its fleet's name claims nothing by marker,
+   whatever the value. (`Infra.Cli.run` always gives it one; only a hand-built
+   `Boundary` can be `none`.) -/
+#guard ownershipOf {} .aws anyKind "x" (tagged [(markerKey, "some-other-fleet")]) = .foreign
+#guard ownershipOf {} .aws anyKind "x" (tagged [(markerKey, "mine")]) = .foreign
 
 /- Set, a value that is not ours is `foreign`: the same verdict as no marker,
    and the same consequence — left alone. This is the isolation the field is
@@ -476,11 +490,10 @@ private def tagged (ts : List (String × String)) : Evidence := .tags ts none
 #guard ownershipOf { fleetName := some "mine" }
          .aws anyKind "x" (tagged [(markerKey, "mine")]) = .managed
 
-/- The legacy value matches every fleet, permanently: naming a fleet must not
-   turn an estate tagged before the name existed into somebody else's. This is
-   the assertion to read if `legacyMarkerValue` is ever tempting to remove. -/
-#guard ownershipOf { fleetName := some "mine" }
-         .aws anyKind "x" (tagged [(markerKey, legacyMarkerValue)]) = .managed
+/- The retired value matches no fleet: it used to match every one, which is
+   exactly why it could not tell two fleets in one account apart. -/
+#guard ownershipOf mine .aws anyKind "x" (tagged [(markerKey, retiredMarkerValue)]) = .foreign
+#guard ownershipOf {} .aws anyKind "x" (tagged [(markerKey, retiredMarkerValue)]) = .foreign
 
 /- And the value never *grants* what the key did not: a fleet's own name under
    some other key is not a marker. -/
@@ -490,33 +503,33 @@ private def tagged (ts : List (String × String)) : Evidence := .tags ts none
 /- An exclusion overrides the marker, not the other way round. This is what
    makes a released resource stay released even though this tool created it and
    tagged it. -/
-#guard ownershipOf { exclusions := [⟨.aws, anyKind, "x", "released 2026-09-06"⟩] }
+#guard ownershipOf { mine with exclusions := [⟨.aws, anyKind, "x", "released 2026-09-06"⟩] }
          .aws anyKind "x" (tagged [(markerKey, "mine")]) = .excluded
 
 /- An exclusion is per cloud and per kind, not by name alone: two clouds can
    hold resources of the same name, and this example does. -/
-#guard ownershipOf { exclusions := [⟨.aws, anyKind, "x", "why"⟩] }
+#guard ownershipOf { mine with exclusions := [⟨.aws, anyKind, "x", "why"⟩] }
          .scaleway anyKind "x" (tagged [(markerKey, "mine")]) = .managed
 
 /- The cutoff ages out a marked resource older than adoption. -/
-#guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
+#guard ownershipOf { mine with since := some "2026-09-01T00:00:00Z" }
          .aws anyKind "x" (.tags [(markerKey, "mine")] (some "2026-08-01T00:00:00Z")) = .excluded
-#guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
+#guard ownershipOf { mine with since := some "2026-09-01T00:00:00Z" }
          .aws anyKind "x" (.tags [(markerKey, "mine")] (some "2026-09-15T00:00:00Z")) = .managed
 
 /- An unknown creation time does not age anything out, and does not claim
    anything either: the marker decides alone. Guessing in either direction
    would be a silent wrong answer. -/
-#guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
+#guard ownershipOf { mine with since := some "2026-09-01T00:00:00Z" }
          .aws anyKind "x" (tagged [(markerKey, "mine")]) = .managed
-#guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
+#guard ownershipOf { mine with since := some "2026-09-01T00:00:00Z" }
          .aws anyKind "x" (tagged []) = .foreign
 
 /- And the cutoff never promotes: an unmarked resource created yesterday is
    still not ours. The cutoff is a backstop on the marker, never a substitute
    for it, which is the difference between this and "assume everything new is
    mine". -/
-#guard ownershipOf { since := some "2026-09-01T00:00:00Z" }
+#guard ownershipOf { mine with since := some "2026-09-01T00:00:00Z" }
          .aws anyKind "x" (.tags [] (some "2026-09-15T00:00:00Z")) = .foreign
 
 /-! ### The description rung
@@ -600,6 +613,14 @@ private def bTwo : Boundary := { namePrefix := some "secrets-", namePrefixes := 
          (.named "tn-db" none) = .managed
 #guard bTwo.prefixes = ["secrets-", "typednotes-"]
 
+/- The default prefix is the fleet's name and a hyphen; an explicit one
+   replaces it rather than adding to it; no name and no prefix claims nothing. -/
+#guard ({ fleetName := some "tn" } : Boundary).prefixes = ["tn-"]
+#guard ({ fleetName := some "tn", namePrefix := some "db-" } : Boundary).prefixes = ["db-"]
+#guard ({} : Boundary).prefixes = []
+#guard ownershipOf { fleetName := some "tn" } .scaleway .postgres "tn-db" (.named "tn-db" none) = .managed
+#guard ownershipOf { fleetName := some "tn" } .scaleway .postgres "tnx-db" (.named "tnx-db" none) = .foreign
+
 /- The two rungs do not leak into one another. A prefix must not rescue a
    resource whose tags say it is somebody else's, and a marker tag must not
    rescue a name-only resource that is misnamed — otherwise the ladder would be
@@ -611,20 +632,20 @@ private def bTwo : Boundary := { namePrefix := some "secrets-", namePrefixes := 
 
 /-! ### Claiming what the declaration does not name
 
-  Stricter than managing a declared one: the grandfathered value cannot tell fleets apart, so
-  it never licenses destroying an undeclared resource for a named fleet. -/
+  The same verdict as managing a declared one, now that only the fleet's own name is accepted.
+  Kept as guards because this is where destroying is decided. -/
 private def bNamed : Boundary := { fleetName := some "typednotes", namePrefix := some "secrets-" }
 #guard claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, "typednotes")])
-#guard !claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, legacyMarkerValue)])
+#guard !claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, retiredMarkerValue)])
 #guard !claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, "someone-else")])
 #guard !claimsUndeclared bNamed .scaleway .secrets "old" (tagged [])
 #guard !claimsUndeclared bNamed .scaleway .secrets "old" .unreadable
 -- The name rung claims by its prefix, and only by it.
 #guard claimsUndeclared bNamed .scaleway .postgres "secrets-old" (.named "secrets-old" none)
 #guard !claimsUndeclared bNamed .scaleway .postgres "reports" (.named "reports" none)
--- An unnamed fleet claims no undeclared resource by tag: whose it is cannot
--- be told. The name rung still claims for it, by its prefix.
-#guard !claimsUndeclared {} .aws anyKind "x" (tagged [(markerKey, legacyMarkerValue)])
+-- A boundary without a name claims nothing by tag. The name rung still
+-- claims for it, by its prefix.
+#guard !claimsUndeclared {} .aws anyKind "x" (tagged [(markerKey, retiredMarkerValue)])
 #guard !claimsUndeclared {} .aws anyKind "x" (tagged [(markerKey, "anything")])
 #guard claimsUndeclared { namePrefix := some "tn-" } .scaleway .postgres "tn-db" (.named "tn-db" none)
 -- Exclusions and the `since` cutoff still win.

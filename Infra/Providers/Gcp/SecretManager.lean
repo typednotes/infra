@@ -1,4 +1,5 @@
 import Infra.Providers.Gcp.Rest
+import Infra.Providers.Marker
 import Infra.Core.Stage
 import Infra.Core.Ownership
 import Linen.Data.Base64
@@ -136,6 +137,24 @@ def readOwnership (creds : Credentials) (project name : String) :
   | .error _ => return .unreadable
   | .ok reply =>
     return .tags (labelsOf reply) none
+
+/-- Take this fleet's ownership marker off the secret, leaving every other
+    label (the API-key back-reference included).
+
+    `PATCH` with `updateMask=labels` and the full remaining map: a map field
+    named in an update mask is replaced wholesale (Secret Manager REST
+    reference, `projects.secrets.patch`; Google AIP-134), so the read-filter-
+    write is what keeps the other labels. A secret not carrying this fleet's
+    marker is not written. -/
+def releaseMarker (creds : Credentials) (project name fleet : String) : IO Unit := do
+  let reply ← Gcp.call creds "GET" host (secretPath project name)
+  match Marker.releaseTags fleet (labelsOf reply) with
+  | none      => pure ()
+  | some rest =>
+    discard <| Gcp.call creds "PATCH" host (secretPath project name)
+      [("updateMask", some "labels")]
+      (payload := some (.object
+        [("labels", .object (rest.map fun (k, v) => (k, Value.string v)))]))
 
 /-- Give an existing secret a new value. Returns the version identifier.
 

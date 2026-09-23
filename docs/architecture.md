@@ -416,19 +416,26 @@ a kind" flag, and none is needed.
 
 The other half is *membership*, and it deliberately does not live here. Ownership is decided by
 `Infra.Core.Ownership` — a marker `infra` writes on create (a tag, or a marker in the object's
-one free-text field, or for the kinds with neither a name prefix the declaration sets), checked
-against a human-authored realm and exclusion list. The tag's value carries the fleet's own name
-where a declaration sets one (`Boundary.fleetName`), which is what makes two fleets in one
-account leave each other alone rather than merely being refused.
+one free-text field, or for the kinds with neither a name prefix, `<fleet name>-` by default),
+checked against a human-authored realm and exclusion list. The tag's value is the fleet's name,
+which every fleet has since 0.17.0: the `fleet` command derives it from the declaration's
+identifier in kebab-case (`fleet crossCloud` is `cross-cloud`), `Boundary.fleetName` overrides
+it, and a live command refuses a name that is not a valid marker value on every cloud. That is
+what makes two fleets in one account leave each other alone rather than merely being refused.
+(Before 0.17.0 the name was optional, and an unnamed fleet wrote `true`, which every fleet
+accepted; that value is retired and now matches no fleet.)
 
 The marker, read from the cloud on every run, is what gets consulted at plan and apply time —
 there is no local record — for one reason: the key family changes when the declaration
 changes, so it cannot answer a question about a resource whose line has just been deleted. That
 resource has no key, and if the key family were the only evidence it would be indistinguishable
-from a resource nobody ever declared. `Engine.claimUndeclared` asks every region the fleet uses
-for resources carrying a marker that names this fleet and that the declaration does not; that
-is what makes "deleted from the file" mean "destroy", on any machine, while resources this tool
-never touched stay out of reach. `Plan.outside`, a single fleet-wide verdict meant to do this
+from a resource nobody ever declared. `Engine.claimUndeclared` asks every region the fleet uses,
+on every cloud it declares or names in its `accounts`, for resources carrying a marker that names
+this fleet and that the declaration does not; that is what makes "deleted from the file" mean
+"destroy", on any machine, while resources this tool never touched stay out of reach. The same
+marker is what `forget` removes: a forgotten resource is released — unmarked, not destroyed —
+on the next apply, so leaving management is also written on the resource, where membership
+lives. `Plan.outside`, a single fleet-wide verdict meant to do this
 job, is gone, and so is the local ledger that replaced it until 0.16.0; see
 `docs/persistence.md`.
 
@@ -504,7 +511,13 @@ not the starting point it looks like. See `docs/authentication.md`'s "Still open
 
 Being authenticated is not the same as being pointed at the right place, so a fleet also states
 which accounts it is for, and every live command verifies that before listing anything
-(`Infra.Cli.Accounts`, `Kinds/Identity.lean`).
+(`Infra.Cli.Accounts`, `Kinds/Identity.lean`). Since 0.17.0 that statement also says which
+clouds to search for what the fleet left behind: every cloud named there is loaded,
+account-checked and scanned, even once the declaration has nothing left on it — so a cloud is
+retired by deleting its lines, applying, and only then dropping it from `accounts`. It is
+deliberately `accounts` and not "every cloud whose credentials are loaded": a laptop often
+holds credentials for unrelated accounts, and `accounts` is the checked statement of where the
+fleet lives.
 
 The account and the region are the two halves of "where is this about to build", and they are
 declared alike but enforced differently. An API key *belongs* to one account and cannot be

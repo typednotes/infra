@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.16.0 covers
+## What 0.17.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **15 resource kinds** (8 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -75,7 +75,7 @@ any one of them:
 | | |
 |---|---|
 | Verified against a real account | a three-stage sequence on **all three clouds**: 32 resources across 11 of the 14 kinds, created, converged, partly dropped, and destroyed. Stage 2 deletes resources whose lines are *gone* from the declaration, so it cannot pass unless membership works |
-| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, that the marker decides (orphans found and destroyed, nothing else), dump round-trip and replay, fleet isolation, orphan recheck and retry, and that a sweep deletes only what it created |
+| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, that the marker decides (orphans found and destroyed, nothing else), dump round-trip and replay, fleet isolation and naming, `forget` releasing (unmarking, not deleting), orphans found on a cloud no longer declared, orphan recheck and retry, and that a sweep deletes only what it created |
 | **Never run against an account** | AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
@@ -115,7 +115,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.16.0"
+rev = "v0.17.0"
 ```
 
 Then:
@@ -203,26 +203,33 @@ lake exe infra dump [FILE]      # JSON snapshot of what the fleet sees, no secre
 
 **Deleting a resource from the declaration destroys it.** A resource is yours
 if it carries the marker this tool writes on everything it creates, it is
-inside the realm your declaration names, and it is not on the exclusion list —
-and if two fleets share an account, each can put its own name in that marker
-(`boundary := { fleetName := some "…" }`) so the other's resources read as
-foreign and are left alone. Every cloud and kind reports that evidence, on one
-of three rungs: a tag, or — where the object has no tags but one writable
-free-text field — a marker written into its `description`, or, for the two
-Scaleway products with neither, the resource's own name against a prefix you
-configure (`namePrefix`, plus `namePrefixes` when a fleet's untaggable resources
-were not all named under one). A resource whose line you deleted is found by
-its marker — `plan` and `apply` ask the cloud for everything carrying this
-fleet's marker, in every region and kind the fleet's clouds offer — so deleting
-a line destroys the resource from any machine, a fresh CI runner included;
-nothing local is consulted, because nothing local is kept. And the rule runs
-the other way too: only a resource carrying the marker is ever changed or
-destroyed, so a declared name held by something else is foreign — its changes
-are dropped with a warning. Destroying an *undeclared* resource asks more: a
-marker naming this fleet. One carrying the old unnamed value `true` is warned
-about and never destroyed, and a fleet without a `fleetName` destroys nothing
-undeclared by tag, since it cannot tell its own from another fleet's (the
-name-prefix rung still works). Saying
+inside the realm your declaration names, and it is not on the exclusion list.
+The marker's value is the **fleet's name**, which every fleet has: `fleet
+typednotes` is named `typednotes`, `fleet crossCloud` is `cross-cloud` (the
+identifier in kebab-case), and `boundary := { fleetName := some "…" }`
+overrides it. So two fleets sharing an account read each other's resources as
+foreign and leave them alone. A live command refuses a name that cannot be a
+marker value on every cloud (1–63 lowercase letters, digits, `-`, `_`,
+starting with a letter), and renaming the declaration renames the fleet: its
+resources then read as foreign and are left alone, never destroyed, until
+`fleetName` pins the old name.
+
+Every cloud and kind reports that evidence, on one of three rungs: a tag, or —
+where the object has no tags but one writable free-text field — a marker
+written into its `description`, or, for the two Scaleway products with
+neither, the resource's own name against a prefix: the fleet's name and a
+hyphen (`typednotes-…`) by default, replaced by `namePrefix` / `namePrefixes`
+if you set them. A resource whose line you deleted is found by its marker —
+`plan` and `apply` ask the cloud for everything carrying this fleet's marker,
+in every region and kind of every cloud the fleet declares or names in
+`accounts` — so deleting a line destroys the resource from any machine, a
+fresh CI runner included; nothing local is consulted, because nothing local is
+kept. And the rule runs the other way too: only a resource carrying this
+fleet's marker is ever changed or destroyed, so a declared name held by
+something else is foreign — its changes are dropped with a warning. A
+resource carrying `managed-by-infra=true`, the value unnamed fleets wrote
+before 0.17.0, matches no fleet: it is warned about by name, with the retag
+that brings it back, and never touched. Saying
 `.absent` within the declaration does the same thing; `destroy` is `apply`
 against an empty declaration. All three end at the same call, and deletions
 run in the reverse of creation order so a resource goes before whatever it
@@ -233,25 +240,29 @@ consequence of applying, not a statement of intent, so CI never has to write
 back to your branch. `Infra/Core/Ownership.lean` records the reasoning, and
 which way each rule fails. `dump` writes what a run sees — every resource with
 its ownership evidence and observed state, the undeclared ones the next apply
-destroys, the foreign ones, the warnings, never a secret value — and the same
-JSON replays as in-memory backends for tests. It is a record, never an input.
-The cases that can still strand an orphan are enumerated in
-`docs/coverage.md`: a resource on the name rung in a fleet that has set no
-`namePrefix` (there is no marker on it), and anything on a cloud the
-declaration no longer names at all — that cloud is not scanned, so retire it
-with `destroy` before removing it.
+destroys, the forgotten ones it releases, the foreign ones, the warnings,
+never a secret value — and the same JSON replays as in-memory backends for
+tests. It is a record, never an input. The cases that can still strand an
+orphan are enumerated in `docs/coverage.md`: a resource on the name rung named
+outside the fleet's prefix (there is no marker on it), and anything on a cloud
+named neither in the declaration nor in `accounts` — that cloud is not
+scanned. So to retire a cloud, delete its lines but keep it in `accounts`
+until the apply that empties it, then drop it from `accounts`.
 
 To stop managing something *without* destroying it, say so:
 
 ```lean
-forget scaleway queues "old-queue"
+forget aws queues "old-queue"
 ```
 
-which the scan skips, leaving the resource alone. It is checked: a `forget`
-for something the fleet still declares does not compile. The resource keeps its
-marker, so the `forget` line has to stay for as long as the resource exists.
-For `postgresMigrations` a delete is already a forget: it prints FORGET and
-touches nothing.
+It is checked: a `forget` for something the fleet still declares does not
+compile. The next apply **releases** the resource — removes this fleet's
+marker and leaves everything else as it was; the plan shows `RELEASE
+aws/queues/old-queue` — after which it is no fleet's and the `forget` line can
+be deleted. The two Scaleway kinds whose name is their marker (Serverless SQL
+databases, queues) cannot be unmarked, so a `forget` line for one of them has
+to stay for as long as the resource exists. For `postgresMigrations` a delete
+is already a forget: it prints FORGET and touches nothing.
 
 Resources you never marked are untouched throughout. They carry no marker of
 this fleet's, so nothing here can claim them.
@@ -292,26 +303,27 @@ listing what already exists, it declares a target and reconciles it. It is also
 the shortest file in the repo, and deliberately so — the whole declaration is:
 
 ```lean
-fleet exampleQueue where
-  resource scaleway queues "infra-example"
+fleet exampleQueue in paris where
+  resource scaleway queues "example-queue-jobs"
     { visibilityTimeoutSec := 30 }
 ```
 
 ```
 $ lake exe scaleway-queue          # offline: the plan, from placeholders
-would CREATE scaleway/queues/infra-example
+would CREATE scaleway/queues/example-queue-jobs
 (dry run — nothing changed)
 
 $ lake exe scaleway-queue apply
-CREATE scaleway/queues/infra-example ... ok
+CREATE scaleway/queues/example-queue-jobs ... ok
 ```
 
-A real, billable resource in your Scaleway account. Re-running `plan`
-afterwards prints `nothing to do`, since the queue already matches the target.
-Removing the line and applying deletes it, so `lake exe scaleway-queue destroy`
-and deleting the line are two ways of saying the same thing. Use
-`forget scaleway queues "infra-example"` if you want to keep the queue and stop
-managing it.
+A real, billable resource in your Scaleway account. A Scaleway queue can carry
+no tag, so its only marker is its name, checked against the fleet's prefix —
+by default the fleet's name and a hyphen, here `example-queue-` from `fleet
+exampleQueue`. That is why the queue is named `example-queue-jobs`: it is
+managed like everything else — deleting the line or `lake exe scaleway-queue
+destroy` deletes it. A `forget` line keeps it, and since a name cannot be
+unmarked, that line stays for as long as the queue exists.
 
 ### Two instances behind a security group
 
@@ -418,8 +430,9 @@ extending anything:
 - [`docs/permissions.md`](docs/permissions.md) — **what those credentials must
   be allowed to do**: the AWS actions each kind calls, an adaptable operator
   policy, and why the ownership marker needs two grants per kind rather than one
-- [`docs/persistence.md`](docs/persistence.md) — the two local records, and
-  why membership is not intent
+- [`docs/persistence.md`](docs/persistence.md) — why nothing is stored
+  locally, the two local records that used to be, and why membership is not
+  intent
 - [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the
   trademark policies that constrain them
 - [`docs/ci-auth.md`](docs/ci-auth.md) — how CI authenticates without storing

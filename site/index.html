@@ -281,9 +281,9 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.16.0</strong> — no local state: the ledger and cache are gone, and
-  every run reads the markers from the cloud. <code>dump</code> writes what a fleet
-  sees as a snapshot that replays as a test fixture.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.17.0</strong> — every fleet has a name, and it is the whole marker:
+  the prefix defaults to it, <code>forget</code> unmarks instead of lingering, and a
+  cloud you retire is still cleaned up.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -665,12 +665,15 @@ would CREATE scaleway/secrets/db-url
       step with your code. What it manages is decided by a marker on each
       resource, not a committed file &#8212; a tag where the cloud has tags, a
       marker written into the object&#8217;s <code>description</code> where it
-      has not, and the resource&#8217;s own name against a prefix you configure
-      for the two products with neither. A fleet sharing an account can write
-      its own name into that marker, so the other fleet&#8217;s resources read
-      as foreign and are left alone. The markers are read from the cloud on
-      every run and nothing is stored locally, so a fresh CI runner sees what
-      your laptop sees. <code>dump</code> writes that view as JSON, never a secret.
+      has not, and the resource&#8217;s own name against the fleet&#8217;s
+      prefix for the two products with neither. The marker carries the
+      fleet&#8217;s name &#8212; <code>fleet myFleet</code> is
+      <code>my-fleet</code> &#8212; so two fleets sharing an account read each
+      other&#8217;s resources as foreign and leave them alone. The markers are
+      read from the cloud on every run and nothing is stored locally, so a
+      fresh CI runner sees what your laptop sees. <code>forget</code> takes the
+      marker off a tagged resource without deleting it, and <code>dump</code> writes
+      that view as JSON, never a secret.
     </p>
     <div class="card" style="max-width:760px">
       <div class="card-bar"><img src="logo.svg" alt="" width="15" height="16"><span>shell</span></div>
@@ -680,7 +683,7 @@ would CREATE scaleway/secrets/db-url
 <span class="c">#   [[require]]</span>
 <span class="c">#   name = "infra"</span>
 <span class="c">#   git = "https://github.com/typednotes/infra"</span>
-<span class="c">#   rev = "v0.16.0"</span>
+<span class="c">#   rev = "v0.17.0"</span>
 
 lake update                <span class="c"># fetch infra</span>
 lake exe infra init        <span class="c"># turn this into an infra project</span>
