@@ -369,6 +369,13 @@ SignedHeaders=host;x-amz-content-sha256;x-amz-date, \
 Signature=b1ba7bd1e79e9726d5be98201bf756baa5d2e2b505a3ff12e45bbaa0e7068520"
   unless authOf s3 == expectedS3 do
     throw (IO.userError s!"S3 signature mismatch:\n  got      {authOf s3}\n  expected {expectedS3}")
+  -- Scaleway Object Storage addresses a project through the access key:
+  -- signed as `<key>@<project>`, or the API key's own default project is used.
+  let scw ← Infra.Providers.Aws.signedRequestAt creds
+    { Infra.Providers.Aws.S3.endpoint .scaleway "fr-par" with project := some "proj-1" }
+    signedAt "GET" "/"
+  unless mentions (authOf scw) "Credential=AKIDEXAMPLE@proj-1/20150830/fr-par/s3/" do
+    throw (IO.userError s!"a Scaleway S3 request was not signed for its project: {authOf scw}")
 
   -- Query protocol: `POST /` with a form body, IAM, always signed us-east-1.
   let form := Infra.Providers.Aws.Query.formBody

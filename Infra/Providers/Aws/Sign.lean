@@ -30,6 +30,14 @@ structure Endpoint where
   /-- SigV4 region. Not always the caller's region: IAM is global and always
       signs `us-east-1`, whatever region the credentials name. -/
   region  : String
+  /-- Scaleway Object Storage only: the project the request is for, sent as
+      the access key's `@<project-id>` suffix — the one way to address a
+      project on an API that has no project parameter. Without it Scaleway
+      uses the API key's *own* default project, which need not be the
+      fleet's: found in CI, where the key's default project was one it had no
+      rights in (a 403 on `ListBuckets`), and locally, where it was an empty
+      project, so every bucket scan silently looked in the wrong place. -/
+  project : Option String := none
 
 /-- Sign and send, returning the response or raising the provider's own error.
 
@@ -45,7 +53,9 @@ def signedRequestAt (creds : Credentials) (ep : Endpoint) (now : Data.Time.UTCTi
     (headers : List (String × String) := []) (body : ByteArray := ByteArray.empty)
     (doubleEncodePath : Bool := false) : IO Request := do
   let sigHeaders ← Crypto.SigV4.sign
-    { accessKeyId := creds.accessKey
+    { accessKeyId := match ep.project with
+        | some p => creds.accessKey ++ "@" ++ p
+        | none   => creds.accessKey
       secretAccessKey := creds.secretKey
       sessionToken := creds.sessionToken }
     ep.region ep.service now

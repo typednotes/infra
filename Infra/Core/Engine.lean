@@ -189,7 +189,15 @@ def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
         unless k != .postgresMigrations && (declaresKind || scannableUndeclared p k) do
           continue
         let cls := physicalClass p k
-        for o in ← b.list k do
+        -- A refused listing fails the run — an unlisted kind could hide an
+        -- orphan — but says what was being listed and why, since the fleet
+        -- may declare nothing of this kind at all.
+        let listed ← try b.list k catch e =>
+          throw (IO.userError s!"listing {p.name} {k.name}{if code.isEmpty then "" else s!" in {code}"} \
+failed. Every kind on the fleet's clouds is listed, declared or not, to find resources \
+carrying this fleet's marker that the declaration no longer names — so the credentials \
+need read access to it. The cloud said: {e}")
+        for o in listed do
           let handle := observedHandle k o
           let nm := handle.raw
           let sameThing := fun (q : ProviderId) (k' : Kind) (n : String) =>

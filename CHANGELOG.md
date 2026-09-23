@@ -121,6 +121,27 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.17.1] — 2026-09-23
+
+### Fixed: Scaleway Object Storage requests went to the API key's default project
+
+S3 has no project parameter, so Scaleway serves an S3 request from the API
+key's *own* default project unless the access key is written
+`<key>@<project-id>`. infra signed with the bare key, so every Scaleway bucket
+call — listing included — went to whatever project the key defaulted to,
+while every other Scaleway call passed the fleet's `project_id`. Found by
+`typednotes-infra`'s first 0.17.0 CI apply: its key defaults to a project it
+has no rights in, and the bucket scan every run now performs failed with
+`403 AccessDenied`. Locally it was silent and worse: the key defaulted to an
+empty project, so the scan found no buckets and a bucket this fleet left
+behind in its real project would never have been found. `Endpoint` gains a
+`project`, which `s3For` fills for Scaleway and the signer appends to the
+access key (checked offline in `checkSigning`, and live with the same key
+against both projects).
+
+A refused listing during the scan now says which kind was being listed and
+why every kind is listed, rather than only the raw HTTP error.
+
 ## [0.17.0] — 2026-09-23
 
 Five simplifications, each removing an exception to "the marker decides".

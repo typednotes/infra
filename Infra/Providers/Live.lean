@@ -226,7 +226,11 @@ private def withoutMarker :
 #guard withoutMarker (.known [(markerKey, "someone-elses-value")]) = .known []
 
 private def s3For (provider : ProviderId) (creds : Credentials) : Endpoint :=
-  S3.endpoint provider creds.region
+  match provider with
+  -- Addressed to the fleet's project, like every other Scaleway call — see
+  -- `Endpoint.project`.
+  | .scaleway => { S3.endpoint provider creds.region with project := creds.projectId }
+  | _         => S3.endpoint provider creds.region
 
 /-- One postgres database's ownership evidence, whichever product it is.
 

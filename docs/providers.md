@@ -41,7 +41,7 @@ file to compile.
 
 | Kind | AWS | Scaleway | Shared client? |
 |---|---|---|---|
-| `objectStore` | S3 | Object Storage | **yes** — one implementation |
+| `objectStore` | S3 | Object Storage | **yes** — one implementation; on Scaleway every request is signed with the access key written `<key>@<project-id>`, the only way to address a project on an API with no project parameter (without it Scaleway uses the API key's own default project, which need not be the fleet's) |
 | `queues` | SQS | Messaging & Queuing | **yes** — one implementation |
 | `imageRegistry` | ECR | Container Registry | no |
 | `secrets` | Secrets Manager | Secret Manager | no |
