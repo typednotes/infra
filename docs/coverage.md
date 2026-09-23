@@ -58,14 +58,18 @@ the parent `postgres` resource (`.unreadable` when there is no route to
 read a parent through). The design, the three hard edges and their
 trade-offs: `docs/migrations.md`.
 
-Since 0.14.0 one history can be ordered after another (`after`), for two
-services on one database whose schemas reference each other's tables —
-before that, both were ready in the same scheduling wave and ran in
-declaration order. `Plan.migrationsAreSound` refuses an `after` name that is
-not a declared history, and a history naming itself; the scheduler refuses a
-longer cycle. Offline only, like the rest of the kind: the ordering is pinned
-by `example/PostgresMigrations.lean`'s guards, whose dependent history is
-declared first so that only the edge can put it second.
+Since 0.14.0 a migration's SQL can live at a URL (`github "owner/repo"
+"ref" [files]`), fetched by `plan`/`apply`/`refresh` — so the SQL stays in
+the service's own repository — and histories on one database are ordered by
+what their SQL says: one that `REFERENCES` a table follows the one that
+`CREATE`s it (`Infra.Core.SqlDeps`); an unresolved reference, or a table two
+histories create, is refused. A container's `migrations` is a list, so a
+rollout can wait for another service's schema too. Exercised: the ordering
+by `example/PostgresMigrations.lean`'s guards (the dependent history is
+declared first, so only the inferred edge can put it second); the fetch
+against real `raw.githubusercontent.com` files, including a 404 and an
+`http://` URL refused; and the inference over the four real schemas of
+`typednotes-infra`. Not yet: a live apply.
 
 Two of the kinds — `objectStore` and `queues` — need no per-cloud code
 *between AWS and Scaleway*, because Scaleway's endpoints are S3- and

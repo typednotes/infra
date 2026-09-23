@@ -142,8 +142,7 @@ instance : Settleable .postgresMigrations where
              connectionSecret := ← settleField env s.connectionSecret
              observerSecret := ← settleField env s.observerSecret
              schema := ← settleField env s.schema
-             migrations := ← settleField env s.migrations
-             after := ← settleField env s.after }
+             migrations := ← settleField env s.migrations }
 
 instance : Settleable .s3Bucket where
   settle env s := do
@@ -201,7 +200,7 @@ instance : Settleable .scalewayContainer where
   settle env s := do
     let refs ← settleField env s.secretEnv
     let nsKey ← settleField env s.namespace'
-    let migKey ← settleField env s.migrations
+    let migKeys ← settleField env s.migrations
     return { name := ← settleField env s.name
              namespace' := ← settleRefReq env .scaleway .scalewayContainerNamespace nsKey
              image := ← settleField env s.image
@@ -213,7 +212,7 @@ instance : Settleable .scalewayContainer where
              timeoutSec := ← settleField env s.timeoutSec
              env := ← settleField env s.env
              secretEnv := ← settleRefs env .scaleway .secrets refs
-             migrations := ← settleRef env .scaleway .postgresMigrations migKey }
+             migrations := ← migKeys.mapM (settleRefReq env .scaleway .postgresMigrations) }
 
 /-- Total over `Kind`, so a new kind cannot be forgotten here. -/
 @[reducible] def settleableOf : (k : Kind) → Settleable k

@@ -186,6 +186,16 @@ def depsKeyOpt {K : ProviderId → Kind → Type} {p : ProviderId} {k : Kind} :
     | some (some key) => [⟨p, k, key, .handle⟩]
     | _               => []
 
+/-- Every key held in a plain list of references, where "said: nothing"
+    and the empty list both name nothing. -/
+def depsKeyList {K : ProviderId → Kind → Type} {p : ProviderId} {k : Kind} :
+    Partial (Expr K (List (K p k))) → List (Dep K)
+  | .unknown => []
+  | .known e =>
+    match e.asLit with
+    | some keys => keys.map fun key => ⟨p, k, key, .handle⟩
+    | none      => []
+
 /-- Every key held in a *list*-of-references payload. -/
 def depsKeys {K : ProviderId → Kind → Type} {p : ProviderId} {k : Kind} :
     Partial (Expr K (List (String × K p k))) → List (Dep K)
@@ -232,7 +242,6 @@ instance : HasDeps PostgresSpec where
 instance : HasDeps PostgresMigrationsSpec where
   deps s := depsReq s.name ++ depsReq s.database ++ depsReq s.connectionSecret
             ++ depsReq s.observerSecret ++ depsReq s.schema ++ depsReq s.migrations
-            ++ depsOpt s.after
 
 instance : HasDeps S3BucketSpec where
   deps s := depsReq s.name ++ depsOpt s.versioning ++ depsOpt s.objectLock
@@ -271,7 +280,7 @@ instance : HasDeps ScalewayContainerSpec where
     ++ depsOpt s.port ++ depsOpt s.minScale ++ depsOpt s.maxScale
     ++ depsOpt s.memoryMb ++ depsOpt s.cpuLimit ++ depsOpt s.timeoutSec
     ++ depsOpt s.env ++ depsOpt s.secretEnv ++ depsKeys s.secretEnv
-    ++ depsOpt s.migrations ++ depsKeyOpt s.migrations
+    ++ depsOpt s.migrations ++ depsKeyList s.migrations
 
 /-- Total over `Kind`, so a new kind cannot silently contribute no edges. -/
 @[reducible] def hasDepsOf : (k : Kind) → HasDeps (SpecOf.{1} k)

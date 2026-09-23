@@ -189,10 +189,7 @@ def migrationsConflict (applied target : List Migration) : Option String :=
 
     The two secret-name fields are not compared at all: which secret holds
     a URL is bookkeeping, and rotating one must not propose a replace —
-    `SecretsSpec.valueFrom`'s reading. Nor is `after`: it is an ordering
-    edge between histories that nothing in the database records, so it is
-    reported unknown and changing it can only reorder future work. `name`,
-    `database` and `schema` are
+    `SecretsSpec.valueFrom`'s reading. `name`, `database` and `schema` are
     `forcesReplace` because the rows live in exactly that database and
     schema: a different one is a different resource, and "replace" here is
     `delete` — a ledger-only FORGET that touches no schema — followed by a
@@ -202,11 +199,17 @@ instance : Divergent .postgresMigrations where
     divergesReq "name" .forcesReplace t.name r.name
     ++ divergesReq "database" .forcesReplace t.database r.database
     ++ divergesReq "schema" .forcesReplace t.schema r.schema
-    ++ (match migrationsConflict r.migrations t.migrations with
-        | none =>
-            if r.migrations.length == t.migrations.length then []
-            else [("migrations", .mutable)]
-        | some _ => [("migrations (history conflict)", .forcesReplace)])
+    ++ (let applied := r.migrations.filterMap MigrationDecl.resolved?
+        match resolvedMigrations? t.migrations with
+        -- Unfetched SQL cannot be compared; `push` refuses such a plan
+        -- before anything reaches this table.
+        | none => [("migrations (sources not fetched)", .forcesReplace)]
+        | some target =>
+          match migrationsConflict applied target with
+          | none =>
+              if applied.length == target.length then []
+              else [("migrations", .mutable)]
+          | some _ => [("migrations (history conflict)", .forcesReplace)])
 
 /- The three shapes the prefix comparison exists to tell apart, pinned: no
    applied history is a prefix of anything (a first apply), an exact match is

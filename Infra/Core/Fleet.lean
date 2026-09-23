@@ -1,6 +1,7 @@
 import Infra.Core.Stage
 import Infra.Core.Diverge
 import Infra.Core.Ledger
+import Infra.Core.SqlDeps
 
 /-
   A fleet: the set of resources one target speaks about, across all the clouds it spans.
@@ -8,7 +9,7 @@ import Infra.Core.Ledger
 
 namespace Infra.Core
 
-open Infra.Specs (SpecOf Migration)
+open Infra.Specs (SpecOf Migration MigrationDecl resolvedMigrations?)
 
 /-- A key family: one finite, decidable key type per `(provider, kind)` pair.
 
@@ -133,34 +134,128 @@ def Plan.secretsAreSound {κ : Keys} (T : Plan κ) : Bool :=
       | .present s => s.sourceIsSound
       | _          => true
 
-/-- Whether every declared migration history is internally sound — ids
-    strictly increasing, no empty SQL, a quotable schema, and literals
-    throughout. The decidable companion of `secretsAreSound`, checking the
-    per-resource rule `PostgresMigrationsSpec.historyIsSound` fleet-wide;
-    a fleet writes `#guard myPlan.migrationsAreSound` (or the `fleet`
-    declaration emits it) and gets the guarantee back at compile time.
+/-! ## Ordering between migration histories, read from their SQL
 
-    Plus the one rule a single spec cannot decide: every `after` name is a
-    history this plan declares *present* on the same cloud. The scheduler
-    ignores an edge to a slot no action touches — right for an identity the
-    fleet does not manage, wrong here, where a misspelt name would silently
-    drop the ordering the field exists to guarantee and the first sign would
-    be a `references` failing against a table that is not there yet. A
-    cycle between histories is not checked here: `orderActions` refuses it
-    at plan time, naming the slots. -/
+  Two histories on one database are ordered by what their SQL says: one
+  that `references` a table is scheduled after the one that `create`s it
+  (`SqlDeps`). Computed over the *resolved* histories of a database — every
+  source inline or already fetched — because a URL nobody has read yet says
+  nothing about tables. `Infra.Cli.run` fetches every source before `plan`
+  and `apply`, so on those paths every database is resolved; only offline
+  `check` sees unresolved ones, and it orders them without these edges. -/
+
+/-- One present history, as the dependency analysis sees it. -/
+structure HistoryInfo where
+  name       : String
+  database   : String
+  /-- `none` while any source is an unfetched URL. -/
+  migrations : Option (List Migration)
+
+/-- Every present history on cloud `p`. -/
+def Plan.histories {κ : Keys} (T : Plan κ) (p : ProviderId) : List HistoryInfo :=
+  (Finite.elems (α := κ.Key p .postgresMigrations)).filterMap fun key =>
+    match T.assign p .postgresMigrations key with
+    | .present s =>
+      match s.database.asLit with
+      | some db => some { name := κ.name p .postgresMigrations key, database := db
+                          migrations := s.migrations.asLit.bind resolvedMigrations? }
+      | none    => none
+    | _ => none
+
+private def historyCreates (h : HistoryInfo) : List SqlDeps.TableName :=
+  (h.migrations.getD []).flatMap fun m => SqlDeps.creates m.sql
+
+private def historyRefs (h : HistoryInfo) : List SqlDeps.TableName :=
+  (h.migrations.getD []).flatMap fun m => SqlDeps.references m.sql
+
+/-- The histories on the same database as `h`, when all of them — `h`
+    included — are resolved; `none` otherwise (no edges can be read yet). -/
+private def resolvedPeers (all : List HistoryInfo) (h : HistoryInfo) : Option (List HistoryInfo) :=
+  let peers := all.filter (·.database == h.database)
+  if peers.all (·.migrations.isSome) then some peers else none
+
+/-- The histories `name` (on cloud `p`) must follow: every other history on
+    its database whose SQL creates a table `name`'s SQL references. Empty
+    while that database has unresolved sources, and for a table the history
+    creates itself. Ambiguity and unresolved references are not decided
+    here — `migrationDepsProblem` refuses them — so this never guesses. -/
+def Plan.historyDeps {κ : Keys} (T : Plan κ) (p : ProviderId) (name : String) : List String :=
+  let all := T.histories p
+  match all.find? (·.name == name) with
+  | none   => []
+  | some h =>
+    match resolvedPeers all h with
+    | none       => []
+    | some peers =>
+      let own := historyCreates h
+      let wanted := (historyRefs h).filter fun t => !own.contains t
+      (peers.filter fun g => g.name != name && (historyCreates g).any wanted.contains).map (·.name)
+
+/-- What is wrong with the ordering the SQL implies, if anything, for every
+    database whose histories are all resolved:
+
+    * a table created by two histories — which one a reference means is a
+      guess, so it is refused;
+    * a reference to a table no history on that database creates — the
+      dependency exists but points nowhere this fleet can order against,
+      which is also how a table created where the scanner cannot see (a
+      `DO` block) surfaces, rather than as a silently missing edge.
+
+    A cycle is not checked here: `orderActions` refuses it, naming the
+    slots. `Engine.push` refuses a plan with a problem before deriving any
+    action; `migrationsAreSound` includes it, so an inline fleet gets it at
+    compile time. -/
+def Plan.migrationDepsProblem {κ : Keys} (T : Plan κ) : Option String :=
+  let problems : List String :=
+    (Finite.elems (α := ProviderId)).flatMap fun p =>
+      let all := T.histories p
+      all.flatMap fun h =>
+        match resolvedPeers all h with
+        | none       => []
+        | some peers =>
+          let own := historyCreates h
+          let ambiguous := own.filterMap fun t =>
+            let owners := peers.filter fun g => (historyCreates g).contains t
+            if owners.length > 1 && (owners.head?.map (·.name)) == some h.name then
+              some s!"{Ledger.slotId p .postgresMigrations h.name}: table {t} on database \
+'{h.database}' is created by several histories ({String.intercalate ", " (owners.map (·.name))}), \
+so which one a reference means would be a guess"
+            else none
+          let unresolved := (historyRefs h).filterMap fun t =>
+            if own.contains t || peers.any (fun g => (historyCreates g).contains t) then none
+            else some s!"{Ledger.slotId p .postgresMigrations h.name}: its SQL references {t}, \
+which no declared history on database '{h.database}' creates — declare the history that \
+creates it (or, if it is created where a scanner cannot see, such as inside a DO block, create \
+it with a plain CREATE TABLE)"
+          ambiguous ++ unresolved
+  match problems.eraseDups with
+  | []  => none
+  | ps  => some (String.intercalate "\n" ps)
+
+/-- Every `url` source not yet fetched, by slot. `Engine.push` refuses a
+    plan that still has one: only `Infra.Cli.run`'s fetch turns a URL into
+    SQL, and applying or diffing a history whose content is unknown would
+    be a guess. -/
+def Plan.unresolvedMigrationSources {κ : Keys} (T : Plan κ) : List String :=
+  (Finite.elems (α := ProviderId)).flatMap fun p =>
+    (T.histories p).filterMap fun h =>
+      if h.migrations.isNone then some (Ledger.slotId p .postgresMigrations h.name) else none
+
+/-- Whether every declared migration history is sound, as far as can be
+    decided from the declaration: each history's own rule
+    (`PostgresMigrationsSpec.historyIsSound` — ids ordered, sources sound,
+    schema quotable, literals throughout), and, where the SQL is known
+    (inline sources), the ordering it implies (`migrationDepsProblem`).
+    The decidable companion of `secretsAreSound`; a fleet writes
+    `#guard myPlan.migrationsAreSound`. URL-sourced SQL is checked once
+    fetched, by `Engine.push`. -/
 def Plan.migrationsAreSound {κ : Keys} (T : Plan κ) : Bool :=
-  (Finite.elems (α := ProviderId)).all fun p =>
-    let declared : List String :=
-      (Finite.elems (α := κ.Key p .postgresMigrations)).filterMap fun key =>
-        match T.assign p .postgresMigrations key with
-        | .present _ => some (κ.name p .postgresMigrations key)
-        | _          => none
+  ((Finite.elems (α := ProviderId)).all fun p =>
     (Finite.elems (α := κ.Key p .postgresMigrations)).all fun key =>
       match T.assign p .postgresMigrations key with
-      | .present s =>
-          s.historyIsSound
-          && ((s.afterNames.getD []).all fun nm => declared.contains nm)
-      | _          => true
+      | .present s => s.historyIsSound
+      | _          => true)
+  && T.migrationDepsProblem.isNone
 
 /-- The runtime half of the migrations contract: what the database has
     applied must be a prefix of what the declaration names, with matching
@@ -175,20 +270,21 @@ def Plan.migrationsAreSound {κ : Keys} (T : Plan κ) : Bool :=
     time before applying, because defense against a rewritten history is
     cheap at every tier and fatal at none.
 
-    A sighting against a target whose `migrations` is not a literal is
-    skipped here rather than guessed at — `migrationsAreSound` already
-    refuses that shape at compile time, so a fleet that got this far wrote
-    a literal. -/
+    A sighting against a target whose `migrations` is not a literal, or
+    still has an unfetched URL, is skipped here rather than guessed at —
+    `migrationsAreSound` refuses the first at compile time, and `push`
+    refuses the second before it gets here. -/
 def Plan.migrationsAppendOnly {κ : Keys} (T : Plan κ) (W : World κ) : Option String :=
   let declared : List (String × List Migration × List Migration) :=
     (Finite.elems (α := ProviderId)).flatMap fun p =>
       (Finite.elems (α := κ.Key p .postgresMigrations)).flatMap fun key =>
         match T.assign p .postgresMigrations key, W.sighting p .postgresMigrations key with
         | .present s, some seen =>
-            match s.migrations.asLit with
+            match s.migrations.asLit.bind resolvedMigrations? with
             | some target => [(Ledger.slotId p .postgresMigrations
                                  (κ.name p .postgresMigrations key),
-                               seen.reported.migrations, target)]
+                               seen.reported.migrations.filterMap MigrationDecl.resolved?,
+                               target)]
             | none        => []
         | _, _ => []
   match declared.filterMap fun (slot, applied, target) =>

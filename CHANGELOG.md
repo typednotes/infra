@@ -123,32 +123,67 @@ moving it over needs no dialect.
 
 ## [0.14.0] — 2026-09-23
 
-### Added: `after` — one migration history ordered after another
+### Added: migrations read from their service's repository
 
-`PostgresMigrationsSpec` gains an optional `after : List String`: the fleet
-names of other `postgresMigrations` resources whose pending migrations must
-apply first. The case that forced it is the first real consumer of 0.13.0:
-`typednotes-infra` declares three histories on one database — the app's
-(`users`, `orgs`), `ledger`'s (`usage_events … references orgs(id)`) and
-`liaison`'s — and all three name the same database and URL secrets, so they
-became ready in the same scheduling wave and ran in *declaration order*.
-Correct only when the fleet happened to be written in dependency order: the
-accident `Engine.impliedByName`'s note describes for `.secrets` before
-`.postgres`, arriving again one kind over.
+A migration is now declared with a **source** — inline SQL, or an `https://`
+URL — instead of carrying its SQL directly:
 
-- Wired through `impliedByName`, name-based and same-cloud like every other
-  name the kind carries.
-- `Plan.migrationsAreSound` refuses an `after` name that is not a history
-  the plan declares present — the scheduler ignores an edge to a slot no
-  action touches, so a misspelt name would otherwise silently drop the
-  ordering it was written to guarantee. `historyIsSound` refuses a history
-  naming itself; a longer cycle is refused by `orderActions` at plan time.
-- Reported `unknown` and never compared by `Divergent`: nothing in the
-  database records it, so editing it can only reorder future work.
-- `example/PostgresMigrations.lean` declares a second history *before* the
-  one it depends on, so its `runsBefore` guard can only pass because of the
-  edge — checked by deleting the edge and watching the guard fail — plus
-  two negative fleets (`badAfter`, `selfAfter`) pinned `!migrationsAreSound`.
+```lean
+migrations := github "typednotes/ledger" "v0.2.0" ["sql/0001_init.sql"]
+```
+
+`Infra.Cli.run` fetches every URL before `plan`, `apply` and `refresh`, once
+per run and never cached across runs; `Engine.push` refuses a plan that still
+holds an unfetched source, and so does the backend. `check` stays offline: it
+prints the plan with a labelled stand-in and says which sources it did not
+read. So the SQL stays in the service's repository as plain `.sql`, and the
+fleet names files at a release tag — adopting a migration is a one-line diff.
+
+Checked against the real thing, not only offline: `fetchSql` read a file from
+`raw.githubusercontent.com`, refused a 404 (naming the URL and asking whether
+the tag is pushed) and an `http://` URL, and `withFetchedSources` substituted
+it into a plan whose ordering was then inferred correctly.
+
+**Breaking:** `PostgresMigrationsSpec.migrations` is `List MigrationDecl`.
+Inline histories write `inlineMigrations [(id, sql), …]`; `Migration`
+remains the resolved `{ id, sql }` shape.
+
+### Added: ordering between histories, read from the SQL
+
+`typednotes-infra`, the first real consumer of 0.13.0, declares three
+histories on one database — the app's (`users`, `orgs`), `ledger`'s
+(`usage_events … references orgs(id)`) and `liaison`'s. All three name the
+same database and secrets, so they became ready in the same scheduling wave
+and ran in *declaration order*: correct only by accident. The foreign keys
+already state the dependency, so infra now reads them. `Infra.Core.SqlDeps`
+is a conservative, total scanner (comments, strings and dollar-quoted bodies
+skipped; unqualified names mean `public`) for `CREATE TABLE` and
+`REFERENCES`, and a history is scheduled after every other history on its
+database that creates a table it references.
+
+What it cannot settle is refused, never guessed (`Plan.migrationDepsProblem`,
+at compile time for inline SQL via `migrationsAreSound`, and in `push` once
+URLs are fetched): a reference to a table no history on the database
+creates, and a table two histories create.
+
+Pinned by `example/PostgresMigrations.lean`, which declares the dependent
+history *first* — checked by deleting the `REFERENCES` and watching the
+ordering guard fail — plus negative fleets for an unresolved reference and a
+doubly-created table, and a positive one for the same table name on two
+databases.
+
+A first draft of this release had an explicit `after : List String` field
+instead; it was replaced before the release was pushed, because it declared
+a second time what the foreign key already says.
+
+### Changed: a container's `migrations` is a list
+
+A dependency that lives in a service's *code* rather than its SQL — a broker
+writing the ledger's tables — is not a history edge; it belongs on the
+container. `ScalewayContainerSpec.migrations` is now
+`List (K .scaleway .postgresMigrations)` and portable `ComputeSpec.migrations`
+is `List String`, so a rollout waits for every history it names.
+**Breaking:** `migrations := some h` becomes `migrations := [h]`.
 
 ### Added: `Boundary.namePrefixes`
 
@@ -188,8 +223,7 @@ check sat *inside* the pairwise-order lambda — and a history with one
 migration has no pairs, so it was never evaluated: `[{ id := "0001",
 sql := "" }]` passed `migrationsAreSound`. Every conjunct is now
 parenthesised, and `example/PostgresMigrations.lean`'s `emptySql` fleet pins
-the case. Found by the `after` check, which was written the same way and
-did not fire.
+the case. Found by a new check written the same way, which did not fire.
 
 ## [0.13.0] — 2026-09-23
 

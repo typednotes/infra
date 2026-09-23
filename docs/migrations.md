@@ -84,16 +84,44 @@ is `PostgresSpec.masterPasswordSecret`'s precedent exactly.
 
 ### Where the SQL lives
 
-Not copied into `Fleet.lean`. The schema belongs to the service repo
-(`ledger/sql/*.sql`), and copying it into the infra declaration is exactly the
-two-live-copies outcome the `linen` rule exists to prevent. Instead the
-service exposes its migrations as a Lean value — `Ledger.Sql.migrations :
-List Migration` — and the consumer repo `require`s the service at a tag, the
-same way it already pins `infra`. `Fleet.lean` then holds a `#guard` that the
-migrations value and the container's image tag name the same release, so a
-deploy that bumps one and not the other does not compile. The image tag *is*
-the version, per `ledger`'s releasing rules; this makes the schema version the
-same value.
+In the service's own repository, as plain `.sql` files — never copied into
+the fleet, and never re-expressed in Lean. A migration is declared with a
+**source** (`SqlSource`): inline text, or an `https://` URL. `github` builds
+the URLs for a public repository at a ref:
+
+```lean
+migrations := github "typednotes/ledger" "v0.2.0" ["sql/0001_init.sql"]
+```
+
+`Infra.Cli.run` fetches every URL before `plan`, `apply` and `refresh`
+(`fetchMigrationSources`, then `withFetchedSources`), and `Engine.push`
+refuses a plan that still holds an unfetched one. `check` stays offline: it
+prints the plan with a labelled stand-in and says which sources it did not
+read.
+
+- **Files are listed, not directories.** Adopting a new migration is a
+  one-line diff of the declaration — the review surface — and nothing is
+  applied that the fleet does not name. Ids come from the file names
+  (`0001_init.sql` → `0001`); a misnamed file has no id and is refused at
+  compile time.
+- **Pin the ref to the release the image comes from.** A consumer keeps one
+  version value per service and builds both the image tag and the ref from
+  it, so schema and code cannot drift apart.
+- **A URL is not trusted to be immutable.** A tag can be moved. Once a
+  migration is applied, the database's own record of its SQL is what the
+  append-only check compares against, so changed content behind an applied
+  URL is refused, not re-applied. Unapplied content is simply what the ref
+  says at plan time.
+- **What moved from compile time to plan time.** Inline SQL is checked by
+  `#guard … migrationsAreSound` (content and the order it implies); for a
+  URL, only its shape is checkable offline, and its content and ordering are
+  checked by `plan`.
+
+The first draft of this section had each service expose its SQL as a Lean
+value that the consumer `require`d. It worked, and was replaced before
+release: it put Lean files into Rust repositories purely to satisfy the
+consumer's build, and it tied the fleet's compile to every service's
+package graph.
 
 ### Soundness, at the decidable tier
 
@@ -245,51 +273,48 @@ Ordered after both references, one migration at a time:
    The old code keeps running against a schema its forward-only migrations
    kept compatible, which is the correct failure state.
 
-**Ordering against the container.** The edge this needs does not exist yet:
-nothing in `ScalewayContainerSpec` (or portable `ComputeSpec`) references a
-migrations resource, and `HasDeps` derives edges from spec fields. The
-proposal is one optional field — `Field .optional o f (K p .postgresMigrations)`
-— on the compute specs, whose entire job is the edge, the way
-`compute.executionRole` exists for one cloud's sake. This is the one engine
-change beyond the kind itself, and it is what turns "migrate, then roll out"
-from a runbook step into the plan's topological order.
+**Ordering against the container.** One optional field on the compute
+specs — typed references on `scalewayContainer`, names on portable `compute`
+— whose entire job is the edges: it is what turns "migrate, then roll out"
+from a runbook step into the plan's topological order. Since 0.14.0 it is a
+**list**: a service can need another service's schema as well as its own.
 
-**Ordering between histories** (0.14.0). Two services on one database can
-depend on each other's schema: `ledger`'s `usage_events` carries
-`references orgs(id)`, and `orgs` is created by the app that owns users and
-orgs. Both histories name the same database and URL secrets, so as of 0.13.0
+**Ordering between histories** (0.14.0) — **read from the SQL.** Two
+services on one database can depend on each other's schema: `ledger`'s
+`usage_events` carries `references orgs(id)`, and `orgs` is created by the
+app. Both histories name the same database and URL secrets, so as of 0.13.0
 they became ready in the same scheduling wave and ran in *declaration
-order* — correct only if the fleet happened to declare them in dependency
-order, and the kind of accident `Engine.impliedByName`'s note exists to
-remove. `after : List String` is the edge: the fleet names of the histories
-whose pending migrations must apply first.
+order*. The foreign key already states the dependency, so infra reads it:
+`Infra.Core.SqlDeps` scans each migration for `CREATE TABLE name` and
+`REFERENCES name`, and a history is scheduled after every other history on
+its database that creates a table it references (`Plan.historyDeps`, used by
+the scheduler's `dependsOn`).
 
-```lean
-resource scaleway postgresMigrations "typednotes-ledger-history"
-  { database := "typednotes-db", …, schema := "ledger",
-    after := ["typednotes-core-history"],
-    migrations := … }
-```
-
-- **Name-based, same cloud**, like every other name this kind carries, and
-  wired through `impliedByName` like them.
-- **Refused when it names nothing.** The scheduler ignores an edge to a slot
-  no action touches — right for an identity a fleet does not manage, wrong
-  here, where a misspelt name would silently drop the ordering. So
-  `Plan.migrationsAreSound` checks that every `after` name is a history the
-  plan declares present, and `historyIsSound` refuses a history naming
-  itself. A longer cycle is refused at plan time by `orderActions`
-  ("dependency cycle among: …").
-- **Never compared.** Nothing in the database records the edge, so it is
-  reported `unknown` and `Divergent` ignores it: editing it can only reorder
-  future work, never propose an update of its own.
+- **A scanner, conservative by construction.** Comments, string literals and
+  dollar-quoted bodies are skipped; unquoted names fold to lower case;
+  unqualified names mean `public` (infra never sets `search_path`);
+  temporary tables are ignored.
+- **What it cannot settle is refused, never guessed**
+  (`Plan.migrationDepsProblem`): a reference to a table no history on that
+  database creates, and a table two histories create. A table created where
+  the scanner cannot see (inside a `DO` block) therefore surfaces as an
+  error naming it, not as a missing edge. Checked at compile time for inline
+  SQL (`migrationsAreSound`) and by `push` once URLs are fetched.
+- **Only foreign keys.** A dependency that lives in a service's *code* —
+  a broker writing the ledger's tables — is not in its SQL, so it is not a
+  history edge. It belongs on the container, whose `migrations` is a list:
+  the broker's rollout waits for the ledger's history as well as its own.
 - **A failure still stops what follows.** An apply stops at the first failed
   action, so a history whose dependency failed never runs against a
-  half-migrated schema.
+  half-migrated schema. A cycle is refused by `orderActions`.
+
+The first draft of 0.14.0 had an explicit `after : List String` field
+instead. It was replaced before release: it declared a second time what the
+foreign key already says, and a copy can drift.
 
 `example/PostgresMigrations.lean` declares the dependent history *first*, so
-its `runsBefore` guard can only pass because of the edge — checked by
-removing the edge and watching the guard fail.
+its `runsBefore` guard can only pass because of the inferred edge — checked
+by removing the `REFERENCES` and watching the guard fail.
 
 ## Ownership
 

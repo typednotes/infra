@@ -495,12 +495,15 @@ when that one's own delete runs — which the teardown graph orders last.
 
 **Where its edges come from.** None from `HasDeps`: every cross-resource
 field is a plain name. `Engine.impliedByName` turns `database`,
-`connectionSecret` and `observerSecret` into slot ids, and — since 0.14.0 —
-each `after` name into the slot of another history, so a service whose SQL
-references another's tables is scheduled after it even though both are
-ready in the same wave. `schedule` would drop an edge to a slot nothing
-touches, which is why `Plan.migrationsAreSound` refuses an `after` name that
-is not a declared history rather than leaving it to the scheduler.
+`connectionSecret` and `observerSecret` into slot ids. The edges *between*
+histories need the whole plan, so `dependsOn` adds them from
+`Plan.historyDeps` — read from the SQL (`Infra.Core.SqlDeps`): a history
+follows every other history on its database that creates a table it
+references. Only resolved SQL has edges, which is why `Infra.Cli.run`
+fetches URL sources (`fetchMigrationSources`, `withFetchedSources`) before
+building the plan it pushes, and why `push` refuses unfetched sources and
+`Plan.migrationDepsProblem` (an unresolved or ambiguous reference) before
+deriving any action.
 
 ### Which clouds get authenticated, and the hole that leaves
 

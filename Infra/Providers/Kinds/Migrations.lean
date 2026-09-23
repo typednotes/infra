@@ -76,7 +76,7 @@ namespace Infra.Providers.Kinds.Migrations
 
 open Infra.Core
 open Infra.Providers.Kinds
-open Infra.Specs (Migration)
+open Infra.Specs (Migration MigrationDecl declsOf resolvedMigrations?)
 open Database.SQL.Connection
 open Database.SQL.Session
 open Database.PostgreSQL.LibPQ
@@ -304,11 +304,7 @@ them; see docs/migrations.md")
              connectionSecret := route.connectionSecret
              observerSecret := route.observerSecret
              schema := route.schema
-             migrations
-             -- An ordering edge, not state: nothing in the database records
-             -- it, so it is reported unknown and `Divergent` never compares
-             -- it — `ScalewayContainerSpec.migrations`' reading.
-             after := .unknown }
+             migrations := declsOf migrations }
 
 -- ────────────────────────────────────────────────────────────────────
 -- Apply: the one body behind `create` and `update`
@@ -333,13 +329,18 @@ private def applySession (spec : ProviderSpec .postgresMigrations) :
   -- `none` from `migrationsConflict` covers equal and strict-prefix both,
   -- and the suffix is the work.
   let appliedM : List Migration := applied.map fun (id, sql) => ({ id, sql } : Migration)
-  match Infra.Core.migrationsConflict appliedM spec.migrations with
+  -- Only fetched SQL reaches a backend (`Engine.push` refuses the rest);
+  -- checked again here because this is the step that runs it.
+  let some declared := resolvedMigrations? spec.migrations
+    | throw (SessionError.resultError "migration sources have not been fetched; refusing to \
+apply SQL whose content is unknown")
+  match Infra.Core.migrationsConflict appliedM declared with
   | some id =>
       throw (SessionError.resultError s!"applied migration '{id}' does not match the declaration's \
 history — migrations are append-only, and this check is the backend's own third line of \
 defence after the plan-time one; see docs/migrations.md")
   | none =>
-      let pending := spec.migrations.drop appliedM.length
+      let pending := declared.drop appliedM.length
       for m in pending do
         Session.transaction do
           Session.sql m.sql

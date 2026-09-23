@@ -78,16 +78,17 @@ structure ComputeSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
   memoryMb   : Field .optional o f Nat
   timeoutSec : Field .optional o f Nat
   env        : Field .optional o f (List (String × String))
-  /-- The fleet name of the `postgresMigrations` resource this rollout must
-      wait for — migrate, then roll.
+  /-- The fleet names of the `postgresMigrations` resources this rollout
+      must wait for — migrate, then roll. A list, because a service can need
+      another service's schema as well as its own (a broker that writes the
+      ledger's tables waits for the ledger's history too).
 
-      Its entire job is the ordering edge (`Engine.impliedByName`; a plain
-      name, because this spec is portable and a typed reference would name
-      a provider). No cloud reports anything about it, so it is never
-      compared and never drift: a compute whose migrations name changes is
-      a compute with a different edge, not a different resource. See
-      `docs/migrations.md`, "Ordering against the container". -/
-  migrations : Field .optional o f String
+      Its entire job is the ordering edges (`Engine.impliedByName`; plain
+      names, because this spec is portable and a typed reference would name
+      a provider). No cloud reports anything about them, so they are never
+      compared and never drift. See `docs/migrations.md`, "Ordering against
+      the container". -/
+  migrations : Field .optional o f (List String)
 
 structure QueuesSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
@@ -329,20 +330,91 @@ def PostgresSpec.serverless {K : ProviderId → Kind → Type}
   minCapacity := .known minCapacity
   maxCapacity := .known maxCapacity
 
-/-- A Postgres schema migration, as a declared value.
+/-- A Postgres schema migration whose SQL is known: what a database has
+    applied, and what a declared migration becomes once its source is read.
 
-    The SQL is carried verbatim rather than as a path or a digest: the
-    declaration is the review surface — a `plan` line names this resource,
-    and the diff of the declaration is where a human reads the SQL before
-    it runs — so the target holds the content itself. `id` is the
-    lexicographic application order, matching `ledger`'s numbered-file
-    convention (`sql/0001_init.sql`, …); content is compared exactly, so
-    there is no hash whose stability across toolchain versions would become
-    its own history-conflict story. See `docs/migrations.md`. -/
+    The SQL is carried verbatim rather than as a digest: content is compared
+    exactly against what the database recorded, so there is no hash whose
+    stability across toolchain versions would become its own history-conflict
+    story. `id` is the lexicographic application order, matching the
+    numbered-file convention (`sql/0001_init.sql`, …). See
+    `docs/migrations.md`. -/
 structure Migration where
   id  : String
   sql : String
   deriving Repr, DecidableEq, BEq, ToJson, FromJson
+
+/-- Where a declared migration's SQL comes from.
+
+    * `text` — the SQL itself, written in the declaration.
+    * `url` — an `https://` URL whose body is the SQL, fetched by
+      `Infra.Cli.run` before `plan` and `apply` (never by `check`, which
+      stays offline). The SQL then stays in the service's own repository —
+      pin the URL to a release tag or commit, and the migration is exactly
+      the file that release shipped. `github` builds these.
+
+    A URL is not trusted to be immutable (a tag can be moved): once a
+    migration is applied, the database's own record of its SQL is what the
+    append-only check compares against, so changed content behind an applied
+    URL is refused, not re-applied. -/
+inductive SqlSource where
+  | text (sql : String)
+  | url (url : String)
+  deriving Repr, DecidableEq, BEq, ToJson, FromJson
+
+/-- A migration as declared: an id, and where its SQL comes from. -/
+structure MigrationDecl where
+  id     : String
+  source : SqlSource
+  deriving Repr, DecidableEq, BEq, ToJson, FromJson
+
+/-- The migration, if its SQL is known (`text`); `none` for a `url` source
+    that has not been fetched yet. -/
+def MigrationDecl.resolved? (m : MigrationDecl) : Option Migration :=
+  match m.source with
+  | .text sql => some { id := m.id, sql }
+  | .url _    => none
+
+/-- Every migration resolved, or `none` if any source is still a URL. -/
+def resolvedMigrations? (ms : List MigrationDecl) : Option (List Migration) :=
+  ms.mapM MigrationDecl.resolved?
+
+/-- Inline migrations: `(id, sql)` pairs written in the declaration. -/
+def inlineMigrations (ms : List (String × String)) : List MigrationDecl :=
+  ms.map fun (id, sql) => { id, source := .text sql }
+
+/-- Already-known migrations as declarations — what a backend reports back. -/
+def declsOf (ms : List Migration) : List MigrationDecl :=
+  ms.map fun m => { id := m.id, source := .text m.sql }
+
+/-- The id a migration file's name carries: everything before its first `_`,
+    if that is a non-empty run of digits (`0001_init.sql` → `0001`), else
+    `""` — which `historyIsSound` refuses, so a misnamed file fails the
+    build rather than sorting somewhere unexpected. -/
+def migrationIdOfPath (path : String) : String :=
+  let file := (path.splitOn "/").getLast?.getD path
+  match file.splitOn "_" with
+  | pre :: _ :: _ => if !pre.isEmpty && pre.all Char.isDigit then pre else ""
+  | _             => ""
+
+/-- Migrations kept in a public GitHub repository, read at `ref` (a release
+    tag or a commit): one entry per file, in the order given, each fetched
+    from `raw.githubusercontent.com`. Ids come from the file names.
+
+    Listing the files rather than a directory is deliberate: adopting a new
+    migration is a one-line diff of the declaration — the review surface —
+    and nothing is applied that the fleet does not name. -/
+def github (repo ref : String) (files : List String) : List MigrationDecl :=
+  files.map fun file =>
+    { id := migrationIdOfPath file
+      source := .url s!"https://raw.githubusercontent.com/{repo}/{ref}/{file}" }
+
+#guard migrationIdOfPath "sql/0001_init.sql" = "0001"
+#guard migrationIdOfPath "migrations/0012_add_index.sql" = "0012"
+#guard migrationIdOfPath "sql/init.sql" = ""
+#guard migrationIdOfPath "sql/v1_init.sql" = ""
+#guard (github "typednotes/ledger" "v0.2.0" ["sql/0001_init.sql"]).map (·.source) =
+  [.url "https://raw.githubusercontent.com/typednotes/ledger/v0.2.0/sql/0001_init.sql"]
 
 /-- A declared migration set: an ordered list of migrations applied to one
     schema of one declared database, by `infra` itself rather than by the
@@ -371,17 +443,11 @@ structure Migration where
     the new name) must not propose a replace — the same reading
     `SecretsSpec.valueFrom` gets.
 
-    `after` is the one edge between two histories: the fleet names of other
-    `postgresMigrations` resources whose pending migrations must apply
-    first — the service whose schema carries `references orgs(id)` names the
-    service that creates `orgs`. Without it, two histories on one database
-    are ready in the same scheduling wave and run in declaration order,
-    which is an accident rather than a guarantee. Ordering is its whole job,
-    like `ScalewayContainerSpec.migrations`: nothing cloud-side reports it,
-    so it is reported `unknown` and never compared. `Plan.migrationsAreSound`
-    refuses a name that is not a declared history of the same cloud, since
-    an edge to an unmanaged slot constrains nothing and a typo here would
-    silently drop the ordering it was written to guarantee. -/
+    **Ordering between histories is read from the SQL**, not declared: a
+    history whose SQL says `references orgs(id)` is scheduled after the
+    history on the same database whose SQL says `create table orgs`
+    (`Infra.Core.SqlDeps`). A reference nothing declared creates, or a table
+    two histories create, is refused rather than guessed at. -/
 structure PostgresMigrationsSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
     (f : Type → Type u) where
   name             : Field .required o f String
@@ -392,28 +458,15 @@ structure PostgresMigrationsSpec (K : ProviderId → Kind → Type) (o : Type u 
   database         : Field .required o f String
   connectionSecret : Field .required o f String
   observerSecret   : Field .required o f String
-  /-- The Postgres schema this service owns. One resource per service, one
-      schema per service: two services never share a migration resource. -/
+  /-- The Postgres schema this service's history table lives in. One
+      resource per service, one schema per service: two services never share
+      a migration resource. -/
   schema           : Field .required o f String
   /-- The full ordered history. Append-only: a migration the database has
       already applied must stay in this list with the same content, forever —
       enforced at plan time by `Plan.migrationsAppendOnly`, and again by the
       backend before it applies anything. -/
-  migrations       : Field .required o f (List Migration)
-  /-- Fleet names of other `postgresMigrations` resources, same cloud, whose
-      pending migrations apply before this one's. Unsaid means none. See the
-      structure's doc comment. -/
-  after            : Field .optional o f (List String)
-
-/-- The `after` names, when they are written as a literal — unsaid reads as
-    `some []`, and `none` means an expression nobody can read offline, which
-    `historyIsSound` refuses for the same reason it refuses a non-literal
-    history: an ordering edge is schema, not a post-apply value. -/
-def PostgresMigrationsSpec.afterNames {K : ProviderId → Kind → Type}
-    (s : PostgresMigrationsSpec K Partial (Expr K)) : Option (List String) :=
-  match s.after with
-  | .unknown => some []
-  | .known e => e.asLit
+  migrations       : Field .required o f (List MigrationDecl)
 
 /-- A schema name the backend can quote safely. Checked rather than escaped
     past: the decidable tier of the design rule, so the backend's quoting is
@@ -426,25 +479,28 @@ def isSimpleIdent (s : String) : Bool :=
   | []       => false
   | c :: cs  => okFirst c && cs.all okRest
 
+/-- A migration source that can be checked offline: non-empty SQL, or an
+    `https://` URL. Its *content* is checked once fetched. -/
+def SqlSource.isSound : SqlSource → Bool
+  | .text sql => !sql.trimAscii.isEmpty
+  | .url u    => u.startsWith "https://" && u.length > "https://".length
+
 /-- Whether this declared history is internally sound, at the decidable tier:
 
-    ids strictly increasing (so list order *is* lexicographic application
-    order, `ledger`'s convention), no empty `sql`, a quotable `schema`, and
-    an `after` list of non-empty names that does not name the resource
-    itself (a self-edge is a one-node cycle the scheduler would refuse
-    anyway, later and less legibly).
+    ids non-empty and strictly increasing (so list order *is* lexicographic
+    application order), every source sound (non-empty SQL, or an `https://`
+    URL), and a quotable `schema`.
 
     Everything here is decidable from the authored value alone, like
     `SecretsSpec.sourceIsSound`; lift it fleet-wide with
-    `Plan.migrationsAreSound`, which also checks that every `after` name is
-    a declared history — the part that needs the fleet. A non-literal
-    `migrations`, `schema` or `after` is *unsound*: migration content is
-    schema, not a post-apply value, and a history nobody can read offline is
-    a history nobody can check. -/
+    `Plan.migrationsAreSound`, which also checks the ordering the SQL implies
+    where the SQL is inline. A non-literal `migrations` or `schema` is
+    *unsound*: a history nobody can read offline is a history nobody can
+    check. -/
 def PostgresMigrationsSpec.historyIsSound {K : ProviderId → Kind → Type}
     (s : PostgresMigrationsSpec K Partial (Expr K)) : Bool :=
-  match s.schema.asLit, s.migrations.asLit, s.afterNames with
-  | some schema, some ms, some after =>
+  match s.schema.asLit, s.migrations.asLit with
+  | some schema, some ms =>
       -- Each `all` is parenthesised: a `fun` body extends as far right as it
       -- can, so without them every later conjunct ends up *inside* the
       -- previous lambda — which is how, before 0.14.0, the empty-`sql`
@@ -452,9 +508,8 @@ def PostgresMigrationsSpec.historyIsSound {K : ProviderId → Kind → Type}
       -- for a one-migration history (no pairs, so nothing ran).
       isSimpleIdent schema
       && (ms.zip (ms.drop 1)).all (fun (a, b) => a.id < b.id)
-      && ms.all (fun m => !m.id.isEmpty && !m.sql.isEmpty)
-      && after.all (fun nm => !nm.isEmpty && some nm != s.name.asLit)
-  | _, _, _ => false
+      && ms.all (fun m => !m.id.isEmpty && m.source.isSound)
+  | _, _ => false
 
 #guard isSimpleIdent "ledger"
 #guard isSimpleIdent "usage_events_2"
@@ -564,13 +619,14 @@ structure ScalewayContainerSpec (K : ProviderId → Kind → Type) (o : Type u �
       real Scaleway secret-binding mechanism is unconfirmed — see `Infra/Providers/Live.lean`
       and `docs/providers.md`. -/
   secretEnv  : Field .optional o f (List (String × K .scaleway .secrets))
-  /-- The `postgresMigrations` resource this container's rollout waits for —
-      a *typed* reference this time, since the spec is provider-local
-      already, and a real `Dep` edge (`depsKeyOpt`) rather than a name-based
-      one. Ordering is the field's whole job: it is settled to a handle the
-      backend ignores, reported `unknown`, and never compared. See
-      `docs/migrations.md`, "Ordering against the container". -/
-  migrations : Field .optional o f (Option (K .scaleway .postgresMigrations))
+  /-- The `postgresMigrations` resources this container's rollout waits
+      for — *typed* references this time, since the spec is provider-local
+      already, and real `Dep` edges (`depsKeyList`) rather than name-based
+      ones. A list, because a service can need another service's schema as
+      well as its own. Ordering is the field's whole job: it is settled to
+      handles the backend ignores, reported `unknown`, and never compared.
+      See `docs/migrations.md`, "Ordering against the container". -/
+  migrations : Field .optional o f (List (K .scaleway .postgresMigrations))
 
 /-! ## Dispatch -/
 
@@ -681,7 +737,7 @@ instance : Fillable ComputeSpec where
       memoryMb   := s.memoryMb.getD (.lit 256)
       timeoutSec := s.timeoutSec.getD (.lit 30)
       env        := s.env.getD (.lit [])
-      migrations := s.migrations.getD (.lit "") }
+      migrations := s.migrations.getD (.lit []) }
 
 instance : Fillable QueuesSpec where
   fill s :=
@@ -707,12 +763,11 @@ instance : Fillable PostgresSpec where
       minCapacity          := s.minCapacity.getD (.lit 0)
       maxCapacity          := s.maxCapacity.getD (.lit 0) }
 
-/-- Every field but `after` is required, so `fill` copies field for field:
-    a target with a missing required field was a structure-literal error
-    before it ever reached here. `after` defaults to `[]` — "said: nothing",
-    no ordering edge. The existence of this instance is the compile-time
-    certificate that any well-typed `postgresMigrations` target is
-    creatable. -/
+/-- Every field is required, so `fill` copies field for field with no
+    defaults to fill: a target with a missing field was a structure-literal
+    error before it ever reached here. The existence of this instance is
+    the compile-time certificate that any well-typed `postgresMigrations`
+    target is creatable. -/
 instance : Fillable PostgresMigrationsSpec where
   fill s :=
     { name := s.name
@@ -720,8 +775,7 @@ instance : Fillable PostgresMigrationsSpec where
       connectionSecret := s.connectionSecret
       observerSecret := s.observerSecret
       schema := s.schema
-      migrations := s.migrations
-      after := s.after.getD (.lit []) }
+      migrations := s.migrations }
 
 instance : Fillable S3BucketSpec where
   fill s :=
@@ -759,7 +813,7 @@ instance : Fillable ScalewayContainerSpec where
       timeoutSec := s.timeoutSec.getD (.lit 30)
       env        := s.env.getD (.lit [])
       secretEnv  := s.secretEnv.getD (.lit [])
-      migrations := s.migrations.getD (.lit none) }
+      migrations := s.migrations.getD (.lit []) }
 
 /-- `ingress := []` is the safe default: a group that lets nothing in. -/
 instance : Fillable SecurityGroupSpec where

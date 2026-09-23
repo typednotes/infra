@@ -31,6 +31,7 @@ import Infra.Providers
 namespace Infra.Cli
 
 open Infra.Core
+open Infra.Specs (MigrationDecl)
 
 /-- Where the observed-state cache lives, relative to the working directory.
     See `docs/persistence.md`. -/
@@ -233,6 +234,97 @@ SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
     -- account in the wrong region look fine.
     IO.println s!"{p.name}: {actual} in {c.region} {Ansi.style colour Ansi.green "ok"}"
 
+/-! ## Migration sources
+
+  A `postgresMigrations` history may read its SQL from URLs (`github`), so
+  the SQL stays in the service's own repository. The fetch happens here, at
+  the edge, before `plan`/`apply`/`refresh` hand the plan to the engine —
+  which refuses a plan with an unfetched source (`Engine.push`). `check`
+  never fetches: it stays offline, and says what it could not check. -/
+
+/-- Rewrite every present history's migrations with `f`, leaving every other
+    kind, and every non-present history, exactly as it was. -/
+def mapMigrationDecls {κ : Keys} (T : Plan κ)
+    (f : ProviderId → String → List MigrationDecl → List MigrationDecl) : Plan κ :=
+  { assign := fun p k key =>
+      match k, key with
+      | .postgresMigrations, key =>
+        match T.assign p .postgresMigrations key with
+        | .present s =>
+          match s.migrations.asLit with
+          | some ms => .present { s with migrations := .lit (f p (κ.name p .postgresMigrations key) ms) }
+          | none    => .present s
+        | other => other
+      | k, key => T.assign p k key }
+
+/-- Every distinct `url` source the plan declares. -/
+def migrationSourceUrls {κ : Keys} (T : Plan κ) : List String :=
+  ((Finite.elems (α := ProviderId)).flatMap fun p =>
+    (Finite.elems (α := κ.Key p .postgresMigrations)).flatMap fun key =>
+      match T.assign p .postgresMigrations key with
+      | .present s => (s.migrations.asLit.getD []).filterMap fun m =>
+          match m.source with
+          | .url u  => some u
+          | .text _ => none
+      | _ => []).eraseDups
+
+/-- The body of an `https://` URL, as UTF-8 text: a `200`, decodable, and not
+    empty — anything else fails, naming the URL, because a migration whose
+    SQL could not be read must never be applied as if it said nothing.
+    Retries transient failures like every other call (`Http.send`). -/
+def fetchSql (url : String) : IO String := do
+  let rest := String.ofList (url.toList.drop "https://".length)
+  let (hostPath, query) := match rest.splitOn "?" with
+    | [hp]       => (hp, "")
+    | hp :: q    => (hp, String.intercalate "?" q)
+    | []         => (rest, "")
+  let (host, path) := match hostPath.splitOn "/" with
+    | h :: segs => (h, "/" ++ String.intercalate "/" segs)
+    | []        => (hostPath, "/")
+  if !url.startsWith "https://" || host.isEmpty then
+    throw (IO.userError s!"migration source {url}: only https:// URLs are fetched")
+  let resp ← Infra.Providers.Http.send (Infra.Providers.Http.requestPresigned "GET" host path query)
+  let status := resp.statusCode.statusCode
+  unless status == 200 do
+    throw (IO.userError s!"migration source {url}: HTTP {status} — is the tag or commit \
+pushed, and the path right?")
+  let some body := String.fromUTF8? resp.body
+    | throw (IO.userError s!"migration source {url}: the body is not UTF-8 text")
+  if body.trimAscii.isEmpty then
+    throw (IO.userError s!"migration source {url}: the body is empty")
+  return body
+
+/-- The SQL behind every `url` source the plan declares, as `(url, sql)`.
+    Each URL is read once per run, and the text is never cached across runs:
+    a moved tag is seen the next time, and an applied migration whose
+    content changed is then refused by the append-only check against the
+    database's own record. -/
+def fetchMigrationSources {κ : Keys} (T : Plan κ) : IO (List (String × String)) := do
+  let mut fetched : List (String × String) := []
+  for u in migrationSourceUrls T do
+    fetched := (u, ← fetchSql u) :: fetched
+  return fetched.reverse
+
+/-- The plan with every `url` source replaced by its fetched SQL. A URL
+    missing from `fetched` stays a URL, and `Engine.push` refuses it. -/
+def withFetchedSources {κ : Keys} (T : Plan κ) (fetched : List (String × String)) : Plan κ :=
+  mapMigrationDecls T fun _ _ ms => ms.map fun m =>
+    match m.source with
+    | .url u  => match fetched.lookup u with
+      | some sql => { m with source := .text sql }
+      | none     => m
+    | .text _ => m
+
+/-- For offline `check` only: stand-in SQL for every `url` source — a comment
+    naming the URL, which creates and references nothing — so the offline
+    plan can be printed. Ordering the SQL would imply is not known offline;
+    `offlinePlan` says so. -/
+def placeholderMigrationSources {κ : Keys} (T : Plan κ) : Plan κ :=
+  mapMigrationDecls T fun _ _ ms => ms.map fun m =>
+    match m.source with
+    | .url u  => { m with source := .text s!"-- {u}\n-- not fetched: `check` is offline" }
+    | .text _ => m
+
 /-- The plan, against the placeholder backends: what a bare invocation shows.
 
     Offline, credential-free and free of charge, which is what makes it a safe
@@ -243,8 +335,13 @@ SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
 def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Unit := do
   let colour ← Ansi.wanted
   unless headline.isEmpty do IO.println s!"{Ansi.style colour Ansi.bold headline}\n"
-  for line in ← push Infra.Providers.all target (worldOf []) { colour } do
+  for line in ← push Infra.Providers.all (placeholderMigrationSources target) (worldOf []) { colour } do
     IO.println line
+  let remote := (migrationSourceUrls target).length
+  if remote > 0 then
+    IO.println (Ansi.style colour Ansi.dim
+      s!"\n{remote} migration source(s) are URLs and were not fetched: the order between \
+histories their SQL implies, and their content, are checked by `plan`.")
   IO.println (Ansi.style colour Ansi.dim
     "\nThat was the placeholder backend — no cloud was contacted.")
   IO.println (Ansi.style colour Ansi.dim
@@ -372,7 +469,8 @@ def run (exe : String) (F : Fleet)
     reporting <| withLive fun bs => do
       let world ← pull (κ := F.keys) cacheRoot bs
       let rows ← Ledger.load cacheRoot
-      let outstanding := (plan F.plan world rows F.forgets).length
+      let wanted := withFetchedSources F.plan (← fetchMigrationSources F.plan)
+      let outstanding := (plan wanted world rows F.forgets).length
       IO.println s!"refreshed; {rows.length} managed; {outstanding} action(s) outstanding"
   -- Rebuilds the ledger as what it is documented to be: a cache of ownership,
   -- not the record of it. Only kinds whose marker a backend can actually read
@@ -402,7 +500,11 @@ def run (exe : String) (F : Fleet)
       -- `Plan.absent` is the empty declaration: the same keys, every one
       -- `.absent`. So `destroy` is not a second teardown mechanism, it is
       -- this one with an empty target, and the guard below checks that.
-      let wanted := if tearDown then Plan.absent F.keys else F.plan
+      -- A teardown needs no SQL (a history's delete is a FORGET), so only a
+      -- reconcile fetches the migration sources.
+      let fetched ← if tearDown then pure [] else fetchMigrationSources F.plan
+      let resolved := withFetchedSources F.plan fetched
+      let wanted := if tearDown then Plan.absent F.keys else resolved
       -- No teardown special-case here: `push` decides that from the target,
       -- because `Plan.absent` declares nothing and that is exactly what a
       -- teardown is. `--force` stays for the other case, a declaration that
@@ -420,7 +522,7 @@ def run (exe : String) (F : Fleet)
       -- `edges := F.plan` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
       -- order deletions by. See `orderActions`.
-      for line in ← push bs wanted world opts (edges := F.plan) (store := store)
+      for line in ← push bs wanted world opts (edges := resolved) (store := store)
                         (seen := some entries) do
         IO.println line
   | _ =>

@@ -13,6 +13,7 @@ import Infra.Core.InstanceType
 import Infra.Core.Compose
 import Infra.Specs.Basic
 import Infra.Specs.Build
+import Infra.Core.SqlDeps
 import Infra.Core.Fleet
 import Infra.Core.Ergonomics
 import Infra.Core.Region

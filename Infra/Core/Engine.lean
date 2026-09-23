@@ -216,8 +216,7 @@ def Action.renderStyled {κ : Keys} (colour : Bool) (a : Action κ) : String :=
     type `K p k`, which names a provider, and a portable spec that named a
     provider would not be portable. So they carry a plain `String` —
     `PostgresSpec.masterPasswordSecret`, `SecretSource.apiKeyFor`, every
-    field of `PostgresMigrationsSpec` that names another resource (including
-    `after`, one history naming another it must follow), and
+    field of `PostgresMigrationsSpec` that names another resource, and
     `ComputeSpec.migrations` — and `HasDeps`, which can only produce edges
     out of real references, reports nothing for the name-bearing fields.
 
@@ -256,27 +255,24 @@ def impliedByName {κ : Keys} (p : ProviderId) :
   -- reading would mean the database's schema was legible from somewhere it
   -- was never granted to.
   --
-  -- Plus one per `after` name: the histories this one's SQL depends on (a
-  -- `references` into another service's table). Same-cloud too — two
-  -- histories that must apply in order share a database, or at least a
-  -- deploy, and `Plan.migrationsAreSound` refuses a name that is not a
-  -- declared history here, so none of these edges can point at nothing.
+  -- The edges *between* histories are not here: they come from the SQL, and
+  -- reading them needs the whole plan, not one spec (`dependsOn`,
+  -- `Plan.historyDeps`).
   | .postgresMigrations, s =>
-    (match s.database.asLit, s.connectionSecret.asLit, s.observerSecret.asLit with
-     | some db, some cs, some os =>
-         (if db.isEmpty then [] else [Ledger.slotId p .postgres db])
-         ++ (if cs.isEmpty then [] else [Ledger.slotId p .secrets cs])
-         ++ (if os.isEmpty then [] else [Ledger.slotId p .secrets os])
-     | _, _, _ => [])
-    ++ ((Infra.Specs.PostgresMigrationsSpec.afterNames s |>.getD []).filterMap fun nm =>
-          if nm.isEmpty then none else some (Ledger.slotId p .postgresMigrations nm))
-  -- The rollout-ordering edge: a container whose migrations field names a
-  -- migration set waits for it. An empty name constrains nothing.
+    match s.database.asLit, s.connectionSecret.asLit, s.observerSecret.asLit with
+    | some db, some cs, some os =>
+        (if db.isEmpty then [] else [Ledger.slotId p .postgres db])
+        ++ (if cs.isEmpty then [] else [Ledger.slotId p .secrets cs])
+        ++ (if os.isEmpty then [] else [Ledger.slotId p .secrets os])
+    | _, _, _ => []
+  -- The rollout-ordering edges: a compute waits for every migration set its
+  -- `migrations` field names. An empty name constrains nothing.
   | .compute, s =>
     match s.migrations with
     | .known e => match e.asLit with
-      | some nm => if nm.isEmpty then [] else [Ledger.slotId p .postgresMigrations nm]
-      | none    => []
+      | some nms => nms.filterMap fun nm =>
+          if nm.isEmpty then none else some (Ledger.slotId p .postgresMigrations nm)
+      | none     => []
     | .unknown => []
   | _, _ => []
 
@@ -290,6 +286,10 @@ private def dependsOn {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind)
     (((hasDepsOf k).deps authored).map fun d =>
       Ledger.slotId d.provider d.kind (κ.name d.provider d.kind d.key))
     ++ impliedByName p k authored
+    -- A history follows the histories whose tables its SQL references.
+    ++ (if k == .postgresMigrations then
+          (T.historyDeps p (κ.name p k key)).map (Ledger.slotId p .postgresMigrations)
+        else [])
   | _ => []
 
 /-- One scheduling step. -/
@@ -617,6 +617,16 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
   -- plan shows the refusal exactly where it would have shown the work, and
   -- an apply never reaches the backend's own third check. Runs on the
   -- placeholder path too, where it is vacuous: no sighting, no history.
+  -- Unknown SQL cannot be applied, diffed or ordered: a URL source is
+  -- fetched by `Infra.Cli.run` before it calls here, and a caller that
+  -- skipped that is refused rather than served a guess.
+  match T.unresolvedMigrationSources with
+  | [] => pure ()
+  | slots => throw (IO.userError s!"{String.intercalate ", " slots}: migration sources \
+have not been fetched — `Infra.Cli.run` reads every `url` source before `plan` and `apply`; \
+a caller that builds its own backends must do the same (`Infra.Cli.fetchMigrationSources` then `withFetchedSources`)")
+  if let some msg := T.migrationDepsProblem then
+    throw (IO.userError msg)
   if let some msg := T.migrationsAppendOnly W then
     throw (IO.userError msg)
   let work ← match orderActions T (plan T W store.rows store.forgets) edges with

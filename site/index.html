@@ -281,10 +281,10 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.14.0</strong> — one service's migration history can wait for
-  another's, so a schema that references another service's tables applies
-  in dependency order, not declaration
-  order.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.14.0</strong> — migrations are read from each service's own
+  repository at a release tag, and applied in the order their foreign keys
+  imply — no ordering to declare
+  twice.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
