@@ -69,7 +69,7 @@ by `example/PostgresMigrations.lean`'s guards (the dependent history is
 declared first, so only the inferred edge can put it second); the fetch
 against real `raw.githubusercontent.com` files, including a 404 and an
 `http://` URL refused; and the inference over the four real schemas of
-`typednotes-infra`, and a live apply on Scaleway (see "Verification").
+`typednotes-infra`, and a live apply on Scaleway (see "Exercised by CI" below).
 
 Two of the kinds — `objectStore` and `queues` — need no per-cloud code
 *between AWS and Scaleway*, because Scaleway's endpoints are S3- and
