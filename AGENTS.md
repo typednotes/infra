@@ -31,6 +31,49 @@ part of a feature, stop and get explicit agreement from the user on the
 partial scope before shipping it, rather than deciding unilaterally that
 "the common case" is good enough.
 
+**The marker decides what a fleet manages — never the ledger, never a name.**
+This is the principle everything else rests on, and it cuts both ways:
+
+1. **Every resource `infra` creates carries the fleet's marker** — a tag, the
+   description rung, or the name prefix (the ladder below) — naming the fleet
+   when `Boundary.fleetName` is set.
+2. **A resource carrying this fleet's marker that the declaration no longer
+   names is destroyed on the next apply — on any machine.** Deleting a line
+   must destroy the resource from a CI runner with no `.infra/` at all, not
+   only from the laptop whose ledger happens to remember it. `push`'s callers
+   find these by asking the cloud (`Engine.claimUndeclared`), across every
+   region and every kind the fleet's clouds offer — including a kind the
+   declaration no longer has anything of, which is exactly the case where the
+   last resource of it was just removed.
+3. **Only a resource carrying this fleet's marker is changed or destroyed.** A
+   declared name is not evidence: a resource holding a declared name without
+   the marker is warned about by name and left alone — `update`, `replace` and
+   `delete` included, on the plan path too (`Engine.foreignDeclared`).
+4. **The ledger is a cache.** It may be absent, stale or wrong, and nothing
+   may depend on it for correctness: not what exists, not what is managed, not
+   what gets destroyed. It only saves work.
+5. **"Undeclared" is about the physical resource.** Two kinds that list the
+   same thing (an S3 bucket as `objectStore` and `s3Bucket`; a Scaleway
+   container as `compute` and `scalewayContainer`) share a physical class
+   (`Engine.physicalClass`); a resource declared under one is not an orphan of
+   the other. Adding a kind means checking whether it overlaps an existing one.
+6. **Destroying needs a marker that names this fleet.** The grandfathered value
+   (`legacyMarkerValue`) matches every fleet, so for a fleet that names itself
+   it may adopt a declared resource but never license destroying an undeclared
+   one (`Ownership.claimsUndeclared`) — it is warned about instead.
+
+The cases this cannot cover are **enumerated, in `Engine.scannableUndeclared`
+and `docs/coverage.md`**, never left to a catch-all: Scaleway queues are only
+scanned while the fleet declares one (listing them mints a credential, and
+`plan` must not change the account); `postgresMigrations` has nothing to find
+(its delete is a ledger-only FORGET); and a cloud the declaration no longer
+names *at all* is not scanned — retire a cloud with `destroy` before removing
+its last line. Every change near this principle is tested with an **empty
+ledger** (`checkMarkerDecides` in `Main.lean`), because a ledger in the test
+hides exactly the bug this section exists to prevent — as it did until 0.15.0,
+when removing a line from `typednotes-infra` left an IAM application and its
+live API key standing after a CI apply.
+
 **Ownership falls back down a ladder, and never off the end.** When a feature
 needs to mark a resource — ownership being the one that matters — not every
 cloud offers the same place to put the mark, and "this object has no tags" is

@@ -119,6 +119,119 @@ def plan {κ : Keys} (T : Plan κ) (W : World κ)
     (ledger : List Ledger.Row := []) (forgets : List (Released κ) := []) :
     List (Action κ) := actions T W ledger forgets
 
+/-! ## Which physical thing a listing shows
+
+  Two kinds can list the same physical resources: an S3 bucket is both an
+  `objectStore` and an `s3Bucket`, and a Scaleway Serverless Container is both
+  a `compute` and a `scalewayContainer`. Anything that decides a resource is
+  *undeclared* has to ask about the physical thing, not the `(kind, name)`
+  pair — otherwise a container declared as `scalewayContainer` shows up,
+  undeclared, under `compute`, and is destroyed. Checked against each
+  backend's `list` (2026-09-23): these are the only overlaps. -/
+
+/-- The physical class a `(cloud, kind)` listing shows: equal for two kinds
+    that list the same resources, distinct otherwise. -/
+def physicalClass (p : ProviderId) : Kind → String
+  | .objectStore | .s3Bucket => "bucket"
+  | .compute => if p == .scaleway then "container" else "compute"
+  | .scalewayContainer => "container"
+  | k => k.name
+
+#guard physicalClass .scaleway .compute == physicalClass .scaleway .scalewayContainer
+#guard physicalClass .aws .objectStore == physicalClass .aws .s3Bucket
+#guard physicalClass .aws .compute != physicalClass .aws .scalewayContainer
+#guard physicalClass .scaleway .scalewayContainer != physicalClass .scaleway .scalewayContainerNamespace
+
+/-- Whether `claimUndeclared` lists kind `k` on cloud `p` even when the
+    declaration has nothing of that kind there — which is what lets removing
+    the *last* resource of a kind destroy it.
+
+    Every pair where the kind exists and listing it is a plain read, except,
+    enumerated rather than left to a catch-all:
+
+    * `postgresMigrations` — its listing is route-driven (only declared
+      histories can be named, `Kinds.Migrations.list`), and its delete is a
+      ledger-only FORGET that touches no cloud, so there is nothing to find
+      and nothing to destroy.
+    * `queues` **on Scaleway** — listing mints an SQS credential
+      (`Scaleway.Sqs`), and `plan` must not change the account. Scanned only
+      while the fleet declares a Scaleway queue (it mints one anyway then); a
+      fleet that removes its *last* Scaleway queue leaves it standing — the
+      one known gap in this principle, stated in `docs/coverage.md`.
+    * the provider-local kinds off their own cloud, where they do not exist. -/
+def scannableUndeclared (p : ProviderId) : Kind → Bool
+  | .postgresMigrations => false
+  | .queues => p != .scaleway
+  | .s3Bucket | .securityGroup | .awsInstance => p == .aws
+  | .scalewayFunctionNamespace | .scalewayFunction
+  | .scalewayContainerNamespace | .scalewayContainer => p == .scaleway
+  | _ => true
+
+/-- Whether the declaration names physical resource `nm` of class `cls` on
+    `p` — under any kind of that class, and whatever it asks for it
+    (`present`, `absent`, or `unmanaged`, which is "not my business"). -/
+def declaredPhysically (κ : Keys) (p : ProviderId) (cls name : String) : Bool :=
+  (Finite.elems (α := Kind)).any fun k =>
+    physicalClass p k == cls &&
+      (Finite.elems (α := κ.Key p k)).any fun key => κ.name p k key == name
+
+/-- What discovery found: rows for undeclared resources this fleet owns, and
+    the warnings for what it saw but may not claim. -/
+structure Discovered where
+  rows     : List Ledger.Row := []
+  warnings : List String := []
+
+/-- **Every resource marked as this fleet's that the declaration does not name,
+    found by asking the cloud — not the ledger.**
+
+    This is what makes deleting a line destroy the resource on any machine,
+    including a CI runner that starts with no `.infra/` at all. The ledger is a
+    cache: it can be absent, stale or wrong, and none of that may decide what
+    exists and is managed. The marker decides (`claimsUndeclared`): a tag or
+    description carrying this fleet's name, or the name prefix for the kinds
+    that carry nothing.
+
+    Scope: every region the fleet uses on every cloud it uses (`scanners`),
+    and every kind `scannableUndeclared` allows there, plus every kind the
+    declaration names. A resource already in `existing` (the ledger), named in
+    a `forget`, or declared under any kind of its physical class is skipped —
+    the first is already managed, the other two are not orphans. One row per
+    physical resource, however many kinds list it.
+
+    A resource that reads as ours only through the grandfathered marker is not
+    claimed, and is warned about by name: which fleet it belongs to cannot be
+    told, so destroying it is not this fleet's call. -/
+def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
+    (forgets : List (Released κ)) (existing : List Ledger.Row) : IO Discovered := do
+  let mut found : List (String × Ledger.Row) := []   -- (physical class, row)
+  let mut warnings : List String := []
+  for p in κ.providers do
+    for (code, b) in bs.scanners p do
+      for k in Finite.elems (α := Kind) do
+        let declaresKind := !(Finite.elems (α := κ.Key p k)).isEmpty
+        unless k != .postgresMigrations && (declaresKind || scannableUndeclared p k) do
+          continue
+        let cls := physicalClass p k
+        for o in ← b.list k do
+          let handle := observedHandle k o
+          let nm := handle.raw
+          let sameThing := fun (q : ProviderId) (k' : Kind) (n : String) =>
+            q == p && physicalClass q k' == cls && n == nm
+          if declaredPhysically κ p cls nm
+              || forgets.any (fun r => sameThing r.cloud r.kind r.name)
+              || existing.any (fun r => sameThing r.cloud r.kind r.name)
+              || found.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm) then
+            continue
+          let evidence ← b.ownershipInfo k handle
+          if claimsUndeclared boundary p k nm evidence then
+            found := found ++ [(cls, { cloud := p, kind := k, name := nm, region := code })]
+          else if (ownershipOf boundary p k nm evidence).isOurs then
+            warnings := warnings ++ [s!"warning: {Ledger.slotId p k nm} is not declared and \
+carries the grandfathered '{markerKey}={legacyMarkerValue}' marker, which cannot say which fleet \
+it belongs to — so it is not destroyed. Retag it with this fleet's name to have it removed, or \
+`forget` it."]
+  return { rows := found.map (·.2), warnings }
+
 /-- Rebuild the ledger from what the account itself says is ours, for every
     `(provider, kind)` this fleet's key family names and whose backend can
     report a marker for (`Backend.ownershipInfo`).
@@ -147,7 +260,14 @@ def discover {κ : Keys} (bs : Backends) (boundary : Boundary)
         for o in observed do
           let handle := observedHandle k o
           let nm := handle.raw
-          if here nm then
+          -- The same physical thing declared under another kind (a container
+          -- declared as `scalewayContainer`, listed here as `compute`) is not
+          -- a resource of *this* kind, and recording it as one would make it
+          -- an orphan. See `physicalClass`.
+          let declaredElsewhere := (Finite.elems (α := Kind)).any fun k' =>
+            k' != k && physicalClass p k' == physicalClass p k &&
+              (Finite.elems (α := κ.Key p k')).any fun key => κ.name p k' key == nm
+          if here nm && !declaredElsewhere then
             match ← b.ownershipInfo k handle with
             | .unreadable => pure ()
             | evidence =>
@@ -605,6 +725,44 @@ be mine. If it really is gone, or was never mine, `forget` it instead of applyin
            log := s!"{a.renderStyled opts.colour} \
 {Ansi.style opts.colour Ansi.green "... ok"}" :: st.log }
 
+/-- Declared resources that exist but are **not** this fleet's, by slot, with
+    the verdict in English.
+
+    The other half of "the marker decides": a resource may be changed or
+    destroyed only if it carries this fleet's marker, whatever the
+    declaration says about it. Before 0.15.0 only an orphan's delete checked
+    (`runStep`); an `update`, a `replace`, or a `destroy` of a *declared* name
+    ran against whatever held that name — while the adoption warning told the
+    reader such a resource "will not be created, changed or destroyed". Now it
+    will not be: `push` drops those actions, on the plan path too, so a plan
+    never shows work it will refuse.
+
+    A kind whose marker this backend cannot read counts as foreign — refusing
+    only means this fleet manages less than it declares (and says so), while
+    guessing could destroy someone else's resource. `unmanaged` keys are not
+    asked about: they are "not my business". -/
+private def foreignDeclared {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
+    (boundary : Boundary) : IO (List (String × String)) := do
+  let mut out : List (String × String) := []
+  for p in Finite.elems (α := ProviderId) do
+    for k in Finite.elems (α := Kind) do
+      for key in Finite.elems (α := κ.Key p k) do
+        match T.assign p k key, W.sighting p k key with
+        | .unmanaged, _ => pure ()
+        | _, none       => pure ()
+        | _, some sighting =>
+          let nm := κ.name p k key
+          let slot := Ledger.slotId p k nm
+          match ← (bs.backendFor p k nm).ownershipInfo k (observedHandle k sighting.observed) with
+          | .unreadable =>
+            out := out ++ [(slot, "of a kind whose marker this backend cannot read, so its \
+ownership cannot be verified")]
+          | evidence =>
+            let verdict := ownershipOf boundary p k nm evidence
+            unless verdict.isOurs do
+              out := out ++ [(slot, describeVerdict boundary evidence verdict)]
+  return out
+
 /-- Reconcile the world to the target.
 
     Returns the lines describing what was done — or, in a dry run, what would
@@ -632,6 +790,19 @@ a caller that builds its own backends must do the same (`Infra.Cli.fetchMigratio
   let work ← match orderActions T (plan T W store.rows store.forgets) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
+  -- Only resources carrying this fleet's marker are changed or destroyed —
+  -- see `foreignDeclared`. Said out loud per resource, on every run: the
+  -- state it describes (declared, existing, and not ours) is otherwise
+  -- invisible — no action, no plan line.
+  let foreign ← foreignDeclared bs T W store.boundary
+  for (slot, why) in foreign do
+    IO.eprintln s!"warning: {slot} is declared and exists, but is {why}. It will not be \
+changed or destroyed by this fleet, which therefore manages less than it declares. Either \
+exclude it deliberately, or delete it and let this fleet create it — see docs/persistence.md"
+  let work := work.filter fun a =>
+    match a with
+    | .update .. | .replace .. | .delete .. => !foreign.any (·.1 == a.slot)
+    | _ => true
   -- A dry run returns here and writes nothing. An *apply* deliberately does
   -- not return early on an empty work-list: it still has to record what it
   -- claims. See the adoption block below — a fully converged fleet has nothing
@@ -707,49 +878,20 @@ Declare the cloud, or point the ledger elsewhere")
   -- The ledger is purely a cache of resources already verified this way; it
   -- must never itself be read as evidence of ownership.
   --
-  -- So: a backend that CAN report a marker — tags, a marker decoded out of a
-  -- description, or the name on the rung where that is all there is — is
-  -- checked against `ownershipOf`. A backend that cannot (`.unreadable`) is
-  -- refused, not adopted — the safe default, since claiming it wrongly can
-  -- delete someone else's resource, while refusing it only means this fleet
-  -- manages less than it declares (loudly warned, and fixable by adding
-  -- marker support to that kind's backend, or by setting
-  -- `Boundary.namePrefix` for a kind the cloud simply cannot tag).
+  -- So the verdict is `foreignDeclared`'s, reached above for every declared
+  -- resource that exists — tags, a marker decoded out of a description, or the
+  -- name on the rung where that is all there is, checked against
+  -- `ownershipOf`. A backend that cannot read one (`.unreadable`) counts as
+  -- foreign: refused, not adopted, and already warned about by name.
   let mut rows := store.rows
   for p in Finite.elems (α := ProviderId) do
     for k in Finite.elems (α := Kind) do
       for key in Finite.elems (α := κ.Key p k) do
         match T.assign p k key, W.sighting p k key with
-        | .present _, some sighting =>
+        | .present _, some _ =>
           let nm := κ.name p k key
           unless rows.any (Ledger.Row.isAt · p k nm) do
-            let handle := observedHandle k sighting.observed
-            let claim ← match ← (bs.backendFor p k nm).ownershipInfo k handle with
-              | .unreadable =>
-                IO.eprintln s!"warning: {Ledger.slotId p k nm} is declared and exists, \
-but this backend cannot read a marker for this kind to verify ownership of it. It will not be \
-created, changed or destroyed by this fleet, which therefore manages less than it declares, \
-until marker support is added for this kind — see AGENTS.md's \"no half-implemented features\" \
-rule and docs/persistence.md. It is never adopted by name alone."
-                pure false
-              | evidence =>
-                let verdict := ownershipOf store.boundary p k nm evidence
-                -- Said out loud, because the alternative is the quietest bad
-                -- state this tool can be in: the declaration names it, it
-                -- exists, it matches — so there is no action, no plan line and
-                -- nothing to notice — and yet it is not managed, so a later
-                -- deletion of its line abandons it instead of destroying it.
-                -- Warned on every apply rather than once, since there is no
-                -- "once" to hang it on: the ledger is a cache, and a run that
-                -- rebuilt it would forget it had already mentioned this.
-                unless verdict.isOurs do
-                  IO.eprintln s!"warning: {Ledger.slotId p k nm} is declared and exists, \
-but is {describeVerdict store.boundary evidence verdict}. It will not be created, changed or \
-destroyed by this fleet, which therefore manages less than it declares. Either exclude it \
-deliberately, or delete \
-it and let this fleet create it — see docs/persistence.md"
-                pure verdict.isOurs
-            if claim then
+            if !foreign.any (·.1 == Ledger.slotId p k nm) then
               rows := { cloud := p, kind := k, name := nm
                         region := store.regionOf p k nm } :: rows
         | _, _ => pure ()

@@ -117,6 +117,15 @@ private def composedMarkedBackends : Backends where
           ownershipInfo := fun _ _ => pure (.tags [(markerKey, legacyMarkerValue)] none) }
     | .gcp      => Infra.Providers.placeholderBackend "gcp"
 
+/-- `Infra.Providers.all`, except every backend reports the marker — what a
+    real backend reports for resources this (unnamed) fleet created. The
+    placeholder alone answers `.unreadable`, which `push` now treats as "not
+    ours": it refuses to change or destroy a resource it cannot verify. -/
+private def ownedBackends : Backends where
+  backend p :=
+    { Infra.Providers.placeholderBackend p.name with
+        ownershipInfo := fun _ _ => pure (.tags [(markerKey, legacyMarkerValue)] none) }
+
 /-- An apply records what it claims, even when it has nothing to do.
 
     This is the check the offline suite was missing, and its absence cost three
@@ -763,6 +772,63 @@ Signature=21cccf6f70b4372af8e137af9b15333d9485d91e393b87fc2b9e034f8ef7a77d"
 
   IO.println "signing: ok (S3 and Query vectors, Content-MD5, both error dialects)"
 
+/- The principle this library rests on, checked end to end: **the marker
+    decides what is managed, not the ledger.** With an *empty* ledger — every
+    CI runner — a resource carrying this fleet's name that the declaration no
+    longer names is found and destroyed; everything else is left alone. -/
+fleet markerFleet in paris where
+  provider scaleway where
+    resource secrets "kept" { valueFrom := Infra.Specs.fromEnv "X" }
+    resource scalewayContainerNamespace "ns" as markerNs { description := "d" }
+    resource scalewayContainer "app" { namespace' := markerNs, image := "i", port := 8080 }
+
+private def markerOf : String → List (String × String)
+  | "kept" | "old-secret" | "app" | "old-app" | "ns" => [(markerKey, "tn")]
+  | "legacy-secret" => [(markerKey, legacyMarkerValue)]
+  | "theirs"        => [(markerKey, "another-fleet")]
+  | _               => []
+
+private def markerBackends : Backends where
+  backend p :=
+    { Infra.Providers.placeholderBackend p.name with
+        list := fun k => match k with
+          | .secrets => pure (["kept", "old-secret", "legacy-secret", "theirs", "stranger"].map
+              fun n => { handle := ⟨n⟩, version := "" })
+          | .compute => pure (["app", "old-app"].map fun n => { handle := ⟨n⟩, status := "" })
+          | .scalewayContainer => pure (["app", "old-app"].map fun n => { handle := ⟨n⟩, url := "" })
+          -- Listing queues on Scaleway mints a credential: discovery must not
+          -- touch it for a fleet that declares none.
+          | .queues => throw (IO.userError "queues were listed: that mints a credential")
+          | _ => pure []
+        ownershipInfo := fun _ h => pure (.tags (markerOf h.raw) none) }
+
+def checkMarkerDecides : IO Unit := do
+  let boundary : Boundary := { fleetName := some "tn" }
+  let found ← claimUndeclared (κ := markerFleet.keys) markerBackends boundary [] []
+  let slots := found.rows.map fun r => Ledger.slotId r.cloud r.kind r.name
+  -- Exactly the two undeclared resources carrying this fleet's name — the
+  -- container once, though two kinds list it.
+  unless slots.length == 2 && slots.contains "scaleway/secrets/old-secret"
+      && slots.any (fun sl => (sl.splitOn "/old-app").length > 1) do
+    throw (IO.userError s!"expected old-secret and old-app, got {slots}")
+  -- `app` is declared as a `scalewayContainer`; its `compute` listing is the
+  -- same container, not an orphan.
+  if slots.any (fun sl => (sl.splitOn "/app").length > 1 && (sl.splitOn "old-app").length == 1) then
+    throw (IO.userError s!"a declared container was claimed as an orphan via another kind: {slots}")
+  -- The grandfathered marker cannot say which fleet it belongs to: warned, not claimed.
+  unless found.warnings.length == 1 && (found.warnings.head!.splitOn "legacy-secret").length > 1 do
+    throw (IO.userError s!"expected one warning, about legacy-secret: {found.warnings}")
+  -- With those rows — and nothing else — the plan destroys them.
+  let store : Store markerFleet.keys := { rows := found.rows, boundary }
+  let lines ← push markerBackends markerFleet.plan (worldOf []) {} (store := store)
+  unless lines.any (mentions · "DELETE scaleway/secrets/old-secret")
+      && lines.any (fun l => (l.splitOn "DELETE").length > 1 && (l.splitOn "old-app").length > 1) do
+    throw (IO.userError s!"expected the two orphans deleted: {lines}")
+  if lines.any (fun l => (l.splitOn "theirs").length > 1 || (l.splitOn "stranger").length > 1
+      || (l.splitOn "legacy-secret").length > 1) then
+    throw (IO.userError s!"touched a resource that is not this fleet's: {lines}")
+  IO.println "marker: ok (an empty ledger still finds and destroys what carries this fleet's name, and nothing else)"
+
 /-- Checks `push`'s planning and ordering without touching a cloud.
 
     Uses the placeholder backends, but a dry run never calls them at all — it
@@ -791,21 +857,27 @@ def checkPush : IO Unit := do
   | _, _ => throw (IO.userError s!"expected both slots in the plan: {dry}")
 
   -- A resource that already matches drops out entirely.
-  let partial' ← push bs demoPlan partialWorld {}
+  let partial' ← push ownedBackends demoPlan partialWorld {}
   unless (partial'.filter (·.startsWith "would")).length == 7 do
     throw (IO.userError s!"expected 7 actions against partialWorld: {partial'}")
 
   -- An immutable field that disagrees is a replace, not an update.
-  let immutable ← push bs demoPlan immutableDriftWorld {}
+  let immutable ← push ownedBackends demoPlan immutableDriftWorld {}
   unless immutable.any (mentions · "REPLACE aws/s3-bucket/cold") do
     throw (IO.userError s!"expected a replace for the object-lock change: {immutable}")
+  -- …but only of a resource this fleet can show is its own. The placeholder
+  -- cannot read a marker, so the same drift proposes nothing: a declared name
+  -- is not evidence of ownership (0.15.0; before, this replaced it anyway).
+  let unverified ← push bs demoPlan immutableDriftWorld {}
+  if unverified.any (mentions · "REPLACE aws/s3-bucket/cold") then
+    throw (IO.userError s!"replaced a resource whose ownership it could not verify: {unverified}")
 
   -- An idle plan asks for nothing at all.
   let idle ← push bs idlePlan emptyWorld {}
   unless idle == ["nothing to do"] do
     throw (IO.userError s!"idle plan should be a no-op: {idle}")
 
-  IO.println "push: ok (dry run, cross-cloud ordering, no-op and replace)"
+  IO.println "push: ok (dry run, cross-cloud ordering, no-op, replace — and no replace of what is not ours)"
 
 /-- Checks a composed secret: one apply, right order, and no leakage.
 
@@ -894,7 +966,9 @@ def checkMintedKey : IO Unit := do
   -- Teardown is the transpose, and this is the half that matters on AWS: an
   -- IAM user holding an access key cannot be deleted, so the secret that owns
   -- the key has to go first.
-  let down ← push bs (Plan.absent identityKeys) identityAppliedWorld
+  -- Against a backend that reports the marker: a teardown deletes only what
+  -- is verifiably this fleet's, and a placeholder cannot say.
+  let down ← push ownedBackends (Plan.absent identityKeys) identityAppliedWorld
     { apply := true } (edges := identityPlan)
   match down.findIdx? (fun l => mentions l "secrets/app-key"),
         down.findIdx? (fun l => mentions l "iam/reports-app") with
@@ -933,10 +1007,15 @@ def checkTeardown : IO Unit := do
   unless onNothing == ["nothing to do"] do
     throw (IO.userError s!"tearing down an unapplied fleet should be a no-op: {onNothing}")
 
-  -- Against a world where the referenced bucket exists, the delete appears.
-  let dry ← push bs (Plan.absent demoKeys) partialWorld {}
+  -- Against a world where the referenced bucket exists, the delete appears…
+  let dry ← push ownedBackends (Plan.absent demoKeys) partialWorld {}
   unless (dry.filter (·.startsWith "would DELETE")).length == 1 do
     throw (IO.userError s!"expected one delete against partialWorld: {dry}")
+  -- …and does not, for a resource that is not verifiably ours: `destroy`
+  -- deletes what carries the marker, not whatever holds a declared name.
+  let refused ← push bs (Plan.absent demoKeys) partialWorld {}
+  unless refused == ["nothing to do"] do
+    throw (IO.userError s!"destroy reached a resource it could not verify: {refused}")
 
   -- Ordering, on the fleet that has a real cross-cloud edge: the Scaleway
   -- function reads the AWS bucket, so on the way down the function goes first.
@@ -950,7 +1029,7 @@ def checkTeardown : IO Unit := do
           reported := { name := "ingest", runtime := "python3.12"
                         namespace' := ⟨"demo"⟩, code := .unknown
                         handler := .unknown, sourceBucket := .unknown } }⟩ ]
-  let ordered ← push bs (Plan.absent demoKeys) both {}
+  let ordered ← push ownedBackends (Plan.absent demoKeys) both {}
   match slotIdx ordered "scaleway/scaleway-function/ingest",
         slotIdx ordered "aws/s3-bucket/cold" with
   | some fn, some bucket =>
@@ -958,7 +1037,7 @@ def checkTeardown : IO Unit := do
       throw (IO.userError s!"on teardown the function must go before its bucket: {ordered}")
   | _, _ => throw (IO.userError s!"expected both deletes: {ordered}")
 
-  IO.println "teardown: ok (no-op when absent, reverse order when present)"
+  IO.println "teardown: ok (no-op when absent, reverse order when present, only what is ours)"
 
 /-- A resource that vanishes between `list` and `read` is absent, not fatal.
 
@@ -1093,6 +1172,7 @@ def selfCheck : IO Unit := do
   checkPullAndPlan
   checkCredentials
   checkSigning
+  checkMarkerDecides
   checkPush
   checkTeardown
   checkSecretComposition

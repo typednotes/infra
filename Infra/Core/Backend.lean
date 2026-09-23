@@ -126,6 +126,16 @@ structure Backends where
       endpoint for anything placed anywhere else. The region comes from the
       ledger row instead, which is why the row records one. -/
   backendAt : ProviderId → String → Backend := fun p _ => backend p
+  /-- Every region this fleet uses on a cloud, each with its code and backend:
+      where to look for resources carrying this fleet's marker that the
+      declaration does **not** name (`Engine.claimUndeclared`).
+
+      Not `listers`: those are derived from the declaration's own slots, per
+      kind, so a kind the fleet no longer declares anything of has none — and
+      that is exactly the kind whose last resource was just removed and must
+      now be destroyed. The code is recorded on the row, so the delete goes to
+      the region the resource was found in (`backendAt`). -/
+  scanners : ProviderId → List (String × Backend) := fun p => [("", backend p)]
 
 /-- One observed resource, tied back to the fleet key it realises.
 

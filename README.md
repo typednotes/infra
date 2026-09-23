@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.14.1 covers
+## What 0.15.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **15 resource kinds** (8 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -115,7 +115,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.14.1"
+rev = "v0.15.0"
 ```
 
 Then:
@@ -210,9 +210,13 @@ of three rungs: a tag, or — where the object has no tags but one writable
 free-text field — a marker written into its `description`, or, for the two
 Scaleway products with neither, the resource's own name against a prefix you
 configure (`namePrefix`, plus `namePrefixes` when a fleet's untaggable resources
-were not all named under one). A resource whose line
-you deleted can still be named after the fact — the declaration no longer
-mentions it, so nothing else can, until the ledger or the marker does. Saying
+were not all named under one). A resource whose line you deleted is found by
+its marker — `plan` and `apply` ask the cloud for everything carrying this
+fleet's marker, in every region and kind the fleet's clouds offer — so deleting
+a line destroys the resource from any machine, a fresh CI runner included; the
+ledger is never needed for it. And the rule runs the other way too: only a
+resource carrying the marker is ever changed or destroyed, so a declared name
+held by something else is warned about and left alone. Saying
 `.absent` within the declaration does the same thing; `destroy` is `apply`
 against an empty declaration. All three end at the same call, and deletions
 run in the reverse of creation order so a resource goes before whatever it
@@ -222,10 +226,11 @@ Nothing about that needs committing, which is deliberate: membership is a
 consequence of applying, not a statement of intent, so CI never has to write
 back to your branch. `Infra/Core/Ownership.lean` records the reasoning, and
 which way each rule fails. The ledger is a local cache of the decision, not the
-decision itself — `lake exe infra discover` rebuilds it straight from the
-account if it is ever lost. The one case that still strands an orphan is a
-resource on the name rung in a fleet that has set no `namePrefix`: there is no
-marker on it to rebuild from, which is exactly what the prefix is for.
+decision itself, and nothing depends on it. The cases that can still strand
+an orphan are enumerated in `docs/coverage.md`: a resource on the name rung in
+a fleet that has set no `namePrefix` (there is no marker on it), a Scaleway
+queue once the fleet declares none (listing queues there mints a credential),
+and anything on a cloud the declaration no longer names at all.
 
 To stop managing something *without* destroying it, say so:
 

@@ -365,6 +365,31 @@ def Ownership.isOurs : Ownership → Bool
   | .managed => true
   | _        => false
 
+/-- Whether a resource the declaration does **not** name may be claimed —
+    and so destroyed — on the marker's say-so alone, with no ledger row.
+
+    `ownershipOf` decides whether a resource is ours; this is stricter in one
+    way, and deliberately. The grandfathered marker value (`legacyMarkerValue`)
+    matches *every* fleet, which is right for adopting a resource the
+    declaration names (the name is corroboration) and wrong for destroying one
+    it does not: a resource tagged `true` by another, unnamed fleet in the same
+    account — `infra`'s own live tests, say — would read as ours and be deleted.
+    So when this fleet names itself, only its own name in the marker claims an
+    undeclared resource. A fleet that does not name itself owns its realm
+    outright (`Accounts` refuses two such fleets in one account), so any marker
+    value is its own.
+
+    The name rung (`Boundary.prefixes`, for the kinds nothing can be written
+    on) claims as it does everywhere: the prefix *is* the declaration's claim,
+    so setting one means every such resource under it is this fleet's, and one
+    this fleet does not declare is destroyed. -/
+def claimsUndeclared (b : Boundary) (cloud : ProviderId) (k : Kind) (name : String)
+    (e : Evidence) : Bool :=
+  (ownershipOf b cloud k name e).isOurs &&
+    match e, b.fleetName with
+    | .tags ts _, some me => ts.any fun t => t.1 == markerKey && t.2 == me
+    | _,          _       => true
+
 /-- The verdict, as a warning line's worth of English — and, when it is not
     ours, which rung of the ladder said so.
 
@@ -576,6 +601,25 @@ private def bTwo : Boundary := { namePrefix := some "secrets-", namePrefixes := 
          .aws anyKind "mine-x" (tagged [(markerKey, "theirs")]) = .foreign
 #guard ownershipOf { fleetName := some "mine", namePrefix := some "mine-" }
          .scaleway .postgres "theirs-x" (.named "theirs-x" none) = .foreign
+
+/-! ### Claiming what the declaration does not name
+
+  Stricter than adopting: the grandfathered value cannot tell fleets apart, so
+  it never licenses destroying an undeclared resource for a named fleet. -/
+private def bNamed : Boundary := { fleetName := some "typednotes", namePrefix := some "secrets-" }
+#guard claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, "typednotes")])
+#guard !claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, legacyMarkerValue)])
+#guard !claimsUndeclared bNamed .scaleway .secrets "old" (tagged [(markerKey, "someone-else")])
+#guard !claimsUndeclared bNamed .scaleway .secrets "old" (tagged [])
+#guard !claimsUndeclared bNamed .scaleway .secrets "old" .unreadable
+-- The name rung claims by its prefix, and only by it.
+#guard claimsUndeclared bNamed .scaleway .postgres "secrets-old" (.named "secrets-old" none)
+#guard !claimsUndeclared bNamed .scaleway .postgres "reports" (.named "reports" none)
+-- An unnamed fleet owns its realm: any marker value is its own.
+#guard claimsUndeclared {} .aws anyKind "x" (tagged [(markerKey, legacyMarkerValue)])
+-- Exclusions and the `since` cutoff still win.
+#guard !claimsUndeclared { bNamed with exclusions := [⟨.scaleway, .secrets, "old", "kept"⟩] }
+         .scaleway .secrets "old" (tagged [(markerKey, "typednotes")])
 
 /-! ### Unreadable
 

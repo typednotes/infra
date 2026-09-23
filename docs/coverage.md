@@ -1,4 +1,4 @@
-# Coverage in 0.14.1
+# Coverage in 0.15.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-23.
@@ -1006,6 +1006,37 @@ produced. From the outside, a pair with a carefully argued permanent exception
 and a pair nobody had got to looked identical — both answered `none`, both
 refused — so the four documented ones made the five undocumented ones look
 deliberate too.
+
+### What a fleet manages is found by its marker, on every run
+
+Since 0.15.0, `plan`/`apply`/`destroy`/`refresh` ask the cloud for every
+resource carrying this fleet's marker that the declaration does not name
+(`Engine.claimUndeclared`) and destroy it — so deleting a line works from a CI
+runner with no ledger — and `push` changes or destroys only resources that
+carry the marker (`Engine.foreignDeclared`). Scanned: every region the fleet
+uses, on every cloud it uses, every kind `Engine.scannableUndeclared` allows
+there — including kinds the declaration no longer has anything of. Kinds that
+list the same physical resources share a class (`Engine.physicalClass`: S3
+buckets as `objectStore`/`s3Bucket`, Scaleway containers as
+`compute`/`scalewayContainer`), so one declared under either is not an orphan
+of the other.
+
+What this cannot reach, enumerated:
+
+| case | why | instead |
+|---|---|---|
+| Scaleway `queues`, once the fleet declares none | listing mints an SQS credential; `plan` must not change the account | remove the last queue with a run whose ledger remembers it, or delete it by hand |
+| `postgresMigrations` | its listing is route-driven, and its delete is a ledger-only FORGET | nothing to destroy: the schema dies with its database |
+| a cloud the declaration no longer names at all | no credentials are loaded for it | `destroy` before removing its last line |
+| a name-rung resource in a fleet with no `namePrefix` | nothing on it says whose it is | set the prefix |
+| a resource marked with the grandfathered value, in a named fleet | the value matches every fleet, so whose it is cannot be told | warned by name; retag it or `forget` it |
+
+Exercised: offline by `checkMarkerDecides` (an empty ledger finds and destroys
+exactly the undeclared, fleet-named resources — once per physical resource —
+and leaves the declared-under-another-kind, grandfathered, other-fleet and
+unmarked ones alone, without listing Scaleway queues), and live against
+`typednotes-infra`'s Scaleway account with no ledger, where the plan found
+exactly its four abandoned resources and claimed nothing else.
 
 ### The name rung, and why it is opt-in
 

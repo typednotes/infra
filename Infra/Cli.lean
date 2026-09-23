@@ -155,7 +155,15 @@ this declaration names no {p.name} resources" }
             -- written by a fleet that never said where it was, which is the
             -- same case `backend` covers.
             backendAt  := fun p code =>
-              backendIn p (if code.isEmpty then fallback p else code) }, lookup)
+              backendIn p (if code.isEmpty then fallback p else code)
+            -- Every region the fleet uses on this cloud, across all kinds —
+            -- or the credentials' own if it places nothing there explicitly.
+            scanners   := fun p =>
+              let codes := (Finite.elems (α := Kind)).foldl (init := []) fun acc k =>
+                (regions.used κ p k (fallback p)).foldl (init := acc) fun acc c =>
+                  if acc.contains c then acc else acc ++ [c]
+              (if codes.isEmpty then [fallback p] else codes).map fun c => (c, backendIn p c) },
+            lookup)
 
 /-- Which accounts a fleet is for.
 
@@ -360,12 +368,13 @@ def usage (exe : String) : String := String.intercalate "\n"
   , "  apply --force    reconcile even if that destroys most of the fleet"
   , "  destroy          delete everything this fleet declares"
   , ""
-  , "  Deleting a resource from the declaration destroys it, because the"
-  , "  ledger and not the declaration records what is managed. To stop"
-  , "  managing something without destroying it, say `forget` in the"
-  , "  declaration. `destroy` is `apply` against an empty declaration. The"
-  , "  ledger is a cache: `discover` rebuilds what it can from the marker tag"
-  , "  `infra` itself writes, rather than trusting past runs to have it right."
+  , "  Deleting a resource from the declaration destroys it: what a fleet"
+  , "  manages is what carries its marker in the account, found by asking the"
+  , "  cloud on every run — the local ledger is only a cache, so this works"
+  , "  from a fresh CI runner too. Only marked resources are ever changed or"
+  , "  destroyed. To stop managing something without destroying it, say"
+  , "  `forget` in the declaration. `destroy` is `apply` against an empty"
+  , "  declaration. `discover` rewrites the cache from the markers."
   ]
 
 /-- The whole front end for one fleet.
@@ -448,6 +457,16 @@ def run (exe : String) (F : Fleet)
   -- prints as "uncaught exception: …", which reads like a crash in the tool
   -- rather than a refusal by a cloud — and buries the message in a prefix
   -- that carries no information.
+  -- What this fleet manages, decided by the cloud: the ledger (a cache — it
+  -- may be empty, as on every CI runner) plus every undeclared resource
+  -- carrying this fleet's marker (`Engine.claimUndeclared`). Without the
+  -- second half, removing a line from the declaration abandoned the resource
+  -- anywhere the ledger did not happen to remember it.
+  let managedRows (bs : Backends) : IO (List Ledger.Row) := do
+    let cached ← Ledger.load cacheRoot
+    let found ← claimUndeclared (κ := F.keys) bs boundary F.forgets cached
+    for w in found.warnings do IO.eprintln w
+    return cached ++ found.rows
   let reporting (act : IO Unit) : IO UInt32 := do
     match ← act.toBaseIO with
     | .ok _    => return 0
@@ -468,7 +487,7 @@ def run (exe : String) (F : Fleet)
   | ["refresh"] =>
     reporting <| withLive fun bs => do
       let world ← pull (κ := F.keys) cacheRoot bs
-      let rows ← Ledger.load cacheRoot
+      let rows ← managedRows bs
       let wanted := withFetchedSources F.plan (← fetchMigrationSources F.plan)
       let outstanding := (plan wanted world rows F.forgets).length
       IO.println s!"refreshed; {rows.length} managed; {outstanding} action(s) outstanding"
@@ -496,7 +515,7 @@ def run (exe : String) (F : Fleet)
     reporting <| withLive fun bs => do
       let entries ← observe (κ := F.keys) cacheRoot bs
       let world := worldOf entries
-      let rows ← Ledger.load cacheRoot
+      let rows ← managedRows bs
       -- `Plan.absent` is the empty declaration: the same keys, every one
       -- `.absent`. So `destroy` is not a second teardown mechanism, it is
       -- this one with an empty target, and the guard below checks that.

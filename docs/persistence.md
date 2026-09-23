@@ -170,6 +170,17 @@ three things a human authors and no run has to write back: the realm, an
 inclusion marker on each created resource, and an exclusion snapshot. See
 `Infra.Core.Ownership`, which also records which way each of those fails.
 
+**Derived on every run, not only by `discover` (0.15.0).** Until 0.15.0 the
+derivation above existed only as the `discover` command; `plan` and `apply`
+read orphans from the ledger alone. So on a machine without the ledger — every
+CI runner — deleting a line from the declaration abandoned the resource. It
+was found on `typednotes-infra`, whose CI applies left a retired IAM
+application and its live API key standing. Now `Infra.Cli.run` asks the cloud
+for every undeclared resource carrying this fleet's marker before planning
+(`Engine.claimUndeclared`), and `push` changes or destroys only what carries
+it (`Engine.foreignDeclared`). The ledger went from "the record, rebuildable"
+to what this section always said it was: a cache nothing depends on.
+
 **Two fleets in one account, and the marker's value.** The marker's *key* is
 constant, and its *value* is where a fleet writes its own name
 (`Boundary.fleetName`, threaded to the backends by `Infra.Cli.liveFor` so the

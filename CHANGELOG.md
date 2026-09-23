@@ -121,6 +121,61 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.15.0] — 2026-09-23
+
+### Changed: the marker decides what a fleet manages — on every run
+
+Two halves of one principle, now written at the top of `AGENTS.md`.
+
+**A resource carrying this fleet's marker that the declaration no longer
+names is destroyed on the next apply, on any machine.** Until now orphans came
+only from the ledger (`.infra/`), and the marker-based derivation existed only
+as the manual `discover` command. So on a machine without the ledger — every
+CI runner — deleting a line abandoned the resource. Found on
+`typednotes-infra`: its CI applies left `secrets-db-app` (an IAM application
+with table-structure rights), `secrets-db-key` (its live API key) and two stale
+secrets standing after their lines were removed. `Infra.Cli.run` now asks the
+cloud before planning (`Engine.claimUndeclared`). It scans every region the
+fleet uses, and every kind the fleet's clouds offer — including a kind the
+declaration no longer has anything of, where the *last* resource of it was
+just removed (`Backends.scanners`, `Engine.scannableUndeclared`).
+
+**Only a resource carrying the marker is changed or destroyed.** `update`,
+`replace` and the keyed `delete` (so `destroy`) used to run against whatever
+held a declared name. Only an orphan's delete re-checked the marker — while
+the adoption warning told the reader such a resource "will not be created,
+changed or destroyed". `push` now drops those actions for a declared resource
+that is not verifiably this fleet's, on the plan path too, and says so by name
+(`Engine.foreignDeclared`). **Behaviour change:** a backend whose
+`ownershipInfo` answers `.unreadable` for a kind can no longer update, replace
+or delete resources of that kind. That was the documented intent, and is now
+the behaviour.
+
+Details that make it safe rather than merely eager:
+
+- **Physical identity.** An S3 bucket lists as both `objectStore` and
+  `s3Bucket`, a Scaleway container as both `compute` and `scalewayContainer`
+  (`Engine.physicalClass`). A resource declared under one is not an orphan of
+  the other, and an undeclared one gets one row. `discover` had the same flaw
+  for a fleet declaring both kinds of a pair; it is class-aware now too.
+- **A named fleet destroys only what names it.** The grandfathered marker
+  value matches every fleet, so it may still adopt a declared resource but
+  never licenses destroying an undeclared one (`Ownership.claimsUndeclared`) —
+  warned about instead.
+- **`plan` stays read-only.** Scaleway queues are scanned only while the
+  fleet declares one, because listing them mints a credential. That, and the
+  other cases this cannot reach, are enumerated in `docs/coverage.md`.
+- **A listing that fails stops the run**, naming the kind, rather than
+  reading as "nothing there". This matters now that kinds a fleet does not use
+  are listed: its credentials need read access to them.
+
+Tested with an **empty ledger** — `checkMarkerDecides`, which fails if the
+physical-class mapping is removed (checked). Also tested live: a plan of
+`typednotes-infra` with no `.infra/` found exactly its four abandoned
+resources, plus the two actions it had pending, and claimed nothing else.
+The offline push/teardown checks now run against a backend that reports the
+marker, and assert the refusal against the placeholder.
+
 ## [0.14.1] — 2026-09-23
 
 ### Fixed: a minted key's principal was empty after the apply that minted it
