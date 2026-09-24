@@ -181,7 +181,8 @@ gcloud services enable --project=typednotes \
   artifactregistry.googleapis.com \
   run.googleapis.com \
   iam.googleapis.com \
-  cloudresourcemanager.googleapis.com
+  cloudresourcemanager.googleapis.com \
+  sqladmin.googleapis.com
 ```
 
 `cloudresourcemanager` is there for `Gcp.Iam.readPolicies`, which reads the
@@ -189,9 +190,20 @@ project's IAM policy to report the roles bound to a service account. That one
 degrades to `unknown` rather than failing if it is unavailable, so it is the
 only optional entry.
 
-`sqladmin.googleapis.com` is deliberately absent: `postgres` is not in the live
-fleet, and enabling an API is not free of consequence — it widens what a
-compromised credential could reach.
+`sqladmin.googleapis.com` is there although `postgres` is not in the live
+fleet. It used to be left out on purpose — enabling an API widens what a
+compromised credential could reach — but since 0.17.0 every run lists **every
+kind** on the fleet's clouds, declared or not, to find resources carrying the
+fleet's marker that the declaration no longer names (`Engine.claimUndeclared`).
+With the API off, that listing fails the run:
+
+    listing gcp postgres in europe-west9 failed. … HTTP 403 PERMISSION_DENIED:
+    Cloud SQL Admin API has not been used in project 113928363564 before or it
+    is disabled.
+
+A disabled API is not treated as "nothing there": that would let one missing
+switch hide a whole kind. Enabled 2026-09-24. Enabling it creates nothing and
+costs nothing; the role below is what bounds what CI can do with it.
 
 To see what is already on:
 
@@ -233,6 +245,28 @@ What each is for:
 | `roles/storage.admin` | `objectStore` |
 | `roles/iam.serviceAccountAdmin` | `iam` |
 | `roles/run.admin` | `compute` |
+| `projects/typednotes/roles/infraCiCloudSqlRead` (custom, below) | `postgres` — **read only**, for the scan |
+
+One kind is in no live fleet but is still read: every run lists every kind
+(see `sqladmin` above), so CI must be able to *list* `postgres` without being
+able to manage it. The scan makes exactly two Cloud SQL calls —
+`Gcp.CloudSql.list` (`instances.list`) and `readOwnership` (`instances.get`) —
+so the role grants exactly those two permissions. It is a custom role because
+the nearest predefined one, `roles/cloudsql.viewer`, also carries
+`cloudsql.instances.export`, which next to `roles/storage.admin` would let CI
+export a database into a bucket. Created 2026-09-24:
+
+```sh
+gcloud iam roles create infraCiCloudSqlRead --project=typednotes \
+  --title="infra CI: Cloud SQL scan" \
+  --permissions=cloudsql.instances.list,cloudsql.instances.get --stage=GA
+gcloud projects add-iam-policy-binding typednotes \
+  --member=serviceAccount:infra-ci@typednotes.iam.gserviceaccount.com \
+  --role=projects/typednotes/roles/infraCiCloudSqlRead --condition=None
+```
+
+If the scan ever reads more of Cloud SQL, this role has to follow — the failure
+will name the missing permission.
 
 **This table is derived from `test/Live.lean`, and it went stale once already**
 — `roles/run.admin` was missing after `compute` joined the GCP fleet, and the
@@ -279,10 +313,14 @@ Missing the *read* half used to be worse, because it was quiet: a failed read
 made the engine fall back to the local ledger (since removed), so the ownership
 perimeter silently stopped being enforced for that kind. `sqs:ListQueueTags` and
 `iam:ListUserTags` were both absent for that reason. There is no fallback now:
-a listing or tag read that errors fails the run (`claimUndeclared` does not
-catch it), and a marker a backend reports as unreadable counts as foreign — a
-declared resource is left alone with a warning, an undeclared one is never
-destroyed.
+a listing that errors fails the run, and so does a tag read that errors —
+except one answering **access denied** for an *undeclared* resource, which
+since 0.17.2 is warned about by name and left alone (`Backend.readsAsRefused`;
+it could never have been claimed). A marker a backend reports as unreadable
+counts as foreign — a declared resource is left alone with a warning, an
+undeclared one is never destroyed. So a missing tag-*read* permission no longer
+always fails loudly: for undeclared resources it shows up as one warning per
+resource, and those warnings are worth reading after changing this policy.
 
 One permission is easy to miss because no resource names it: the fleets contain
 two **composed** secrets, whose values are built from a base secret's value at
@@ -292,7 +330,8 @@ the policy for the same reason.
 
 Two not on that list, deliberately. `roles/cloudsql.admin` is not granted
 because `postgres` is not in the live fleet — it takes longer to create than
-the workflow's step timeout. And nothing grants
+the workflow's step timeout; the scan's read-only custom role above is all CI
+holds on Cloud SQL. And nothing grants
 `resourcemanager.projects.setIamPolicy`: `Gcp.Iam` refuses to write policy
 bindings by design, so the permission would be unused, and granting the ability
 to rewrite a project's IAM policy to a CI identity is not something to do for
@@ -382,6 +421,14 @@ scw iam policy create name=infra-ci-live-tests application-id="$APP" \
   rules.3.project-ids.0="$CI" rules.3.permission-set-names.0=ObjectStorageFullAccess \
   rules.4.project-ids.0="$CI" rules.4.permission-set-names.0=FunctionsFullAccess \
   rules.5.project-ids.0="$CI" rules.5.permission-set-names.0=ContainersFullAccess
+
+# Read-only, for the scan (added 2026-09-24 — see "Read-only grants for the
+# scan" below). Two in the CI project, one at organization scope.
+P=$(scw iam policy list application-ids.0="$APP" name=infra-ci-live-tests -o json | jq -r '.[0].id')
+ORG=$(scw config get default-organization-id)
+scw iam rule create policy-id="$P" permission-set-names.0=RelationalDatabasesReadOnly project-ids.0="$CI"
+scw iam rule create policy-id="$P" permission-set-names.0=ServerlessSQLDatabaseReadOnly project-ids.0="$CI"
+scw iam rule create policy-id="$P" permission-set-names.0=IAMApplicationReadOnly organization-id="$ORG"
 ```
 
 Then three repository secrets:
@@ -392,23 +439,58 @@ Then three repository secrets:
 | `SCW_SECRET_KEY` | from the same command — shown once, so capture it then |
 | `SCW_DEFAULT_PROJECT_ID` | `93e968f6-3d1e-4f28-ac82-b7ed6b4b6658` |
 
-`SCW_DEFAULT_ORGANIZATION_ID` is **not** required. Only `Iam.Scw` reads it, and
-`resource iam` is out of `scalewayFull`. The workflow still passes it, so that
-re-adding the kind does not also mean remembering this line.
+`SCW_DEFAULT_ORGANIZATION_ID` **is** required now: the scan lists IAM
+applications, which are organization-scoped (`Iam.Scw` reads it). It is not a
+repository secret — it is inherited from the `typednotes` organization's
+secrets, which is why the table above does not list it. A repository without
+access to that organization secret needs it added.
 
 `project-ids` rather than `organization-id` is the point: with the former, a
-credential that goes wrong cannot reach anything outside the CI project.
+credential that goes wrong cannot reach anything outside the CI project. Every
+rule that can *change* anything is project-scoped.
 
-**The policy above needs no organization-level rights, and that is deliberate.**
-Scaleway's IAM applications live in the *organization*, not in a project, so
-covering the `iam` kind would have meant granting CI org-wide IAM — which the
-isolated project cannot contain, and which is the one grant that could reach
-production identities.
+**The policy above holds no organization-level right that can change
+anything, and that is deliberate.** Scaleway's IAM applications live in the
+*organization*, not in a project, so covering the `iam` kind would have meant
+granting CI org-wide IAM *management* — which the isolated project cannot
+contain, and which is the one grant that could reach production identities.
 
-So `resource iam` was **dropped from `scalewayFull`**. CI's Scaleway credential
-now holds project-scoped product permissions and nothing else. A `#guard` in
-`test/Live.lean` pins the absence, because adding the resource back would
-silently re-introduce the requirement.
+So `resource iam` was **dropped from `scalewayFull`**, and CI cannot create,
+change or delete an identity. A `#guard` in `test/Live.lean` pins the absence,
+because adding the resource back would silently re-introduce the requirement.
+
+#### Read-only grants for the scan
+
+Since 0.17.0 every run lists **every kind** on the fleet's clouds, declared or
+not, to find resources carrying the fleet's marker that the declaration no
+longer names (`Engine.claimUndeclared`) — so CI must be able to *read* two
+kinds it does not manage, or the run fails before creating anything:
+
+    listing scaleway iam in fr-par failed. … scaleway GET
+    /iam/v1alpha1/applications: HTTP 403 permissions_denied: insufficient
+    permissions
+
+A refused listing is not read as "nothing there", deliberately: one missing
+permission would then hide a whole kind. The three rules added on 2026-09-24,
+each the narrowest set that covers what the scan calls:
+
+| Permission set | Scope | For |
+|---|---|---|
+| `RelationalDatabasesReadOnly` | CI project | `postgres`, Managed Database half (`Postgres.Rdb.list`, `readOwnership`) |
+| `ServerlessSQLDatabaseReadOnly` | CI project | `postgres`, Serverless SQL half (`Postgres.ServerlessSql.list`) |
+| `IAMApplicationReadOnly` | **organization** | `iam`: the scan calls only `GET /iam/v1alpha1/applications` (`Iam.Scw.listRaw`, which `list` and `readOwnership` share) |
+
+The last is the one organization-scoped rule, and it is **read-only and
+applications-only**: CI can see every IAM application in the organization —
+names, ids, tags — but not users, groups, policies, and nothing it can change.
+`IAMApplicationReadOnly` rather than `IAMReadOnly`, which would add all of
+those. What the scan does with what it sees is claim the applications carrying
+*this* fleet's marker, `managed-by-infra=ci-tests-infra` (`liveBoundary` in
+`test/Live.lean`). On 2026-09-24 the organization's applications carried
+either `managed-by-infra=typednotes` (another fleet's), no marker, or
+Serverless Containers' own tags — all left alone. And the permission set
+itself cannot delete anything, so the worst a wrong verdict could do here is
+fail a delete.
 
 The kind is still covered live on AWS and GCP, where an identity is account- or
 project-scoped and can be confined. If you ever want it on Scaleway too,
@@ -421,40 +503,21 @@ separate organization is the only thing that really isolates it.
 
 
 Scaleway grants permission *sets* to an IAM application through a policy, and
-they are coarse — one per product family:
+they are coarse — one per product family. The policy in use is the one under
+"Run CI in its own project" above. (An earlier version of this section showed
+every rule at organization scope, with `IAMManager`; that is the setup the CI
+project replaced, and it is not what CI holds.)
 
-```sh
-ORG=$(scw config get default-organization-id)
-APP_ID=<the application id whose API key CI uses>
+`MessagingAndQueuingFullAccess` covers more than the queue itself: minting the
+dedicated SQS credential is an IAM-ish operation on the Queues product, which
+is why the reclaim path in `Scaleway.Sqs` needs it too.
 
-scw iam policy create \
-  name=infra-ci-live-tests \
-  application-id="$APP_ID" \
-  rules.0.organization-id="$ORG" \
-  rules.0.permission-set-names.0=MessagingAndQueuingFullAccess \
-  rules.1.organization-id="$ORG" \
-  rules.1.permission-set-names.0=SecretManagerFullAccess \
-  rules.2.organization-id="$ORG" \
-  rules.2.permission-set-names.0=ContainerRegistryFullAccess \
-  rules.3.organization-id="$ORG" \
-  rules.3.permission-set-names.0=ObjectStorageFullAccess \
-  rules.4.organization-id="$ORG" \
-  rules.4.permission-set-names.0=IAMManager \
-  rules.5.organization-id="$ORG" \
-  rules.5.permission-set-names.0=FunctionsFullAccess \
-  rules.6.organization-id="$ORG" \
-  rules.6.permission-set-names.0=ContainersFullAccess
-```
-
-`MessagingAndQueuingFullAccess` is the one already needed, and note it covers
-more than the queue itself: minting the dedicated SQS credential is an IAM-ish
-operation on the Queues product, which is why the reclaim path in
-`Scaleway.Sqs` needs it too.
-
-`IAMManager` is the coarse one, and there *is* a narrower set:
-`IAMApplicationManager` covers applications alone, where `IAMManager` also
-carries ProjectManager. Prefer the narrower one — or drop `resource iam` from
-`scalewayFull` and grant no organization-level rights at all.
+Where a product has a family of sets, prefer the narrowest: for IAM,
+`IAMApplicationReadOnly` and `IAMApplicationManager` cover applications alone,
+where `IAMReadOnly` and `IAMManager` cover users, groups and policies too (and
+`IAMManager` carries ProjectManager). `scw iam permission-set list` shows each
+set's scope type — `organization` or `projects` — which decides which kind of
+rule can hold it.
 
 **A trap worth naming**, because it cost a round of debugging: a policy
 attached to the wrong *application* is indistinguishable from no policy. The

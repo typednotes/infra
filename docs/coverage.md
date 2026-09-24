@@ -580,9 +580,13 @@ pushed, Scaleway's newly-contextual error pinpointed itself
 On Google Cloud an API must be **enabled on the project** before anything can
 call it, which is a separate act from being permitted to call it. Roles were
 documented; enablement was not. `ci/README.md` now has the
-`gcloud services enable` line, and notes that `sqladmin` is deliberately left
-off because `postgres` is not in the fleet and enabling an API widens what a
-compromised credential can reach.
+`gcloud services enable` line. It left `sqladmin` off, because `postgres` is
+not in the fleet and enabling an API widens what a compromised credential can
+reach — until 0.17.0 made every run list every kind, declared or not, and the
+disabled API failed the scan. It is enabled since 2026-09-24, with a custom
+role granting CI only `cloudsql.instances.list` and `.get`; Scaleway's CI
+policy gained the matching read-only sets (`ci/README.md`, "Read-only grants
+for the scan").
 
 Worth noting for contrast: Google's message names the API, the project, the
 console page and the propagation delay. AWS's named a regex. Scaleway's named

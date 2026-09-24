@@ -10,6 +10,32 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Fixed: the Scaleway and GCP live tests could not list every kind
+
+Since 0.17.0 every run lists every kind on the fleet's clouds, declared or not,
+and the CI credentials had been confined so that they could not: the Scaleway
+leg failed on `GET /iam/v1alpha1/applications` (`403 permissions_denied`), and
+the GCP leg on Cloud SQL (`Cloud SQL Admin API has not been used in project …
+or it is disabled`). A refused listing stays fatal — that is the design — so
+the credentials now hold read access to exactly what the scan calls, and
+nothing that can change it (2026-09-24, `ci/README.md`):
+
+- **Scaleway**, on the existing `infra-ci-live-tests` policy:
+  `RelationalDatabasesReadOnly` and `ServerlessSQLDatabaseReadOnly` in the CI
+  project, and `IAMApplicationReadOnly` at **organization** scope — the one
+  organization-level rule CI holds, read-only and applications-only.
+- **GCP**: `sqladmin.googleapis.com` enabled, and a custom role
+  `infraCiCloudSqlRead` holding only `cloudsql.instances.list` and `.get` —
+  not `roles/cloudsql.viewer`, which also carries `cloudsql.instances.export`.
+
+`live-test.yml` now passes `SCW_DEFAULT_ORGANIZATION_ID` to the backstop
+teardown, whose `destroy` had failed with `no Scaleway organization configured`
+since the scan began listing IAM, and requires it in the secrets check. Two
+stale passages in `ci/README.md` are corrected: an organization-wide
+`IAMManager` policy shown as the one CI uses, and "a tag read that errors
+fails the run", which 0.17.2 made untrue for access-denied reads of undeclared
+resources.
+
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order

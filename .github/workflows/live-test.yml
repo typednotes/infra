@@ -184,6 +184,7 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           CI_TESTS_INFRA_SECRET: ${{ env.CI_TESTS_INFRA_SECRET }}
         run: |
           # An unset GitHub secret arrives as the empty string, not as absent —
@@ -192,7 +193,10 @@ jobs:
           # surfacing later as an opaque 403.
           case "${{ inputs.provider }}" in
             aws)      need="" ;;   # OIDC — checked by the role-ARN step above
-            scaleway) need="SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID" ;;
+            # The organization id too: every run lists IAM applications, which
+            # are organization-scoped (ci/README.md, "Read-only grants for the
+            # scan"). Inherited from the organization's secrets, not the repo's.
+            scaleway) need="SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID" ;;
             gcp)      need="" ;;   # WIF — no static secret exists
           esac
           # Every provider needs this one: the fleet now declares a secret, and
@@ -229,11 +233,11 @@ jobs:
           SCW_ACCESS_KEY: ${{ inputs.provider == 'scaleway' && secrets.SCW_ACCESS_KEY || '' }}
           SCW_SECRET_KEY: ${{ inputs.provider == 'scaleway' && secrets.SCW_SECRET_KEY || '' }}
           SCW_DEFAULT_PROJECT_ID: ${{ inputs.provider == 'scaleway' && secrets.SCW_DEFAULT_PROJECT_ID || '' }}
-          # Unused as things stand: only `Iam.Scw` reads the organization id,
-          # and `resource iam` is out of `scalewayLive` because Scaleway's IAM
-          # applications are organization-scoped and CI holds no org-level
-          # rights. Passed anyway so that re-adding the kind does not also
-          # require remembering this line.
+          # Needed although `resource iam` is out of the Scaleway fleet: every
+          # run lists every kind, IAM applications included, to find resources
+          # carrying this fleet's marker (`Engine.claimUndeclared`), and those
+          # are organization-scoped. CI can read them, not change them — see
+          # ci/README.md, "Read-only grants for the scan".
           SCW_DEFAULT_ORGANIZATION_ID: ${{ inputs.provider == 'scaleway' && secrets.SCW_DEFAULT_ORGANIZATION_ID || '' }}
         run: lake test -- ${{ inputs.provider }}
 
@@ -254,12 +258,16 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          # `destroy` scans every kind, IAM applications included, and those
+          # are organization-scoped: without this, the Scaleway teardown fails
+          # with "no Scaleway organization configured" before deleting anything.
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
         run: |
           echo "::warning::live run did not finish cleanly; tearing down"
           lake test -- ${{ inputs.provider }} destroy || true
-          # A sweep as well, because `destroy` only removes what the ledger
-          # records and this run may have died before recording something —
-          # or before the ledger existed at all. The sweep asks the account
-          # instead, so it catches what the ledger cannot name.
+          # A sweep as well. `destroy` removes what carries this fleet's
+          # marker, and a run that died mid-create may have left something
+          # before its marker was written; the sweep deletes by the
+          # 'ci-tests-infra-' name prefix instead, marker or not.
           lake test -- ${{ inputs.provider }} sweep || true
           echo "If this still fails, run the Cleanup workflow, or look for resources named 'ci-tests-infra-*'"
