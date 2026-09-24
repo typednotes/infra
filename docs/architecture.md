@@ -435,8 +435,10 @@ this fleet and that the declaration does not; that is what makes "deleted from t
 "destroy", on any machine, while resources this tool never touched stay out of reach. A resource
 whose marker these credentials are refused (access denied, after the listing that showed it
 succeeded) is one this tool may not read, so it does not manage it: warned about by name, left
-alone, and the run goes on — whereas a refused *listing* fails the run, because it could hide a
-whole kind's orphans. The same
+alone, and the run goes on — provided another marker of the same kind was read, which shows the
+refusal is that resource's own. Reading the marker is required to handle a kind that carries one,
+so a kind whose every read is refused fails the run, as does a refused *listing*: either could
+hide a whole kind's orphans behind a missing permission. The same
 marker is what `forget` removes: a forgotten resource is released — unmarked, not destroyed —
 on the next apply, so leaving management is also written on the resource, where membership
 lives. `Plan.outside`, a single fleet-wide verdict meant to do this

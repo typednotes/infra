@@ -1,4 +1,4 @@
-# Coverage in 0.17.2
+# Coverage in 0.17.3
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-23.
@@ -1103,7 +1103,17 @@ answering **access denied** (`Backend.readsAsRefused`: a 403 with
 `permissions_denied` or `PERMISSION_DENIED`, and not a Google API that is
 switched off, not a signature or credential failure): that resource is
 warned about by name and left alone (`Engine.refusedMarkerWarning`), since it
-could never have been claimed. A *declared* resource that cannot be read still
+could never have been claimed — **provided the same scan read another marker
+of that kind in that region**. Reading the marker is required to handle a kind
+that carries one, and nothing in a refusal tells "this resource's policy shuts
+us out" from "our role may not read tags"; so if every read of a kind is
+refused, one declared resource of it is read as a probe, and if that is
+refused too — or there is none — the run fails naming the kind and every
+refused resource (`Engine.refusedWithoutPermission`). Refusals of `forget`ed
+resources do not count, which is the way out for a kind whose only other
+resource is locked on purpose. (0.17.2 accepted every refusal, so a missing
+tag-read permission left a whole kind's orphans standing behind a list of
+warnings; fixed in 0.17.3.) A *declared* resource that cannot be read still
 fails the run, as do the re-reads before an orphan's delete or release.
 
 What this cannot reach, enumerated:
@@ -1115,7 +1125,7 @@ What this cannot reach, enumerated:
 | a name-rung resource named outside the fleet's prefixes | nothing on it says it is this fleet's | name it under the prefix, or add its prefix with `namePrefixes` — listing `<fleet name>-` too, since setting any prefix replaces the default |
 | a name-rung resource in a `forget` line | its name *is* the marker and cannot be removed, so it cannot be released | the `forget` line stays for as long as the resource exists |
 | a resource marked with the retired value `true` | it matches no fleet | warned by name, never touched; retag it `managed-by-infra=<name>` (the next run manages it, or destroys it if undeclared), or delete it by hand |
-| an undeclared resource whose marker the cloud refuses to show these credentials (since 0.17.2) | what infra may not read, it does not manage: listed, but its marker read answers access denied — a bucket whose bucket policy does not name the caller is the case that forced it | warned by name, never touched; the run goes on. If it *is* this fleet's, grant the credentials read access and the next apply destroys it. The one place two machines can disagree: credentials that can read such a resource would act on its marker, ones that cannot leave it |
+| an undeclared resource whose marker the cloud refuses to show these credentials, while another of its kind in that region is readable (since 0.17.2; the second condition since 0.17.3) | what infra may not read, it does not manage: listed, but its marker read answers access denied — a bucket whose bucket policy does not name the caller is the case that forced it | warned by name, never touched; the run goes on. If it *is* this fleet's, grant the credentials read access and the next apply destroys it. The one place two machines can disagree: credentials that can read such a resource would act on its marker, ones that cannot leave it. When *no* marker of the kind is readable, the run fails instead: that is a missing permission, not this row |
 
 Exercised: offline by `checkMarkerDecides` (over an in-memory `Snapshot`
 account, it finds and destroys exactly the undeclared, fleet-named resources —
@@ -1123,9 +1133,12 @@ once per physical resource, and including a queue although the fleet declares
 none — and leaves the declared-under-another-kind, retired-`true`, other-fleet
 and unmarked ones alone), by `checkRefusedIsNotManaged` (a resource whose
 marker read is refused is warned about once, however many kinds list it, and
-left alone while the orphan beside it is destroyed; a refused listing, and a
-marker read failing any other way, still fail the run; a forgotten unreadable
-one keeps its line), and live against `typednotes-infra`'s Scaleway
+left alone while the orphan beside it is destroyed; a kind whose every read is
+refused fails the run, naming the kind and its resources, unless a declared
+resource of it is readable; a refused listing, and a marker read failing any
+other way, still fail the run; a forgotten unreadable one keeps its line and
+does not count against the permission — each limit checked by breaking it and
+watching the suite fail), and live against `typednotes-infra`'s Scaleway
 account from a machine with no local state, where the plan found exactly its
 four abandoned resources and claimed nothing else.
 

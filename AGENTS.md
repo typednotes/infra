@@ -90,8 +90,11 @@ one without credentials here (said out loud); a name-rung resource's `forget`
 line stays; a resource carrying the retired `true` is warned about, never
 touched; an undeclared resource whose marker read is refused (access denied,
 `readsAsRefused`) is warned about, never touched — what infra may not read it
-does not manage — while a refused *listing* still fails the run, because
-"unreadable, so not ours" must never widen from one resource to a whole kind.
+does not manage — but only when another marker of that kind in that region
+was read: reading the marker is required to handle a kind that carries one, so
+a kind whose every read is refused fails the run (`refusedWithoutPermission`),
+as does a refused *listing*, because "unreadable, so not ours" must never
+widen from one resource to a whole kind.
 Scaleway queues are no exception: listing checks, read-only, whether
 Queues is enabled, and only then uses the dedicated `infra` SQS credential —
 shared between machines as the unmarked secret `infra-sqs-credential`, a cache

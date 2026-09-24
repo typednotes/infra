@@ -72,6 +72,9 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │      b.ownershipInfo k h                                   │
   │        access denied (readsAsRefused) → a warning, not     │
   │          ours; any other failure → the run fails           │
+  │      end of kind: refusals, but no marker of it read →     │
+  │        probe a declared one; still none → the run fails    │
+  │        (refusedWithoutPermission; forgotten not counted)   │
   │      forgotten → a release if still ours on a tag rung     │
   │      otherwise → Orphan if Ownership.claimsUndeclared,     │
   │        else a warning if it carries the retired `true`     │

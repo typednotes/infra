@@ -315,12 +315,16 @@ perimeter silently stopped being enforced for that kind. `sqs:ListQueueTags` and
 `iam:ListUserTags` were both absent for that reason. There is no fallback now:
 a listing that errors fails the run, and so does a tag read that errors —
 except one answering **access denied** for an *undeclared* resource, which
-since 0.17.2 is warned about by name and left alone (`Backend.readsAsRefused`;
-it could never have been claimed). A marker a backend reports as unreadable
-counts as foreign — a declared resource is left alone with a warning, an
-undeclared one is never destroyed. So a missing tag-*read* permission no longer
-always fails loudly: for undeclared resources it shows up as one warning per
-resource, and those warnings are worth reading after changing this policy.
+is warned about by name and left alone (`Backend.readsAsRefused`; it could
+never have been claimed) — but only when another marker of that kind in that
+region was read in the same scan. A kind whose every marker read is refused
+fails the run (`Engine.refusedWithoutPermission`), because that is what a
+missing tag-*read* permission looks like, and reading the marker is required
+to handle a kind that carries one. (0.17.2 accepted every refusal, which
+turned exactly this permission gap back into one quiet warning per resource;
+0.17.3 made it loud again.) A marker a backend reports as unreadable counts as
+foreign — a declared resource is left alone with a warning, an undeclared one
+is never destroyed.
 
 One permission is easy to miss because no resource names it: the fleets contain
 two **composed** secrets, whose values are built from a base secret's value at

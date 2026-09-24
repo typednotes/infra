@@ -168,10 +168,13 @@ name wrote before infra 0.17.0. It matches no fleet now, so it is left alone: {f
     failed every CI plan of the fleet next to it.)
 
     Narrow on purpose. Only an **undeclared** resource, only **after its
-    listing succeeded**, and only an **access-denied** answer
-    (`readsAsRefused`): a refused listing still fails the run — it would
+    listing succeeded**, only an **access-denied** answer (`readsAsRefused`),
+    and only when **another marker of the same kind, in the same region, was
+    read** in the same scan: reading the marker is required to handle a kind
+    that carries one, so a kind whose every read is refused fails the run
+    (`refusedWithoutPermission`), as does a refused listing — either would
     otherwise turn one missing permission into a whole kind never cleaned up —
-    as does a declared resource that cannot be read, and any other error.
+    a declared resource that cannot be read, and any other error.
 
     Said out loud, because it is the one place two machines can disagree: if
     such a resource did carry this fleet's marker, credentials that can read it
@@ -186,6 +189,30 @@ so keep its `forget` line until it can be read."
 to it and the next apply destroys it, since it is no longer declared."
   s!"warning: {slot} is not declared, and the cloud refused to show its ownership \
 marker to these credentials, so it is treated as not this fleet's and left alone.{tail}"
+
+/-- The failure when **every** marker read of a kind in a region was refused:
+    these credentials lack the permission to read the marker, which handling a
+    kind that carries one requires.
+
+    Not a warning per resource, which is what 0.17.2 printed: nothing in a
+    refusal tells "this resource's own policy shuts us out" from "our role
+    may not read tags", and taking the second for the first leaves every
+    orphan of the kind standing, one warning at a time, behind a green run —
+    exactly the widening from one resource to a whole kind that a refused
+    *listing* already fails for. So a refusal is only ever that resource's own
+    when another marker of the same kind, in the same region, was read in the
+    same scan (`claimUndeclared`). Forgotten resources are not counted: a
+    `forget` line is how a fleet says a resource it cannot read is not its
+    business. -/
+def refusedWithoutPermission (p : ProviderId) (k : Kind) (inRegion : String)
+    (slots : List String) : String :=
+  s!"every ownership-marker read of {p.name} {k.name}{inRegion} was refused \
+({String.intercalate ", " slots}), and no other marker of that kind could be read here. \
+These credentials need read access to this kind's marker — its tags, labels or \
+description — to handle it at all. A resource that refuses these credentials on \
+purpose (a bucket policy, say) is left alone only when another of the same kind can be \
+read, which shows the refusal is that resource's and not a missing permission; if it \
+is not this fleet's, `forget` it."
 
 /-- **Every resource marked as this fleet's that the declaration does not name,
     found by asking the cloud.**
@@ -209,8 +236,10 @@ marker to these credentials, so it is treated as not this fleet's and left alone
     A resource whose marker the cloud refuses to show these credentials
     (`readsAsRefused`, after the listing that found it succeeded) is not
     claimed either, and is warned about by name (`refusedMarkerWarning`): what
-    infra may not read, it does not manage. A refused *listing*, or any other
-    failure to read a marker, still fails the run. -/
+    infra may not read, it does not manage — provided the scan read another
+    marker of that kind in that region, so the refusal is that resource's own
+    and not a missing permission (`refusedWithoutPermission`). A refused
+    *listing*, or any other failure to read a marker, still fails the run. -/
 def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
     (forgets : List (Released κ)) : IO Discovered := do
   let mut found : List (String × Orphan) := []   -- (physical class, orphan)
@@ -237,13 +266,23 @@ def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
 failed. Every kind on the fleet's clouds is listed, declared or not, to find resources \
 carrying this fleet's marker that the declaration no longer names — so the credentials \
 need read access to it. The cloud said: {e}")
+        let inRegion := if code.isEmpty then "" else s!" in {code}"
+        -- Whether this scan read a marker of this kind here, the undeclared
+        -- resources whose read was refused (forgotten ones aside), and the
+        -- declared ones — probes, read only if nothing else settles it. See
+        -- `refusedWithoutPermission`.
+        let mut readOk := false
+        let mut refusedSlots : List String := []
+        let mut probes : List (Handle k) := []
         for o in listed do
           let handle := observedHandle k o
           let nm := handle.raw
           let sameThing := fun (q : ProviderId) (k' : Kind) (n : String) =>
             q == p && physicalClass q k' == cls && n == nm
-          if declaredPhysically κ p cls nm
-              || found.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm)
+          if declaredPhysically κ p cls nm then
+            probes := probes ++ [handle]
+            continue
+          if found.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm)
               || releases.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm)
               || refused.contains (p, cls, nm) then
             continue
@@ -253,7 +292,7 @@ need read access to it. The cloud said: {e}")
           let slot := slotId p k nm
           let evidence? ← try some <$> b.ownershipInfo k handle catch e =>
             if readsAsRefused (toString e) then pure none
-            else throw (IO.userError s!"reading the ownership marker of {slot}{if code.isEmpty then "" else s!" in {code}"} \
+            else throw (IO.userError s!"reading the ownership marker of {slot}{inRegion} \
 failed. It is not declared, so it is read to find out whether it carries this fleet's \
 marker. The cloud said: {e}")
           let isForgotten := forgets.any (fun r => sameThing r.cloud r.kind r.name)
@@ -261,8 +300,10 @@ marker. The cloud said: {e}")
             | some ev => pure ev
             | none =>
               refused := refused ++ [(p, cls, nm)]
+              unless isForgotten do refusedSlots := refusedSlots ++ [slot]
               warnings := warnings ++ [refusedMarkerWarning boundary slot isForgotten]
               continue
+          readOk := true
           -- A forgotten resource is never an orphan. If it still carries
           -- this fleet's marker, and the marker is somewhere that can be
           -- rewritten, apply removes it; a name-only one keeps its marker —
@@ -278,6 +319,25 @@ marker. The cloud said: {e}")
             found := found ++ [(cls, { cloud := p, kind := k, name := nm, region := code })]
           else if carriesRetiredMarker evidence then
             warnings := warnings ++ [retiredMarkerWarning boundary (slotId p k nm)]
+        -- Reading the marker is required to handle a kind that carries one.
+        -- A refusal is taken as that resource's own only once this scan has
+        -- shown the credentials *can* read this kind's markers here: one
+        -- successful read, of an undeclared resource or, failing that, of a
+        -- declared one. Otherwise every refusal is the same missing
+        -- permission, and accepting them would leave the whole kind's orphans
+        -- standing behind a list of warnings.
+        unless refusedSlots.isEmpty || readOk do
+          for h in probes do
+            if readOk then break
+            try
+              discard <| b.ownershipInfo k h
+              readOk := true
+            catch e =>
+              unless readsAsRefused (toString e) do
+                throw (IO.userError s!"reading the ownership marker of {slotId p k h.raw}{inRegion} \
+failed, to check these credentials may read this kind's markers. The cloud said: {e}")
+          unless readOk do
+            throw (IO.userError (refusedWithoutPermission p k inRegion refusedSlots))
   return { orphans := found.map (·.2), releases := releases.map (·.2), warnings }
 
 -- ══════════════════════════════════════════════════════════════

@@ -10,32 +10,6 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Fixed: the Scaleway and GCP live tests could not list every kind
-
-Since 0.17.0 every run lists every kind on the fleet's clouds, declared or not,
-and the CI credentials had been confined so that they could not: the Scaleway
-leg failed on `GET /iam/v1alpha1/applications` (`403 permissions_denied`), and
-the GCP leg on Cloud SQL (`Cloud SQL Admin API has not been used in project …
-or it is disabled`). A refused listing stays fatal — that is the design — so
-the credentials now hold read access to exactly what the scan calls, and
-nothing that can change it (2026-09-24, `ci/README.md`):
-
-- **Scaleway**, on the existing `infra-ci-live-tests` policy:
-  `RelationalDatabasesReadOnly` and `ServerlessSQLDatabaseReadOnly` in the CI
-  project, and `IAMApplicationReadOnly` at **organization** scope — the one
-  organization-level rule CI holds, read-only and applications-only.
-- **GCP**: `sqladmin.googleapis.com` enabled, and a custom role
-  `infraCiCloudSqlRead` holding only `cloudsql.instances.list` and `.get` —
-  not `roles/cloudsql.viewer`, which also carries `cloudsql.instances.export`.
-
-`live-test.yml` now passes `SCW_DEFAULT_ORGANIZATION_ID` to the backstop
-teardown, whose `destroy` had failed with `no Scaleway organization configured`
-since the scan began listing IAM, and requires it in the secrets check. Two
-stale passages in `ci/README.md` are corrected: an organization-wide
-`IAMManager` policy shown as the one CI uses, and "a tag read that errors
-fails the run", which 0.17.2 made untrue for access-denied reads of undeclared
-resources.
-
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order
@@ -154,6 +128,58 @@ The inline block loses `sed -i` along with Python: BSD sed reads the next
 argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
+
+## [0.17.3] — 2026-09-24
+
+### Fixed: a missing tag-read permission read as one warning per resource
+
+0.17.2 left alone every undeclared resource whose marker read was refused, and
+said so per resource. Nothing in a refusal tells "this resource's own policy
+shuts us out" from "these credentials may not read tags", so a role missing a
+tag-read permission (`s3:GetBucketTagging`, say) turned a whole kind into
+warnings: every orphan of it left standing, and the run green. That is the
+widening from one resource to a whole kind that a refused listing already
+fails for.
+
+Now reading the marker is required to handle a kind that carries one. A
+refusal is left alone only when the same scan read another marker of that
+kind, in that region. If none was read, one declared resource of the kind is
+read as a probe; if that is refused too, or there is none, the run fails,
+naming the kind, every refused resource and the way out
+(`Engine.refusedWithoutPermission`). `forget`ed resources do not count, so a
+kind whose only other resource is locked on purpose can still run. The
+`docs.typednotes.org` case this rule exists for is unchanged: its sibling
+bucket `typednotes` is readable.
+
+`checkRefusedIsNotManaged` gains the three cases: every read refused fails, a
+readable declared resource settles it, and a refused one does not. Each was
+checked by removing it from the engine and watching the suite fail.
+
+### Fixed: the Scaleway and GCP live tests could not list every kind
+
+Since 0.17.0 every run lists every kind on the fleet's clouds, declared or not,
+and the CI credentials had been confined so that they could not: the Scaleway
+leg failed on `GET /iam/v1alpha1/applications` (`403 permissions_denied`), and
+the GCP leg on Cloud SQL (`Cloud SQL Admin API has not been used in project …
+or it is disabled`). A refused listing stays fatal — that is the design — so
+the credentials now hold read access to exactly what the scan calls, and
+nothing that can change it (2026-09-24, `ci/README.md`):
+
+- **Scaleway**, on the existing `infra-ci-live-tests` policy:
+  `RelationalDatabasesReadOnly` and `ServerlessSQLDatabaseReadOnly` in the CI
+  project, and `IAMApplicationReadOnly` at **organization** scope — the one
+  organization-level rule CI holds, read-only and applications-only.
+- **GCP**: `sqladmin.googleapis.com` enabled, and a custom role
+  `infraCiCloudSqlRead` holding only `cloudsql.instances.list` and `.get` —
+  not `roles/cloudsql.viewer`, which also carries `cloudsql.instances.export`.
+
+`live-test.yml` now passes `SCW_DEFAULT_ORGANIZATION_ID` to the backstop
+teardown, whose `destroy` had failed with `no Scaleway organization configured`
+since the scan began listing IAM, and requires it in the secrets check. Two
+stale passages in `ci/README.md` are corrected: an organization-wide
+`IAMManager` policy shown as the one CI uses, and "a tag read that errors
+fails the run", which 0.17.2 made untrue for access-denied reads of undeclared
+resources.
 
 ## [0.17.2] — 2026-09-24
 

@@ -547,19 +547,25 @@ open Infra.Providers.Snapshot in
     whose marker read is refused (access denied, after its listing succeeded)
     is warned about by name and left alone, and the rest of the run goes on:
     the orphans around it are still found and destroyed. The limits hold too —
-    a refused *listing*, and any failure that is not a refusal, still fail the
-    run; a physical resource listed under two kinds is warned about once; and
-    a forgotten one keeps its `forget` line. -/
+    reading the marker is required to handle a kind that carries one, so a
+    kind whose every read is refused fails the run unless a declared resource
+    of it is readable; a refused *listing*, and any failure that is not a
+    refusal, still fail the run; a physical resource listed under two kinds is
+    warned about once; and a forgotten one keeps its `forget` line, and does
+    not count against the permission. -/
 def checkRefusedIsNotManaged : IO Unit := do
   let boundary : Boundary := { fleetName := some "tn" }
   -- The case that forced it: a hand-managed bucket whose bucket policy does
   -- not name these credentials, next to this fleet's own orphan. On AWS the
   -- same bucket is listed under both kinds that show buckets. (`markerAccount`
   -- without its own orphans, so the one here is the only one.)
+  -- Each refused bucket has a readable sibling of its kind: the refusal is
+  -- then that bucket's own, not a missing permission.
   let account : Snapshot := markerAccount.filter (!·.name.startsWith "old-") ++
     [ refused .scaleway .objectStore "docs.example.org" "fr-par"
     , marked .scaleway .objectStore "tn-old-bucket" "tn" "fr-par"
-    , refused .aws .objectStore "locked", refused .aws .s3Bucket "locked" ]
+    , refused .aws .objectStore "locked", refused .aws .s3Bucket "locked"
+    , unmarked .aws .objectStore "readable", unmarked .aws .s3Bucket "readable" ]
   let deleted ← IO.mkRef []
   let bs := Infra.Providers.Snapshot.backends account deleted
   let found ← claimUndeclared (κ := markerFleet.keys) bs boundary []
@@ -605,8 +611,44 @@ HTTP 403 permissions_denied: insufficient permissions")
   | .error e =>
     unless mentions (toString e) "listing scaleway queues" do
       throw (IO.userError s!"the refused listing does not say what was listed: {e}")
+  -- Reading the marker is required to handle a kind that carries one: when
+  -- every read of a kind is refused, that is a missing permission, not each
+  -- resource's own policy, and the run fails naming the kind and the fix.
+  let allRefused : Snapshot :=
+    [ refused .aws .queues "q1", refused .aws .queues "q2" ]
+  match ← (claimUndeclared (κ := markerFleet.keys)
+      (Infra.Providers.Snapshot.backends allRefused (← IO.mkRef [])) boundary []).toBaseIO with
+  | .ok d => throw (IO.userError s!"a kind whose every marker read is refused did not fail the run: \
+warnings {d.warnings}")
+  | .error e =>
+    let said := toString e
+    unless mentions said "every ownership-marker read of aws queues was refused"
+        && mentions said "aws/queues/q1" && mentions said "aws/queues/q2" && mentions said "forget" do
+      throw (IO.userError s!"the failure does not name the kind, the resources and the way out: {said}")
+  -- A declared resource of the kind proves the permission when no undeclared
+  -- one can: `kept` is declared and readable, so the refused secret is that
+  -- secret's own business.
+  let probed ← claimUndeclared (κ := markerFleet.keys)
+    (Infra.Providers.Snapshot.backends
+      [marked .scaleway .secrets "kept" "tn", refused .scaleway .secrets "locked-secret"] (← IO.mkRef []))
+    boundary []
+  unless probed.orphans.isEmpty && probed.warnings.any (mentions · "locked-secret") do
+    throw (IO.userError s!"a readable declared resource did not settle the permission: \
+orphans {probed.orphans.map (·.slot)}, warnings {probed.warnings}")
+  -- …and a declared one that is refused too settles nothing.
+  match ← (claimUndeclared (κ := markerFleet.keys)
+      (Infra.Providers.Snapshot.backends
+        [refused .scaleway .secrets "kept", refused .scaleway .secrets "locked-secret"] (← IO.mkRef []))
+      boundary []).toBaseIO with
+  | .ok _ => throw (IO.userError "a refused declared probe was taken as proof of the permission")
+  | .error e =>
+    unless mentions (toString e) "every ownership-marker read of scaleway secrets" do
+      throw (IO.userError s!"unexpected failure: {e}")
   -- A forgotten resource that cannot be read is neither released nor claimed,
-  -- and the warning says to keep its line.
+  -- and the warning says to keep its line. Its refusal does not count against
+  -- the permission — `forget` is the way out for a kind whose only other
+  -- resource is locked on purpose — so this passes although nothing of the
+  -- kind was read.
   let forgot ← claimUndeclared (κ := releaseFleet.keys)
     (Infra.Providers.Snapshot.backends [refused .scaleway .secrets "let-go"] (← IO.mkRef []))
     boundary releaseFleet.forgets
@@ -614,7 +656,7 @@ HTTP 403 permissions_denied: insufficient permissions")
       && forgot.warnings.any (fun w => mentions w "let-go" && mentions w "keep its `forget` line") do
     throw (IO.userError s!"a forgotten, unreadable resource: releases {forgot.releases.map (·.slot)}, \
 orphans {forgot.orphans.map (·.slot)}, warnings {forgot.warnings}")
-  IO.println "refused: ok (an undeclared resource whose marker is refused is warned about and left alone; a refused listing, or any other failure, still fails the run)"
+  IO.println "refused: ok (an undeclared resource whose marker is refused is left alone when another of its kind is readable; a kind with none readable, a refused listing, or any other failure fails the run)"
 
 open Infra.Providers.Snapshot in
 /-- A cloud the declaration no longer names is still scanned, when the

@@ -62,7 +62,7 @@ namespace Infra.Cli.New
     line `init` appends when converting a `lakefile.toml`, and into what
     `scaffold` prints when it keeps a lakefile it did not write — one string,
     so those three cannot disagree. -/
-private def infraRev : String := "v0.17.2"
+private def infraRev : String := "v0.17.3"
 
 /-- The dependency line a consumer's `lakefile.lean` needs, pinned to
     `infraRev`. -/
