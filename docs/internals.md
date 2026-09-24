@@ -67,8 +67,11 @@ One apply, end to end. Each box is a real function; the names are searchable.
   │    for each cloud bs has scanners for, each region in      │
   │    bs.scanners p, each kind scannableUndeclared allows     │
   │    (all but postgresMigrations):                           │
-  │      b.list k, skip names declared (any kind of the same   │
-  │      physicalClass), b.ownershipInfo k h                   │
+  │      b.list k (refused → the run fails), skip names        │
+  │      declared (any kind of the same physicalClass),        │
+  │      b.ownershipInfo k h                                   │
+  │        access denied (readsAsRefused) → a warning, not     │
+  │          ours; any other failure → the run fails           │
   │      forgotten → a release if still ours on a tag rung     │
   │      otherwise → Orphan if Ownership.claimsUndeclared,     │
   │        else a warning if it carries the retired `true`     │

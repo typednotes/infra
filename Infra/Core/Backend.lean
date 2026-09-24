@@ -30,6 +30,65 @@ def readsAsAbsent (msg : String) : Bool :=
     , "HTTP 404" ]
   codes.any fun c => (msg.splitOn c).length > 1
 
+/-- Whether a provider's error says *this caller may not see this resource*:
+    a 403 whose code is one of the access-denied codes below.
+
+    Used for exactly one decision (`Engine.claimUndeclared`): an undeclared
+    resource whose marker read is refused is not this fleet's — warned about by
+    name and left alone — rather than a failed run. Every other caller keeps
+    treating a refusal as the error it is.
+
+    Matched on the rendered message for the reason `readsAsAbsent` is, and
+    narrow in the same direction: an unrecognised code is a hard error, never a
+    refusal. The codes, each as `Http.describeError` renders it:
+
+    * `AccessDenied` — S3 (and so Scaleway Object Storage) and the AWS query
+      protocols; `AccessDeniedException` and a namespaced
+      `…#AccessDeniedException` — the AWS JSON protocols. Observed: `HTTP 403
+      AccessDenied: Access Denied` from `GetBucketTagging` on a Scaleway bucket
+      whose bucket policy does not name the caller (2026-09-24).
+    * `UnauthorizedOperation` — EC2.
+    * `permissions_denied` — Scaleway's REST APIs. Observed: `HTTP 403
+      permissions_denied: insufficient permissions` (2026-09-23).
+    * `PERMISSION_DENIED` — Google. Observed.
+
+    **Not** a refusal, though also a 403:
+
+    * a signature or credential failure (`SignatureDoesNotMatch`,
+      `InvalidAccessKeyId`, …) — nothing to do with this resource;
+    * a Google API that is not enabled. Google answers it as `PERMISSION_DENIED`
+      too, but it says the whole service is off, not that one resource is
+      hidden, and "unreadable, so not ours" must never widen from one resource
+      to a whole kind. Recognised by its code (`SERVICE_DISABLED`) and by its
+      message, which is what `describeError` keeps. -/
+def readsAsRefused (msg : String) : Bool :=
+  let refusals := ["AccessDenied", "AccessDeniedException", "UnauthorizedOperation",
+                   "permissions_denied", "PERMISSION_DENIED"]
+  let serviceOff := ["SERVICE_DISABLED", "has not been used in project", "it is disabled"]
+  -- The code is the token between `HTTP 403 ` and the next `:`, minus any
+  -- `namespace#` an AWS JSON service puts in front of it.
+  let codes := (msg.splitOn "HTTP 403 ").drop 1 |>.map fun rest =>
+    let code := (rest.splitOn ":").headD ""
+    (code.splitOn "#").getLastD code
+  codes.any (refusals.contains ·) && !serviceOff.any fun s => (msg.splitOn s).length > 1
+
+#guard readsAsRefused "s3 GET s3.fr-par.scw.cloud/docs.typednotes.org?tagging: HTTP 403 AccessDenied: Access Denied (request tx1)"
+#guard readsAsRefused "HTTP 403 AccessDenied: Access Denied (request tx1)"
+#guard readsAsRefused "secretsmanager POST …: HTTP 403 com.amazonaws.secretsmanager#AccessDeniedException: no"
+#guard readsAsRefused "scaleway GET /secret-manager/v1beta1/regions/fr-par/secrets/x: HTTP 403 permissions_denied: insufficient permissions"
+#guard readsAsRefused "HTTP 403 PERMISSION_DENIED: Permission 'storage.buckets.get' denied on resource"
+#guard readsAsRefused "ec2 POST …: HTTP 403 UnauthorizedOperation: You are not authorized"
+-- A whole service switched off is not one resource hidden.
+#guard !readsAsRefused "HTTP 403 PERMISSION_DENIED: Cloud SQL Admin API has not been used in project 1 before or it is disabled."
+-- Credential and signature failures are not about the resource.
+#guard !readsAsRefused "HTTP 403 SignatureDoesNotMatch: The request signature we calculated does not match"
+#guard !readsAsRefused "HTTP 403 InvalidAccessKeyId: The AWS Access Key Id you provided does not exist"
+-- The code must be a 403's, and must be the code, not a word in the message.
+#guard !readsAsRefused "HTTP 401 AccessDenied: nope"
+#guard !readsAsRefused "HTTP 500 InternalError: AccessDenied upstream"
+#guard !readsAsRefused "HTTP 403 : AccessDenied"
+#guard !readsAsRefused "connection reset by peer"
+
 /-- One cloud's CRUD surface, defunctionalised as a record rather than a class so that
     `Backends` can be a total function over `ProviderId` without sigma gymnastics. -/
 structure Backend where

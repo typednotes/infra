@@ -43,6 +43,12 @@ structure Resource where
   /-- What the cloud reported (`ObservedOf kind`, as JSON), if captured;
       replayed as a placeholder observation otherwise. -/
   observed : Option Json := none
+  /-- The cloud's refusal, if it would not show these credentials this
+      resource's marker: replayed as `ownershipInfo` raising exactly this
+      message, as a live backend does (`Backend.readsAsRefused`), so `evidence`
+      is not consulted. Listed all the same — the case is a resource the
+      listing shows and the marker read refuses. -/
+  refusal : Option String := none
   deriving BEq
 
 def Resource.slot (r : Resource) : String := slotId r.cloud r.kind r.name
@@ -58,6 +64,14 @@ def byName (cloud : ProviderId) (kind : Kind) (name : String) (region := "") : R
 /-- A resource carrying no marker at all — someone else's. -/
 def unmarked (cloud : ProviderId) (kind : Kind) (name : String) (region := "") : Resource :=
   { cloud, kind, name, region, evidence := .tags [] none }
+
+/-- A resource the credentials may list but whose marker read is refused —
+    a bucket whose bucket policy does not name them. The message is the one a
+    Scaleway bucket answered (2026-09-24). -/
+def refused (cloud : ProviderId) (kind : Kind) (name : String) (region := "")
+    (message := "s3 GET s3.fr-par.scw.cloud/x?tagging: HTTP 403 AccessDenied: Access Denied (request tx0)") :
+    Resource :=
+  { cloud, kind, name, region, refusal := some message }
 
 abbrev Snapshot := List Resource
 
@@ -86,7 +100,8 @@ instance : ToJson Resource where
   toJson r := Json.mkObj ([ ("slot", Json.str r.slot), ("cloud", Json.str r.cloud.name)
                           , ("kind", Json.str r.kind.name), ("name", Json.str r.name)
                           , ("region", Json.str r.region), ("evidence", evidenceJson r.evidence) ]
-                          ++ (r.observed.map fun o => [("observed", o)]).getD [])
+                          ++ (r.observed.map fun o => [("observed", o)]).getD []
+                          ++ (r.refusal.map fun m => [("refusal", Json.str m)]).getD [])
 
 instance : FromJson Resource where
   fromJson? j := do
@@ -98,7 +113,8 @@ instance : FromJson Resource where
              name := ← j.getObjValAs? String "name"
              region := (j.getObjValAs? String "region").toOption.getD ""
              evidence := ← evidenceOf (← j.getObjVal? "evidence")
-             observed := (j.getObjVal? "observed").toOption }
+             observed := (j.getObjVal? "observed").toOption
+             refusal := (j.getObjValAs? String "refusal").toOption }
 
 -- ── Replay ──────────────────────────────────────────────────────────────
 
@@ -139,8 +155,9 @@ def backends (snap : Snapshot) (deleted : IO.Ref (List String))
           let freed ← match released with
             | some ref => ref.get
             | none     => pure []
-          let ev := (snap.find? fun r => r.cloud == p && r.kind == k && r.name == h.raw).map
-            (·.evidence) |>.getD .unreadable
+          let r? := snap.find? fun r => r.cloud == p && r.kind == k && r.name == h.raw
+          if let some msg := r?.bind (·.refusal) then throw (IO.userError msg)
+          let ev := r?.map (·.evidence) |>.getD .unreadable
           return match ev with
             | .tags ts at' =>
               if freed.contains (slotId p k h.raw) then .tags (ts.filter (·.1 != markerKey)) at'
@@ -168,7 +185,8 @@ private def sample : Snapshot :=
   [ marked .scaleway .secrets "db-url" "tn" "fr-par"
   , byName .scaleway .postgres "tn-db"
   , unmarked .aws .objectStore "theirs"
-  , { cloud := .gcp, kind := .iam, name := "x", evidence := .unreadable } ]
+  , { cloud := .gcp, kind := .iam, name := "x", evidence := .unreadable }
+  , refused .scaleway .objectStore "locked" "fr-par" ]
 
 -- JSON round-trips, evidence and all.
 #guard match sample.mapM fun r => fromJson? (α := Resource) (toJson r) with

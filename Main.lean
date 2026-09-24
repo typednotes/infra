@@ -543,6 +543,80 @@ orphans {again.orphans.map (·.slot)}")
   IO.println "forget releases: ok (a marked forgotten resource is unmarked on apply, not destroyed; a name-only one is left, and its line stays)"
 
 open Infra.Providers.Snapshot in
+/-- **What infra may not read, it does not manage.** An undeclared resource
+    whose marker read is refused (access denied, after its listing succeeded)
+    is warned about by name and left alone, and the rest of the run goes on:
+    the orphans around it are still found and destroyed. The limits hold too —
+    a refused *listing*, and any failure that is not a refusal, still fail the
+    run; a physical resource listed under two kinds is warned about once; and
+    a forgotten one keeps its `forget` line. -/
+def checkRefusedIsNotManaged : IO Unit := do
+  let boundary : Boundary := { fleetName := some "tn" }
+  -- The case that forced it: a hand-managed bucket whose bucket policy does
+  -- not name these credentials, next to this fleet's own orphan. On AWS the
+  -- same bucket is listed under both kinds that show buckets. (`markerAccount`
+  -- without its own orphans, so the one here is the only one.)
+  let account : Snapshot := markerAccount.filter (!·.name.startsWith "old-") ++
+    [ refused .scaleway .objectStore "docs.example.org" "fr-par"
+    , marked .scaleway .objectStore "tn-old-bucket" "tn" "fr-par"
+    , refused .aws .objectStore "locked", refused .aws .s3Bucket "locked" ]
+  let deleted ← IO.mkRef []
+  let bs := Infra.Providers.Snapshot.backends account deleted
+  let found ← claimUndeclared (κ := markerFleet.keys) bs boundary []
+  let slots := found.orphans.map (·.slot)
+  unless slots.contains "scaleway/object-store/tn-old-bucket" do
+    throw (IO.userError s!"an orphan next to a refused resource was not found: {slots}")
+  if slots.any (fun s => mentions s "docs.example.org" || mentions s "locked") then
+    throw (IO.userError s!"a resource whose marker could not be read was claimed: {slots}")
+  let aboutDocs := found.warnings.filter (mentions · "docs.example.org")
+  unless aboutDocs.length == 1 && aboutDocs.all (mentions · "refused to show its ownership marker") do
+    throw (IO.userError s!"expected one refusal warning about docs.example.org: {found.warnings}")
+  unless (found.warnings.filter (mentions · "locked")).length == 1 do
+    throw (IO.userError s!"a bucket listed under two kinds was not warned about exactly once: \
+{found.warnings}")
+  -- Applied, the orphan goes and the refused resources stay.
+  let entries ← pullEntries (κ := markerFleet.keys) bs
+  let _ ← push bs markerFleet.plan (worldOf entries) { apply := true } (orphans := found.orphans)
+    (boundary := boundary) (seen := some entries)
+  let gone ← deleted.get
+  unless gone.contains "scaleway/object-store/tn-old-bucket" do
+    throw (IO.userError s!"the orphan was not deleted: {gone}")
+  if gone.any (fun g => mentions g "docs.example.org" || mentions g "locked") then
+    throw (IO.userError s!"deleted a resource whose marker could not be read: {gone}")
+  -- Anything but a refusal still fails the run, and says which resource.
+  let broken := Infra.Providers.Snapshot.backends
+    [refused .scaleway .secrets "flaky" (message := "HTTP 500 InternalError: try again")] (← IO.mkRef [])
+  match ← (claimUndeclared (κ := markerFleet.keys) broken boundary []).toBaseIO with
+  | .ok _ => throw (IO.userError "a failed marker read that is not a refusal did not fail the run")
+  | .error e =>
+    unless mentions (toString e) "scaleway/secrets/flaky" && mentions (toString e) "InternalError" do
+      throw (IO.userError s!"the failure does not name the resource and the cause: {e}")
+  -- A refused *listing* still fails the run: it would hide a whole kind.
+  let refusedList : Backends :=
+    { backend := fun p =>
+        { Infra.Providers.placeholderBackend p.name with
+            list := fun k =>
+              if p == .scaleway && k == .queues then
+                throw (IO.userError "scaleway GET /mnq/v1beta1/regions/fr-par/sqs-info: \
+HTTP 403 permissions_denied: insufficient permissions")
+              else pure [] } }
+  match ← (claimUndeclared (κ := markerFleet.keys) refusedList boundary []).toBaseIO with
+  | .ok _ => throw (IO.userError "a refused listing did not fail the run")
+  | .error e =>
+    unless mentions (toString e) "listing scaleway queues" do
+      throw (IO.userError s!"the refused listing does not say what was listed: {e}")
+  -- A forgotten resource that cannot be read is neither released nor claimed,
+  -- and the warning says to keep its line.
+  let forgot ← claimUndeclared (κ := releaseFleet.keys)
+    (Infra.Providers.Snapshot.backends [refused .scaleway .secrets "let-go"] (← IO.mkRef []))
+    boundary releaseFleet.forgets
+  unless forgot.releases.isEmpty && forgot.orphans.isEmpty
+      && forgot.warnings.any (fun w => mentions w "let-go" && mentions w "keep its `forget` line") do
+    throw (IO.userError s!"a forgotten, unreadable resource: releases {forgot.releases.map (·.slot)}, \
+orphans {forgot.orphans.map (·.slot)}, warnings {forgot.warnings}")
+  IO.println "refused: ok (an undeclared resource whose marker is refused is warned about and left alone; a refused listing, or any other failure, still fails the run)"
+
+open Infra.Providers.Snapshot in
 /-- A cloud the declaration no longer names is still scanned, when the
     backends can scan it (the CLI loads every cloud `Accounts` names): the
     `tn` fleet declares only Scaleway resources, and its bucket left on AWS
@@ -942,6 +1016,7 @@ def selfCheck : IO Unit := do
   checkFleetName
   checkRetiredCloud
   checkForgetReleases
+  checkRefusedIsNotManaged
   checkPush
   checkTeardown
   checkSecretComposition

@@ -88,12 +88,17 @@ nothing to find (its delete is a FORGET that does nothing); a cloud named
 neither in the declaration nor in `accounts` is not scanned, nor is a named
 one without credentials here (said out loud); a name-rung resource's `forget`
 line stays; a resource carrying the retired `true` is warned about, never
-touched. Scaleway queues are no exception: listing checks, read-only, whether
+touched; an undeclared resource whose marker read is refused (access denied,
+`readsAsRefused`) is warned about, never touched — what infra may not read it
+does not manage — while a refused *listing* still fails the run, because
+"unreadable, so not ours" must never widen from one resource to a whole kind.
+Scaleway queues are no exception: listing checks, read-only, whether
 Queues is enabled, and only then uses the dedicated `infra` SQS credential —
 shared between machines as the unmarked secret `infra-sqs-credential`, a cache
 that costs one mint to lose. Every change near this principle is tested
 against a snapshot of an account (`checkMarkerDecides`, `checkDumpReplays`,
-`checkRetiredCloud`, `checkForgetReleases` in `Main.lean`) — never with
+`checkRetiredCloud`, `checkForgetReleases`, `checkRefusedIsNotManaged` in
+`Main.lean`) — never with
 remembered state, which hides
 exactly the bug this section exists to prevent: before 0.15.0, removing a line
 from `typednotes-infra` left an IAM application and its live API key standing

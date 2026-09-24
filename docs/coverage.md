@@ -1,4 +1,4 @@
-# Coverage in 0.17.1
+# Coverage in 0.17.2
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-23.
@@ -1089,6 +1089,19 @@ deleting it (`runStep`), so a resource retagged between plan and apply is not
 destroyed. A refused orphan delete (`DependencyViolation`) is retried after the
 rest of the work-list, and fails the apply if it never clears.
 
+What fails the scan, and what does not. A refused **listing** fails the run,
+saying which cloud, kind and region was being listed: an unlisted kind could
+hide an orphan, and treating it as empty would turn one missing permission
+into a whole kind never cleaned up. So does any failure to read an undeclared
+resource's marker, naming the resource. The one exception is a marker read
+answering **access denied** (`Backend.readsAsRefused`: a 403 with
+`AccessDenied`, `AccessDeniedException`, `UnauthorizedOperation`,
+`permissions_denied` or `PERMISSION_DENIED`, and not a Google API that is
+switched off, not a signature or credential failure): that resource is
+warned about by name and left alone (`Engine.refusedMarkerWarning`), since it
+could never have been claimed. A *declared* resource that cannot be read still
+fails the run, as do the re-reads before an orphan's delete or release.
+
 What this cannot reach, enumerated:
 
 | case | why | instead |
@@ -1098,12 +1111,17 @@ What this cannot reach, enumerated:
 | a name-rung resource named outside the fleet's prefixes | nothing on it says it is this fleet's | name it under the prefix, or add its prefix with `namePrefixes` — listing `<fleet name>-` too, since setting any prefix replaces the default |
 | a name-rung resource in a `forget` line | its name *is* the marker and cannot be removed, so it cannot be released | the `forget` line stays for as long as the resource exists |
 | a resource marked with the retired value `true` | it matches no fleet | warned by name, never touched; retag it `managed-by-infra=<name>` (the next run manages it, or destroys it if undeclared), or delete it by hand |
+| an undeclared resource whose marker the cloud refuses to show these credentials (since 0.17.2) | what infra may not read, it does not manage: listed, but its marker read answers access denied — a bucket whose bucket policy does not name the caller is the case that forced it | warned by name, never touched; the run goes on. If it *is* this fleet's, grant the credentials read access and the next apply destroys it. The one place two machines can disagree: credentials that can read such a resource would act on its marker, ones that cannot leave it |
 
 Exercised: offline by `checkMarkerDecides` (over an in-memory `Snapshot`
 account, it finds and destroys exactly the undeclared, fleet-named resources —
 once per physical resource, and including a queue although the fleet declares
 none — and leaves the declared-under-another-kind, retired-`true`, other-fleet
-and unmarked ones alone), and live against `typednotes-infra`'s Scaleway
+and unmarked ones alone), by `checkRefusedIsNotManaged` (a resource whose
+marker read is refused is warned about once, however many kinds list it, and
+left alone while the orphan beside it is destroyed; a refused listing, and a
+marker read failing any other way, still fail the run; a forgotten unreadable
+one keeps its line), and live against `typednotes-infra`'s Scaleway
 account from a machine with no local state, where the plan found exactly its
 four abandoned resources and claimed nothing else.
 
@@ -1208,7 +1226,9 @@ placeholders report no evidence on their own:
   refuses and says which prefix, and a matching one deletes.
 - `checkMarkerDecides` and `checkDumpReplays`, described under "What a fleet
   manages is found by its marker" above, and `checkFleetName`,
-  `checkRetiredCloud` and `checkForgetReleases`, under "Membership" above.
+  `checkRetiredCloud` and `checkForgetReleases`, under "Membership" above, and
+  `checkRefusedIsNotManaged`, under "What a fleet manages is found by its
+  marker".
 
 `Infra/Core/Ownership.lean`'s own `#guard`s carry the rest: the failure
 direction of each rung, that a prefix is a prefix and not a substring, that an

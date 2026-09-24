@@ -154,6 +154,39 @@ destroys it, or delete it by hand; otherwise leave it"
   s!"warning: {slot} is not declared and carries '{markerKey}={retiredMarkerValue}', the marker fleets without a \
 name wrote before infra 0.17.0. It matches no fleet now, so it is left alone: {fix}."
 
+/-- The warning for an undeclared resource whose marker the cloud refused to
+    show (`readsAsRefused`): it is treated as not this fleet's and left alone.
+
+    **An unreadable resource is not managed.** Rule 3 already forbids changing
+    or destroying anything without a readable marker naming this fleet, so a
+    refused read could never lead to a claim; failing the run over it only
+    blocked every other change. And the refusal is evidence in itself: infra
+    writes no bucket policy or other per-resource access rule, so a resource
+    that shuts this fleet's credentials out was put out of its reach by
+    somebody else. (The case that forced it: a hand-managed Scaleway bucket
+    whose bucket policy named only a user and a deleted application, which
+    failed every CI plan of the fleet next to it.)
+
+    Narrow on purpose. Only an **undeclared** resource, only **after its
+    listing succeeded**, and only an **access-denied** answer
+    (`readsAsRefused`): a refused listing still fails the run — it would
+    otherwise turn one missing permission into a whole kind never cleaned up —
+    as does a declared resource that cannot be read, and any other error.
+
+    Said out loud, because it is the one place two machines can disagree: if
+    such a resource did carry this fleet's marker, credentials that can read it
+    would destroy it and credentials that cannot would leave it. -/
+def refusedMarkerWarning (boundary : Boundary) (slot : String) (forgotten : Bool) : String :=
+  let me := boundary.fleetName.getD "<this fleet's name>"
+  let tail := if forgotten then
+      " It is forgotten (`forget`), and whether it still carries the marker is unknown, \
+so keep its `forget` line until it can be read."
+    else
+      s!" If it is this fleet's ('{markerKey}={me}'), grant these credentials read access \
+to it and the next apply destroys it, since it is no longer declared."
+  s!"warning: {slot} is not declared, and the cloud refused to show its ownership \
+marker to these credentials, so it is treated as not this fleet's and left alone.{tail}"
+
 /-- **Every resource marked as this fleet's that the declaration does not name,
     found by asking the cloud.**
 
@@ -171,12 +204,19 @@ name wrote before infra 0.17.0. It matches no fleet now, so it is left alone: {f
     A resource carrying the retired marker value (`retiredMarkerValue`,
     written by fleets without a name before 0.17.0) is not claimed — it
     belongs to no fleet any more — and is warned about by name, because it is
-    most likely this fleet's own and waiting to be retagged. -/
+    most likely this fleet's own and waiting to be retagged.
+
+    A resource whose marker the cloud refuses to show these credentials
+    (`readsAsRefused`, after the listing that found it succeeded) is not
+    claimed either, and is warned about by name (`refusedMarkerWarning`): what
+    infra may not read, it does not manage. A refused *listing*, or any other
+    failure to read a marker, still fails the run. -/
 def claimUndeclared {κ : Keys} (bs : Backends) (boundary : Boundary)
     (forgets : List (Released κ)) : IO Discovered := do
   let mut found : List (String × Orphan) := []   -- (physical class, orphan)
   let mut releases : List (String × Orphan) := []
   let mut warnings : List String := []
+  let mut refused : List (ProviderId × String × String) := []   -- (cloud, class, name), warned once
   -- Every cloud the backends can scan — not only the declared ones. Which
   -- clouds those are is the front end's decision (`Infra.Cli.liveFor` loads
   -- the declared clouds and the ones `Accounts` names, and gives any other
@@ -204,21 +244,36 @@ need read access to it. The cloud said: {e}")
             q == p && physicalClass q k' == cls && n == nm
           if declaredPhysically κ p cls nm
               || found.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm)
-              || releases.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm) then
+              || releases.any (fun (c, r) => c == cls && r.cloud == p && r.name == nm)
+              || refused.contains (p, cls, nm) then
             continue
+          -- The marker, or `none` if the cloud refused to show it — see
+          -- `refusedMarkerWarning`. Any other failure fails the run, naming
+          -- the resource.
+          let slot := slotId p k nm
+          let evidence? ← try some <$> b.ownershipInfo k handle catch e =>
+            if readsAsRefused (toString e) then pure none
+            else throw (IO.userError s!"reading the ownership marker of {slot}{if code.isEmpty then "" else s!" in {code}"} \
+failed. It is not declared, so it is read to find out whether it carries this fleet's \
+marker. The cloud said: {e}")
+          let isForgotten := forgets.any (fun r => sameThing r.cloud r.kind r.name)
+          let evidence ← match evidence? with
+            | some ev => pure ev
+            | none =>
+              refused := refused ++ [(p, cls, nm)]
+              warnings := warnings ++ [refusedMarkerWarning boundary slot isForgotten]
+              continue
           -- A forgotten resource is never an orphan. If it still carries
           -- this fleet's marker, and the marker is somewhere that can be
           -- rewritten, apply removes it; a name-only one keeps its marker —
           -- its name — and its `forget` line has to stay.
-          if forgets.any (fun r => sameThing r.cloud r.kind r.name) then
-            let evidence ← b.ownershipInfo k handle
+          if isForgotten then
             if claimsUndeclared boundary p k nm evidence then
               match evidence with
               | .tags _ _ =>
                 releases := releases ++ [(cls, { cloud := p, kind := k, name := nm, region := code })]
               | _ => pure ()
             continue
-          let evidence ← b.ownershipInfo k handle
           if claimsUndeclared boundary p k nm evidence then
             found := found ++ [(cls, { cloud := p, kind := k, name := nm, region := code })]
           else if carriesRetiredMarker evidence then

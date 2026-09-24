@@ -29,7 +29,15 @@ building blocks this project has been carrying:
 | `Cloud.Endpoint` — per-service hosts and signing scopes | `Infra/Providers/Aws/Protocols.lean`, `Infra/Providers/{Scaleway,Gcp}/Rest.lean` |
 | `Cloud.Auth`, `Cloud.Transport` — signing and the single egress point | `Infra/Providers/Aws/Sign.lean`, `Infra/Providers/Http.lean` |
 | `Cloud.Protocol.{S3,AwsJson,GoogleRest,ScalewayRest}` — the four wire dialects | `Infra/Providers/Aws/Protocols.lean`, `.../{Scaleway,Gcp}/Rest.lean` |
-| `Cloud.Error` — the classified taxonomy, including the not-found code list | `Infra/Core/Backend.lean`'s `readsAsAbsent` |
+| `Cloud.Error` — the classified taxonomy, including the not-found code list | `Infra/Core/Backend.lean`'s `readsAsAbsent`, and the access-denied half of its `readsAsRefused` (0.17.2) |
+
+`readsAsRefused` is not a straight duplicate of `Cloud.Error.Class.denied`:
+`linen`'s `denied` also covers signature and credential failures
+(`SignatureDoesNotMatch`, `ExpiredToken`, …) and does not tell a disabled
+Google API from a hidden resource, and both of those must *not* read as
+"this one resource is not ours". The move therefore needs `linen` to split
+`denied` (refused-for-this-resource vs. not-authenticated vs. service off)
+first; proposed there rather than worked around here.
 
 `linen` also gained the **data plane** these never had — object CRUD, message
 send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
@@ -120,6 +128,47 @@ The inline block loses `sed -i` along with Python: BSD sed reads the next
 argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
+
+## [0.17.2] — 2026-09-24
+
+### Changed: what infra may not read, it does not manage
+
+An undeclared resource whose ownership marker the cloud refuses to show these
+credentials — access denied, after the listing that showed it succeeded — is
+now warned about by name and left alone, and the run goes on. Before, it failed
+the whole run, although it could never have been claimed: changing or
+destroying anything needs a readable marker naming this fleet.
+
+Found by `typednotes-infra`'s first CI apply on 0.17.1. Once bucket requests
+went to the right project, the scan found `docs.typednotes.org`, a
+hand-managed Scaleway bucket whose bucket policy names only a user and a
+deleted application; `GetBucketTagging` answered `403 AccessDenied` to the CI
+key, and every plan and apply failed on a bucket the fleet has nothing to do
+with. (The green `Plan` run on the same commit hit the same 403 and hid it:
+that workflow pipes into `tee` without `pipefail`.)
+
+Narrow on purpose, and each limit is tested (`checkRefusedIsNotManaged`):
+
+- only a **marker read** of an **undeclared** resource. A refused *listing*
+  still fails the run — it could hide a whole kind's orphans — as does a
+  declared resource that cannot be read, and the re-reads before an orphan's
+  delete or release;
+- only **access denied** (`Backend.readsAsRefused`): a 403 carrying
+  `AccessDenied`, `AccessDeniedException`, `UnauthorizedOperation`,
+  `permissions_denied` or `PERMISSION_DENIED`. A disabled Google API (also
+  `PERMISSION_DENIED`), a signature or credential failure, and every non-403
+  still fail;
+- warned once per physical resource, however many kinds list it; a forgotten
+  one that cannot be read is neither released nor claimed, and its `forget`
+  line stays.
+
+Any other failed marker read now names the resource it was reading, rather
+than printing only the provider's error. `Snapshot.Resource` gains `refusal`,
+so a snapshot can describe a resource whose marker read is refused.
+
+The cost, stated in `docs/coverage.md`: this is the one place two machines
+can disagree. If such a resource did carry this fleet's marker, credentials
+that can read it would act on it and credentials that cannot would leave it.
 
 ## [0.17.1] — 2026-09-23
 

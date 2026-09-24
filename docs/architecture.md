@@ -432,7 +432,11 @@ resource has no key, and if the key family were the only evidence it would be in
 from a resource nobody ever declared. `Engine.claimUndeclared` asks every region the fleet uses,
 on every cloud it declares or names in its `accounts`, for resources carrying a marker that names
 this fleet and that the declaration does not; that is what makes "deleted from the file" mean
-"destroy", on any machine, while resources this tool never touched stay out of reach. The same
+"destroy", on any machine, while resources this tool never touched stay out of reach. A resource
+whose marker these credentials are refused (access denied, after the listing that showed it
+succeeded) is one this tool may not read, so it does not manage it: warned about by name, left
+alone, and the run goes on — whereas a refused *listing* fails the run, because it could hide a
+whole kind's orphans. The same
 marker is what `forget` removes: a forgotten resource is released — unmarked, not destroyed —
 on the next apply, so leaving management is also written on the resource, where membership
 lives. `Plan.outside`, a single fleet-wide verdict meant to do this
