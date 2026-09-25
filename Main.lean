@@ -877,6 +877,191 @@ def checkMintedKey : IO Unit := do
 
   IO.println "minted keys: ok (identity first, key before URL, teardown reversed, converges)"
 
+/- `--refresh-secrets`: a `fromEnv` secret compared with its variable, a
+    composed one with its settled recipe, the copies followed, and a minted
+    key left alone. `HOME` is the variable because every machine this runs on
+    has one, and a test cannot set one. -/
+fleet refreshFleet in paris where
+  provider scaleway where
+    resource secrets "plain" as refreshPlain { valueFrom := Infra.Specs.fromEnv "HOME" }
+    resource secrets "steady" { valueFrom := Infra.Specs.fromEnv "HOME" }
+    resource secrets "url" as refreshUrl
+      { valueFrom := Infra.Specs.composed expr!"u:{secretValueOf refreshPlain}" }
+    resource iam "app" { policies := ["ServerlessSQLDatabaseDataReadWrite"] }
+    resource secrets "key" { valueFrom := Infra.Specs.apiKeyFor "app" }
+    resource scalewayContainerNamespace "ns" as refreshNs { description := "d" }
+    resource scalewayContainer "binds"
+      { namespace' := refreshNs, image := "i", port := 8080, secretEnv := [("URL", refreshUrl)] }
+    resource scalewayContainer "idle" { namespace' := refreshNs, image := "i", port := 8080 }
+
+open Infra.Providers.Snapshot in
+/-- `refreshFleet`'s account: everything exists and carries the marker. -/
+private def refreshAccount : Snapshot :=
+  [ marked .scaleway .secrets "plain" "tn", marked .scaleway .secrets "steady" "tn"
+  , marked .scaleway .secrets "url" "tn", marked .scaleway .secrets "key" "tn"
+  , marked .scaleway .iam "app" "tn", marked .scaleway .scalewayContainerNamespace "ns" "tn"
+  , marked .scaleway .scalewayContainer "binds" "tn", marked .scaleway .scalewayContainer "idle" "tn" ]
+
+/-- The account as backends with a secret store: `secretValue` answers from
+    `values` (and records each read in `reads`), and `update` records the slot
+    and, for a secret, writes the value the declaration settles to — which is
+    what a live backend's `putValue` does. A container reads back as declared,
+    so the only work a plan can find is the refresh's. -/
+private def refreshBackends (values : IO.Ref (List (String × String)))
+    (reads updated : IO.Ref (List String)) (deleted : IO.Ref (List String)) : Backends where
+  backend p :=
+    let base := (Infra.Providers.Snapshot.backends refreshAccount deleted).backend p
+    { base with
+        read := fun k h => match k, h with
+          | .scalewayContainer, h => pure
+              { name := h.raw, namespace' := ⟨"ns"⟩, image := "i", port := .unknown
+                minScale := .unknown, maxScale := .unknown, memoryMb := .unknown
+                cpuLimit := .unknown, timeoutSec := .unknown, env := .unknown
+                secretEnv := .unknown, migrations := .unknown }
+          | k, h => base.read k h
+        secretValue := fun h => do
+          let slot := slotId p .secrets h.raw
+          reads.modify (· ++ [slot])
+          match (← values.get).find? (·.1 == slot) with
+          | some (_, v) => pure v
+          | none        => throw (IO.userError s!"no value stored for {slot}")
+        update := fun k h spec => do
+          updated.modify (· ++ [slotId p k h.raw])
+          match k, spec with
+          | .secrets, s =>
+            let v ← match s.valueFrom with
+              | .fromEnv var => Infra.Specs.envSecretValue var
+              | .composed v  => pure v
+              | .apiKeyFor _ => throw (IO.userError "refusing to mint a second key")
+            let slot := slotId p .secrets h.raw
+            values.modify fun vs => (slot, v) :: vs.filter (·.1 != slot)
+          | _, _ => pure ()
+          base.update k h spec }
+
+def checkRefreshSecrets : IO Unit := do
+  let boundary : Boundary := { fleetName := some "tn" }
+  let some home ← IO.getEnv "HOME"
+    | throw (IO.userError "refresh secrets: this check needs HOME to be set")
+  let canary := "stale-canary-value"
+  let fresh := [ ("scaleway/secrets/plain", home), ("scaleway/secrets/steady", home)
+               , ("scaleway/secrets/url", s!"u:{home}"), ("scaleway/secrets/key", "minted") ]
+  let values ← IO.mkRef fresh
+  let reads ← IO.mkRef []
+  let updated ← IO.mkRef []
+  let bs := refreshBackends values reads updated (← IO.mkRef [])
+  let plan (refresh : Bool) : IO (List String) := do
+    let entries ← pullEntries (κ := refreshFleet.keys) bs
+    push bs refreshFleet.plan (worldOf entries) { refreshSecrets := refresh }
+      (boundary := boundary) (seen := some entries)
+  let leaks (lines : List String) : Bool :=
+    lines.any fun l => mentions l canary || (home.length > 1 && mentions l home)
+  -- Everything stored is what the declaration would write: nothing to do,
+  -- with the flag or without.
+  let idle ← plan true
+  unless idle == ["nothing to do"] do
+    throw (IO.userError s!"refreshing an up-to-date fleet should be a no-op: {idle}")
+  -- A stale value, and a plan without the flag: create-only as ever, and not
+  -- one value read.
+  values.set ((fresh.filter (·.1 != "scaleway/secrets/plain")) ++ [("scaleway/secrets/plain", canary)])
+  reads.set []
+  let blind ← plan false
+  unless blind == ["nothing to do"] && (← reads.get).isEmpty do
+    throw (IO.userError s!"a plan without --refresh-secrets read or rewrote a secret: \
+{blind}, reads {← reads.get}")
+  -- With it: the stale secret, the one composed from it, and the container
+  -- holding a copy — in that order — and nothing else.
+  let dry ← plan true
+  let would := dry.filter (·.startsWith "would")
+  unless would == [ "would UPDATE scaleway/secrets/plain", "would UPDATE scaleway/secrets/url"
+                  , "would UPDATE scaleway/scaleway-container/binds" ] do
+    throw (IO.userError s!"expected plain, url, then binds: {dry}")
+  unless dry.any (mentions · "plain: its stored value differs")
+      && dry.any (mentions · "url: it is composed from scaleway/secrets/plain")
+      && dry.any (mentions · "binds: it holds a copy of scaleway/secrets/url") do
+    throw (IO.userError s!"every refresh must say why: {dry}")
+  if leaks dry then throw (IO.userError s!"a refresh plan printed a secret value: {dry}")
+  -- Applied: the same three updates, after which a refresh finds nothing.
+  let entries ← pullEntries (κ := refreshFleet.keys) bs
+  let applied ← push bs refreshFleet.plan (worldOf entries) { apply := true, refreshSecrets := true }
+    (boundary := boundary) (seen := some entries)
+  unless (← updated.get) == [ "scaleway/secrets/plain", "scaleway/secrets/url"
+                           , "scaleway/scaleway-container/binds" ] do
+    throw (IO.userError s!"expected three updates, got {← updated.get}")
+  if leaks applied then throw (IO.userError s!"a refresh apply logged a secret value: {applied}")
+  let settled ← plan true
+  unless settled == ["nothing to do"] do
+    throw (IO.userError s!"a refresh did not converge: {settled}")
+  -- A composed secret stale on its own — its input is right, the recipe
+  -- settles differently — is rewritten, with what holds it, and its input
+  -- is not.
+  values.modify fun vs => ("scaleway/secrets/url", canary) :: vs.filter (·.1 != "scaleway/secrets/url")
+  let composedOnly := (← plan true).filter (·.startsWith "would")
+  unless composedOnly == [ "would UPDATE scaleway/secrets/url"
+                         , "would UPDATE scaleway/scaleway-container/binds" ] do
+    throw (IO.userError s!"expected url then binds: {composedOnly}")
+  -- The minted key is never read, let alone rewritten.
+  if (← reads.get).contains "scaleway/secrets/key" then
+    throw (IO.userError "a refresh read a minted key")
+  IO.println "refresh secrets: ok (stale fromEnv and composed values rewritten, copies followed, keys untouched, converges; nothing read without the flag)"
+
+/- `destroy --keep-data`: the databases, their password secret and the
+    buckets stay — declared or orphaned — and everything else goes. -/
+fleet keepFleet in paris where
+  provider scaleway where
+    resource postgres "db"
+      { masterUsername := "admin", masterPasswordSecret := "db-password", minCapacity := 0, maxCapacity := 4 }
+    resource postgres "lake"
+      { masterUsername := "unused", masterPasswordSecret := "", minCapacity := 0, maxCapacity := 4 }
+    resource secrets "db-password" { valueFrom := Infra.Specs.fromEnv "X" }
+    resource secrets "other" { valueFrom := Infra.Specs.fromEnv "X" }
+    resource objectStore "assets" { versioning := true }
+    resource scalewayContainerNamespace "ns" { description := "d" }
+
+open Infra.Providers.Snapshot in
+private def keepAccount : Snapshot :=
+  [ marked .scaleway .postgres "db" "tn", marked .scaleway .postgres "lake" "tn"
+  , marked .scaleway .secrets "db-password" "tn", marked .scaleway .secrets "other" "tn"
+  , marked .scaleway .objectStore "assets" "tn"
+  , marked .scaleway .scalewayContainerNamespace "ns" "tn"
+  -- Undeclared: two that hold data, two that do not.
+  , marked .scaleway .postgres "old-db" "tn", marked .scaleway .objectStore "old-bucket" "tn"
+  , marked .scaleway .secrets "old-secret" "tn", marked .scaleway .queues "old-queue" "tn" ]
+
+def checkKeepData : IO Unit := do
+  let boundary : Boundary := { fleetName := some "tn" }
+  let deleted ← IO.mkRef []
+  let bs := Infra.Providers.Snapshot.backends keepAccount deleted
+  let found ← claimUndeclared (κ := keepFleet.keys) bs boundary []
+  let entries ← pullEntries (κ := keepFleet.keys) bs
+  let world := worldOf entries
+  let T := keepFleet.plan
+  let kept := keptSlots T world found.orphans
+  let expectKept := [ "scaleway/postgres/db", "scaleway/postgres/lake", "scaleway/secrets/db-password"
+                    , "scaleway/object-store/assets", "scaleway/postgres/old-db"
+                    , "scaleway/object-store/old-bucket" ]
+  unless kept.length == expectKept.length && expectKept.all kept.contains do
+    throw (IO.userError s!"expected the databases, the password and the buckets kept: {kept}")
+  -- The full teardown, for contrast, would take the database.
+  let full ← push bs (Plan.absent keepFleet.keys) world {} (edges := T)
+    (orphans := found.orphans) (boundary := boundary) (seen := some entries)
+  unless full.any (mentions · "DELETE scaleway/postgres/db") do
+    throw (IO.userError s!"a full teardown should delete the database: {full}")
+  -- Keeping the data: no brake (it declares nothing), and exactly the rest goes.
+  let orphans := found.orphans.filter fun o => !keptByTeardown T o.cloud o.kind o.name
+  let _ ← push bs T.keepingData world { apply := true } (edges := T) (orphans := orphans)
+    (boundary := boundary) (seen := some entries)
+  let gone ← deleted.get
+  let expectGone := [ "scaleway/secrets/other", "scaleway/scaleway-container-namespace/ns"
+                    , "scaleway/secrets/old-secret", "scaleway/queues/old-queue" ]
+  unless gone.length == expectGone.length && expectGone.all gone.contains do
+    throw (IO.userError s!"expected exactly the non-data resources deleted, got {gone}")
+  -- And the next apply takes the kept ones back: declared, marked, nothing to do.
+  let after ← pullEntries (κ := keepFleet.keys) bs
+  let back ← push bs (T.keepingData) (worldOf after) {} (boundary := boundary) (seen := some after)
+  unless back == ["nothing to do"] do
+    throw (IO.userError s!"a second keep-data teardown should find nothing left to do: {back}")
+  IO.println "keep data: ok (databases, a classic database's password and buckets stay, declared or orphaned; everything else goes)"
+
 /-- Checks the empty declaration: what `destroy` reconciles against.
 
     Two claims worth pinning. First, `Plan.absent` deletes what exists and
@@ -1063,6 +1248,8 @@ def selfCheck : IO Unit := do
   checkTeardown
   checkSecretComposition
   checkMintedKey
+  checkRefreshSecrets
+  checkKeepData
   checkGcpAssertion
   checkVanishingResource
   checkSecretsRequestToken

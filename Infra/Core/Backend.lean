@@ -107,12 +107,14 @@ structure Backend where
   /-- Read one secret's value.
 
       The **only** inbound plaintext path in this interface, and deliberately
-      separate from `read`, which never fetches a value. Its only sanctioned
-      caller is `Engine.settleFor`, on the apply path, to resolve an
-      `Expr.secretValue` in a composed target; the planning path cannot reach
-      it at all (`envOfWorld` leaves `Env.secretValue` at its default). What it
-      returns is handed to one create/update call and never stored, cached, or
-      returned outward — the same discipline as
+      separate from `read`, which never fetches a value. Its sanctioned
+      callers are `Engine.settleFor`, on the apply path, to resolve an
+      `Expr.secretValue` in a composed target, and `Engine.refreshSecrets`,
+      only under `--refresh-secrets`, to compare a stored value with the
+      declared one. The ordinary planning path cannot reach it at all
+      (`envOfWorld` leaves `Env.secretValue` at its default). What it returns
+      is handed to one create/update call or one comparison and never stored,
+      cached, or returned outward — the same discipline as
       `Infra.Providers.Kinds.Postgres.fetchMasterPassword`. -/
   secretValue : Handle .secrets → IO String
   /-- What this backend can find out about one resource's ownership, as

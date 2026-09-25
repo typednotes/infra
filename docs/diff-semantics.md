@@ -626,10 +626,30 @@ before applying anything. Cheap at every tier, fatal at none.
   structurally incapable of holding a computed key, closing the `HasDeps` soft
   spot above outright rather than by convention. Touches `Field`, every spec
   with a reference, and their `Fillable`/`Settleable`/`Divergent` entries.
-- **Comparing a composed secret.** Neither cloud reports a secret's value, so
-  a composed one is create-only: once it exists there is nothing to diff, and
-  a second apply asks for nothing. Rotating one is therefore an explicit act,
-  not a reconciliation, and there is no `--rotate-secrets` yet.
+- **Comparing a secret on every plan.** No cloud reports a secret's value in
+  its metadata, so a secret is create-only by default: once it exists there is
+  nothing to diff, and a second apply asks for nothing. Comparing values is
+  now possible, but only when asked (0.18.0): `plan --refresh-secrets` and
+  `apply --refresh-secrets` (`Engine.refreshSecrets`) read the stored value of
+  every declared `fromEnv` and `composed` secret, compare it with what the
+  declaration would write now — the environment variable, or the recipe
+  settled against the current values of its inputs — and plan an `UPDATE`
+  where they differ. The copies follow: a composed secret built from a
+  rewritten one is rewritten after it (not compared: settled against the old
+  input it would give the old answer), and so is one built from a resource
+  this run creates or replaces; a `compute` or `scalewayContainer` holding a
+  copy (`env` through `secretValueOf`, `secretEnv`) is updated after that. A
+  `secretValueOf` in any other kind's field is never re-sent, and the plan
+  says so by name (`resendsSecretsOnUpdate`). A plan without the flag reads no
+  value at all, exactly as before.
+
+  Not adopted as the default, deliberately: it widens the planning path from
+  "cannot hold a value" to "compares values it reads and drops them", and it
+  costs two reads per secret per run. Covered: `fromEnv` and `composed`. Not
+  covered: `apiKeyFor` (below), and a database's `masterPasswordSecret`, which
+  the database reads once, at creation, so a new value in the secret changes
+  nothing. `postgresMigrations`' URL secrets need no refresh: they are read
+  afresh on every run.
 
   `SecretSource.apiKeyFor` is create-only for a stronger reason than "cannot
   be compared": re-minting on every apply would leave a trail of live

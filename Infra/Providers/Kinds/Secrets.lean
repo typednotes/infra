@@ -23,11 +23,15 @@ import Linen.Data.Time.Clock
   That is a deliberate asymmetry, and it has a consequence worth stating: a
   secret changed outside this tool is not detected as drift. Detecting it would
   mean pulling plaintext into the engine, the `Sighting`, and potentially a
-  `dump` — a far worse trade than missing a drift.
+  `dump` — a far worse trade than missing a drift. (The one exception is
+  `fetchValue` below, whose callers are listed there — among them
+  `--refresh-secrets`, which compares a value and drops it, and never puts it
+  in a `Sighting`.)
 
   A missing environment variable is an error naming the variable, not an empty
-  secret: silently writing `""` as a password is the kind of failure that is
-  discovered much later and much more expensively.
+  secret (`Infra.Specs.envSecretValue`): silently writing `""` as a password
+  is the kind of failure that is discovered much later and much more
+  expensively.
 
   ## The back-reference to a minted API key
 
@@ -57,12 +61,6 @@ open Infra.Providers.Aws
 open Infra.Providers.JsonRead
 open Data.Json (Value)
 
-/-- Read the value a target points at, or fail naming the variable. -/
-def valueFromEnv (varName : String) : IO String := do
-  match ← IO.getEnv varName with
-  | some v => return v
-  | none   => throw (IO.userError
-      s!"secret value not available: environment variable '{varName}' is not set")
 
 /-! ## The API-key back-reference
 
@@ -109,7 +107,9 @@ def apiKeyRefOf : Evidence → Option (String × String)
     `Kinds.Compute`'s `.scalewayContainer` support). Narrowly scoped exactly like
     `Kinds.Postgres.fetchMasterPassword`: read once, hand straight to the create/update call
     that needs it, never stored or returned any further than that — the module note above
-    about values only ever travelling outward does not apply to this one function.
+    about values only ever travelling outward does not apply to this one function. It is also
+    `Backend.secretValue`, so its other callers are `Engine.settleFor` (a composed value) and,
+    under `--refresh-secrets` only, `Engine.refreshSecrets` (one comparison, then dropped).
 
     **Unconfirmed against the real API**: whether Scaleway's actual secret-binding mechanism
     for containers wants the plaintext value at all, or a native reference that never leaves

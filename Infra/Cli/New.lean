@@ -62,7 +62,7 @@ namespace Infra.Cli.New
     line `init` appends when converting a `lakefile.toml`, and into what
     `scaffold` prints when it keeps a lakefile it did not write — one string,
     so those three cannot disagree. -/
-private def infraRev : String := "v0.17.3"
+private def infraRev : String := "v0.18.0"
 
 /-- The dependency line a consumer's `lakefile.lean` needs, pinned to
     `infraRev`. -/
@@ -800,6 +800,8 @@ lake exe " ++ name ++ " plan           # what would change; reads, changes nothi
 lake exe " ++ name ++ " apply          # actually reconcile
 lake exe " ++ name ++ " plan --destroy # what tearing it down would delete
 lake exe " ++ name ++ " destroy        # delete everything this fleet declares
+lake exe " ++ name ++ " destroy --keep-data     # ...but keep databases and buckets
+lake exe " ++ name ++ " apply --refresh-secrets # also rewrite secrets gone stale
 lake exe " ++ name ++ " dump           # what this fleet manages, as JSON; changes nothing
 ```
 

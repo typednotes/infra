@@ -663,8 +663,8 @@ backends, so a real account's dump can be a test fixture.
 A snapshot cannot hold a secret. `SecretsObserved` is a handle and a version,
 no `ObservedOf` has a value field, and `Backend.read` for `.secrets`
 deliberately never fetches one — `Backend.secretValue` is the only inbound
-plaintext path, its result goes straight to one create call, and it is never
-stored. (One other secret value is read back, below the engine: infra's own
+plaintext path, its result goes straight to one create call (or, under
+`--refresh-secrets`, into one comparison), and it is never stored. (One other secret value is read back, below the engine: infra's own
 Scaleway Queues credential, from its shared `infra-sqs-credential` copy —
 `Infra.Providers.Scaleway.Sqs`. It signs queue calls and never reaches a
 sighting or a snapshot.)
@@ -681,6 +681,20 @@ sighting or a snapshot.)
              Not a second mechanism: `.delete` and `.deleteOrphan`
              share one body and one `Backend.delete` call, addressed
              by name. Pending releases run too.
+
+  --refresh-secrets   plan, apply. `Engine.refreshSecrets` adds an
+             UPDATE for each fromEnv/composed secret whose stored value
+             differs from the declared one, then for what is composed
+             from it or holds a copy of it; each with a
+             `refresh-secrets:` line saying why. Scheduled with the
+             rest by the ordinary edges.
+  --keep-data         destroy, plan --destroy. The target is
+             `Plan.keepingData` — Plan.absent with every
+             `keptByTeardown` slot `unmanaged` (postgres,
+             postgresMigrations, objectStore, s3Bucket, and the
+             password secret a declared database names) — and the
+             orphans of those are dropped before `push`. Each kept
+             resource that exists gets a `KEEP` line.
   dump       observe + claimUndeclared + foreignDeclared, written as a
              JSON Snapshot to FILE or stdout. Read-only, like plan.
 ```

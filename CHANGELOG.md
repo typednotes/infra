@@ -129,6 +129,56 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.18.0] — 2026-09-25
+
+### Added: `--refresh-secrets`, on `plan` and `apply`
+
+A secret was create-only: no cloud shows its value in metadata, so once it
+existed nothing compared it, and a second apply asked for nothing. That left
+every copy of a value as it was first written — a CI secret changed after the
+first apply never reached the cloud, and a connection string composed from a
+rebuilt database kept the old endpoint. The only remedy was renaming the
+secret.
+
+With the flag, `Engine.refreshSecrets` reads the stored value of every
+declared `fromEnv` and `composed` secret that exists and carries the fleet's
+marker, compares it with what the declaration would write now (the variable;
+the recipe settled against its inputs' current values), and plans an `UPDATE`
+where they differ. The copies follow, in dependency order: a composed secret
+built from a rewritten one — or from a resource this run creates or replaces —
+is rewritten after it, without being compared; a `compute` (`env` through
+`secretValueOf`) or `scalewayContainer` (`secretEnv`) holding one is updated
+after that. Each addition has a `refresh-secrets:` line saying why; none says
+a value. Without the flag nothing changes: a plan reads no value at all.
+
+Not covered, and said so in `docs/coverage.md`: `apiKeyFor` (rotation revokes
+a live key — delete the secret and apply), a database's
+`masterPasswordSecret` (read once, at creation), and a `secretValueOf` in any
+kind whose `update` does not re-send it (`resendsSecretsOnUpdate`; warned by
+name). `checkRefreshSecrets` pins it offline — a stale variable, a stale
+recipe, the cascade, convergence, no read without the flag, no value printed,
+the minted key never read.
+
+`envSecretValue` moved from `Kinds.Secrets` to `Infra.Specs`, so the backend
+writing a secret and the engine comparing one read the variable the same way.
+
+### Added: `destroy --keep-data`, and `plan --destroy --keep-data`
+
+A teardown that leaves the data standing: `postgres`, `postgresMigrations`,
+`objectStore`, `s3Bucket`, and the secret a declared database names as its
+`masterPasswordSecret` — declared or orphaned alike (`Plan.keepingData`,
+`keptByTeardown`; `Kind.holdsData` is total, so a new kind has to be
+decided). Each kept resource that exists gets a `KEEP` line. What is kept
+keeps the fleet's marker, so the next `apply` finds it and manages it again.
+`checkKeepData` pins it offline.
+
+### Changed: CLI flags are parsed, not matched
+
+`parseReconcile` replaces the list of exact argument lists. Flags may come in
+any order; an unknown one, a repeated one, or one that means nothing for the
+command (`--keep-data` without a teardown, `--refresh-secrets` on one) is a
+usage error rather than ignored.
+
 ## [0.17.3] — 2026-09-24
 
 ### Fixed: a missing tag-read permission read as one warning per resource

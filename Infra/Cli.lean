@@ -424,16 +424,80 @@ def snapshotOf {κ : Keys} (bs : Backends) (regions : Regions) (entries : List (
                      evidence := ← (bs.backendAt o.cloud o.region).ownershipInfo o.kind ⟨o.name⟩ }]
   return out
 
+/-- One of the three commands that reconcile — `plan`, `apply`, `destroy` —
+    with its flags. -/
+structure Reconcile where
+  /-- Against the empty declaration (`destroy`, `plan --destroy`). -/
+  tearDown       : Bool := false
+  /-- Actually change things (`apply`, `destroy`). -/
+  doIt           : Bool := false
+  force          : Bool := false
+  /-- Leave the data standing on a teardown (`Engine.Plan.keepingData`). -/
+  keepData       : Bool := false
+  refreshSecrets : Bool := false
+  deriving BEq, Repr
+
+/-- Read a reconciling command line, or `none` for anything else — an
+    unknown flag, a repeated one, or one that means nothing for that command,
+    so that a typo is a usage error rather than a flag silently ignored:
+
+    * `plan [--destroy [--keep-data] | --refresh-secrets]`
+    * `apply [--force] [--refresh-secrets]`
+    * `destroy [--force] [--keep-data]`
+
+    `--keep-data` only means something on a teardown, and `--refresh-secrets`
+    only on a reconcile: a teardown writes no secret. -/
+def parseReconcile : List String → Option Reconcile
+  | cmd :: flags =>
+    let allowed := match cmd with
+      | "plan"    => ["--destroy", "--keep-data", "--refresh-secrets"]
+      | "apply"   => ["--force", "--refresh-secrets"]
+      | "destroy" => ["--force", "--keep-data"]
+      | _         => []
+    let has := flags.contains
+    let tearDown := cmd == "destroy" || has "--destroy"
+    if allowed.isEmpty || !flags.all allowed.contains || flags.eraseDups.length != flags.length
+        || (has "--keep-data" && !tearDown) || (has "--refresh-secrets" && tearDown) then none
+    else some { tearDown, doIt := cmd != "plan", force := has "--force"
+                keepData := has "--keep-data", refreshSecrets := has "--refresh-secrets" }
+  | [] => none
+
+#guard parseReconcile ["plan"] == some {}
+#guard parseReconcile ["apply", "--force"] == some { doIt := true, force := true }
+#guard parseReconcile ["apply", "--refresh-secrets", "--force"] ==
+  some { doIt := true, force := true, refreshSecrets := true }
+#guard parseReconcile ["destroy", "--keep-data"] == some { tearDown := true, doIt := true, keepData := true }
+#guard parseReconcile ["plan", "--keep-data", "--destroy"] == some { tearDown := true, keepData := true }
+#guard parseReconcile ["plan", "--refresh-secrets"] == some { refreshSecrets := true }
+-- A flag that means nothing for the command, a repeat, or a typo: usage.
+#guard parseReconcile ["plan", "--keep-data"] == none
+#guard parseReconcile ["plan", "--destroy", "--refresh-secrets"] == none
+#guard parseReconcile ["destroy", "--refresh-secrets"] == none
+#guard parseReconcile ["apply", "--keep-data"] == none
+#guard parseReconcile ["plan", "--force"] == none
+#guard parseReconcile ["apply", "--force", "--force"] == none
+#guard parseReconcile ["apply", "--refresh-secret"] == none
+#guard parseReconcile ["dump"] == none
+
 def usage (exe : String) : String := String.intercalate "\n"
-  [ s!"usage: {exe} [check | plan [--destroy] | apply [--force] | destroy | dump [FILE]]"
+  [ s!"usage: {exe} [check | plan [--destroy [--keep-data] | --refresh-secrets]"
+  , s!"       {String.pushn "" ' ' exe.length} | apply [--force] [--refresh-secrets] | destroy [--force] [--keep-data] | dump [FILE]]"
   , ""
-  , "  check            run the offline self-checks (default)"
-  , "  plan             show what would change, without changing anything"
-  , "  plan --destroy   show what tearing the fleet down would delete"
-  , "  apply            actually reconcile"
-  , "  apply --force    reconcile even if that destroys most of the fleet"
-  , "  destroy          delete everything this fleet manages"
-  , "  dump [FILE]      write what this fleet manages, as JSON, to FILE or stdout"
+  , "  check                  run the offline self-checks (default)"
+  , "  plan                   show what would change, without changing anything"
+  , "  plan --destroy         show what tearing the fleet down would delete"
+  , "  apply                  actually reconcile"
+  , "  apply --force          reconcile even if that destroys most of the fleet"
+  , "  destroy                delete everything this fleet manages"
+  , "  dump [FILE]            write what this fleet manages, as JSON, to FILE or stdout"
+  , ""
+  , "  --refresh-secrets      (plan, apply) read every fromEnv and composed secret,"
+  , "                         rewrite the ones whose stored value is not the declared"
+  , "                         one, and update what holds a copy of them. Minted API"
+  , "                         keys are not rotated: delete the secret and apply again"
+  , "  --keep-data            (destroy, plan --destroy) leave databases, their"
+  , "                         migration histories, buckets, and the password secret"
+  , "                         a database names standing; the next apply takes them back"
   , ""
   , "  What a fleet manages is what carries its marker in the account, read off"
   , "  the resources on every run; nothing is stored locally. So deleting a"
@@ -557,15 +621,17 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
       match args with
       | ["dump", path] => IO.FS.writeFile path (out ++ "\n"); IO.eprintln s!"wrote {path}"
       | _              => IO.println out
-  -- Four commands, one body. They vary in two independent ways — *which*
+  -- Three commands, one body. They vary in two independent ways — *which*
   -- declaration to reconcile against, and whether to actually do it — so
-  -- writing them out separately would be four copies of the same three lines.
+  -- writing them out separately would be copies of the same three lines.
   -- `Plan.absent` is the "empty declaration": same keys, every one `.absent`.
-  | ["plan"] | ["apply"] | ["apply", "--force"]
-  | ["plan", "--destroy"] | ["destroy"] | ["destroy", "--force"] =>
-    let tearDown := args.head? == some "destroy" || args == ["plan", "--destroy"]
-    let doIt     := args.head? == some "apply" || args.head? == some "destroy"
-    let forced   := args.contains "--force"
+  | _ =>
+  match parseReconcile args with
+  | none =>
+    IO.eprintln (usage exe)
+    return 2
+  | some r =>
+    let tearDown := r.tearDown
     reporting <| withLive fun bs => do
       let entries ← pullEntries (κ := F.keys) bs
       let world := worldOf entries
@@ -579,21 +645,33 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
       -- reconcile fetches the migration sources.
       let fetched ← if tearDown then pure [] else fetchMigrationSources F.plan
       let resolved := withFetchedSources F.plan fetched
-      let wanted := if tearDown then Plan.absent F.keys else resolved
+      -- `--keep-data` is the same teardown with the data slots `unmanaged`,
+      -- and the orphans of those kinds left out: a database whose line was
+      -- removed is kept like one still declared (`keptByTeardown`).
+      let wanted :=
+        if !tearDown then resolved
+        else if r.keepData then F.plan.keepingData
+        else Plan.absent F.keys
+      let orphans := if r.keepData then
+          found.orphans.filter fun o => !keptByTeardown F.plan o.cloud o.kind o.name
+        else found.orphans
+      -- Said, since an `unmanaged` slot produces no plan line.
+      if r.keepData then
+        for slot in keptSlots F.plan world found.orphans do
+          IO.println s!"{Ansi.style colour Ansi.blue "KEEP"} {slot} \
+{Ansi.style colour Ansi.dim "(--keep-data)"}"
       -- No teardown special-case here: `push` decides that from the target,
       -- because `Plan.absent` declares nothing and that is exactly what a
       -- teardown is. `--force` stays for the other case, a declaration that
       -- still declares things and drops most of them.
-      let opts : PushOptions := { apply := doIt, colour, force := forced }
+      let opts : PushOptions := { apply := r.doIt, colour, force := r.force
+                                  refreshSecrets := r.refreshSecrets }
       -- `edges := F.plan` matters only for a teardown: `Plan.absent` carries
       -- no specs, so without the fleet's own declaration there is nothing to
       -- order deletions by. See `orderActions`.
-      for line in ← push bs wanted world opts (edges := resolved) (orphans := found.orphans)
+      for line in ← push bs wanted world opts (edges := resolved) (orphans := orphans)
                         (boundary := boundary) (seen := some entries)
                         (releases := found.releases) do
         IO.println line
-  | _ =>
-    IO.eprintln (usage exe)
-    return 2
 
 end Infra.Cli

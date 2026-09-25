@@ -78,7 +78,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.17.3"
+require infra from git "https://github.com/typednotes/infra" @ "v0.18.0"
 
 @[default_target]
 lean_exe «my-infra» where
@@ -208,6 +208,22 @@ lake exe my-infra plan --destroy # what tearing it down would delete
 lake exe my-infra destroy        # delete everything this fleet manages
 lake exe my-infra dump out.json  # what this fleet manages, as JSON
 ```
+
+Two flags change what a reconcile covers:
+
+- **`--refresh-secrets`** (`plan`, `apply`). A secret is written once, at
+  creation, and never compared after — no cloud shows its value in metadata.
+  With this flag, every `fromEnv` and `composed` secret's stored value is
+  read and compared with what the declaration would write now; the ones that
+  differ are rewritten, and so is whatever holds a copy (a composed secret
+  built from one, a container's `secretEnv`). The plan says *which* differ and
+  why, never the value. A minted API key (`apiKeyFor`) is not rotated: delete
+  the secret and apply again.
+- **`--keep-data`** (`destroy`, `plan --destroy`). A teardown that leaves the
+  data standing: `postgres` databases and their `postgresMigrations`
+  histories, `objectStore` and `s3Bucket` buckets, and the password secret a
+  database names — declared or not. Each is listed as `KEEP`. They keep the
+  fleet's marker, so the next `apply` finds them and carries on.
 
 `check` and a bare invocation are the same thing and are always safe. `plan`
 reads your accounts. `apply` and `destroy` change them.

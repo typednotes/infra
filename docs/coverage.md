@@ -1,7 +1,7 @@
-# Coverage in 0.17.3
+# Coverage in 0.18.0
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-23.
+been exercised. Everything below is the state on 2026-09-25.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
@@ -113,11 +113,43 @@ clients for those kinds, not one.
 | `forget` releases — the marker removed on apply, the resource left standing | every taggable pair; Scaleway calls verified live, AWS and GCP offline only |
 | Orphans found on every cloud the declaration or `accounts` names | complete |
 | `check` / `plan` / `apply` / `destroy` / `dump` | complete |
+| `--refresh-secrets` — rewrite `fromEnv`/`composed` secrets whose stored value is stale, and every copy | offline only (`checkRefreshSecrets`); never run against an account. Not covered: `apiKeyFor`, a database's `masterPasswordSecret` — see below |
+| `destroy --keep-data` — a teardown that leaves databases, their histories, buckets and a database's password secret standing | offline only (`checkKeepData`); never run against an account |
 | `dump` snapshots replayed as offline test fixtures (`Snapshot.load`) | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
 | Terraform/OpenTofu export (`toHcl`) | works; not a round trip — see below |
 | Terraform/OpenTofu import (`fleetOfState`) | works, from `terraform show -json` |
 | `lake test` — offline by default, live per provider on request | complete |
+
+### What `--refresh-secrets` and `--keep-data` cover, enumerated
+
+`--refresh-secrets` (`Engine.refreshSecrets`) compares, per declared secret
+that exists and carries this fleet's marker:
+
+| Source | Compared with | Refreshed |
+|---|---|---|
+| `fromEnv` | the environment variable, now | yes |
+| `composed` | the recipe, settled against its inputs' current values | yes; and after any input that is rewritten, created or replaced, without comparing |
+| `apiKeyFor` | — there is no declared value, only what the cloud minted | **no**: rotating means revoking a live key. Delete the secret and apply |
+
+And follows each rewritten secret to what holds a copy of it:
+
+| Holder | Refreshed |
+|---|---|
+| a composed secret reading it | yes, after it |
+| `compute.env` through `secretValueOf` | yes: `update` re-sends `env` |
+| `scalewayContainer.secretEnv` / `env` | yes: `update` re-reads `secretEnv` |
+| any other kind's field through `secretValueOf` | **no**: its `update` does not re-send it. Said by name, as a `refresh-secrets: warning:` line (`resendsSecretsOnUpdate`) |
+| a database's `masterPasswordSecret` | **no**: the database reads it once, at creation. Changing its password is an act on the database |
+| `postgresMigrations`' URL secrets | nothing to do: read afresh on every run |
+
+`--keep-data` (`Plan.keepingData`, `keptByTeardown`) keeps, declared or
+orphaned: `postgres`, `postgresMigrations`, `objectStore`, `s3Bucket`, and a
+secret a declared database names as `masterPasswordSecret`. Every other kind
+is destroyed — including `imageRegistry` (CI rebuilds images) and `queues`
+(messages are in flight by nature). `Kind.holdsData` is total, so a new kind
+has to be decided. An orphaned database's password secret cannot be known
+(its declaration is gone) and is destroyed if it is an orphan too.
 
 ## How far each part has actually been run
 

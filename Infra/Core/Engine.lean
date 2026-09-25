@@ -341,6 +341,70 @@ failed, to check these credentials may read this kind's markers. The cloud said:
   return { orphans := found.map (·.2), releases := releases.map (·.2), warnings }
 
 -- ══════════════════════════════════════════════════════════════
+-- Tearing down, keeping the data
+-- ══════════════════════════════════════════════════════════════
+
+/-- The kinds `destroy --keep-data` leaves standing: the ones holding data a
+    fresh apply cannot bring back — database rows and bucket objects.
+
+    Total and explicit, so a kind added later has to be decided rather than
+    falling into either answer. The `false` side is not "worthless": an image
+    registry holds images and a queue holds messages, but CI rebuilds the one
+    and the other is in flight by nature; everything else is configuration
+    the declaration recreates. A migration history is kept with its database:
+    its delete is a FORGET that touches nothing either way, and keeping it
+    keeps the plan from saying FORGET about a database that stays. -/
+def Kind.holdsData : Kind → Bool
+  | .postgres | .postgresMigrations | .objectStore | .s3Bucket => true
+  | .iam | .compute | .queues | .secrets | .imageRegistry | .securityGroup | .awsInstance
+  | .scalewayFunctionNamespace | .scalewayFunction | .scalewayContainerNamespace
+  | .scalewayContainer => false
+
+/-- The secrets a kept database cannot do without: a classic database's
+    `masterPasswordSecret`, which holds the password it was created with and
+    runs with — the database never reads it again, so a secret recreated from
+    a changed environment variable would no longer match it. Same-cloud, like
+    the edge `impliedByName` draws. Serverless databases name `""`. -/
+def keptPasswordSecrets {κ : Keys} (T : Plan κ) : List (ProviderId × String) :=
+  (Finite.elems (α := ProviderId)).flatMap fun p =>
+    (Finite.elems (α := κ.Key p .postgres)).filterMap fun key =>
+      match T.assign p .postgres key with
+      | .present s => match s.masterPasswordSecret.asLit with
+        | some nm => if nm.isEmpty then none else some (p, nm)
+        | none    => none
+      | _ => none
+
+/-- Whether `destroy --keep-data` leaves this resource standing, declared or
+    not: a kind that `holdsData`, or a secret a kept database needs. The same
+    test for a declared slot and for an orphan, so a database whose line was
+    removed before the teardown is kept like one still declared. -/
+def keptByTeardown {κ : Keys} (T : Plan κ) (p : ProviderId) (k : Kind) (name : String) : Bool :=
+  k.holdsData || (k == .secrets && (keptPasswordSecrets T).contains (p, name))
+
+/-- The target of `destroy --keep-data`: `Plan.absent`, except every kept slot
+    is `unmanaged` — "not my business", so nothing is planned for it and it is
+    not asked about. Like `Plan.absent`, it declares nothing present, so the
+    brake reads it as the teardown it is.
+
+    A kept resource keeps this fleet's marker: the next `apply` finds it
+    declared and marked, and manages it again as if nothing had happened. -/
+def Plan.keepingData {κ : Keys} (T : Plan κ) : Plan κ where
+  assign p k key := if keptByTeardown T p k (κ.name p k key) then .unmanaged else .absent
+
+/-- What a keep-data teardown leaves standing that exists — the declared
+    slots it keeps, and the orphans it does not destroy — so the plan can say
+    so: an `unmanaged` slot produces no line, and a teardown that silently
+    skipped a database would read as one that forgot it. -/
+def keptSlots {κ : Keys} (T : Plan κ) (W : World κ) (orphans : List Orphan) : List String :=
+  let declared := (Finite.elems (α := ProviderId)).flatMap fun p =>
+    (Finite.elems (α := Kind)).flatMap fun k =>
+      (Finite.elems (α := κ.Key p k)).filterMap fun key =>
+        let nm := κ.name p k key
+        if keptByTeardown T p k nm && (W.sighting p k key).isSome then some (slotId p k nm)
+        else none
+  declared ++ (orphans.filter fun o => keptByTeardown T o.cloud o.kind o.name).map (·.slot)
+
+-- ══════════════════════════════════════════════════════════════
 -- Ordering
 -- ══════════════════════════════════════════════════════════════
 
@@ -579,6 +643,12 @@ structure PushOptions where
       as plain text — keeps getting plain strings, and only a caller that knows
       it is talking to a terminal turns it on. See `Infra.Core.Ansi`. -/
   colour : Bool := false
+  /-- Rewrite every declared secret whose stored value is no longer the one
+      the declaration would write, and every resource holding a copy of one
+      (`refreshSecrets`). **Off by default**: it is the one mode in which a
+      plan reads secret values, and a secret is otherwise create-only.
+      `apply --refresh-secrets` and `plan --refresh-secrets` on the CLI. -/
+  refreshSecrets : Bool := false
 
 /-- Settle a target for one slot against what exists so far.
 
@@ -591,7 +661,11 @@ structure PushOptions where
     deliberately, so no value outlives the call that needs it.
 
     Fetching only for keys the spec actually names is what keeps a fleet with
-    no composed secrets from ever calling `Backend.secretValue`. -/
+    no composed secrets from ever calling `Backend.secretValue`.
+
+    One other caller, on request only: `refreshSecrets`, which settles a
+    composed secret to compare the result with what is stored, and drops both
+    the moment the comparison is made. -/
 private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List (Entry κ))
     (p : ProviderId) (k : Kind) (key : κ.Key p k) : IO (ProviderSpec k) := do
   match T.assign p k key with
@@ -651,6 +725,173 @@ private def inContext {α : Type} (what : String) (act : IO α) : IO α := do
   match ← act.toBaseIO with
   | .ok a    => return a
   | .error e => throw (IO.userError s!"{what} failed: {e}")
+
+/-! ## Refreshing secrets
+
+  A secret is create-only by default: no cloud reports a value in its
+  metadata, so there is nothing to diff, and a second apply asks for nothing.
+  That leaves every copy of a value exactly as it was written — a GitHub
+  secret changed after the first apply never reaches the cloud, and a
+  connection string composed from a database that has since been rebuilt
+  keeps pointing at the old one.
+
+  `--refresh-secrets` is the explicit way out. It **reads** the stored value
+  of every declared secret it covers, works out the value the declaration
+  would write now, and plans an `UPDATE` wherever the two differ — then
+  follows the copies: a composed secret built from a rewritten one, and a
+  resource that holds one (`scalewayContainer.secretEnv`, a `compute`'s env
+  through `secretValueOf`), are updated after it.
+
+  What it covers, and what it does not, enumerated (`docs/coverage.md` says
+  the same):
+
+  * **Covered:** `fromEnv` secrets (compared with the environment variable)
+    and `composed` secrets (compared with the settled recipe), declared,
+    existing, and carrying this fleet's marker.
+  * **Not covered: `apiKeyFor`.** Its value is a key the cloud minted; there
+    is no "declared value" to compare with, and rewriting it means revoking a
+    live credential. Rotation stays "delete the secret, apply again".
+  * **Not covered: a classic database's `masterPasswordSecret`.** It is read
+    once, at the database's creation; a new value in the secret does not
+    change the database's password (`Kinds.Postgres`).
+  * **Nothing to cover: `postgresMigrations`' two URL secrets**, which are
+    read afresh on every run rather than copied anywhere.
+
+  Values are compared and dropped: nothing read here is stored, returned, or
+  printed — the plan says *that* a value differs, never what it is. -/
+
+/-- The slots of every secret a declared spec depends on: the values it reads
+    (`Expr.secretValue`), the secrets it binds (`scalewayContainer.secretEnv`),
+    and their observed fields (`principalOf`, `accessKeyOf`). A rewritten
+    secret changes all three — a new value, and a new version. -/
+private def secretInputs {κ : Keys} (k : Kind)
+    (authored : Infra.Specs.SpecOf.{1} k κ.Key Partial (Expr κ.Key)) : List String :=
+  ((hasDepsOf k).deps authored).filterMap fun d =>
+    if d.kind == .secrets then some (slotId d.provider d.kind (κ.name d.provider d.kind d.key))
+    else none
+
+/-- Whether updating a resource of this kind re-sends the secret values it
+    holds, so that a rewritten secret reaches it. Total and explicit, so a
+    kind added later has to answer.
+
+    `compute` (its `env`, through `secretValueOf`) and `scalewayContainer`
+    (`env`, and `secretEnv`, re-read at update) are the only fields a secret
+    value is meant to reach. A `secretValueOf` written into any other kind's
+    field is settled at create and never re-sent, and `refreshSecrets` says
+    so by name rather than planning an update that would not carry it. -/
+def resendsSecretsOnUpdate : Kind → Bool
+  | .compute | .scalewayContainer => true
+  | .iam | .objectStore | .queues | .secrets | .imageRegistry | .postgres
+  | .postgresMigrations | .s3Bucket | .securityGroup | .awsInstance
+  | .scalewayFunctionNamespace | .scalewayFunction | .scalewayContainerNamespace => false
+
+/-- What `--refresh-secrets` adds to a plan: the updates, and one line per
+    update saying why. -/
+structure Refresh (κ : Keys) where
+  actions : List (Action κ) := []
+  reasons : List String := []
+
+/-- The secrets whose stored value is not the one the declaration would write
+    now, and everything that holds a copy of one — as `update` actions, with
+    the reason for each. See the section note for what is covered.
+
+    `planned` is the plan without the refresh: a slot it already acts on is
+    left to that action, and a `create` or `replace` there counts as a changed
+    input, since whatever is built from a new resource has to be rebuilt from
+    it. `foreign` is the declared slots that are not this fleet's: never read,
+    never changed.
+
+    A composed secret whose inputs are all unchanged is compared by settling it
+    against the secrets' *current* values, exactly as its create did. One whose
+    input is itself rewritten is not compared — its old inputs would give the
+    old answer — but updated after that input, by the ordinary dependency
+    edges. -/
+def refreshSecrets {κ : Keys} (bs : Backends) (T : Plan κ) (entries : List (Entry κ))
+    (planned : List (Action κ)) (foreign : List String) : IO (Refresh κ) := do
+  let world := worldOf entries
+  let touched := planned.map (·.slot)
+  let rebuilt := planned.filterMap fun a => match a with
+    | .create .. | .replace .. => some a.slot
+    | _ => none
+  -- The covered secrets: slot, the secrets it reads, the non-secret input
+  -- this run rebuilds (if any), the comparison, and its update. The
+  -- comparison is a thunk because it may only run once the row's inputs are
+  -- decided — see below.
+  let mut covered : List (String × List String × Option String × IO Bool × Action κ) := []
+  for p in Finite.elems (α := ProviderId) do
+    for key in Finite.elems (α := κ.Key p .secrets) do
+      let nm := κ.name p .secrets key
+      let slot := slotId p .secrets nm
+      match T.assign p .secrets key, world.sighting p .secrets key with
+      | .present authored, some _ =>
+        if foreign.contains slot || touched.contains slot then continue
+        -- A minted key: nothing declared to compare with. See the note.
+        if let some (.apiKeyFor _) := authored.valueFrom.asLit then continue
+        let depSlots := ((hasDepsOf .secrets).deps authored).map fun d =>
+          slotId d.provider d.kind (κ.name d.provider d.kind d.key)
+        -- The value the declaration would write now, against the stored one.
+        -- Both are dropped as soon as they are compared.
+        let differs : IO Bool := do
+          let spec ← inContext s!"reading {slot} for --refresh-secrets" <|
+            settleFor T bs entries p .secrets key
+          let desired? ← match spec.valueFrom with
+            | .fromEnv v   => some <$> Infra.Specs.envSecretValue v
+            | .composed v  => pure (some v)
+            | .apiKeyFor _ => pure none
+          match desired? with
+          | none => return false
+          | some desired =>
+            let stored ← inContext s!"reading {slot} for --refresh-secrets" <|
+              (bs.backendFor p .secrets nm).secretValue ⟨nm⟩
+            return stored != desired
+        covered := covered ++ [(slot, secretInputs .secrets authored,
+          depSlots.find? rebuilt.contains, differs, .update p .secrets key)]
+      | _, _ => pure ()
+  -- Decided in dependency order: a composed secret only once every covered
+  -- secret it reads is. One whose input changes is not compared — settled
+  -- against the old input, it would give the old answer — but rewritten after
+  -- it, by the ordinary edges. Bounded by the row count: each round decides at
+  -- least one row, or stops (a cycle, which `orderActions` rejects anyway).
+  let mut changed : List (String × String) := []
+  let mut pending := covered
+  for _ in [0:covered.length] do
+    if pending.isEmpty then break
+    let waiting := pending.map (·.1)
+    let (ready, rest) := pending.partition fun (_, reads, _) => !reads.any waiting.contains
+    if ready.isEmpty then break
+    for (slot, reads, rebuiltInput, differs, _) in ready do
+      let isChanged := fun (s : String) => changed.any (·.1 == s) || rebuilt.contains s
+      if let some input := reads.find? isChanged then
+        changed := changed ++ [(slot, s!"it is composed from {input}, which is rewritten")]
+      else if let some input := rebuiltInput then
+        changed := changed ++ [(slot, s!"it is composed from {input}, which this run creates or replaces")]
+      else if ← differs then
+        changed := changed ++ [(slot, "its stored value differs from the declared one")]
+    pending := rest
+  let isChanged := fun (s : String) => changed.any (·.1 == s) || rebuilt.contains s
+  let mut out : Refresh κ := {}
+  for (slot, _, _, _, a) in covered do
+    if let some (_, why) := changed.find? (·.1 == slot) then
+      out := { actions := out.actions ++ [a], reasons := out.reasons ++ [s!"{slot}: {why}"] }
+  -- Everything else holding a copy of a rewritten secret.
+  for p in Finite.elems (α := ProviderId) do
+    for k in Finite.elems (α := Kind) do
+      if k == .secrets then continue
+      for key in Finite.elems (α := κ.Key p k) do
+        let slot := slotId p k (κ.name p k key)
+        match T.assign p k key, world.sighting p k key with
+        | .present authored, some _ =>
+          if foreign.contains slot || touched.contains slot then continue
+          if let some input := (secretInputs k authored).find? isChanged then
+            if resendsSecretsOnUpdate k then
+              out := { actions := out.actions ++ [.update p k key]
+                       reasons := out.reasons ++ [s!"{slot}: it holds a copy of {input}, which is rewritten"] }
+            else
+              out := { out with reasons := out.reasons ++ [s!"warning: {slot} reads {input}, which is \
+rewritten, but updating a {k.name} does not re-send a secret value — it keeps the old one until it is \
+replaced by hand"] }
+        | _, _ => pure ()
+  return out
 
 /-- Run one action, returning the updated set of known resources.
 
@@ -782,8 +1023,10 @@ ownership cannot be verified")]
 /-- Reconcile the world to the target.
 
     Returns the lines describing what was done — or, in a dry run, what would
-    have been. A dry run performs no backend IO at all: it does not skip the
-    writes, it never reaches them. -/
+    have been. A dry run performs no write at all: it does not skip the
+    writes, it never reaches them. Its reads are the markers
+    (`foreignDeclared`) and, only under `PushOptions.refreshSecrets`, the
+    secret values `refreshSecrets` compares. -/
 def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
     (opts : PushOptions := {}) (edges : Plan κ := T) (orphans : List Orphan := [])
     (boundary : Boundary := {}) (seen : Option (List (Entry κ)) := none)
@@ -805,9 +1048,6 @@ a caller that builds its own backends must do the same (`Infra.Cli.fetchMigratio
     throw (IO.userError msg)
   if let some msg := T.migrationsAppendOnly W then
     throw (IO.userError msg)
-  let work ← match orderActions T (plan T W orphans releases) edges with
-    | .ok o    => pure o
-    | .error e => throw (IO.userError e)
   -- Only resources carrying this fleet's marker are changed or destroyed —
   -- see `foreignDeclared`. Said out loud per resource, on every run: the
   -- state it describes (declared, existing, and not ours) is otherwise
@@ -817,6 +1057,20 @@ a caller that builds its own backends must do the same (`Infra.Cli.fetchMigratio
     IO.eprintln s!"warning: {slot} is declared and exists, but is {why}. It will not be \
 changed or destroyed by this fleet, which therefore manages less than it declares. Either \
 exclude it deliberately, or delete it and let this fleet create it — see docs/persistence.md"
+  let planned := plan T W orphans releases
+  -- `--refresh-secrets`: the one mode in which a plan reads secret values
+  -- (`refreshSecrets`). It needs the entries to settle composed values
+  -- against, which a dry run otherwise never pulls.
+  let seen ← if opts.refreshSecrets && seen.isNone then some <$> pullEntries (κ := κ) bs
+    else pure seen
+  let refreshed ← match opts.refreshSecrets, seen with
+    | true, some es => refreshSecrets bs T es planned (foreign.map (·.1))
+    | _, _          => pure {}
+  let reasons := refreshed.reasons.map fun r =>
+    Ansi.style opts.colour Ansi.dim s!"refresh-secrets: {r}"
+  let work ← match orderActions T (planned ++ refreshed.actions) edges with
+    | .ok o    => pure o
+    | .error e => throw (IO.userError e)
   let work := work.filter fun a =>
     match a with
     | .update .. | .replace .. | .delete .. => !foreign.any (·.1 == a.slot)
@@ -826,8 +1080,8 @@ exclude it deliberately, or delete it and let this fleet create it — see docs/
   -- is simply "nothing to do", below the brake.
   if !opts.apply then
     if work.isEmpty then
-      return [Ansi.style opts.colour Ansi.dim "nothing to do"]
-    return (work.map fun a =>
+      return reasons ++ [Ansi.style opts.colour Ansi.dim "nothing to do"]
+    return reasons ++ (work.map fun a =>
         Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
       [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
   -- The brake, and note what it is *not* asked on: a declaration that asks for
@@ -864,8 +1118,8 @@ exclude it deliberately, or delete it and let this fleet create it — see docs/
     | some es => pure es
     | none    => pullEntries (κ := κ) bs
   if work.isEmpty then
-    return [Ansi.style opts.colour Ansi.dim "nothing to do"]
-  let mut st : Progress κ := { entries, log := [] }
+    return reasons ++ [Ansi.style opts.colour Ansi.dim "nothing to do"]
+  let mut st : Progress κ := { entries, log := reasons.reverse }
   -- Orphan deletions are the one part of the work-list with no dependency
   -- edges to sort by: a resource whose declaration is gone has no spec, so
   -- nothing states what it referenced, and the scan reports names and

@@ -746,7 +746,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
       -- it is gone. See `Kinds.Secrets`' module note.
       let marker := fleet
       let (value, accessKey, principal, extra) ← match spec.valueFrom with
-        | .fromEnv v  => do pure (← Secrets.valueFromEnv v, "", "", [])
+        | .fromEnv v  => do pure (← Infra.Specs.envSecretValue v, "", "", [])
         | .composed v => pure (v, "", "", [])
         | .apiKeyFor identity => do
           if identity.isEmpty then
@@ -955,15 +955,17 @@ invocation, which is a worse failure than this one")
         return { handle := h, repositoryUri := "" }
     | .secrets, h, spec => do
       let value ← match spec.valueFrom with
-        | .fromEnv v  => Secrets.valueFromEnv v
+        | .fromEnv v  => Infra.Specs.envSecretValue v
         | .composed v => pure v
         -- Refused rather than re-minted. An update that produced a second
         -- credential every time it ran would leave a trail of live keys
         -- behind it, each as usable as the last and none of them recorded —
         -- the exact leak `apiKeyFor` writes a back-reference to avoid. And
         -- nothing should reach here: `.secrets` compares no field of its
-        -- spec, so an existing secret never diverges. Rotation is an explicit
-        -- act, and this says what it is.
+        -- spec, so an existing secret never diverges, and
+        -- `Engine.refreshSecrets` — the one planner of a secret's update —
+        -- skips minted keys. Rotation is an explicit act, and this says what
+        -- it is.
         | .apiKeyFor identity => throw (IO.userError s!"secret '{h.raw}': refusing to \
 mint a second API key for '{identity}' on update — the existing one would stay live and \
 unreferenced. To rotate, delete this secret (which deletes its key) and apply again.")

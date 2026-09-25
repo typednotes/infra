@@ -156,7 +156,17 @@ what it reads. The planning path cannot reach either — `Env.secretValue`
 defaults to knowing nothing and `actions` settles against a redacted
 environment — so a dry run cannot print a secret because it never has one.
 Nothing observed, cached, or reported carries a value either, which is also
-why a composed secret can never be diffed: it is create-only.
+why a secret is create-only by default: there is nothing to diff it against.
+
+One flag widens the planning path, on request and never by default:
+`--refresh-secrets` (`Engine.refreshSecrets`, 0.18.0) reads the stored value
+of each declared `fromEnv` and `composed` secret through the same
+`Backend.secretValue`, compares it with what the declaration would write now,
+and drops both. What the plan gains is one bit per secret — *that* it differs,
+never what it is — and an `UPDATE` for it and for whatever holds a copy. The
+reason it is a flag and not the default is this paragraph: a plan that reads
+values is a different kind of plan, and it should be one somebody asked for.
+See `docs/diff-semantics.md`'s ledger for what it covers.
 
 One kind widens that, deliberately and by exactly one read:
 `postgresMigrations`' observation path (`plan`/`dump` pulls, behind

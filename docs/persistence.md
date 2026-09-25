@@ -462,4 +462,6 @@ Two defences, both required:
    unless the operator passes `--force`. "Managed" is the declared resources
    that exist and carry the marker, plus the orphans. A plan that deletes
    everything is either a real teardown, in which case `destroy` is the verb
-   for it, or a credentials problem.
+   for it, or a credentials problem. `destroy --keep-data` is the same
+   teardown with the data kinds left out of it (`Plan.keepingData`): what it
+   keeps stays marked, and the next `apply` manages it again.

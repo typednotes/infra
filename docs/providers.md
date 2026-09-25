@@ -367,12 +367,19 @@ redacted environment, so a dry run has no value to leak. The placeholder
 backend returns a canary string, and `lake exe infra check` asserts it appears
 in neither plan output, apply logs, nor a `dump`.
 
-The consequence, in every case: **a value changed outside this tool is not
+The consequence, by default: **a value changed outside this tool is not
 detected as drift.** Detecting it would mean holding plaintext in the engine,
-which is a far worse trade than missing a drift. For a composed secret this
-also means it is **create-only** — its value cannot be compared, so once it
-exists a second apply asks for nothing, and rotation is an explicit act rather
-than a reconciliation.
+which is a far worse trade than missing a drift on every plan. So a secret is
+**create-only** — once it exists a second apply asks for nothing.
+
+The explicit way out is `--refresh-secrets` on `plan` or `apply` (0.18.0):
+the one mode in which `Backend.secretValue` is called on the planning path,
+once per covered secret, to compare the stored value with the declared one —
+and dropped straight after. `fromEnv` and `composed` secrets are covered;
+`apiKeyFor` is not (rotation there means revoking a live key: delete the
+secret and apply), nor is a database's `masterPasswordSecret` (read once, at
+creation). What is rewritten is followed to its copies: composed secrets,
+`compute` env and `scalewayContainer` `secretEnv`.
 
 ## Identity
 

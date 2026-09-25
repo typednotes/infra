@@ -33,7 +33,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.17.3 covers
+## What 0.18.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **15 resource kinds** (8 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -115,7 +115,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.17.3"
+rev = "v0.18.0"
 ```
 
 Then:
@@ -198,6 +198,8 @@ lake exe infra plan --destroy   # show what tearing the fleet down would delete
 lake exe infra apply            # actually reconcile
 lake exe infra apply --force    # reconcile even if that destroys most of the fleet
 lake exe infra destroy          # delete everything carrying the fleet's marker
+lake exe infra destroy --keep-data  # ...except databases, their histories and buckets
+lake exe infra apply --refresh-secrets  # also rewrite secrets whose value went stale
 lake exe infra dump [FILE]      # JSON snapshot of what the fleet sees, no secrets
 ```
 

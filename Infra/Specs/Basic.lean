@@ -141,6 +141,20 @@ inductive SecretSource
   -- Deliberately NOT deriving `Repr`/`ToJson`/`FromJson`: see the `Repr`
   -- instance below, and `Kind.lean` for why nothing serialises this.
 
+/-- The value a `SecretSource.fromEnv` points at, or a failure naming the
+    variable — never `""`: silently writing an empty password is the kind of
+    failure that is discovered much later and much more expensively.
+
+    One copy, read by both of its callers: a backend creating or updating the
+    secret, and `Engine.refreshSecrets` comparing it with what is stored. Two
+    copies could disagree on what "the declared value" is, which is the one
+    question the second caller exists to ask. -/
+def envSecretValue (varName : String) : IO String := do
+  match ← IO.getEnv varName with
+  | some v => return v
+  | none   => throw (IO.userError
+      s!"secret value not available: environment variable '{varName}' is not set")
+
 /-- Redacting, exactly as `Credentials`' own `Repr` does — so a stray trace or
     error message cannot print a composed value.
 
@@ -170,7 +184,10 @@ instance : Repr SecretSource where
 
     That same limitation is what makes a `composed` secret **create-only**: its
     value cannot be compared, so it is never drift, and a second apply asks for
-    nothing. Rotating one is an explicit action, not a reconciliation. The same
+    nothing. Rotating one is an explicit action, not a reconciliation — which
+    is what `--refresh-secrets` is (`Engine.refreshSecrets`): on request, the
+    stored value of a `fromEnv` or `composed` secret is read, compared, and
+    rewritten if it differs. The same
     goes, more emphatically, for `apiKeyFor`: an update that re-minted the key
     on every apply would leave a trail of live credentials behind it, so the
     backend refuses one outright rather than doing something defensible-looking.
