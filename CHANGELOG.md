@@ -129,6 +129,30 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.18.1] — 2026-09-28
+
+### Changed: `linen` v1.6.1
+
+The pin moves from `v1.0.0`. None of the 55 linen modules `infra` builds — its
+imports and everything they import — changed in that range (the 24 files
+`git diff v1.0.0 v1.6.1` touches are all outside that closure), the toolchain
+is the same 4.34.0, and `lake build` and `lake test` pass unchanged. What 1.1–1.6
+add — reactive graphs, `System.GitFn`, JSON-RPC workers — is nothing `infra`
+uses yet. Two things a consumer can notice:
+
+- **Linux builds that link now audit linen's sealed DuckDB library** (since
+  linen 1.2.0): they compile `duckdb_glibc_compat.c` and run `nm` over the
+  result, failing loudly if a runner's libstdc++ needs a glibc symbol linen
+  does not shim. Measured on ubuntu-24.04 only; this repository's workflows
+  run on `ubuntu-latest`, so pinning them is in `TODO.md`.
+- **The native link-flag recipe is unchanged.** The `-L<multiarch>` fix linen
+  shipped after 1.0.0 is the one `infra` already applied (`lakefile.lean`, and
+  the scaffold in `Infra/Cli/New.lean`), which linen's `pkgAbsoluteLibs` now
+  mirrors.
+
+Scaffolded projects pin `v0.18.1` (`infraRev`). The linen review that came with
+the bump is in `TODO.md`: suggestions, not changes.
+
 ## [0.18.0] — 2026-09-25
 
 ### Added: `--refresh-secrets`, on `plan` and `apply`
