@@ -94,8 +94,8 @@ stop that recurring.
 Since 0.19.0 the read-only statement also names `eks:ListClusters` and
 `eks:DescribeCluster`: the scan lists EKS clusters on every run
 (`kubernetesCluster`). While `PowerUserAccess` is attached the role already
-holds both; **re-apply the policy before detaching it**, or AWS live runs fail
-at that listing.
+holds both; the policy was re-applied with them on 2026-09-29, so detaching
+it does not break that listing.
 
 Apply it **inline** on `infra-ci`. One command, and the same command updates
 it — there is no version to set as default and nothing to attach:
@@ -213,8 +213,7 @@ switch hide a whole kind. Enabled 2026-09-24.
 
 `container.googleapis.com` (Kubernetes Engine) is there for the same reason,
 since 0.19.0 added `kubernetesCluster`: the scan lists GKE clusters on every
-run. **Not yet enabled on the CI project** — until it is, and until the role
-below is granted, every GCP live run fails at that listing. Enabling it creates nothing and
+run. Enabled 2026-09-29, with the role below. Enabling it creates nothing and
 costs nothing; the role below is what bounds what CI can do with it.
 
 To see what is already on:
@@ -258,7 +257,7 @@ What each is for:
 | `roles/iam.serviceAccountAdmin` | `iam` |
 | `roles/run.admin` | `compute` |
 | `projects/typednotes/roles/infraCiCloudSqlRead` (custom, below) | `postgres` — **read only**, for the scan |
-| `roles/container.clusterViewer` | `kubernetesCluster` — **read only**, for the scan (`container.clusters.list`/`get`; it cannot read inside a cluster). **Not yet granted** (0.19.0) |
+| `roles/container.clusterViewer` | `kubernetesCluster` — **read only**, for the scan (`container.clusters.list`/`get`; it cannot read inside a cluster). Granted 2026-09-29 (0.19.0) |
 
 One kind is in no live fleet but is still read: every run lists every kind
 (see `sqladmin` above), so CI must be able to *list* `postgres` without being

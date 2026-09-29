@@ -76,11 +76,11 @@ tagged**; each infra half below waits for a linen release that carries it.
   and move `docs/coverage.md`'s rows. Two facts only it can settle: OpenSSL 3
   verifying GKE's IP endpoint through `SSL_set1_host`, and a current Kapsule
   cluster's kubeconfig still carrying a usable token.
-- [ ] **Grant the CI identities the scan's new read access** before the next
-  live run of the ordinary legs (`ci/README.md` has the commands):
-  - [x] Scaleway: `KubernetesReadOnly` on the CI project (2026-09-29).
-  - [ ] AWS: re-apply `ci/aws-permissions-policy.json`
-    (`eks:ListClusters`/`DescribeCluster`).
-  - [ ] GCP: `roles/container.clusterViewer` and the Kubernetes Engine API on
-    the project.
-  Consumers (`typednotes-infra`) need the same before upgrading.
+- [x] **Grant the CI identities the scan's new read access** (2026-09-29):
+  `KubernetesReadOnly` on the Scaleway CI project, `ci/aws-permissions-policy.json`
+  re-applied (`eks:ListClusters`/`DescribeCluster`), and on GCP the Kubernetes
+  Engine API enabled with `roles/container.clusterViewer`.
+- [ ] **Consumers need the same before upgrading** (`typednotes-infra`): on
+  GCP its service account holds `roles/editor` in the same project, which
+  already covers the cluster listing now the API is enabled; its AWS and
+  Scaleway credentials need the read grants in `docs/permissions.md`.
