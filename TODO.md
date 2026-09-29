@@ -17,10 +17,12 @@ tagged**; each infra half below waits for a linen release that carries it.
 ## After the bump
 
 - [x] **Pin Linux CI runners to `ubuntu-24.04`.** This repository's workflows,
-  the scaffolded ones (`Infra/Cli/New.lean`) and the ruleset's required check
-  names (`docs/github/main-branch-ruleset.json`). **The ruleset on GitHub has
-  to be updated to match** (`build (ubuntu-24.04)`), or the renamed check
-  never reports and merges block.
+  the scaffolded ones (`Infra/Cli/New.lean`), and the "Protect main" ruleset
+  (`docs/github/main-branch-ruleset.json`, applied on GitHub 2026-09-29). The
+  ruleset now requires only the two checks infra's CI produces,
+  `build (ubuntu-24.04)` and `build (macos-latest)`: it had been copied from
+  linen's and also required five linen-only jobs (arm64, consumer, unsealable
+  host) that never report here.
 - [x] **Fix the stale `[Unreleased]` notes.** Six `fromUTF8!` uses, and the
   `Sqs.lean` reference now points at `credentialsFor`.
 

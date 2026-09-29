@@ -41,12 +41,7 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "build (ubuntu-24.04)", "integration_id": 15368 },
-          { "context": "build (ubuntu-24.04-arm)", "integration_id": 15368 },
-          { "context": "build (macos-latest)", "integration_id": 15368 },
-          { "context": "Consumer build (ubuntu-24.04)", "integration_id": 15368 },
-          { "context": "Consumer build (ubuntu-24.04-arm)", "integration_id": 15368 },
-          { "context": "Consumer build (macos-latest)", "integration_id": 15368 },
-          { "context": "A host that cannot seal DuckDB fails loudly", "integration_id": 15368 }
+          { "context": "build (macos-latest)", "integration_id": 15368 }
         ]
       }
     }
