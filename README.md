@@ -34,7 +34,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.21.0 covers
+## What 0.21.1 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -48,7 +48,8 @@ point at another cloud's cluster; it is marked by a label of its own, found
 by it when its line goes, and ordered after its cluster, its secrets and —
 for a Service — the workload it fronts. **Run live in 0.20.0 on Scaleway and
 GCP**, four stages each — create, updates in place, orphans destroyed inside
-a cluster that stays, teardown; AWS's leg is prepared and not yet run
+a cluster that stays, teardown; AWS control-plane creation/deletion has run,
+but the complete leg has not passed yet
 (`example/KubernetesPostgres.lean`, `docs/kubernetes.md`).
 
 **New in 0.20.0: infra runs on `linen`'s `Linen.Cloud`** — credentials,
@@ -64,8 +65,14 @@ project scaffolded by 0.20.0, which did not build, builds again.
 
 **New in 0.21.0: `render`, `helm template` for a fleet** — the declared
 Kubernetes objects as the YAML `apply` sends, offline, secrets as
-placeholders (`docs/kubernetes.md`, "Rendering"). And EKS works: every kube
-API token had been signed the way S3 wants rather than STS, and was refused.
+placeholders (`docs/kubernetes.md`, "Rendering"). EKS tokens now sign the way
+STS requires; they had been signed the way S3 wants, and were refused.
+
+**Fixed in 0.21.1: Kubernetes live-test timeouts and silent provisioning** —
+the job budgets the test plus cleanup; waits report status and elapsed time,
+include HTTP time in their deadline, and stop on EKS waiter failure states.
+CI's missing service-linked-role read grant is applied, and the two Lean build
+warnings are gone. The complete AWS Kubernetes leg still needs a passing rerun.
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -145,7 +152,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.21.0"
+rev = "v0.21.1"
 ```
 
 Then:

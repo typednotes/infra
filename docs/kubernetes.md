@@ -96,7 +96,7 @@ created. Teardown reverses them: delete the node group, wait for not-found,
 then delete the control plane and wait again. The live test's four stages
 reuse one cluster; they do not provision four clusters.
 
-The shared `awaitStatus` loop (unreleased) reports its operation immediately,
+The shared `awaitStatus` loop (0.21.1) reports its operation immediately,
 then elapsed seconds and the provider's status on the first poll, on a status
 change, and roughly every fifteen seconds, with a completion line. It writes
 flushed stderr so progress remains visible during a create without becoming

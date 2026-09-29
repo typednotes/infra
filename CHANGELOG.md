@@ -10,6 +10,25 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+Pending in `linen` — none changed from here, because a linen session was
+active on 2026-09-29:
+
+- **A move: the YAML emitter.** `Infra/Interop/Yaml.lean` writes a
+  `Data.Json.Value` as block YAML that YAML 1.1 and 1.2 readers both read
+  back unchanged; linen's `Data.Yaml` only parses. When it lands in linen,
+  infra's copy is deleted in the same change.
+- **`Crypto.SigV4.presign` should take the payload hash.** It always signs
+  `UNSIGNED-PAYLOAD`, which is botocore's S3 rule; a presigned STS URL (an EKS
+  token) needs the empty body's SHA-256. `Eks.stsTokenUrl` composes it from
+  linen's public pieces meanwhile, and goes when `presign` can say so.
+- **`Data.Json.Encode.renderNumber` should round-trip.** It writes a non-integer through `Float.toString`, six digits
+  after the point, so `1e-7` is sent as `0.000000`. infra refuses such a body
+  (`Infra.Core.JsonExact`) rather than send it; once linen renders the
+  shortest representation that reads back as the same `Float`,
+  `lossyNumbers` of every value is `[]` and the guard costs nothing.
+
+## [0.21.1] — 2026-09-29
+
 ### Fixed: Kubernetes live-test timeouts and silent provisioning
 
 The Live test job now budgets the live step **plus** its backstop and
@@ -36,22 +55,7 @@ template now grant that read on the two exact EKS service-linked-role ARNs;
 the existing create grant does not imply read access. The run cleaned up, but
 the complete AWS Kubernetes round trip still needs a successful rerun.
 
-Pending in `linen` — none changed from here, because a linen session was
-active on 2026-09-29:
-
-- **A move: the YAML emitter.** `Infra/Interop/Yaml.lean` writes a
-  `Data.Json.Value` as block YAML that YAML 1.1 and 1.2 readers both read
-  back unchanged; linen's `Data.Yaml` only parses. When it lands in linen,
-  infra's copy is deleted in the same change.
-- **`Crypto.SigV4.presign` should take the payload hash.** It always signs
-  `UNSIGNED-PAYLOAD`, which is botocore's S3 rule; a presigned STS URL (an EKS
-  token) needs the empty body's SHA-256. `Eks.stsTokenUrl` composes it from
-  linen's public pieces meanwhile, and goes when `presign` can say so.
-- **`Data.Json.Encode.renderNumber` should round-trip.** It writes a non-integer through `Float.toString`, six digits
-  after the point, so `1e-7` is sent as `0.000000`. infra refuses such a body
-  (`Infra.Core.JsonExact`) rather than send it; once linen renders the
-  shortest representation that reads back as the same `Float`,
-  `lossyNumbers` of every value is `[]` and the guard costs nothing.
+Scaffolded projects pin `v0.21.1` (`infraRev`).
 
 ## [0.21.0] — 2026-09-29
 
