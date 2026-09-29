@@ -47,10 +47,11 @@ Two consequences worth internalising before you start:
 - **A bare invocation is offline.** It plans against placeholder backends: no
   credentials, no network, no charges. You have to ask for the real thing.
 
-> **Before you invest much in it:** this is early software. Three clouds, 15
+> **Before you invest much in it:** this is early software. Three clouds, 17
 > resource kinds, and a maturity that varies a lot by kind — notably, some
-> kinds (AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP
-> Cloud SQL) *have never been run against a real account*.
+> kinds (the two Kubernetes kinds on every cloud, AWS Lambda and RDS,
+> Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL) *have never
+> been run against a real account*.
 > [`coverage.md`](coverage.md) is the honest breakdown, and worth two minutes
 > before you go further.
 
@@ -78,7 +79,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.18.1"
+require infra from git "https://github.com/typednotes/infra" @ "v0.19.0"
 
 @[default_target]
 lean_exe «my-infra» where
@@ -221,8 +222,8 @@ Two flags change what a reconcile covers:
   the secret and apply again.
 - **`--keep-data`** (`destroy`, `plan --destroy`). A teardown that leaves the
   data standing: `postgres` databases and their `postgresMigrations`
-  histories, `objectStore` and `s3Bucket` buckets, and the password secret a
-  database names — declared or not. Each is listed as `KEEP`. They keep the
+  histories, `objectStore` and `s3Bucket` buckets, `kubernetesCluster`
+  clusters, and the password secret a database names — declared or not. Each is listed as `KEEP`. They keep the
   fleet's marker, so the next `apply` finds them and carries on.
 
 `check` and a bare invocation are the same thing and are always safe. `plan`
@@ -431,6 +432,8 @@ Each of these is a working executable, and the header of each is the lesson:
 | `example/CrossCloud.lean` | one fleet in two clouds, a reference crossing between |
 | `example/MultiRegion.lean` | nested `provider`/`in` blocks, four regions |
 | `example/ScalewayPull.lean` | reading an account without declaring anything |
+| `example/PostgresMigrations.lean` | a migration history as a declared resource, and a rollout ordered after it |
+| `example/KubernetesPostgres.lean` | a managed cluster, and a Postgres StatefulSet behind a Service inside it — objects addressed `<cluster>/<namespace>/<kind>/<name>` |
 | `Infra/Demo.lean` | the same fleet written three ways, with the guards proving they agree |
 
 All but `ScalewayPull` run offline and free with a bare invocation.

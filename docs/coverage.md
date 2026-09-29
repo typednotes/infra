@@ -1,7 +1,7 @@
-# Coverage in 0.18.1
+# Coverage in 0.19.0
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-25.
+been exercised. Everything below is the state on 2026-09-29.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
@@ -12,7 +12,7 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| **GCP** | **all the portable kinds have live clients** — seven GCP-specific (Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL) and the eighth, `postgresMigrations`, whose Postgres-wire backend is one client shared by all three clouds. One stated limit: a serverless `postgres` declaration raises, since Cloud SQL has no such tier. `iam` now writes roles as well as reading them — an etag-guarded, member-scoped edit of the project IAM policy that leaves conditional bindings alone. Provider-local kinds report no counterpart rather than a missing client |
+| **GCP** | **all the portable kinds have live clients** — seven GCP-specific (Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL) and the eighth, `postgresMigrations`, whose Postgres-wire backend is one client shared by all three clouds — and, since 0.19.0, `kubernetesCluster` (GKE) and `kubernetesObject` (one Kubernetes API client shared by all three), **not yet run live**. One stated limit: a serverless `postgres` declaration raises, since Cloud SQL has no such tier. `iam` now writes roles as well as reading them — an etag-guarded, member-scoped edit of the project IAM policy that leaves conditional bindings alone. Provider-local kinds report no counterpart rather than a missing client |
 | Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
@@ -21,7 +21,7 @@ and loud, not a plugin boundary.
 
 ## Resource kinds
 
-Fifteen, split deliberately. **Portable** kinds are the common denominator and
+Seventeen, split deliberately. **Portable** kinds are the common denominator and
 carry no cross-resource references, so the same spec value applies to either
 cloud. **Provider-local** kinds are richer and tie a plan to one cloud, which
 the kind's name makes obvious.
@@ -41,6 +41,31 @@ and Lean reports one as unreachable.
 | `iam` | IAM users | IAM applications | no |
 | `postgres` | RDS | Managed Database | no |
 | `postgresMigrations` | Postgres wire | Postgres wire | **yes, all three clouds** |
+| `kubernetesCluster` | EKS (+ a managed node group) | Kapsule (+ a pool) | no — GKE on GCP |
+| `kubernetesObject` | Kubernetes API | Kubernetes API | **yes, all three clouds** |
+
+**The two Kubernetes kinds (0.19.0) are implemented on all three clouds and
+exercised offline only — no cluster has been created by infra yet.** Every
+call is written against the providers' generated SDKs and discovery documents
+(checked 2026-09-29, recorded in `Infra/Providers/Kinds/Kubernetes.lean`);
+`Main.lean`'s `checkKubernetes`, the `#guard`s in `Infra/Specs/Kubernetes.lean`
+and `example/KubernetesPostgres.lean` are what has run; the opt-in live leg
+(`lake test -- <cloud> kubernetes`) is written and has not. An in-cluster
+object's fleet name is its address, `<cluster>/<namespace>/<kind>/<name>`, and
+its cluster is the same cloud's by construction. The design, its five hard
+edges and where it differs from the proposal: `docs/kubernetes.md`.
+
+What the two kinds do **not** do, enumerated:
+
+| case | why | instead |
+|---|---|---|
+| a namespace other than `default` that the fleet does not declare | namespaces are not managed implicitly | declare it as `rawObject "v1" "Namespace" "{}"` at `<cluster>/_/namespace/<name>`, or create it by hand |
+| PersistentVolumeClaims | Kubernetes keeps a StatefulSet's claims when it goes, and infra never lists or deletes one — they carry the marker, so they say whose they are | delete one by hand, or delete the cluster |
+| Kubernetes Secret objects fed from `secrets` | a secret's value is written into the workload's environment instead (hard edge 3) | declare a Secret through `rawObject` |
+| a workload's secret value on the observation path | the kube API returns whole objects, so a read receives it — dropped at parse, never reported | recorded in `docs/diff-semantics.md`'s ledger |
+| a change made inside a raw object by someone else | a raw manifest compares against the annotation infra wrote, the `kubectl apply` reading | a typed shape, whose fields are read back |
+| EKS autoscaling | a managed node group's bounds are set; scaling within them needs the Cluster Autoscaler or Karpenter in the cluster | install one, or use a fixed `nodeCount` |
+| Kapsule etcd encryption at rest | not established from Scaleway's documentation | treat a secret in a Kapsule workload as readable by anyone with the cluster's etcd |
 
 `postgresMigrations` is the ninth portable kind and the odd one out twice
 over: its backend is a data plane (the Postgres protocol through
@@ -114,7 +139,8 @@ clients for those kinds, not one.
 | Orphans found on every cloud the declaration or `accounts` names | complete |
 | `check` / `plan` / `apply` / `destroy` / `dump` | complete |
 | `--refresh-secrets` — rewrite `fromEnv`/`composed` secrets whose stored value is stale, and every copy | offline only (`checkRefreshSecrets`); never run against an account. Not covered: `apiKeyFor`, a database's `masterPasswordSecret` — see below |
-| `destroy --keep-data` — a teardown that leaves databases, their histories, buckets and a database's password secret standing | offline only (`checkKeepData`); never run against an account |
+| Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline only (`checkKubernetes`, `example/KubernetesPostgres.lean`); the live leg is written and has not run |
+| `destroy --keep-data` — a teardown that leaves databases, their histories, buckets, clusters and a database's password secret standing | offline only (`checkKeepData`); never run against an account |
 | `dump` snapshots replayed as offline test fixtures (`Snapshot.load`) | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
 | Terraform/OpenTofu export (`toHcl`) | works; not a round trip — see below |
@@ -142,10 +168,13 @@ And follows each rewritten secret to what holds a copy of it:
 | any other kind's field through `secretValueOf` | **no**: its `update` does not re-send it. Said by name, as a `refresh-secrets: warning:` line (`resendsSecretsOnUpdate`) |
 | a database's `masterPasswordSecret` | **no**: the database reads it once, at creation. Changing its password is an act on the database |
 | `postgresMigrations`' URL secrets | nothing to do: read afresh on every run |
+| a `kubernetesObject`'s environment (`EnvVar.secret`) | yes: `update` re-reads every secret the object names and applies it whole |
 
 `--keep-data` (`Plan.keepingData`, `keptByTeardown`) keeps, declared or
-orphaned: `postgres`, `postgresMigrations`, `objectStore`, `s3Bucket`, and a
-secret a declared database names as `masterPasswordSecret`. Every other kind
+orphaned: `postgres`, `postgresMigrations`, `objectStore`, `s3Bucket`,
+`kubernetesCluster` (it holds the volumes), and a secret a declared database
+names as `masterPasswordSecret`. In-cluster objects are destroyed; a
+StatefulSet's claims outlive it regardless. Every other kind
 is destroyed — including `imageRegistry` (CI rebuilds images) and `queues`
 (messages are in flight by nature). `Kind.holdsData` is total, so a new kind
 has to be decided. An orphaned database's password secret cannot be known
@@ -348,7 +377,7 @@ backstop step was *skipped*, which is the evidence that the driver's own
 teardown ran and left nothing behind — and the accounts were checked afterwards
 and are clean.
 
-**Thirteen of the fifteen kinds; 22 (cloud, kind) pairs.**
+**Thirteen of the seventeen kinds; 22 (cloud, kind) pairs.** (The two Kubernetes kinds have an opt-in leg of their own that has not run; `postgres` and `postgresMigrations` are below.)
 
 **All three dependency patterns are exercised live.** The chain and the fan-out
 run on every cloud. The **fan-in** was Scaleway-only and is now covered: its
@@ -366,7 +395,7 @@ document, and is still drawn.
 | Scaleway | the same minus `s3Bucket`/`securityGroup`/`iam`, plus both namespaces and `scalewayContainer` | 9 |
 | GCP | the same minus `s3Bucket`/`securityGroup`, plus `compute` | 8 |
 
-**Thirteen of the fifteen kinds**, and 22 (cloud, kind) pairs.
+**Thirteen of the seventeen kinds**, and 22 (cloud, kind) pairs.
 
 `iam` is deliberately absent from the Scaleway fleet, which is the one place a
 kind was dropped rather than never added. Scaleway's IAM applications live in
@@ -382,7 +411,7 @@ built — and `scalewayContainer` for the same reason, since Serverless
 Containers can pull from an external registry. Lambda still cannot: a container
 function must come from an ECR repository in the same account.
 
-Thirteen of the fifteen kinds, 22 (cloud, kind) pairs. Every one is written to be
+Thirteen of the seventeen kinds, 22 (cloud, kind) pairs. Every one is written to be
 created from nothing and deleted again, and the set matters as much as the
 count: a fleet is applied and torn down as a *set*, so `create` and `delete`
 each run seven times in one pass and the absence check covers all of them — a
@@ -397,6 +426,7 @@ those are the same set.
 | Kind | Why not |
 |---|---|
 | `postgres` | Five to fifteen minutes to create and as long to delete, on every cloud — longer than the workflow's step timeout, so it would not be a slow test but a failing one |
+| `kubernetesCluster`, `kubernetesObject` | a cluster takes ten to twenty minutes to create and is billed by the hour; the leg exists, opt-in (`lake test -- <cloud> kubernetes`), and has not been run |
 
 Two kinds left this table, and both left it by removing the obstacle rather
 than by lowering the bar:
@@ -771,6 +801,16 @@ function — it is a number, so it tells the code the response was parsed at all
 
 ### Never run against any account
 
+- **Kubernetes, on every cloud.** `kubernetesCluster` (EKS, GKE, Kapsule) and
+  `kubernetesObject` (the Kubernetes API through the cluster's own CA) have
+  never been called against a real account. The live leg is
+  `lake test -- <cloud> kubernetes`, opt-in and not in CI (a cluster takes
+  ten to twenty minutes and is billed by the hour). Two facts only a live run
+  can settle: OpenSSL 3 verifying GKE's IP endpoint through `SSL_set1_host`,
+  and Kapsule's kubeconfig token being accepted as a bearer (the SDK says the
+  token user exists; that a current cluster still issues one is the run's to
+  show).
+
 Rewritten after AWS's full leg passed, because most of what this section said
 about AWS is no longer true. It listed ECR, Secrets Manager and IAM as never
 called; all three now create, read and delete on every AWS live run.
@@ -974,9 +1014,10 @@ created.
 
 So existence comes from `list` again, which can be wrong only by omission — the
 safe direction — and which is the call this repo has exercised against real
-accounts for all fourteen cloud-control-plane kinds (the fifteenth,
-`postgresMigrations`, is route-driven and answers to a database, not to an
-account listing). Membership stays the markers'. The two
+accounts for the fourteen cloud-control-plane kinds it had then (the
+fifteenth, `postgresMigrations`, is route-driven and answers to a database,
+not to an account listing; the two Kubernetes kinds of 0.19.0 have not been
+listed against a real account). Membership stays the markers'. The two
 questions were conflated before this change; separating them was right, and
 answering the second one per resource was not.
 
@@ -1022,6 +1063,8 @@ because it is the one rung whose evidence infra does not write — see below.
 | `iam` | tags | tags | **description** |
 | `scalewayFunction`, `scalewayContainer`, and both namespaces | — | tags | — |
 | `postgresMigrations` | **inherited** | **inherited** | **inherited** |
+| `kubernetesCluster` | tags | tags | labels |
+| `kubernetesObject` | labels | labels | labels |
 
 `postgresMigrations` answers on all three clouds with the one evidence there
 is: its parent database's. The resource is rows inside a declared `postgres`
@@ -1153,6 +1196,9 @@ What this cannot reach, enumerated:
 | case | why | instead |
 |---|---|---|
 | `postgresMigrations` | rows in a database, not a cloud object: there is nothing to find, and its delete is a no-op FORGET | nothing to destroy: the schema dies with its database |
+| a `kubernetesObject` in a cluster the declaration no longer names (neither declared nor in a `forget`) | an object is reached through its cluster's API server, and the scan looks only in the declaration's clusters | nothing to reach: that cluster is an orphan itself, and deleting it deletes everything in it |
+| an in-cluster object with an owner, a PersistentVolumeClaim, or an Event | a controller's child is its parent's; claims are never deleted (hard edge 5); events are the server's | excluded from the scan by construction |
+| objects of an aggregated API whose discovery answers `503` | its backing service is down, so its resources cannot be listed | skipped with a note on stderr, and scanned again on the next run |
 | a cloud named neither in the declaration nor in `accounts` (or named only in `accounts` and without credentials on this machine) | it is not loaded, so it is not scanned | keep a cloud in `accounts` until the apply that empties it, then drop it |
 | a name-rung resource named outside the fleet's prefixes | nothing on it says it is this fleet's | name it under the prefix, or add its prefix with `namePrefixes` — listing `<fleet name>-` too, since setting any prefix replaces the default |
 | a name-rung resource in a `forget` line | its name *is* the marker and cannot be removed, so it cannot be released | the `forget` line stays for as long as the resource exists |
@@ -1346,7 +1392,8 @@ mechanism, and the disagreement is now unrepresentable rather than documented.
 ## Not in this version
 
 More clouds, more kinds, and more of each cloud's surface — networking beyond
-security groups, DNS, load balancers, Kubernetes. Also: checking an instance
+security groups, DNS, load balancers. (Kubernetes is in since 0.19.0; Helm
+charts are not, and will not be — see `docs/kubernetes.md`.) Also: checking an instance
 type against the region it is placed in, which is now *possible* because both
 facts are declared, and is not done because a stale availability table would
 reject valid fleets.

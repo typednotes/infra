@@ -91,6 +91,12 @@ cannot carry a comment.** The grammar admits only `Version`, `Id` and
 naming neither the cause nor the file. `ci/check-aws-policy.sh` runs in CI to
 stop that recurring.
 
+Since 0.19.0 the read-only statement also names `eks:ListClusters` and
+`eks:DescribeCluster`: the scan lists EKS clusters on every run
+(`kubernetesCluster`). While `PowerUserAccess` is attached the role already
+holds both; **re-apply the policy before detaching it**, or AWS live runs fail
+at that listing.
+
 Apply it **inline** on `infra-ci`. One command, and the same command updates
 it — there is no version to set as default and nothing to attach:
 
@@ -182,7 +188,8 @@ gcloud services enable --project=typednotes \
   run.googleapis.com \
   iam.googleapis.com \
   cloudresourcemanager.googleapis.com \
-  sqladmin.googleapis.com
+  sqladmin.googleapis.com \
+  container.googleapis.com
 ```
 
 `cloudresourcemanager` is there for `Gcp.Iam.readPolicies`, which reads the
@@ -202,7 +209,12 @@ With the API off, that listing fails the run:
     is disabled.
 
 A disabled API is not treated as "nothing there": that would let one missing
-switch hide a whole kind. Enabled 2026-09-24. Enabling it creates nothing and
+switch hide a whole kind. Enabled 2026-09-24.
+
+`container.googleapis.com` (Kubernetes Engine) is there for the same reason,
+since 0.19.0 added `kubernetesCluster`: the scan lists GKE clusters on every
+run. **Not yet enabled on the CI project** — until it is, and until the role
+below is granted, every GCP live run fails at that listing. Enabling it creates nothing and
 costs nothing; the role below is what bounds what CI can do with it.
 
 To see what is already on:
@@ -246,6 +258,7 @@ What each is for:
 | `roles/iam.serviceAccountAdmin` | `iam` |
 | `roles/run.admin` | `compute` |
 | `projects/typednotes/roles/infraCiCloudSqlRead` (custom, below) | `postgres` — **read only**, for the scan |
+| `roles/container.clusterViewer` | `kubernetesCluster` — **read only**, for the scan (`container.clusters.list`/`get`; it cannot read inside a cluster). **Not yet granted** (0.19.0) |
 
 One kind is in no live fleet but is still read: every run lists every kind
 (see `sqladmin` above), so CI must be able to *list* `postgres` without being
@@ -433,6 +446,8 @@ ORG=$(scw config get default-organization-id)
 scw iam rule create policy-id="$P" permission-set-names.0=RelationalDatabasesReadOnly project-ids.0="$CI"
 scw iam rule create policy-id="$P" permission-set-names.0=ServerlessSQLDatabaseReadOnly project-ids.0="$CI"
 scw iam rule create policy-id="$P" permission-set-names.0=IAMApplicationReadOnly organization-id="$ORG"
+# 0.19.0, for the scan's Kapsule listing — NOT YET ADDED to the CI policy.
+scw iam rule create policy-id="$P" permission-set-names.0=KubernetesReadOnly project-ids.0="$CI"
 ```
 
 Then three repository secrets:
@@ -483,6 +498,7 @@ each the narrowest set that covers what the scan calls:
 | `RelationalDatabasesReadOnly` | CI project | `postgres`, Managed Database half (`Postgres.Rdb.list`, `readOwnership`) |
 | `ServerlessSQLDatabaseReadOnly` | CI project | `postgres`, Serverless SQL half (`Postgres.ServerlessSql.list`) |
 | `IAMApplicationReadOnly` | **organization** | `iam`: the scan calls only `GET /iam/v1alpha1/applications` (`Iam.Scw.listRaw`, which `list` and `readOwnership` share) |
+| `KubernetesReadOnly` | CI project | `kubernetesCluster` (0.19.0): `GET /k8s/v1/regions/{region}/clusters` — `Kapsule.list`, which the ownership read shares. **Not yet added** |
 
 The last is the one organization-scoped rule, and it is **read-only and
 applications-only**: CI can see every IAM application in the organization —

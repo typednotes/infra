@@ -1062,6 +1062,93 @@ def checkKeepData : IO Unit := do
     throw (IO.userError s!"a second keep-data teardown should find nothing left to do: {back}")
   IO.println "keep data: ok (databases, a classic database's password and buckets stay, declared or orphaned; everything else goes)"
 
+/- The marker decides inside a cluster too. -/
+fleet k8sFleet in paris where
+  provider scaleway where
+    resource kubernetesCluster "main" { nodeType := "GP1-S", nodeCount := 3 }
+    resource kubernetesObject "main/default/statefulset.apps/postgres"
+      { shape := Infra.Specs.statefulSet (image := "postgres:17") }
+    resource kubernetesObject "main/default/service/postgres"
+      { shape := Infra.Specs.service 5432 }
+    resource kubernetesObject "main/default/deployment.apps/web"
+      { shape := Infra.Specs.deployment (image := "nginx:1.27") }
+
+open Infra.Providers.Snapshot in
+/-- The account `checkKubernetes` replays: the declared cluster and one of
+    its objects, marked; an undeclared object in it, marked (an orphan); a
+    declared address held by an object that carries no marker (foreign); and
+    another fleet's object. -/
+private def k8sAccount : Snapshot :=
+  [ marked .scaleway .kubernetesCluster "main" "tn"
+  , marked .scaleway .kubernetesObject "main/default/statefulset.apps/postgres" "tn"
+  , marked .scaleway .kubernetesObject "main/default/deployment.apps/old-worker" "tn"
+  , unmarked .scaleway .kubernetesObject "main/default/deployment.apps/web"
+  , marked .scaleway .kubernetesObject "main/default/configmap/theirs" "another-fleet" ]
+
+/-- `kubernetesCluster` and `kubernetesObject` against a snapshot of an
+    account: the in-cluster orphan is found and destroyed, the declared-but-
+    unmarked object is refused (never updated), another fleet's object is left
+    alone, the missing service is created — after the workload it fronts — and
+    `--keep-data` keeps the cluster while taking the objects. -/
+def checkKubernetes : IO Unit := do
+  let boundary : Boundary := { fleetName := some "tn" }
+  let deleted ← IO.mkRef []
+  let bs := Infra.Providers.Snapshot.backends k8sAccount deleted
+  let found ← claimUndeclared (κ := k8sFleet.keys) bs boundary []
+  let slots := found.orphans.map (·.slot)
+  unless slots == ["scaleway/kubernetes-object/main/default/deployment.apps/old-worker"] do
+    throw (IO.userError s!"expected exactly the undeclared marked object as an orphan: {slots}")
+  let entries ← pullEntries (κ := k8sFleet.keys) bs
+  let world := worldOf entries
+  let foreign ← foreignDeclared bs k8sFleet.plan world boundary
+  unless foreign.map (·.1) == ["scaleway/kubernetes-object/main/default/deployment.apps/web"] do
+    throw (IO.userError s!"expected the unmarked declared object to be foreign: {foreign.map (·.1)}")
+  let dry ← push bs k8sFleet.plan world {} (orphans := found.orphans) (boundary := boundary)
+    (seen := some entries)
+  unless dry.any (mentions · "would CREATE scaleway/kubernetes-object/main/default/service/postgres")
+      && dry.any (mentions · "would DELETE scaleway/kubernetes-object/main/default/deployment.apps/old-worker") do
+    throw (IO.userError s!"the plan does not show the service's create and the orphan's delete: {dry}")
+  if dry.any (mentions · "deployment.apps/web") then
+    throw (IO.userError s!"the plan changes an object that is not this fleet's: {dry}")
+  let _ ← push bs k8sFleet.plan world { apply := true } (orphans := found.orphans)
+    (boundary := boundary) (seen := some entries)
+  -- The orphan goes; what is not this fleet's does not. (A declared object
+  -- of this fleet's may be replaced: the replay's placeholder report is an
+  -- empty raw shape, which differs from every declared one.)
+  let gone ← deleted.get
+  unless gone.contains "scaleway/kubernetes-object/main/default/deployment.apps/old-worker" do
+    throw (IO.userError s!"the orphan was not deleted: {gone}")
+  if gone.any (fun g => (g.splitOn "deployment.apps/web").length > 1
+      || (g.splitOn "configmap/theirs").length > 1) then
+    throw (IO.userError s!"deleted an object that is not this fleet's: {gone}")
+  -- The service fronts the workload of the same name, so it is scheduled
+  -- after it — from the name alone.
+  let order := match orderActions k8sFleet.plan (actions k8sFleet.plan (worldOf [])) with
+    | .ok o => o.map Action.slot
+    | .error _ => []
+  match order.idxOf? "scaleway/kubernetes-object/main/default/statefulset.apps/postgres",
+        order.idxOf? "scaleway/kubernetes-object/main/default/service/postgres",
+        order.idxOf? "scaleway/kubernetes-cluster/main" with
+  | some sts, some svc, some cluster =>
+    unless cluster < sts && sts < svc do
+      throw (IO.userError s!"expected cluster, then the workload, then its service: {order}")
+  | _, _, _ => throw (IO.userError s!"a slot is missing from the order: {order}")
+  -- `--keep-data`: the cluster holds the volumes and stays; the objects go.
+  let T := k8sFleet.plan
+  let kept := keptSlots T world []
+  unless kept == ["scaleway/kubernetes-cluster/main"] do
+    throw (IO.userError s!"expected the cluster kept: {kept}")
+  -- Hard edge 2, the transport half: an API server that does not answer is
+  -- an error, never "absent" — `get?` answers `none` only for a 404 the
+  -- server sent. (`reachability`'s `#guard`s pin the cloud half.)
+  let nowhere : Infra.Providers.Kube.Access :=
+    { label := "scaleway/kubernetes-cluster/nowhere", host := "127.0.0.1", port := 1
+      caPem := "", token := "t" }
+  match ← (Infra.Providers.Kube.get? nowhere "/api/v1/namespaces/default/services/x").toBaseIO with
+  | .ok r    => throw (IO.userError s!"an unreachable API server read as {repr (r.map fun _ => ())}")
+  | .error _ => pure ()
+  IO.println "kubernetes: ok (an in-cluster orphan is destroyed, an unmarked declared object is refused, a service follows its workload, and keep-data keeps the cluster; an unreachable API server is an error, not absence)"
+
 /-- Checks the empty declaration: what `destroy` reconciles against.
 
     Two claims worth pinning. First, `Plan.absent` deletes what exists and
@@ -1250,6 +1337,7 @@ def selfCheck : IO Unit := do
   checkMintedKey
   checkRefreshSecrets
   checkKeepData
+  checkKubernetes
   checkGcpAssertion
   checkVanishingResource
   checkSecretsRequestToken

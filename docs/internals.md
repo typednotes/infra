@@ -149,7 +149,7 @@ worth understanding first, because every guarantee in the ledger of
 `docs/diff-semantics.md` is a consequence of it.
 
 ```
-  ProviderId × Kind          .aws, .scaleway, .gcp  ×  14 kinds
+  ProviderId × Kind          .aws, .scaleway, .gcp  ×  17 kinds
         │                    Infra/Core/Kind.lean
         │  SpecOf is indexed by Kind ALONE, never by provider.
         │  That is what makes a spec portable.
@@ -582,6 +582,54 @@ building the plan it pushes, and why `push` refuses unfetched sources and
 `Plan.migrationDepsProblem` (an unresolved or ambiguous reference) before
 deriving any action.
 
+### Reached through another resource: `kubernetesObject`
+
+An in-cluster object is not a cloud resource either: it lives behind its
+cluster's API server, which is reached through the cloud (`Kinds.Kubernetes`)
+and then spoken to directly (`Kube.Client`, one client for all three clouds).
+
+```
+  object "main/default/service/postgres"      ← the fleet name is the address
+            │
+            │  ObjectName.parse?  →  cluster "main", namespace, kind, name
+            ▼
+  Kubernetes.access p creds "main"
+     │  the CLOUD: describe the cluster
+     │    not listed ............... none   → the object is gone with it
+     │    listed, no endpoint ...... error  → unknown is never "absent"
+     │    listed, endpoint ......... host, port, CA (base64), and a token
+     │        EKS   presigned STS GetCallerIdentity, x-k8s-aws-id signed
+     │        GKE   the OAuth bearer
+     │        Kapsule  the kubeconfig's token
+     ▼
+  Kube.send: TCP → TLS trusting only the cluster CA (a temp file,
+             createClientContextWithCA) → linen's performRequest
+     │
+     ├─ read    GET the object → Specs.shapeOfLive (secret values dropped)
+     ├─ create/update   server-side apply (PATCH, fieldManager=infra)
+     ├─ delete  DELETE, propagationPolicy Background; 404 is success
+     └─ list    discovery over every group-version, a label-selector
+                list of each listable+deletable resource (owned objects,
+                PVCs and Events excluded) — plus a GET of each declared
+                address, so an unmarked object at a declared name is SEEN
+                and refused (foreignDeclared), never adopted
+```
+
+**Where the clusters come from.** A handle is an address, and read, create
+and delete need nothing else — the cluster is its first segment. `list`
+needs to know *which clusters to look in*: `Infra.Cli.run` derives
+`kubernetesRoutesOf` from the declaration — each declared cluster with its
+placement and the objects declared in it, plus every cluster named in a
+`forget` — and hands it to `liveFor`, which closes over it per backend, as it
+does the migrations routes. A backend in region R looks in the clusters placed
+in R (or placed nowhere). The same function refuses an object placed anywhere
+but its cluster's region.
+
+**Where its edges come from.** None from `HasDeps`: the cluster, the secrets
+an environment reads, a namespace declared as a raw object, and — for a
+service with no selector — the workloads of the same name are all named, and
+`Engine.impliedByName` turns them into slot ids on the object's own cloud.
+
 ### Which clouds get authenticated, and the hole that leaves
 
 `Infra.Cli.liveFor` builds all four of those from **`κ.providers`** — the
@@ -691,8 +739,9 @@ sighting or a snapshot.)
   --keep-data         destroy, plan --destroy. The target is
              `Plan.keepingData` — Plan.absent with every
              `keptByTeardown` slot `unmanaged` (postgres,
-             postgresMigrations, objectStore, s3Bucket, and the
-             password secret a declared database names) — and the
+             postgresMigrations, objectStore, s3Bucket,
+             kubernetesCluster, and the password secret a declared
+             database names) — and the
              orphans of those are dropped before `push`. Each kept
              resource that exists gets a `KEEP` line.
   dump       observe + claimUndeclared + foreignDeclared, written as a

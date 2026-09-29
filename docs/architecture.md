@@ -35,6 +35,9 @@ We will start with the basic services:
 - Secrets
 - Image registry
 
+and, since 0.19.0, managed Kubernetes — a cluster, and the objects that run
+in it (`docs/kubernetes.md`).
+
 With an emphasis on
 - Serverless compute
 - Serverless db
@@ -60,11 +63,15 @@ both AWS and Scaleway to demonstrate exactly this.
 `Kind` splits into two groups:
 
 - **Portable kinds** — `iam`, `objectStore`, `compute`, `queues`, `secrets`, `imageRegistry`,
-  `postgres`, `postgresMigrations`, matching the coverage list above. These are the cross-cutting abstractions. Being
+  `postgres`, `postgresMigrations`, `kubernetesCluster`, `kubernetesObject`, matching the
+  coverage list above. These are the cross-cutting abstractions. Being
   the common denominator constrains them: a portable spec carries **no cross-resource
   references at all**, because a reference has type `K p k` and so names a provider. `compute`
   is serverless-shaped for the same reason — a required subnet reference would make the kind
-  undeployable on serverless functions.
+  undeployable on serverless functions. Where a portable resource needs another it names it
+  instead — a migration history its database, an in-cluster object its cluster (the first
+  segment of its address) — and the scheduler reads the edge from the name, on the resource's
+  own cloud (`Engine.impliedByName`).
 - **Provider-local kinds** — `s3Bucket`, `securityGroup`, `awsInstance`, `scalewayFunction`,
   `scalewayContainer`. The escape hatch to concepts closer to one provider: richer, free to
   reference other resources, and not portable. `awsInstance` is where that freedom is used
@@ -178,6 +185,13 @@ narrow reader, never through `Env.secretValue`, and a credential that can
 it is in `docs/diff-semantics.md`'s ledger. The apply path reads the
 read-write URL, where `fetchMasterPassword` already read one. See
 `docs/migrations.md`, hard edge 2.
+
+A second kind widens it in the same shape (0.19.0): reading an in-cluster
+workload receives the values of the secrets its environment names, because the
+Kubernetes API returns whole objects; they are dropped where the response is
+parsed, before anything reaches a reported spec, a plan or a snapshot. Reaching
+a Kapsule API server reads its kubeconfig token. Both are in the ledger; see
+`docs/kubernetes.md`, hard edges 3 and 4.
 
 ## Fleets across several clouds
 

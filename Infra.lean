@@ -12,6 +12,7 @@ import Infra.Core.Spec
 import Infra.Core.Coe
 import Infra.Core.InstanceType
 import Infra.Core.Compose
+import Infra.Specs.Kubernetes
 import Infra.Specs.Basic
 import Infra.Specs.Build
 import Infra.Core.SqlDeps
@@ -46,6 +47,9 @@ import Infra.Providers.Kinds.Secrets
 import Infra.Providers.Kinds.Compute
 import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
+import Infra.Providers.Kinds.Migrations
+import Infra.Providers.Kube.Client
+import Infra.Providers.Kinds.Kubernetes
 import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Kinds.Identity
 import Infra.Providers.Gcp

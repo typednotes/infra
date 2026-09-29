@@ -46,6 +46,10 @@ def declFor : Kind → String × String
   -- Route-driven on the live backend, so a pull names only what a
   -- declaration named; there is nothing account-side to enumerate.
   | .postgresMigrations => ("pulledPostgresMigrations", "postgresMigrations")
+  | .kubernetesCluster => ("pulledKubernetesCluster", "kubernetesCluster")
+  -- Route-driven too: objects are found inside the clusters a declaration
+  -- names, and this pull names none, so it lists nothing.
+  | .kubernetesObject => ("pulledKubernetesObject", "kubernetesObject")
   | .securityGroup    => ("pulledSecurityGroup", "securityGroup")
   | .scalewayFunctionNamespace  => ("pulledFunctionNamespace", "scalewayFunctionNamespace")
   | .scalewayContainerNamespace => ("pulledContainerNamespace", "scalewayContainerNamespace")

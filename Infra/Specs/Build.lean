@@ -118,6 +118,25 @@ def postgresMigrations (name database connectionSecret observerSecret schema :
     PostgresMigrationsSpec K Partial (Expr K) :=
   { name, database, connectionSecret, observerSecret, schema, migrations }
 
+/-- A managed cluster. `nodeType` is the one thing no cloud can default for
+    you sensibly; everything else falls back to the cloud's own choice. -/
+def kubernetesCluster (name : Expr K String) (nodeType : Expr K String)
+    (version : Partial (Expr K String) := .unknown)
+    (nodeCount : Partial (Expr K Nat) := .unknown)
+    (autoscale : Partial (Expr K (Nat × Nat)) := .unknown)
+    (network : Partial (Expr K String) := .unknown)
+    (clusterRole : Partial (Expr K String) := .unknown)
+    (nodeRole : Partial (Expr K String) := .unknown) :
+    KubernetesClusterSpec K Partial (Expr K) :=
+  { name, version, nodeType, nodeCount, autoscale, network, clusterRole, nodeRole }
+
+/-- An object in a cluster; `name` is its address
+    `<cluster>/<namespace>/<kind>/<name>`, and `shape` says what it is
+    (`deployment`, `statefulSet`, `service`, `rawObject`). -/
+def kubernetesObject (name : Expr K String) (shape : Expr K ObjectShape) :
+    KubernetesObjectSpec K Partial (Expr K) :=
+  { name, shape }
+
 def s3Bucket (name : Expr K String)
     (versioning : Partial (Expr K Bool) := .unknown)
     (objectLock : Partial (Expr K Bool) := .unknown) :
@@ -207,6 +226,11 @@ def scalewayContainer (name : Expr K String)
       let _ : ∀ {K}, Expr K String → Expr K String → Expr K String → Expr K String →
                   Expr K String → Expr K (List MigrationDecl) →
                   PostgresMigrationsSpec K Partial (Expr K) := @postgresMigrations; ()
+  | .kubernetesCluster => let _ : ∀ {K}, Expr K String → Expr K String → _ → _ → _ → _ →
+                            _ → _ → KubernetesClusterSpec K Partial (Expr K) :=
+                            @kubernetesCluster; ()
+  | .kubernetesObject  => let _ : ∀ {K}, Expr K String → Expr K ObjectShape →
+                            KubernetesObjectSpec K Partial (Expr K) := @kubernetesObject; ()
   | .s3Bucket          => let _ : ∀ {K}, Expr K String → _ → _ →
                             S3BucketSpec K Partial (Expr K) := @s3Bucket; ()
   | .securityGroup     => let _ : ∀ {K}, Expr K String → Expr K String → _ →

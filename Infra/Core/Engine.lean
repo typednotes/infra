@@ -113,9 +113,18 @@ def physicalClass (p : ProviderId) : Kind → String
 
     Every other pair is listed, including kinds the declaration no longer has
     anything of — which is where the last resource of a kind, just removed,
-    has to be found. -/
+    has to be found.
+
+    `kubernetesObject` is listed, with one boundary stated rather than left
+    to a catch-all: its listing reaches inside **the clusters the declaration
+    names** — declared, or named in a `forget` — because an object can only be
+    found through its cluster's API server. A cluster the declaration no
+    longer names at all is not reached for an in-cluster scan, and does not
+    need to be: it is an orphan itself, and deleting it deletes everything in
+    it (`docs/kubernetes.md`, hard edge 1). -/
 def scannableUndeclared (p : ProviderId) : Kind → Bool
   | .postgresMigrations => false
+  | .kubernetesCluster | .kubernetesObject => true
   | .s3Bucket | .securityGroup | .awsInstance => p == .aws
   | .scalewayFunctionNamespace | .scalewayFunction
   | .scalewayContainerNamespace | .scalewayContainer => p == .scaleway
@@ -355,7 +364,14 @@ failed, to check these credentials may read this kind's markers. The cloud said:
     its delete is a FORGET that touches nothing either way, and keeping it
     keeps the plan from saying FORGET about a database that stays. -/
 def Kind.holdsData : Kind → Bool
-  | .postgres | .postgresMigrations | .objectStore | .s3Bucket => true
+  -- A cluster holds everything running in it, persistent volumes included:
+  -- deleting one deletes them all.
+  | .postgres | .postgresMigrations | .objectStore | .s3Bucket | .kubernetesCluster => true
+  -- An object's data, if any, is in the PersistentVolumeClaims a StatefulSet
+  -- made, which Kubernetes keeps when the StatefulSet goes and infra never
+  -- deletes (hard edge 5) — so deleting the object loses nothing a fresh
+  -- apply cannot recreate.
+  | .kubernetesObject
   | .iam | .compute | .queues | .secrets | .imageRegistry | .securityGroup | .awsInstance
   | .scalewayFunctionNamespace | .scalewayFunction | .scalewayContainerNamespace
   | .scalewayContainer => false
@@ -520,6 +536,30 @@ def impliedByName {κ : Keys} (p : ProviderId) :
           if nm.isEmpty then none else some (slotId p .postgresMigrations nm)
       | none     => []
     | .unknown => []
+  -- Four name-borne edges, all same-cloud: the cluster the object lives in
+  -- (its address's first segment), its namespace if the fleet declares one,
+  -- every secret its environment reads, and —
+  -- for a service with no explicit selector — the workloads of the same name
+  -- in the same namespace, which is what it selects (`app = <name>`). An edge
+  -- to a workload that is not declared constrains nothing.
+  | .kubernetesObject, s =>
+    match s.name.asLit, s.shape.asLit with
+    | some nm, some shape =>
+      match Infra.Specs.ObjectName.parse? nm with
+      | none   => []
+      | some n =>
+        [slotId p .kubernetesCluster n.cluster]
+        -- A namespace declared as a raw object is created before what lives
+        -- in it (and deleted after); one nobody declares constrains nothing.
+        ++ (if n.clusterScoped then [] else
+              [slotId p .kubernetesObject s!"{n.cluster}/_/namespace/{n.ns}"])
+        ++ shape.secretNames.map (slotId p .secrets)
+        ++ (match shape with
+            | .service _ _ [] =>
+              ["deployment.apps", "statefulset.apps"].map fun kind =>
+                slotId p .kubernetesObject { n with kind }.render
+            | _ => [])
+    | _, _ => []
   | _, _ => []
 
 /-- The slots a resource's spec references, if the plan wants it present. -/
@@ -764,11 +804,17 @@ private def inContext {α : Type} (what : String) (act : IO α) : IO α := do
     (`Expr.secretValue`), the secrets it binds (`scalewayContainer.secretEnv`),
     and their observed fields (`principalOf`, `accessKeyOf`). A rewritten
     secret changes all three — a new value, and a new version. -/
-private def secretInputs {κ : Keys} (k : Kind)
+private def secretInputs {κ : Keys} (p : ProviderId) (k : Kind)
     (authored : Infra.Specs.SpecOf.{1} k κ.Key Partial (Expr κ.Key)) : List String :=
-  ((hasDepsOf k).deps authored).filterMap fun d =>
+  (((hasDepsOf k).deps authored).filterMap fun d =>
     if d.kind == .secrets then some (slotId d.provider d.kind (κ.name d.provider d.kind d.key))
-    else none
+    else none)
+  -- An in-cluster object names its secrets rather than referencing them (a
+  -- portable spec cannot hold a typed reference), and an update re-reads and
+  -- re-sends every one, so its name-borne secret edges are inputs too.
+  ++ (if k == .kubernetesObject then
+        (impliedByName p k authored).filter (·.startsWith (slotId p .secrets ""))
+      else [])
 
 /-- Whether updating a resource of this kind re-sends the secret values it
     holds, so that a rewritten secret reaches it. Total and explicit, so a
@@ -780,9 +826,11 @@ private def secretInputs {κ : Keys} (k : Kind)
     field is settled at create and never re-sent, and `refreshSecrets` says
     so by name rather than planning an update that would not carry it. -/
 def resendsSecretsOnUpdate : Kind → Bool
-  | .compute | .scalewayContainer => true
+  -- An in-cluster object's update re-reads every secret its environment
+  -- names and applies the object whole.
+  | .compute | .scalewayContainer | .kubernetesObject => true
   | .iam | .objectStore | .queues | .secrets | .imageRegistry | .postgres
-  | .postgresMigrations | .s3Bucket | .securityGroup | .awsInstance
+  | .postgresMigrations | .kubernetesCluster | .s3Bucket | .securityGroup | .awsInstance
   | .scalewayFunctionNamespace | .scalewayFunction | .scalewayContainerNamespace => false
 
 /-- What `--refresh-secrets` adds to a plan: the updates, and one line per
@@ -844,7 +892,7 @@ def refreshSecrets {κ : Keys} (bs : Backends) (T : Plan κ) (entries : List (En
             let stored ← inContext s!"reading {slot} for --refresh-secrets" <|
               (bs.backendFor p .secrets nm).secretValue ⟨nm⟩
             return stored != desired
-        covered := covered ++ [(slot, secretInputs .secrets authored,
+        covered := covered ++ [(slot, secretInputs p .secrets authored,
           depSlots.find? rebuilt.contains, differs, .update p .secrets key)]
       | _, _ => pure ()
   -- Decided in dependency order: a composed secret only once every covered
@@ -882,7 +930,7 @@ def refreshSecrets {κ : Keys} (bs : Backends) (T : Plan κ) (entries : List (En
         match T.assign p k key, world.sighting p k key with
         | .present authored, some _ =>
           if foreign.contains slot || touched.contains slot then continue
-          if let some input := (secretInputs k authored).find? isChanged then
+          if let some input := (secretInputs p k authored).find? isChanged then
             if resendsSecretsOnUpdate k then
               out := { actions := out.actions ++ [.update p k key]
                        reasons := out.reasons ++ [s!"{slot}: it holds a copy of {input}, which is rewritten"] }
@@ -1045,6 +1093,11 @@ def push {κ : Keys} (bs : Backends) (T : Plan κ) (W : World κ)
 have not been fetched — `Infra.Cli.run` reads every `url` source before `plan` and `apply`; \
 a caller that builds its own backends must do the same (`Infra.Cli.fetchMigrationSources` then `withFetchedSources`)")
   if let some msg := T.migrationDepsProblem then
+    throw (IO.userError msg)
+  -- The Kubernetes declaration's own soundness (an object's address, its
+  -- cluster declared on the same cloud), refused before any action for the
+  -- same reason: a plan that cannot be carried out is not shown as work.
+  if let some msg := T.kubernetesProblem then
     throw (IO.userError msg)
   if let some msg := T.migrationsAppendOnly W then
     throw (IO.userError msg)

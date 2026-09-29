@@ -33,6 +33,9 @@ def placeholderObserved : (k : Kind) → String → ObservedOf k
   -- An empty applied history: the placeholder has migrated nothing, which is
   -- also what makes a declared pending list read as work to do offline.
   | .postgresMigrations, id => { handle := ⟨id⟩, applied := [] }
+  | .kubernetesCluster, id => { handle := ⟨id⟩, clusterId := "cluster-placeholder"
+                                endpoint := "https://placeholder.invalid" }
+  | .kubernetesObject,  id => { handle := ⟨id⟩, uid := "uid-placeholder" }
   | .s3Bucket,         id => { handle := ⟨id⟩, arn := "arn:placeholder", region := "eu-west-1" }
   | .securityGroup,    id => { handle := ⟨id⟩, groupId := "sg-placeholder", vpcId := "vpc-placeholder" }
   | .awsInstance,      id => { handle := ⟨id⟩, instanceId := "i-placeholder"
@@ -85,6 +88,16 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .postgresMigrations, h => { name := h.raw, database := ""
                                 connectionSecret := "", observerSecret := ""
                                 schema := "", migrations := [] }
+  -- `nodeType` is required, so it cannot be `unknown`; blank is what
+  -- `Divergent .kubernetesCluster` reads as "could not say".
+  | .kubernetesCluster, h => { name := h.raw, version := .unknown, nodeType := ""
+                               nodeCount := .unknown, autoscale := .unknown
+                               network := .unknown, clusterRole := .unknown
+                               nodeRole := .unknown }
+  -- The shape is required too. A placeholder has read no object, and an
+  -- empty raw shape is the one that says so; `list` returns `[]`, so only a
+  -- read-after-create ever sees it.
+  | .kubernetesObject, h => { name := h.raw, shape := .raw "" "" "" }
 
 /-- A backend that talks to nothing. Both providers are this, for now, differing only in the
     identifier they stamp on what they claim to have created. -/

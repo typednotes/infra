@@ -21,7 +21,8 @@
 #
 # Deliberate exceptions:
 #   - `/runtimes` is a catalogue of available runtimes, not a resource
-#     collection.
+#     collection; `/versions` is Kapsule's catalogue of Kubernetes versions,
+#     likewise.
 #   - IAM `/applications` is organization-scoped by nature; there is no
 #     project.
 #
@@ -49,7 +50,7 @@ cd "$(dirname "$0")/.."
 # Collections that are not project-scoped by nature.
 exempt() {
   case "$1" in
-    /runtimes|/applications) return 0 ;;
+    /runtimes|/applications|/versions) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -66,7 +67,7 @@ parent_of() {
 # The call shape, anchored to end-of-line so that a listing whose query is on
 # the same line is not a candidate in the first place. `prefix'` takes
 # arguments and `pfx` does not, hence the alternation.
-call_re='Scaleway\.call creds "GET" \((pfx|prefix'"'"'[^)]*) \+\+ "(/[a-z-]+)"\)[[:space:]]*$'
+call_re='Scaleway\.call creds "GET" \(((pfx|vpc)( creds)?|prefix'"'"'[^)]*) \+\+ "(/[a-z-]+)"\)[[:space:]]*$'
 
 bad=()
 while IFS= read -r hit; do

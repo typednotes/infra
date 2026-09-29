@@ -225,6 +225,18 @@ instance : HasDeps PostgresMigrationsSpec where
   deps s := depsReq s.name ++ depsReq s.database ++ depsReq s.connectionSecret
             ++ depsReq s.observerSecret ++ depsReq s.schema ++ depsReq s.migrations
 
+instance : HasDeps KubernetesClusterSpec where
+  deps s := depsReq s.name ++ depsOpt s.version ++ depsReq s.nodeType ++ depsOpt s.nodeCount
+            ++ depsOpt s.autoscale ++ depsOpt s.network ++ depsOpt s.clusterRole
+            ++ depsOpt s.nodeRole
+
+/-- Expression deps only, which for literal fields is `[]`: an object's
+    edges — to its cluster, to the secrets its environment reads, and a
+    service's to the workload it fronts — are all carried by names, and come
+    from `Engine.impliedByName`. -/
+instance : HasDeps KubernetesObjectSpec where
+  deps s := depsReq s.name ++ depsReq s.shape
+
 instance : HasDeps S3BucketSpec where
   deps s := depsReq s.name ++ depsOpt s.versioning ++ depsOpt s.objectLock
 
@@ -274,6 +286,8 @@ instance : HasDeps ScalewayContainerSpec where
   | .imageRegistry     => inferInstanceAs (HasDeps ImageRegistrySpec)
   | .postgres          => inferInstanceAs (HasDeps PostgresSpec)
   | .postgresMigrations => inferInstanceAs (HasDeps PostgresMigrationsSpec)
+  | .kubernetesCluster => inferInstanceAs (HasDeps KubernetesClusterSpec)
+  | .kubernetesObject  => inferInstanceAs (HasDeps KubernetesObjectSpec)
   | .s3Bucket          => inferInstanceAs (HasDeps S3BucketSpec)
   | .securityGroup     => inferInstanceAs (HasDeps SecurityGroupSpec)
   | .awsInstance       => inferInstanceAs (HasDeps AwsInstanceSpec)

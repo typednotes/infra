@@ -9,57 +9,76 @@ Pending moves into linen are tracked in `CHANGELOG.md` under `[Unreleased]`
 (see `AGENTS.md`, "## Linen"); this file is the wider list, and items that
 become moves should be recorded there too.
 
+**Status 2026-09-29.** The infra-only items are done (0.19.0). The linen
+halves are prepared as local commits in `../linen` on top of v1.7.0 —
+`9dca31c`, `352ff11`, `868512f`, `9f5fc3f`, `4149d18` — **not pushed or
+tagged**; each infra half below waits for a linen release that carries it.
+
 ## After the bump
 
-- [ ] **Pin Linux CI runners to `ubuntu-24.04`.** Since linen 1.2.0 every
-  linking build on Linux compiles `duckdb_glibc_compat.c` and runs linen's
-  sealed-DuckDB audit (it shells out to `nm`), which fails loudly if a newer
-  runner's libstdc++ needs a glibc symbol linen does not shim. It has only been
-  measured on ubuntu-24.04; infra's workflows use `ubuntu-latest`. linen pinned
-  its own runners for this reason. (XS)
-- [ ] **Fix the stale `[Unreleased]` notes.** `fromUTF8!` has six uses, not two
-  (`Providers/Http.lean:158,161`, `Kinds/Secrets.lean:142,167`,
-  `Kinds/Postgres.lean:78`, `Gcp/Iam.lean:366`), and the `Scaleway/Sqs.lean:206`
-  reference now lands on a doc comment. (XS)
+- [x] **Pin Linux CI runners to `ubuntu-24.04`.** This repository's workflows,
+  the scaffolded ones (`Infra/Cli/New.lean`) and the ruleset's required check
+  names (`docs/github/main-branch-ruleset.json`). **The ruleset on GitHub has
+  to be updated to match** (`build (ubuntu-24.04)`), or the renamed check
+  never reports and merges block.
+- [x] **Fix the stale `[Unreleased]` notes.** Six `fromUTF8!` uses, and the
+  `Sqs.lean` reference now points at `credentialsFor`.
 
 ## Duplicates of linen
 
-- [ ] **`JsonRead.field`** (`Infra/Providers/JsonRead.lean:22`) is
-  `Data.Json.Value.lookup` (`linen/Linen/Data/Json/Types.lean:63`). (XS)
-- [ ] **`JsonRead.setField`** (`JsonRead.lean:79`, already a pending move):
-  liaison has its own (`liaison/Liaison/Egress/Credential.lean:214`), so two
-  siblings need it — move it into linen's `Data.Json` and delete both. The
-  lenient `stringField`/`natField`/`boolField` could go with it. (S)
-- [ ] **The `Linen.Cloud` migration** is still blocked on one thing: linen's
-  `Cloud.Error.Class.denied` is a single case (`linen/Linen/Cloud/Error.lean:82`),
-  where infra needs refused / not authenticated / service off. Upstream that
-  split first (M), then migrate in steps:
+- [x] **`JsonRead.field`** replaced by `Data.Json.Value.lookup`.
+- [ ] **`JsonRead.setField`** (and `stringField`/`natField`/`boolField`):
+  linen side prepared (`Data.Json.Value.setField`, `lookupText`/`lookupNat`/
+  `lookupBool`, commit `9dca31c`). Waits for a linen release; then delete
+  infra's and liaison's copies (`liaison/Liaison/Egress/Credential.lean:214`).
+- [ ] **The `Linen.Cloud` migration.** The blocker — splitting
+  `Cloud.Error.Class.denied` — is prepared in linen (`352ff11`:
+  `unauthenticated`, `serviceDisabled`, `isAuthFailure`, `classifyMessage`),
+  and waits for a release. The migration steps themselves are unchanged:
   - `Core/Credentials.lean`, `Core/GcpAuth.lean` → `Cloud.Credentials(.Gcp)`.
     linen's is stricter: it refuses an `http://` `token_uri` (infra rewrites it
     to https, `GcpAuth.lean:167`) and one with a query string.
   - `Providers/Http.lean:110-161`, `Aws/Sign.lean` → `Cloud.Transport`/`Cloud.Auth`.
   - `Gcp/Storage.lean:56`, `Gcp/PubSub.lean:68` stop at 50 pages with a warning;
     `Cloud.Page` records whether a listing was truncated. (L overall)
-- [ ] **Terminal colour.** `Infra/Core/Ansi.lean` overlaps
-  `linen/Linen/System/Console/Ansi.lean`; linen lacks `dim`, the `style` switch
-  and `wanted` (`NO_COLOR`/`FORCE_COLOR`/tty). Move those into linen;
-  typednotes-compiler reads `NO_COLOR` too. (S)
+- [ ] **Terminal colour.** linen side prepared (`868512f`: `style`, `dim`,
+  `wanted`, `shouldColor`). Waits for a release; then delete
+  `Infra/Core/Ansi.lean` (keeping its colour-per-verb constants as linen
+  `Color.fgCode`s).
 
 ## Workarounds that linen could remove
 
-- [ ] **The native link-flag block** (`lakefile.lean:29-144`, mirrored in
-  `Infra/Cli/New.lean:90-205` and kept in sync by `ci/check-lakefile-sync.sh`)
-  is copied in six repos. Lake 4.34 only links an executable with its own
-  package's flags (`Lake/Config/LeanExe.lean:103`), so linen cannot fix it
-  alone: ask linen for a versioned canonical snippet (consumers diff against
-  it), or propose the Lake change. (M, coordination)
-- [ ] **CA bundles in scaffolds** (`Infra/Cli/New.lean:376,436,505,568,634,719`)
-  exist because linen's TLS only uses OpenSSL's compiled-in default paths
-  (`linen/ffi/tls.c:553`). A fallback in linen would drop them.
+- [ ] **The native link-flag block.** linen side prepared (`9f5fc3f`): a
+  versioned canonical block, `ci/consumer/link-helpers.lean`, and
+  `ci/consumer/check-link-helpers.sh`, which linen's own consumer CI job now
+  splices in and checks. Once released, infra's block takes linen's markers
+  for its helper half and `ci/check-lakefile-sync.sh` also runs linen's
+  checker against the pinned tag. The Lake change (a dependency's
+  `moreLinkArgs` reaching a dependent's executable) is not proposed.
+- [ ] **CA bundles in scaffolds.** linen side prepared (`9f5fc3f`): a
+  fallback bundle in `createClientContext`, `fallbackCaBundle`. Once
+  released, the scaffolded "point OpenSSL at the runner's CA bundle" steps
+  can go.
 
 ## Watch
 
 - [ ] **JSON number precision.** linen's `Data.Json.Encode` writes non-integer
   numbers with 6 significant digits. The GCP IAM read-modify-write
   (`Gcp/Iam.lean:204`) re-encodes whole policies — safe only while every number
-  in them is an integer.
+  in them is an integer. The Kubernetes client re-encodes manifests too
+  (`Kube.Client.apply`): a raw manifest with a non-integer number would be
+  rounded — noted in `docs/kubernetes.md`, "Apply semantics".
+
+## Kubernetes
+
+- [x] implement docs/kubernetes.md — 0.19.0, offline only.
+- [ ] **Run the live leg** on each cloud, `lake test -- <cloud> kubernetes`,
+  and move `docs/coverage.md`'s rows. Two facts only it can settle: OpenSSL 3
+  verifying GKE's IP endpoint through `SSL_set1_host`, and a current Kapsule
+  cluster's kubeconfig still carrying a usable token.
+- [ ] **Grant the CI identities the scan's new read access** before the next
+  live run of the ordinary legs: `eks:ListClusters`/`DescribeCluster`
+  (re-apply `ci/aws-permissions-policy.json`), `roles/container.clusterViewer`
+  and the Kubernetes Engine API on the GCP project, `KubernetesReadOnly` on
+  the Scaleway CI project (`ci/README.md` has the commands). Consumers
+  (`typednotes-infra`) need the same before upgrading.

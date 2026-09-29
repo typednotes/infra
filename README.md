@@ -19,7 +19,8 @@ values, so an unrealisable target is a compile error rather than a runtime
 surprise.
 
 - **One portable spec, many clouds.** A resource declared with a portable
-  `Kind` (object store, compute, queues, secrets, Postgres, ...) can be
+  `Kind` (object store, compute, queues, secrets, Postgres, a Kubernetes
+  cluster and what runs in it, ...) can be
   pushed to AWS or Scaleway without change — the provider only enters at
   apply time, through a `Backend`.
 - **Provider-local escape hatches.** When a portable abstraction can't carry
@@ -33,16 +34,27 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.18.1 covers
+## What 0.19.0 covers
 
-**3 clouds** (AWS, Scaleway, GCP) · **15 resource kinds** (8 portable, 7
+**3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
+
+**New in 0.19.0: managed Kubernetes, and the objects in it, as declared
+resources** — `kubernetesCluster` (EKS, GKE, Kapsule) and `kubernetesObject`
+(a Deployment, a StatefulSet, a Service, or any object as a raw manifest,
+through one Kubernetes API client for all three clouds). An object's fleet
+name is its address, `main/default/statefulset.apps/postgres`, so it cannot
+point at another cloud's cluster; it is marked by a label of its own, found
+by it when its line goes, and ordered after its cluster, its secrets and —
+for a Service — the workload it fronts. **Offline only so far**: no cluster
+has been created by infra yet (`example/KubernetesPostgres.lean`,
+`docs/kubernetes.md`).
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
 service accounts and Cloud SQL. Create-and-destroy round trips run in CI on
 **all three clouds** — AWS 12 resources, Scaleway 12, Google Cloud 10,
-covering thirteen of the fifteen kinds and 22 (cloud, kind) pairs. Each leg
+covering thirteen of the seventeen kinds and 22 (cloud, kind) pairs. Each leg
 applies five declarations in sequence: the whole fleet, a scale up, a scale
 down, a version with resources dropped, then one that declares nothing. After
 every stage the account must hold exactly what that stage declares, so a
@@ -75,8 +87,8 @@ any one of them:
 | | |
 |---|---|
 | Verified against a real account | a three-stage sequence on **all three clouds**: 32 resources across 11 of the 14 kinds, created, converged, partly dropped, and destroyed. Stage 2 deletes resources whose lines are *gone* from the declaration, so it cannot pass unless membership works |
-| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, that the marker decides (orphans found and destroyed, nothing else), dump round-trip and replay, fleet isolation and naming, `forget` releasing (unmarking, not deleting), orphans found on a cloud no longer declared, orphan recheck and retry, and that a sweep deletes only what it created |
-| **Never run against an account** | AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
+| Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, that the marker decides (orphans found and destroyed, nothing else), dump round-trip and replay, fleet isolation and naming, `forget` releasing (unmarking, not deleting), orphans found on a cloud no longer declared, orphan recheck and retry, the same inside a Kubernetes cluster (an in-cluster orphan destroyed, an unmarked object at a declared address refused), and that a sweep deletes only what it created |
+| **Never run against an account** | Kubernetes on every cloud (an opt-in live leg exists, `lake test -- <cloud> kubernetes`, and has not run); AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
 references, and a `# TODO` for anything HCL cannot express), and
@@ -115,7 +127,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.18.1"
+rev = "v0.19.0"
 ```
 
 Then:

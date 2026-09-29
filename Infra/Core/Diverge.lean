@@ -224,6 +224,146 @@ private def m2 : Migration := { id := "0002", sql := "CREATE TABLE x.t ()" }
 #guard migrationsConflict [{ id := "0001", sql := "different" }] [m1] == some "0001"
 #guard migrationsConflict [m1, m2] [m1] == some "0002"
 
+/-! ### Kubernetes
+
+  The comparisons here are written out rather than `diverges`, because three
+  of the cluster's fields are spelled differently by the declaration and the
+  cloud, and comparing the spellings would propose work on every plan: a
+  declared minor version against a reported patch release, a role *name*
+  against its ARN, a network name against the id the cloud also reports. -/
+
+/-- Whether a reported Kubernetes version realises a declared one, at the
+    declared precision: `1.31` is realised by `1.31.4-eks-a1b2`, and `v1.31.4`
+    by `1.31.4`. -/
+def k8sVersionMatches (declared reported : String) : Bool :=
+  let strip (v : String) := if v.startsWith "v" then (v.drop 1).toString else v
+  let d := strip declared
+  let r := strip reported
+  r == d || r.startsWith (d ++ ".") || r.startsWith (d ++ "-") || r.startsWith (d ++ "+")
+
+#guard k8sVersionMatches "1.31" "1.31.4-eks-a1b2"
+#guard k8sVersionMatches "1.31.4" "v1.31.4"
+#guard ¬ k8sVersionMatches "1.31" "1.310.1"
+#guard ¬ k8sVersionMatches "1.31" "1.30.9"
+
+/-- A node type, the way the three clouds compare it: case-insensitively,
+    with `-` and `_` the same (Kapsule spells one type both ways). -/
+def nodeTypeKey (t : String) : String := (t.toLower.map fun c => if c == '-' then '_' else c)
+
+#guard nodeTypeKey "GP1-S" == nodeTypeKey "gp1_s"
+
+/-- Whether a reported IAM role (an ARN) is the declared one, given as an ARN
+    or as a bare role name. -/
+def roleMatches (declared reported : String) : Bool :=
+  reported == declared || reported.endsWith ("/" ++ declared)
+
+#guard roleMatches "eks-cluster" "arn:aws:iam::123456789012:role/eks-cluster"
+#guard ¬ roleMatches "eks" "arn:aws:iam::123456789012:role/eks-cluster"
+
+/-- One optional string field compared with a matcher, only when the target
+    sets it — `divergesIfSet` with the equality replaced. -/
+def divergesIfSetBy (name : String) (m : Mutability) (realises : String → String → Bool)
+    (target : String) (reported : Partial String) : List (String × Mutability) :=
+  if target.isEmpty then [] else
+  match reported with
+  | .unknown => []
+  | .known v => if realises target v then [] else [(name, m)]
+
+/-- A cluster's disagreements.
+
+    Nothing that can be changed in place is a `REPLACE`, because replacing a
+    cluster destroys everything running in it: a new `nodeType` or `nodeRole`
+    replaces the *node pool* (the backend's `update` creates the new pool,
+    then deletes the old, and pods reschedule onto it), and a new `version` is
+    an upgrade. Only what no cloud can change on a live cluster forces a
+    replace: `network`, and EKS's `clusterRole`.
+
+    `nodeCount` is not compared while the pool autoscales: the autoscaler owns
+    the number then, and comparing it would fight it on every plan.
+
+    The reported `network` may carry several spellings of one network,
+    newline-separated — an EKS VPC's id and its `Name` tag — and matches if
+    the declared one is among them. -/
+instance : Divergent .kubernetesCluster where
+  divergence t r :=
+    -- Bound with its type: projecting straight out of the reducible
+    -- `Conc` wrapper makes the code generator emit "invalid projection"
+    -- (the same trap `Live.lean` notes for `Handle`).
+    let asc : Nat × Nat := t.autoscale
+    let tType : String := t.nodeType
+    let rType : String := r.nodeType
+    divergesReq "name" .forcesReplace t.name r.name
+    ++ divergesIfSetBy "version" .mutable k8sVersionMatches t.version r.version
+    -- An empty reported type is a cloud that could not say (a pool being
+    -- replaced), which is not a request to change it.
+    ++ (if rType.isEmpty || nodeTypeKey rType == nodeTypeKey tType then []
+        else [("nodeType", .mutable)])
+    ++ (if asc.2 == 0 then diverges "nodeCount" .mutable t.nodeCount r.nodeCount else [])
+    ++ diverges "autoscale" .mutable t.autoscale r.autoscale
+    ++ divergesIfSetBy "network" .forcesReplace
+         (fun d rep => (rep.splitOn "\n").contains d) t.network r.network
+    ++ divergesIfSetBy "clusterRole" .forcesReplace roleMatches t.clusterRole r.clusterRole
+    ++ divergesIfSetBy "nodeRole" .mutable roleMatches t.nodeRole r.nodeRole
+
+/-- What an object's shape disagrees with, field by field, and whether each
+    can change in place. Defaults are compared in the form they take on the
+    wire — a service's `targetPort` of `0` is its `port`, an empty selector is
+    `app = <name>` — so a declaration that spells a default out, and one that
+    leaves it implicit, both converge. Environment lists compare as sets, and
+    a secret-sourced variable by its secret's *name*: its value is never
+    reported, so a changed value is not drift (`--refresh-secrets` rewrites
+    it). A raw manifest compares as JSON, so whitespace is not drift. -/
+def objectShapeDivergence (objName : String) :
+    Infra.Specs.ObjectShape → Infra.Specs.ObjectShape → List (String × Mutability)
+  | .deployment i r p e, .deployment i' r' p' e' =>
+    divergesReq "image" .mutable i i' ++ divergesReq "replicas" .mutable r r'
+    ++ divergesSet "ports" .mutable toString p (.known p')
+    ++ divergesSet "env" .mutable Infra.Specs.EnvVar.key e (.known e')
+  | .statefulSet i r p e st, .statefulSet i' r' p' e' st' =>
+    divergesReq "image" .mutable i i' ++ divergesReq "replicas" .mutable r r'
+    ++ divergesSet "ports" .mutable toString p (.known p')
+    ++ divergesSet "env" .mutable Infra.Specs.EnvVar.key e (.known e')
+    -- Kubernetes refuses any change to `volumeClaimTemplates`.
+    ++ divergesReq "storage" .forcesReplace st st'
+  | .service p t sel, .service p' t' sel' =>
+    let objShort := ((Infra.Specs.ObjectName.parse? objName).map (·.name)).getD objName
+    let eff (port target : Nat) := if target == 0 then port else target
+    let effSel (s : List (String × String)) :=
+      if s.isEmpty then [(Infra.Specs.appLabel, objShort)] else s
+    divergesReq "port" .mutable p p'
+    ++ divergesReq "targetPort" .mutable (eff p t) (eff p' t')
+    ++ divergesSet "selector" .mutable pairKey (effSel sel) (.known (effSel sel'))
+  | .raw av k m, .raw av' k' m' =>
+    let asJson (s : String) := (Data.Json.Decode.decode s).toOption
+    divergesReq "apiVersion" .forcesReplace av av' ++ divergesReq "kind" .forcesReplace k k'
+    ++ (if asJson m == asJson m' && (asJson m).isSome then [] else
+        if m == m' then [] else [("manifest", .mutable)])
+  -- A different kind of object behind the same address: nothing converts one
+  -- into the other in place.
+  | _, _ => [("shape", .forcesReplace)]
+
+instance : Divergent .kubernetesObject where
+  divergence t r :=
+    divergesReq "name" .forcesReplace t.name r.name
+    ++ objectShapeDivergence t.name t.shape r.shape
+
+section
+open Infra.Specs
+#guard (objectShapeDivergence "c/default/service/pg" (.service 5432) (.service 5432 5432
+  [("app", "pg")])).isEmpty
+#guard objectShapeDivergence "c/default/deployment.apps/w" (.deployment "a:1" 1 [80, 443])
+  (.deployment "a:2" 1 [443, 80]) == [("image", .mutable)]
+#guard objectShapeDivergence "c/default/statefulset.apps/pg"
+  (.statefulSet "p" 1 [] [] (some { sizeGb := 20, storageClass := "x" }))
+  (.statefulSet "p" 1 [] [] (some { sizeGb := 10, storageClass := "x" }))
+  == [("storage", .forcesReplace)]
+-- A secret's value is never compared: only which secret it comes from.
+#guard (objectShapeDivergence "c/default/deployment.apps/w"
+  (.deployment "a" 1 [] [.secret "PW" "db"]) (.deployment "a" 1 [] [.secret "PW" "db"])).isEmpty
+#guard (objectShapeDivergence "c/default/configmap/cfg" (.raw "v1" "ConfigMap" "{\"a\": 1}")
+  (.raw "v1" "ConfigMap" "{\"a\":1}")).isEmpty
+end
+
 instance : Divergent .s3Bucket where
   divergence t r :=
     divergesReq "name" .forcesReplace t.name r.name
@@ -327,6 +467,8 @@ instance : Divergent .scalewayContainer where
   | .imageRegistry     => inferInstanceAs (Divergent .imageRegistry)
   | .postgres          => inferInstanceAs (Divergent .postgres)
   | .postgresMigrations  => inferInstanceAs (Divergent .postgresMigrations)
+  | .kubernetesCluster => inferInstanceAs (Divergent .kubernetesCluster)
+  | .kubernetesObject  => inferInstanceAs (Divergent .kubernetesObject)
   | .s3Bucket          => inferInstanceAs (Divergent .s3Bucket)
   | .securityGroup     => inferInstanceAs (Divergent .securityGroup)
   | .awsInstance       => inferInstanceAs (Divergent .awsInstance)

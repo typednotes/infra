@@ -9,7 +9,7 @@ import Infra.Core.SqlDeps
 
 namespace Infra.Core
 
-open Infra.Specs (SpecOf Migration MigrationDecl resolvedMigrations?)
+open Infra.Specs (SpecOf Migration MigrationDecl resolvedMigrations? ObjectName objectNameProblem isClusterName)
 
 /-- A key family: one finite, decidable key type per `(provider, kind)` pair.
 
@@ -297,6 +297,91 @@ declaration does not match — migrations are append-only. An applied migration 
 the declaration's history with the same content forever, and the database cannot have \
 applied an entry the declaration no longer names. Restore the history, or resolve the \
 conflict deliberately — see docs/migrations.md"
+
+/-! ## Kubernetes: what can be decided from the declaration -/
+
+/-- Whether any key of this `(provider, kind)` carries the name. The same
+    test as `claimedByKey` below, which this section comes before. -/
+private def claimedByKeyName (κ : Keys) (p : ProviderId) (k : Kind) (name : String) : Bool :=
+  (Finite.elems (α := κ.Key p k)).any fun key => κ.name p k key == name
+
+/-- What is wrong with the declaration's clusters and in-cluster objects, as
+    far as the declaration alone can say, one line per problem:
+
+    * a cluster whose name is not valid on every cloud (`isClusterName`), a
+      pool with no nodes, or an autoscale range whose minimum exceeds its
+      maximum;
+    * an object whose fleet name is not its address, or whose address's kind
+      disagrees with its shape (`objectNameProblem`), or whose shape is
+      unsound (a port out of range, a raw manifest that is not a JSON object);
+    * an object on a cluster this fleet does not declare **on the same
+      cloud** — the one reference a name can express, and the one it must not
+      leave dangling;
+    * an object whose name or shape is not a literal: an address nobody can
+      read offline is one nobody can check.
+
+    `Engine.push` refuses a plan with a problem before deriving any action;
+    `kubernetesIsSound` is the `#guard`-able form. The placement half — an
+    object in its cluster's region — needs the fleet's `Regions` and is
+    checked by `Infra.Cli.run` (`kubernetesRoutesOf`). -/
+def Plan.kubernetesProblem {κ : Keys} (T : Plan κ) : Option String :=
+  let problems : List String :=
+    (Finite.elems (α := ProviderId)).flatMap fun p =>
+      let clusters := (Finite.elems (α := κ.Key p .kubernetesCluster)).flatMap fun key =>
+        let nm := κ.name p .kubernetesCluster key
+        let slot := slotId p .kubernetesCluster nm
+        let nameProblem := if isClusterName nm then [] else
+          [s!"{slot}: '{nm}' is not a cluster name valid on every cloud (lowercase letters, digits and '-', starting with a letter, at most 40 characters)"]
+        let specProblems := match T.assign p .kubernetesCluster key with
+          | .present s =>
+            let asc : Nat × Nat := match s.autoscale with
+              | .known e => e.asLit.getD (0, 0)
+              | .unknown => (0, 0)
+            let count : Nat := match s.nodeCount with
+              | .known e => e.asLit.getD 1
+              | .unknown => 1
+            (if (s.nodeType.asLit.getD "").isEmpty then
+              [s!"{slot}: nodeType must be a non-empty literal"] else [])
+            ++ (if asc.2 == 0 && count == 0 then
+              [s!"{slot}: a pool of zero nodes that does not autoscale runs nothing"] else [])
+            ++ (if asc.2 != 0 && asc.1 > asc.2 then
+              [s!"{slot}: autoscale ({asc.1}, {asc.2}) has its minimum above its maximum"] else [])
+            -- A pool whose bounds coincide is fixed, and a cloud reports it
+            -- as fixed — so it would read back as `(0, 0)` and diverge on
+            -- every plan. Say it the one way it round-trips.
+            ++ (if asc.2 != 0 && asc.1 == asc.2 then
+              [s!"{slot}: autoscale ({asc.1}, {asc.2}) is a fixed pool — write \
+nodeCount := {asc.1} instead"] else [])
+          | _ => []
+        nameProblem ++ specProblems
+      let objects := (Finite.elems (α := κ.Key p .kubernetesObject)).flatMap fun key =>
+        let nm := κ.name p .kubernetesObject key
+        let slot := slotId p .kubernetesObject nm
+        match T.assign p .kubernetesObject key with
+        | .present s =>
+          match s.shape.asLit with
+          | none => [s!"{slot}: the shape must be a literal (deployment, statefulSet, service or rawObject)"]
+          | some shape =>
+            match objectNameProblem nm shape with
+            | some why => [s!"{slot}: {why}"]
+            | none =>
+              let clusterSeg := ((ObjectName.parse? nm).map (·.cluster)).getD ""
+              (if claimedByKeyName κ p .kubernetesCluster clusterSeg then []
+               else [s!"{slot}: names cluster '{clusterSeg}', which this fleet does not declare on {p.name} — an object lives in a cluster of its own cloud, declared as a kubernetesCluster resource"])
+              ++ ((shape.problem).map (fun why => s!"{slot}: {why}")).toList
+        | _ =>
+          -- Absent or unmanaged: only the address matters, and only its form.
+          if (ObjectName.parse? nm).isSome then []
+          else [s!"{slot}: '{nm}' is not <cluster>/<namespace>/<kind>/<name>"]
+      clusters ++ objects
+  match problems with
+  | []  => none
+  | ps  => some (String.intercalate "\n" ps)
+
+/-- Whether the declaration's Kubernetes resources are sound, as far as the
+    declaration can say — `kubernetesProblem` is `none`. A fleet writes
+    `#guard myFleet.plan.kubernetesIsSound`. -/
+def Plan.kubernetesIsSound {κ : Keys} (T : Plan κ) : Bool := T.kubernetesProblem.isNone
 
 /-- The key carrying this name, if this fleet has one.
 

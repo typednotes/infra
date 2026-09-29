@@ -1,6 +1,7 @@
 import Infra.Core.Spec
 import Infra.Core.Coe
 import Infra.Core.InstanceType
+import Infra.Specs.Kubernetes
 
 open Lean (ToJson FromJson)
 
@@ -535,6 +536,100 @@ def PostgresMigrationsSpec.historyIsSound {K : ProviderId → Kind → Type}
 #guard ¬ isSimpleIdent "has-dash"
 #guard ¬ isSimpleIdent "sp ace"
 
+/-- A managed Kubernetes cluster with one node pool: EKS, GKE or Kapsule.
+
+    Portable, the `postgres` recipe: nothing in "a control plane and a pool of
+    nodes" names a cloud. No table of Kubernetes versions or node types lives
+    in this repository — both are plain strings, checked by the cloud at
+    create, for the reason `PostgresSpec.version` has none: every cloud adds
+    to its catalogue on its own schedule, and a stale table must never block a
+    real value.
+
+    `network` is the prerequisite reference, **by name, never managed**:
+    infra creates, claims and deletes no network resource. What it names is
+    the cloud's own unit — on AWS a VPC (its `Name` tag, a `vpc-…` id, or
+    `default` for the region's default VPC), and
+    the cluster uses that VPC's subnets, which EKS requires in at least two
+    availability zones; on GCP a VPC network (the project's `default` when
+    unset); on Scaleway a Private Network by name (Kapsule attaches one of
+    its own when unset). A cluster cannot change network on any of the three,
+    so a change is a `REPLACE`.
+
+    `clusterRole` and `nodeRole` are AWS's: EKS requires an IAM role for the
+    control plane and one for the nodes (an ARN, or a role name in the
+    fleet's account). GCP and Scaleway have no counterpart and ignore both;
+    the AWS backend refuses a create without them, naming the field — the
+    `ComputeSpec.executionRole` convention.
+
+    Deleting a cluster deletes everything in it, which is why the kind
+    `holdsData` and `destroy --keep-data` keeps it standing. -/
+structure KubernetesClusterSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
+    (f : Type → Type u) where
+  name        : Field .required o f String
+  /-- A Kubernetes minor version, e.g. `"1.31"`; unset for the cloud's
+      default. Upgraded in place (one minor at a time, as every cloud
+      requires); a downgrade is refused by the cloud. -/
+  version     : Field .optional o f String
+  /-- The node pool's machine type: `t3.large`, `e2-standard-2`, `GP1-S`.
+      Changed in place by replacing the node pool, never the cluster. -/
+  nodeType    : Field .required o f String
+  /-- How many nodes; with `autoscale`, the initial size. -/
+  nodeCount   : Field .optional o f Nat
+  /-- `(min, max)` nodes when the pool autoscales; `(0, 0)` — the default —
+      when it does not. -/
+  autoscale   : Field .optional o f (Nat × Nat)
+  network     : Field .optional o f String
+  clusterRole : Field .optional o f String
+  nodeRole    : Field .optional o f String
+
+/-- An object inside a managed cluster — a Deployment, a StatefulSet, a
+    Service, or any other object as a raw manifest.
+
+    The fleet name is the object's address,
+    `<cluster>/<namespace>/<kind>[.<group>]/<name>` (`Infra.Specs.ObjectName`),
+    whose first segment names a `kubernetesCluster` on the same cloud: the
+    reference cannot point at another cloud's cluster because the name has no
+    cloud in it, and the scheduler's edge to the cluster comes from the name
+    (`Engine.impliedByName`), the way a migration history's edge to its
+    database does. `Plan.kubernetesProblem` checks the rest — that the name
+    parses, that its kind agrees with the shape, and that the cluster is
+    declared.
+
+    The marker is a label on the object (`metadata.labels`), written at create
+    and read back by `ownershipInfo` — rung 1, with no climbing. An object is
+    managed on its own label, never on its cluster's say-so. -/
+structure KubernetesObjectSpec (K : ProviderId → Kind → Type) (o : Type u → Type u)
+    (f : Type → Type u) where
+  name  : Field .required o f String
+  shape : Field .required o f ObjectShape
+
+/-- `shape := deployment (image := …) …`.
+
+    Helpers rather than bare `.deployment`, because dot-notation resolves
+    against the expected type's head — `Expr`, not `ObjectShape` — the reason
+    `fromEnv` is one. -/
+def deployment {K : ProviderId → Kind → Type} (image : String) (replicas : Nat := 1)
+    (ports : List Nat := []) (env : List EnvVar := []) : Expr K ObjectShape :=
+  .lit (.deployment image replicas ports env)
+
+/-- `shape := statefulSet (image := …) (storage := some { … })`. -/
+def statefulSet {K : ProviderId → Kind → Type} (image : String) (replicas : Nat := 1)
+    (ports : List Nat := []) (env : List EnvVar := [])
+    (storage : Option ClaimTemplate := none) : Expr K ObjectShape :=
+  .lit (.statefulSet image replicas ports env storage)
+
+/-- `shape := service 5432` — selects pods labelled `app = <name>` unless
+    `selector` says otherwise. -/
+def service {K : ProviderId → Kind → Type} (port : Nat) (targetPort : Nat := 0)
+    (selector : List (String × String) := []) : Expr K ObjectShape :=
+  .lit (.service port targetPort selector)
+
+/-- `shape := rawObject "v1" "ConfigMap" "{\"data\": {…}}"` — any object, its
+    body as a JSON object. -/
+def rawObject {K : ProviderId → Kind → Type} (apiVersion kind manifest : String) :
+    Expr K ObjectShape :=
+  .lit (.raw apiVersion kind manifest)
+
 /-! ## Provider-local kinds -/
 
 /-- Richer than the portable `.objectStore`, and therefore not portable. Reaching for this
@@ -715,6 +810,8 @@ structure AwsInstanceSpec (K : ProviderId → Kind → Type) (o : Type u → Typ
   | .imageRegistry     => ImageRegistrySpec
   | .postgres          => PostgresSpec
   | .postgresMigrations => PostgresMigrationsSpec
+  | .kubernetesCluster => KubernetesClusterSpec
+  | .kubernetesObject  => KubernetesObjectSpec
   | .s3Bucket          => S3BucketSpec
   | .securityGroup     => SecurityGroupSpec
   | .awsInstance       => AwsInstanceSpec
@@ -794,6 +891,25 @@ instance : Fillable PostgresMigrationsSpec where
       schema := s.schema
       migrations := s.migrations }
 
+/-- `version`, `network` and the two roles default to `""` — "the cloud
+    decides", compared only when set (`divergesIfSet`) — and a fixed pool of
+    one node that does not autoscale. -/
+instance : Fillable KubernetesClusterSpec where
+  fill s :=
+    { name        := s.name
+      version     := s.version.getD (.lit "")
+      nodeType    := s.nodeType
+      nodeCount   := s.nodeCount.getD (.lit 1)
+      autoscale   := s.autoscale.getD (.lit (0, 0))
+      network     := s.network.getD (.lit "")
+      clusterRole := s.clusterRole.getD (.lit "")
+      nodeRole    := s.nodeRole.getD (.lit "") }
+
+/-- Both fields are required; the defaults live in the shape's own
+    constructor arguments. -/
+instance : Fillable KubernetesObjectSpec where
+  fill s := { name := s.name, shape := s.shape }
+
 instance : Fillable S3BucketSpec where
   fill s :=
     { name       := s.name
@@ -865,6 +981,8 @@ instance : Fillable ScalewayNamespaceSpec where
   | .imageRegistry     => inferInstanceAs (Fillable ImageRegistrySpec)
   | .postgres          => inferInstanceAs (Fillable PostgresSpec)
   | .postgresMigrations => inferInstanceAs (Fillable PostgresMigrationsSpec)
+  | .kubernetesCluster => inferInstanceAs (Fillable KubernetesClusterSpec)
+  | .kubernetesObject  => inferInstanceAs (Fillable KubernetesObjectSpec)
   | .s3Bucket          => inferInstanceAs (Fillable S3BucketSpec)
   | .securityGroup     => inferInstanceAs (Fillable SecurityGroupSpec)
   | .awsInstance       => inferInstanceAs (Fillable AwsInstanceSpec)

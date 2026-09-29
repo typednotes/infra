@@ -144,6 +144,24 @@ instance : Settleable .postgresMigrations where
              schema := ← settleField env s.schema
              migrations := ← settleField env s.migrations }
 
+instance : Settleable .kubernetesCluster where
+  settle env s := do
+    return { name := ← settleField env s.name
+             version := ← settleField env s.version
+             nodeType := ← settleField env s.nodeType
+             nodeCount := ← settleField env s.nodeCount
+             autoscale := ← settleField env s.autoscale
+             network := ← settleField env s.network
+             clusterRole := ← settleField env s.clusterRole
+             nodeRole := ← settleField env s.nodeRole }
+
+/-- Names only — the cluster is the name's first segment and the secrets are
+    named in the shape — so settling cannot fail on a reference; the edges
+    are `Engine.impliedByName`'s. -/
+instance : Settleable .kubernetesObject where
+  settle env s := do
+    return { name := ← settleField env s.name, shape := ← settleField env s.shape }
+
 instance : Settleable .s3Bucket where
   settle env s := do
     return { name := ← settleField env s.name
@@ -224,6 +242,8 @@ instance : Settleable .scalewayContainer where
   | .imageRegistry     => inferInstanceAs (Settleable .imageRegistry)
   | .postgres          => inferInstanceAs (Settleable .postgres)
   | .postgresMigrations => inferInstanceAs (Settleable .postgresMigrations)
+  | .kubernetesCluster => inferInstanceAs (Settleable .kubernetesCluster)
+  | .kubernetesObject  => inferInstanceAs (Settleable .kubernetesObject)
   | .s3Bucket          => inferInstanceAs (Settleable .s3Bucket)
   | .securityGroup     => inferInstanceAs (Settleable .securityGroup)
   | .awsInstance       => inferInstanceAs (Settleable .awsInstance)

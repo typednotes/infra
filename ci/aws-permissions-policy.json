@@ -101,6 +101,8 @@
         "ec2:Describe*",
         "lambda:ListFunctions",
         "rds:Describe*",
+        "eks:ListClusters",
+        "eks:DescribeCluster",
         "iam:ListUsers"
       ],
       "Resource": "*"

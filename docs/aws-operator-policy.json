@@ -56,6 +56,32 @@
       ]
     },
     {
+      "Sid": "KubernetesClustersNotExercisedByCi",
+      "Effect": "Allow",
+      "Action": "eks:*",
+      "Resource": [
+        "arn:aws:eks:REGION:ACCOUNT:cluster/PREFIX*",
+        "arn:aws:eks:REGION:ACCOUNT:nodegroup/PREFIX*/*/*"
+      ]
+    },
+    {
+      "Sid": "KubernetesRolesNotExercisedByCi",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::ACCOUNT:role/EKS-CLUSTER-ROLE-NAME",
+        "arn:aws:iam::ACCOUNT:role/EKS-NODE-ROLE-NAME"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "eks.amazonaws.com",
+            "ec2.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "Ec2MutationsCannotBeNameScoped",
       "Effect": "Allow",
       "Action": [
@@ -112,6 +138,8 @@
         "ec2:Describe*",
         "lambda:ListFunctions",
         "rds:Describe*",
+        "eks:ListClusters",
+        "eks:DescribeCluster",
         "iam:ListUsers"
       ],
       "Resource": "*"

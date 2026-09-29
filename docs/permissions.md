@@ -141,6 +141,16 @@ deleted is still cleaned up. So a credential for a cloud named there needs the
 listing and tag-read actions of every kind on that cloud even when the
 declaration has nothing left on it, until it is dropped from `accounts`.
 
+**Upgrading to 0.19.0 widens that set by one kind on every cloud:**
+`kubernetesCluster` is listed on each run, declared or not, so every fleet's
+credentials need to list managed clusters and read their tags — `eks:ListClusters`
+and `eks:DescribeCluster` on AWS; `container.clusters.list`/`get`
+(`roles/container.clusterViewer`) and the Kubernetes Engine API **enabled** on
+GCP; `KubernetesReadOnly` on Scaleway. Without them a plan fails at that
+listing, naming it — deliberately, since an unlisted kind could hide an orphan.
+In-cluster objects are only listed inside declared clusters, so a fleet with
+none needs nothing more.
+
 ## AWS, per kind
 
 Read off the call sites in `Infra/Providers/Kinds/` — the API each function
@@ -158,6 +168,8 @@ remembered. Last checked against the code on 2026-09-19.
 | `iam` | `iam:CreateUser`, `DeleteUser`, `ListUsers`, `ListAttachedUserPolicies`, `AttachUserPolicy`, `DetachUserPolicy`, `ListAccessKeys`, `DeleteAccessKey` — **and `CreateAccessKey`, which the template denies**, for `apiKeyFor` only | `iam:TagUser` / `iam:ListUserTags` | `iam:UntagUser` |
 | `compute` | `lambda:CreateFunction`, `DeleteFunction`, `GetFunction`, `ListFunctions`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, **plus `iam:PassRole`** on the execution role | `lambda:TagResource` / `GetFunction` carries them | `lambda:UntagResource` |
 | `postgres` | `rds:CreateDBInstance`, `DeleteDBInstance`, `ModifyDBInstance`, `DescribeDBInstances` | `rds:AddTagsToResource` / `rds:ListTagsForResource` | `rds:RemoveTagsFromResource` |
+| `kubernetesCluster` | `eks:CreateCluster`, `DescribeCluster`, `ListClusters`, `DeleteCluster`, `UpdateClusterVersion`, `CreateNodegroup`, `DescribeNodegroup`, `ListNodegroups`, `UpdateNodegroupConfig`, `UpdateNodegroupVersion`, `DeleteNodegroup`, `ec2:DescribeVpcs`, `DescribeSubnets`, **plus `iam:PassRole`** on the cluster and node roles | `eks:TagResource` (at create) / `DescribeCluster` carries them | `eks:UntagResource` |
+| `kubernetesObject` | no AWS action beyond `eks:DescribeCluster`: the kube API authorises the caller, which must be the cluster's creator or hold an EKS access entry | a label on the object / read with it | a merge patch on the object |
 
 The release column is read off the code like the rest, but no AWS release call
 has run against a real account yet — only offline, until the live suite runs
@@ -180,7 +192,14 @@ passing a role, so a policy with every `lambda:*` action and no `PassRole`
 still cannot create a function. Scope it to the execution role you actually
 use, with an `iam:PassedToService` condition — the template does.
 
-### Two rows nothing verifies
+### Rows nothing verifies
+
+**The two Kubernetes rows have never run against an account either** — the
+live leg that would exercise them is opt-in and has not run. EKS's first
+cluster in an account may also need `iam:CreateServiceLinkedRole` for
+`AWSServiceRoleForAmazonEKS`, which is not in the template; the
+`KubernetesClustersNotExercisedByCi` and `KubernetesRolesNotExercisedByCi`
+Sids carry the caveat.
 
 **`compute` (Lambda) and `postgres` (RDS) are not in any live test.** Lambda
 needs an ECR image to exist first, and RDS takes longer to create than the

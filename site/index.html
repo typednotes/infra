@@ -281,9 +281,9 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.18.1</strong> — <code>apply --refresh-secrets</code> rewrites the secrets
-  whose stored value went stale, and what holds a copy; <code>destroy --keep-data</code>
-  tears a fleet down but leaves its databases and buckets.<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
+  <strong>0.19.0</strong> — a managed Kubernetes cluster, and the Deployments,
+  StatefulSets and Services in it, declared like everything else: marked, diffed,
+  ordered and cleaned up by the fleet (offline so far).<a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
 <nav>
@@ -323,7 +323,7 @@
       </p>
       <div class="stats">
         <div class="stat"><b>3</b><span>clouds — AWS, Scaleway, GCP</span></div>
-        <div class="stat"><b>15</b><span>resource kinds</span></div>
+        <div class="stat"><b>17</b><span>resource kinds</span></div>
       </div>
       <div class="ctas">
         <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Read the tutorial</a>
@@ -683,7 +683,7 @@ would CREATE scaleway/secrets/db-url
 <span class="c">#   [[require]]</span>
 <span class="c">#   name = "infra"</span>
 <span class="c">#   git = "https://github.com/typednotes/infra"</span>
-<span class="c">#   rev = "v0.18.1"</span>
+<span class="c">#   rev = "v0.19.0"</span>
 
 lake update                <span class="c"># fetch infra</span>
 lake exe infra init        <span class="c"># turn this into an infra project</span>

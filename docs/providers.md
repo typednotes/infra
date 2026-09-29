@@ -27,8 +27,9 @@ diagnosis; `SignatureDoesNotMatch` is.
 | S3 (REST-XML) | bucket in the path, XML reply | object storage, `s3Bucket` |
 | Query | `POST /` form body, XML reply | IAM, RDS, EC2 |
 | AWS-JSON | `POST /` + `X-Amz-Target` | Secrets Manager, ECR, SQS |
-| REST-JSON | method and path carry meaning | Lambda |
+| REST-JSON | method and path carry meaning | Lambda, EKS |
 | Scaleway REST | `api.scaleway.com`, `X-Auth-Token` | everything Scaleway-native |
+| Kubernetes API | the cluster's API server, bearer token, the cluster's own CA | `kubernetesObject` on every cloud (`Kube.Client`) |
 
 All four AWS dialects sign identically, which is why signing lives once in
 `Aws/Sign.lean`.
@@ -49,6 +50,8 @@ file to compile.
 | `iam` | IAM users | IAM applications | no |
 | `postgres` | RDS | Managed Database | no — and routed on shape: a set `instanceClass` means a classic instance, capacity bounds mean serverless. Scaleway's Serverless SQL Database is implemented (`serverless-sqldb/v1alpha1`, capacity as `cpu_min`/`cpu_max`); AWS's Aurora Serverless v2 raises a named error, and GCP's Cloud SQL has no serverless tier at all, so it raises with the tier to set instead |
 | `postgresMigrations` | Postgres wire | Postgres wire | **yes** — one wire-protocol client for all three clouds, and route-driven: the only migration sets a backend can name are the declared ones (`docs/migrations.md`) |
+| `kubernetesCluster` | EKS + a managed node group | Kapsule + a pool | no — GKE on GCP. Not yet run live |
+| `kubernetesObject` | Kubernetes API | Kubernetes API | **yes** — one client for all three clouds; only the bearer token differs (see below). Not yet run live |
 | `s3Bucket` | S3 | — | AWS-only kind |
 | `securityGroup` | EC2 security groups | — | AWS-only kind |
 | `awsInstance` | EC2 instances | — | AWS-only kind; the portable `compute` kind is serverless-shaped and cannot carry a required network reference |
@@ -410,6 +413,25 @@ stale fleet definition could otherwise destroy live resources on a first run.
 Credentials come from the chain in `docs/authentication.md`. Scaleway
 additionally needs `default_project_id`, and `iam` needs
 `default_organization_id`.
+
+## Kubernetes: what each cloud needs, and what is not established
+
+`docs/kubernetes.md` is the design; this is the per-cloud part of it.
+
+| | AWS (EKS) | GCP (GKE) | Scaleway (Kapsule) |
+|---|---|---|---|
+| `network` | a VPC by `Name` tag, `vpc-…` id or `default`; its subnets (at least two AZs) — **required** | a VPC network; the project's `default` when unset | a Private Network by name; Kapsule attaches its own when unset |
+| roles | `clusterRole`, `nodeRole` — **required**, ARN or role name | — | — |
+| pool | one managed node group, `infra-pool-N` | one node pool; a regional cluster with its nodes in one zone, so `nodeCount` is the total | one pool, in `<region>-1` |
+| autoscale | the group's bounds only — **needs the Cluster Autoscaler** to act | native | native |
+| kube API token | presigned STS `GetCallerIdentity`, header `x-k8s-aws-id` | the OAuth bearer | the kubeconfig's token |
+| who may call it | the identity that created the cluster (`bootstrapClusterCreatorAdminPermissions`); others need an access entry | IAM roles on the project (`container.developer` and up) | the kubeconfig's admin token |
+| delete | node groups first, then the cluster | the cluster | `with_additional_resources` — volumes, load balancers, emptied private networks |
+| etcd encryption at rest (prose docs, 2026-09-29) | envelope encryption of API data by default on current versions | storage-layer encryption by default | **not established** |
+
+The Kapsule row's last cell is the one to read twice: a workload's secret
+environment value lands in etcd (`docs/kubernetes.md`, hard edge 3), and for
+Kapsule nothing here says how that is protected at rest.
 
 ## What is verified, and what is not
 

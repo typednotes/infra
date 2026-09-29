@@ -63,6 +63,10 @@ def resourceType : ProviderId → Kind → Option String
   -- A migration set is data-plane state, not a registry resource: no
   -- Terraform provider expresses it, on any cloud.
   | .aws, .postgresMigrations         => none
+  | .aws, .kubernetesCluster          => some "aws_eks_cluster"
+  -- The kubernetes provider's generic type: it takes any object as a
+  -- manifest, which is what a shape renders to.
+  | .aws, .kubernetesObject           => some "kubernetes_manifest"
   | .aws, .s3Bucket                   => some "aws_s3_bucket"
   | .aws, .securityGroup              => some "aws_security_group"
   | .aws, .awsInstance                => some "aws_instance"
@@ -78,6 +82,8 @@ def resourceType : ProviderId → Kind → Option String
   | .scaleway, .imageRegistry              => some "scaleway_registry_namespace"
   | .scaleway, .postgres                   => some "scaleway_rdb_instance"
   | .scaleway, .postgresMigrations         => none
+  | .scaleway, .kubernetesCluster          => some "scaleway_k8s_cluster"
+  | .scaleway, .kubernetesObject           => some "kubernetes_manifest"
   | .scaleway, .scalewayFunctionNamespace  => some "scaleway_function_namespace"
   | .scaleway, .scalewayFunction           => some "scaleway_function"
   | .scaleway, .scalewayContainerNamespace => some "scaleway_container_namespace"
@@ -93,6 +99,8 @@ def resourceType : ProviderId → Kind → Option String
   | .gcp, .imageRegistry              => some "google_artifact_registry_repository"
   | .gcp, .postgres                   => some "google_sql_database_instance"
   | .gcp, .postgresMigrations         => none
+  | .gcp, .kubernetesCluster          => some "google_container_cluster"
+  | .gcp, .kubernetesObject           => some "kubernetes_manifest"
   | .gcp, .s3Bucket                   => none
   | .gcp, .securityGroup              => none
   | .gcp, .awsInstance                => none
@@ -115,6 +123,9 @@ def kindOfResourceType (ty : String) : Option (ProviderId × Kind) :=
   | "aws_ecr_repository"            => some (.aws, .imageRegistry)
   | "aws_db_instance"               => some (.aws, .postgres)
   | "aws_security_group"            => some (.aws, .securityGroup)
+  | "aws_eks_cluster"               => some (.aws, .kubernetesCluster)
+  | "scaleway_k8s_cluster"          => some (.scaleway, .kubernetesCluster)
+  | "google_container_cluster"      => some (.gcp, .kubernetesCluster)
   | "aws_instance"                  => some (.aws, .awsInstance)
   | "scaleway_iam_application"      => some (.scaleway, .iam)
   | "scaleway_object_bucket"        => some (.scaleway, .objectStore)
@@ -245,6 +256,37 @@ def attrsOf (nameOf : (p : ProviderId) → (k : Kind) → K p k → String) :
   | .postgresMigrations, s =>
     [strReq "name" s.name, strReq "database" s.database,
      .missing "migrations" "a migration history has no Terraform type"]
+  -- The control plane only: every Terraform provider makes the node pool a
+  -- resource of its own (`aws_eks_node_group`, `google_container_node_pool`,
+  -- `scaleway_k8s_pool`), and one fleet resource cannot export as two blocks.
+  | .kubernetesCluster, s =>
+    [strReq "name" s.name] ++ strOpt "version" s.version
+    ++ strOpt "role_arn" s.clusterRole
+    ++ [.missing "node_pool" "the node pool is a separate Terraform resource \
+(aws_eks_node_group / google_container_node_pool / scaleway_k8s_pool) — declare it by hand \
+from nodeType, nodeCount and autoscale"]
+    ++ (match s.network with
+        | .unknown => []
+        | .known _ => [.missing "network" "a VPC / network / private network by name — resolve \
+its id by hand"])
+  -- The whole object, rendered exactly as the live backend would render it,
+  -- marker label included; a secret-sourced environment variable is left as a
+  -- placeholder naming its secret, since a value never leaves the apply path.
+  | .kubernetesObject, s =>
+    match req s.name, req s.shape with
+    | some nm, some shape =>
+      match Infra.Specs.ObjectName.parse? nm with
+      | none   => [.missing "manifest" "the name is not <cluster>/<namespace>/<kind>/<name>"]
+      | some n =>
+        match Infra.Specs.renderManifest n shape (markerKey, "<fleet name>")
+            (fun sec => s!"<secret {sec}>") with
+        | .ok v =>
+          [.raw "manifest" s!"jsondecode({quote (Data.Json.Encode.encode v)})"]
+          ++ (if shape.secretNames.isEmpty then [] else
+              [.missing "env" "secret-sourced values are placeholders — wire the secrets up \
+in Terraform yourself"])
+        | .error e => [.missing "manifest" e]
+    | _, _ => [.missing "manifest" "computed — resolve by hand"]
   | .s3Bucket, s =>
     [strReq "bucket" s.name] ++ boolOpt "versioning" s.versioning
     ++ boolOpt "object_lock_enabled" s.objectLock
@@ -362,6 +404,8 @@ def kindIdent : Kind -> String
   | .imageRegistry => "imageRegistry"
   | .postgres => "postgres"
   | .postgresMigrations => "postgresMigrations"
+  | .kubernetesCluster => "kubernetesCluster"
+  | .kubernetesObject => "kubernetesObject"
   | .s3Bucket => "s3Bucket"
   | .securityGroup => "securityGroup"
   | .awsInstance => "awsInstance"
@@ -446,16 +490,24 @@ fleet {name} where\n{String.intercalate "\n" byProvider}{skippedNote}"
 #guard resourceType .scaleway .s3Bucket = none
 #guard resourceType .aws .scalewayFunction = none
 
+/-- Types the exporter emits that name no cloud, and so cannot be imported:
+    `kubernetes_manifest` is the kubernetes provider's, the same on every
+    cloud, and a state entry of it says neither which cloud nor which cluster
+    it lives in. The importer skips it (counted among the unrecognised) rather
+    than guess a cloud. -/
+def cloudlessTypes : List String := ["kubernetes_manifest"]
+
 -- Every type the exporter can emit is one the importer recognises again, and
--- lands back on the same cloud. Not a full round trip — the portable kind is
--- preferred on the way back — but the *cloud* must never change.
+-- lands back on the same cloud — or is one of the enumerated cloudless ones,
+-- which the importer does not guess at. Not a full round trip — the portable
+-- kind is preferred on the way back — but the *cloud* must never change.
 #guard (Finite.elems (α := ProviderId)).all fun p =>
   (Finite.elems (α := Kind)).all fun k =>
     match resourceType p k with
     | none    => true
     | some ty => match kindOfResourceType ty with
       | some (p', _) => p' == p
-      | none         => false
+      | none         => cloudlessTypes.contains ty
 
 #guard label "my-bucket.example" = "my-bucket_example"
 #guard label "9lives" = "_9lives"

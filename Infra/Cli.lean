@@ -66,6 +66,46 @@ could never see. See docs/migrations.md")
     table := (p, routes.reverse) :: table
   return fun p => ((table.find? fun e => e.1 == p).map (·.2)).getD []
 
+/-- The declared clusters, per cloud, as the object backend's routes: where
+    each is placed and which objects the declaration puts in it — plus every
+    cluster named in a `forget`, so that the objects of a forgotten cluster
+    are still found (and, carrying this fleet's marker, destroyed as orphans
+    or released). An in-cluster object's handle is only its address, and the
+    declaration is the only place that says which clusters to look in.
+
+    Refuses an object placed anywhere but its cluster's region
+    (`Regions.codeFor` must agree): its backend reaches the API server through
+    the cluster, whatever region the line says, so a disagreeing placement
+    would route its calls through the wrong regional endpoint rather than be
+    ignored. -/
+def kubernetesRoutesOf (κ : Keys) (T : Plan κ) (regions : Regions)
+    (forgets : List (Released κ)) :
+    IO (ProviderId → List Infra.Providers.Kinds.Kubernetes.ClusterRoute) := do
+  let mut table : List (ProviderId × List Infra.Providers.Kinds.Kubernetes.ClusterRoute) := []
+  for p in Finite.elems (α := ProviderId) do
+    let objects := (Finite.elems (α := κ.Key p .kubernetesObject)).filterMap fun key =>
+      match T.assign p .kubernetesObject key with
+      | .unmanaged => none
+      | _          => some (κ.name p .kubernetesObject key)
+    for obj in objects do
+      if let some n := Infra.Specs.ObjectName.parse? obj then
+        let here := regions.codeFor p .kubernetesObject obj
+        let there := regions.codeFor p .kubernetesCluster n.cluster
+        unless here == there do
+          throw (IO.userError s!"{slotId p .kubernetesObject obj}: placed in {here.getD "the credentials' region"}, but its cluster {n.cluster} is in {there.getD "the credentials' region"} — an object is reached through its cluster, so it must be placed with it")
+    let declared := (Finite.elems (α := κ.Key p .kubernetesCluster)).map fun key =>
+      let nm := κ.name p .kubernetesCluster key
+      { name := nm, region := (regions.codeFor p .kubernetesCluster nm).getD ""
+        objects := objects.filter fun o =>
+          ((Infra.Specs.ObjectName.parse? o).map (·.cluster)) == some nm
+        : Infra.Providers.Kinds.Kubernetes.ClusterRoute }
+    let forgotten := forgets.filterMap fun r =>
+      if r.cloud == p && r.kind == .kubernetesCluster && !declared.any (·.name == r.name) then
+        some { name := r.name, region := "" }
+      else none
+    table := (p, declared ++ forgotten) :: table
+  return fun p => ((table.find? fun e => e.1 == p).map (·.2)).getD []
+
 /-- Build backends, authenticating only the providers `κ` actually declares
     resources in. The rest get the placeholder, which never calls a network.
 
@@ -99,7 +139,8 @@ def liveFor (κ : Keys) (regions : Regions := {})
     (fleet : String)
     (routes : ProviderId → List Infra.Providers.Kinds.Migrations.MigrationRoute :=
       fun _ => [])
-    (extra : List ProviderId := []) :
+    (extra : List ProviderId := [])
+    (k8s : ProviderId → List Infra.Providers.Kinds.Kubernetes.ClusterRoute := fun _ => []) :
     IO (Backends × (ProviderId → Option Credentials)) := do
   let mut creds : List (ProviderId × Credentials) := []
   -- The declared clouds, then the `extra` ones — clouds the fleet's
@@ -157,7 +198,7 @@ and neither the fleet nor the credentials say which region to scan, so it is not
   -- every endpoint builder reads.
   let backendIn := fun (p : ProviderId) (code : String) =>
     match lookup p with
-    | some c => Infra.Providers.liveBackend p { c with region := code } fleet (routes p)
+    | some c => Infra.Providers.liveBackend p { c with region := code } fleet (routes p) (k8s p)
     -- A cloud this declaration names nothing on: no credentials, so the
     -- placeholder, which calls nothing. Nothing is routed here — orphans are
     -- only looked for on the clouds the declaration uses.
@@ -588,6 +629,7 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
     let named := (Finite.elems (α := ProviderId)).filter (accounts.expect · |>.isSome)
     let (bs, creds) ← liveFor F.keys F.regions name
       (← migrationRoutesOf F.keys F.plan) (extra := named)
+      (k8s := ← kubernetesRoutesOf F.keys F.plan F.regions F.forgets)
     checkAccounts F.keys accounts creds colour
     act bs
   -- Failures are reported, not thrown out of `main`. An escaping exception

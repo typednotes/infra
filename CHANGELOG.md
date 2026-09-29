@@ -10,25 +10,22 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Pending: `linen` needs TLS client certificates
+### Pending: the halves of five moves that wait for a `linen` release
 
-`linen`'s TLS client context cannot present a certificate ("mutual TLS not
-supported yet", `ffi/tls.c`, checked 2026-09-29). Proposed in
-`docs/kubernetes.md`: a Scaleway Kapsule cluster's kubeconfig authenticates
-its admin user with a client certificate, so the `kubernetesCluster` /
-`kubernetesObject` kinds — if Kapsule offers no token-shaped kubeconfig
-user, which the generated SDK decides — need `linen` to add client-cert
-support to `linen_tls_client_ctx_create`, per linen's own contribution
-rules. Listed here rather than left implicit, for the reason the moves
-below are.
+Prepared in `linen` as local commits on top of v1.7.0 (2026-09-29), **not
+pushed or tagged**; `infra`'s side of each lands once it pins a release that
+carries them, deleting its own copy in the same change (`AGENTS.md`, "Linen"):
 
-### Pending: `JsonRead.setField` belongs in `linen`
+| moved into `linen` | `infra`'s copy, to delete then |
+|---|---|
+| `Data.Json.Value.setField`, and the lenient `lookupText`/`lookupNat`/`lookupBool` | `JsonRead.setField`, `stringField`/`natField`/`boolField` (`liaison`'s `setField` goes too) |
+| `Cloud.Class.denied` split into `denied` / `unauthenticated` / `serviceDisabled`, with `isAuthFailure` | nothing yet — this unblocks the `Linen.Cloud` migration below, whose `readsAsRefused` needed exactly that split |
+| `System.Console.Ansi.style`, `dim`, `wanted` (and the pure `shouldColor`) | `Infra/Core/Ansi.lean` |
+| `ci/consumer/link-helpers.lean` + `check-link-helpers.sh`, a versioned canonical block of the link-flag helpers | the helper half of the `⟪native-link-flags⟫` block in `lakefile.lean` and `Infra/Cli/New.lean`, which would then carry linen's markers and be checked against the pinned tag |
+| a fallback CA bundle in `createClientContext` (`Network.TLS.fallbackCaBundle`) | the "point OpenSSL at the runner's CA bundle" steps in the scaffolded CI (`Infra/Cli/New.lean`) |
 
-"Rewrite one field of a JSON object, leaving every other field and their order
-alone" is a `Data.Json.Value` operation, not an infrastructure-as-code one. It
-lives in `Infra/Providers/JsonRead.lean` because GCP's `setIamPolicy` needs it
-and nothing in `linen`'s `Data.Json` offers it yet. Listed here rather than
-left implicit, for the reason the moves below are.
+`JsonRead.field` is already gone: it was `Data.Json.Value.lookup`, which
+every linen `infra` has pinned carries (0.19.0).
 
 ### Pending: delete the code that has moved to `linen`
 `linen` 0.16.0 adds `Linen.Cloud`, a cloud-services layer that includes the
@@ -49,7 +46,8 @@ building blocks this project has been carrying:
 Google API from a hidden resource, and both of those must *not* read as
 "this one resource is not ours". The move therefore needs `linen` to split
 `denied` (refused-for-this-resource vs. not-authenticated vs. service off)
-first; proposed there rather than worked around here.
+first — now prepared there (`Class.unauthenticated`, `Class.serviceDisabled`),
+awaiting a release; see the table above.
 
 `linen` also gained the **data plane** these never had — object CRUD, message
 send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
@@ -142,6 +140,83 @@ The inline block loses `sed -i` along with Python: BSD sed reads the next
 argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
+
+## [0.19.0] — 2026-09-29
+
+### Added: managed Kubernetes, and the objects in it — `kubernetesCluster`, `kubernetesObject`
+
+`docs/kubernetes.md`, which was a proposal, is now the design doc of what was
+built; "Where the implementation differs" records what changed. Both kinds
+are portable and implemented on all three clouds, **and exercised offline
+only**: no cluster has been created by infra yet.
+
+- **`kubernetesCluster`** — a control plane and one node pool: EKS with a
+  managed node group, GKE (regional, nodes in one zone), Kapsule. `version`
+  upgrades in place; a `nodeType` or EKS `nodeRole` change replaces the
+  *pool* (new one ready before the old goes), never the cluster; `network` —
+  referenced by name, never managed — and EKS's `clusterRole` force a replace.
+  Rung 1 everywhere (tags / labels). `holdsData`, so `destroy --keep-data`
+  keeps it.
+- **`kubernetesObject`** — a Deployment, a StatefulSet (with a volume claim
+  template), a Service, or any object as a raw JSON manifest, through **one**
+  Kubernetes API client (`Infra.Providers.Kube.Client`) that trusts only the
+  cluster's own CA; only the bearer token differs per cloud (EKS a presigned
+  STS URL, GKE the OAuth token, Kapsule the kubeconfig's token — so the linen
+  mutual-TLS addition the proposal expected is not needed). An object's fleet
+  name is its **address**, `<cluster>/<namespace>/<kind>/<name>`, so a
+  StatefulSet and a Service can share a name and an object cannot point at
+  another cloud's cluster. Server-side apply for create and update; marked by
+  a label on the object itself, never on a pod template; found by it inside
+  the declaration's clusters when its line goes.
+- **Ordering from names** (`Engine.impliedByName`): an object after its
+  cluster, its secrets and its declared namespace; a Service with no selector
+  after the workloads of the same name.
+- **`Plan.kubernetesProblem` / `kubernetesIsSound`**, refused by `push`
+  before any action and `#guard`-able: an address that does not parse or
+  disagrees with its shape, a cluster not declared on the same cloud, names
+  that are not DNS-1123, a fixed pool spelled as an autoscale range.
+- **Hard edge 2, both halves pinned offline**: an object is absent only when
+  the *cloud* no longer lists its cluster; an API server that does not answer
+  is an error (`Kinds.Kubernetes.reachability`, `checkKubernetes`).
+- **A widening, recorded in the ledger**: reading a workload receives the
+  values of the secrets its environment names (the API returns whole
+  objects); they are dropped where the response is parsed.
+- Terraform: `aws_eks_cluster` / `google_container_cluster` /
+  `scaleway_k8s_cluster` (control plane only, the pool as a `# TODO`), and
+  `kubernetes_manifest` for objects — which the importer skips, since it names
+  no cloud.
+- `example/KubernetesPostgres.lean` (a bare `lake exe kubernetes-postgres` is
+  offline), `Main.lean`'s `checkKubernetes`, and an opt-in live leg,
+  `lake test -- <cloud> kubernetes`, written and not run.
+
+### Changed: every run lists managed clusters — credentials need to read them
+
+The scan for undeclared resources covers every kind on every cloud the fleet
+names, so `kubernetesCluster` is listed on each run, declared or not. **A
+credential that cannot list clusters now fails every plan at that listing** —
+deliberately, as any refused listing does. What to grant, read-only:
+`eks:ListClusters` and `eks:DescribeCluster` (AWS); `roles/container.clusterViewer`
+with the Kubernetes Engine API **enabled** (GCP — a disabled API is not read as
+"nothing there", the Cloud SQL rule); `KubernetesReadOnly` (Scaleway).
+`ci/aws-permissions-policy.json` and `docs/aws-operator-policy.json` carry the
+AWS half; `ci/README.md` the commands for GCP and Scaleway, marked not yet
+applied to this repository's CI identities. In-cluster objects are only listed
+inside declared clusters, so a fleet with none needs nothing more.
+
+### Changed
+
+- **Linux CI runners are pinned to `ubuntu-24.04`**, in this repository's
+  workflows and in the ones `infra new` scaffolds: linen's sealed-DuckDB audit
+  has only been measured there (`TODO.md`, from the 0.18.1 review).
+- **`JsonRead.field` is gone**: it was linen's `Data.Json.Value.lookup` with
+  its arguments swapped, and every caller now uses that.
+- `destroy --keep-data` keeps clusters (they hold the volumes); a
+  `kubernetesObject`'s update re-sends the secrets it names, so
+  `--refresh-secrets` follows them.
+- `ci/check-scaleway-scoping.sh` recognises the Kapsule and VPC listings
+  (`pfx creds`, `vpc creds`), and exempts `/versions`, a catalogue. Checked
+  against deliberately unscoped copies of both listings, which it reports.
+- The scaffolded `Catalogue.lean` declares a cluster and two objects in it.
 
 ## [0.18.1] — 2026-09-28
 

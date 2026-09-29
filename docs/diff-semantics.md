@@ -356,6 +356,14 @@ misplaced fleet never reaches a DNS lookup:
 | A placement leaving one of the fleet's clouds unplaced | `Assert (rs.covers κ)` on `Regions.covering` |
 | A *resource* placed in a region its cloud does not have | `Assert (l.code p).isSome` on `Locality.region`, one resource at a time |
 | A migration history that is not one | `Plan.migrationsAreSound` lifting `PostgresMigrationsSpec.historyIsSound` — ids strictly increasing, no empty `sql`, a quotable `schema`, literals throughout (migration content is schema, not a post-apply value) |
+| An in-cluster object that is not addressable, or on a cluster the fleet does not declare on its cloud | `Plan.kubernetesIsSound` (`kubernetesProblem`, which `Engine.push` also refuses before any action) — the address parses, its kind agrees with the shape, its names are DNS-1123, its cluster is a declared `kubernetesCluster` on the same cloud, its shape is sound; and a cluster name valid on all three clouds, a pool that runs something, an autoscale range that is a range |
+
+An in-cluster object pointing at *another cloud's* cluster is **structural**
+rather than decidable: its fleet name, `<cluster>/<namespace>/<kind>/<name>`,
+has no cloud in it, and the cluster it names is resolved on the object's own
+cloud (`Engine.impliedByName`). Placing an object in a region other than its
+cluster's is refused at runtime, by `Infra.Cli.kubernetesRoutesOf`, since
+`Regions` is not part of a `Plan`.
 
 `Regions.covers` is per *cloud* and not per *slot*, which is a deliberate
 weakening: `by decide` reduces in the kernel, and a per-slot check compares
@@ -425,6 +433,26 @@ it after — was rejected because it would have widened a bigger invariant:
 the project, so the `plan.yml` token would have gained the right to mint
 keys for *any* identity, the read-write ones included. Recorded in
 `docs/migrations.md`, hard edge 2.
+
+**A second weakening of the same shape** (0.19.0, with `kubernetesObject`):
+reading an in-cluster workload receives the values of the secrets its
+environment names, because the Kubernetes API returns whole objects and cannot
+be asked for one without its `env`. The values are dropped where the response
+is parsed (`Infra.Specs.shapeOfLive` maps each back to `EnvVar.secret <name>
+<secret>` through an annotation infra wrote), so nothing holds one past that
+function: not `Reported`, not a plan line, not a snapshot. And reaching a
+Kapsule cluster's API server at all — observation included — means reading
+the kubeconfig's admin token, which is handed straight to the request.
+Neither widening was avoidable without managing Kubernetes Secret objects,
+which this version does not (`docs/kubernetes.md`, hard edges 3 and 4).
+
+The immutability decisions of the two Kubernetes kinds, for the record:
+a cluster's `network` and EKS `clusterRole` force a replace (no cloud moves a
+live cluster); `version` is an upgrade; `nodeType` and `nodeRole` replace the
+**node pool** in place, never the cluster; `nodeCount` is not compared while
+the pool autoscales. An object's StatefulSet `storage` forces a replace
+(`volumeClaimTemplates` are immutable); everything else is server-side
+applied in place.
 
 **Decidable, but not embeddable in the structure**: `PostgresSpec.hasCapacityChoice` — "at least
 one of `instanceClass` or `{minCapacity, maxCapacity}` is set" — is a decidable `Bool` function,

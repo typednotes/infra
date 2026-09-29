@@ -6,6 +6,7 @@ import Infra.Providers.Kinds.Compute
 import Infra.Providers.Kinds.Iam
 import Infra.Providers.Kinds.Postgres
 import Infra.Providers.Kinds.Migrations
+import Infra.Providers.Kinds.Kubernetes
 import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Zip
 import Infra.Core.GcpAuth
@@ -55,6 +56,14 @@ import Infra.Providers.Gcp.Iam
   backend knows where each declared migration set lives; `Infra.Cli.run`
   derives it, and a backend built without one can list nothing and refuses
   rather than fabricate. See `docs/migrations.md`.
+
+  `.kubernetesCluster` on all three — EKS, GKE, Kapsule — and
+  `.kubernetesObject` on all three from **one** client (`Kube.Client`): the
+  Kubernetes API is the same everywhere, and only the bearer token each cloud
+  mints differs (`Kinds.Kubernetes.access`). Like migrations, an object's
+  listing needs the declaration's clusters (`k8s`, derived by
+  `Infra.Cli.run`); its read, create and delete do not, since an object's
+  address names its cluster. See `docs/kubernetes.md`.
 
   `.scalewayFunction` on Scaleway, whose `sourceBucket` reference is passed to
   the function as a `SOURCE_BUCKET` environment variable — the cross-cloud
@@ -272,6 +281,8 @@ private def postgresEvidence (provider : ProviderId) (creds : Credentials)
 def liveRead (provider : ProviderId) (creds : Credentials)
     (routes : List Migrations.MigrationRoute := []) :
     (k : Kind) → Handle k → IO (Reported k)
+  | .kubernetesCluster, h => Kubernetes.read provider creds h.raw
+  | .kubernetesObject, h  => Kubernetes.readObject provider creds h
   | .objectStore, h => do
     match provider with
     | .gcp =>
@@ -461,8 +472,14 @@ def liveRead (provider : ProviderId) (creds : Credentials)
     equation compiler has to refine it per branch. -/
 def liveBackend (provider : ProviderId) (creds : Credentials)
     (fleet : String)
-    (routes : List Migrations.MigrationRoute := []) : Backend where
+    (routes : List Migrations.MigrationRoute := [])
+    (k8s : List Kubernetes.ClusterRoute := []) : Backend where
   list
+    | .kubernetesCluster => do
+      return (← Kubernetes.listClusters provider creds).map Kubernetes.observedOf
+    -- Route-driven, like migrations: only the clusters the declaration names
+    -- are looked in. See `Engine.scannableUndeclared`.
+    | .kubernetesObject => Kubernetes.listObjects provider creds k8s
     | .objectStore => do
       match provider with
       -- Cloud Storage's JSON API, not the S3-compatible one: that needs HMAC
@@ -885,6 +902,9 @@ invocation, which is a worse failure than this one")
                   spec.timeoutSec spec.env secretVals
       return { handle := ⟨spec.name⟩, url }
     | .postgresMigrations, spec => Migrations.apply provider creds spec
+    | .kubernetesCluster, spec => Kubernetes.create provider creds spec fleet
+    -- Server-side apply: create and update are one call.
+    | .kubernetesObject, spec => Kubernetes.applyObject provider creds fleet spec
 
   update
     | .objectStore, h, spec => do
@@ -1037,6 +1057,8 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
     -- The same body as `create`: the resource *is* its history, so
     -- "update" is "apply the pending suffix" and the backend says which.
     | .postgresMigrations, h, spec => Migrations.apply provider creds spec
+    | .kubernetesCluster, _, spec => Kubernetes.update provider creds spec fleet
+    | .kubernetesObject, _, spec => Kubernetes.applyObject provider creds fleet spec
 
   delete
     | .objectStore, h =>
@@ -1125,6 +1147,10 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
     | .postgresMigrations, h => do
       IO.eprintln s!"note: {h.raw} released from management; schema and \
 history left in place"
+    -- With everything in it: the cloud deletes the cluster's objects and
+    -- volumes. `destroy --keep-data` keeps clusters for that reason.
+    | .kubernetesCluster, h => Kubernetes.delete provider creds h.raw
+    | .kubernetesObject, h => Kubernetes.deleteObject provider creds h
   -- The one inbound plaintext path; see `Backend.secretValue`. `fetchValue`
   -- already exists and is already the narrowly-scoped reader for both clouds.
   secretValue h := Secrets.fetchValue provider creds h.raw
@@ -1177,6 +1203,11 @@ history left in place"
       | .aws      => ImageRegistry.Ecr.readOwnership creds (ecrFor creds) h.raw
       | .scaleway => ImageRegistry.Scw.readOwnership creds h.raw
     | .postgres, h => postgresEvidence provider creds h.raw
+    -- Rung 1 on all three: EKS tags, GKE `resourceLabels`, Kapsule tags.
+    | .kubernetesCluster, h => Kubernetes.ownership provider creds h.raw
+    -- Rung 1 by construction: the object's own `metadata.labels`. Never its
+    -- cluster's marker — see `KubernetesObjectSpec`.
+    | .kubernetesObject, h => Kubernetes.objectOwnership provider creds h
     -- The child's verdict is the parent database's: the resource is rows
     -- inside that database, not a cloud object of its own, so there is no
     -- marker of its own to read and the parent's is the only evidence there
@@ -1265,6 +1296,11 @@ history left in place"
          these refuse and say why.
        * securityGroup, awsInstance — AWS-only kinds; refused.
 
+     Every cloud — kubernetesCluster: EKS `UntagResource`, GKE
+     `:setResourceLabels` under the label fingerprint, Kapsule `PATCH` of the
+     cluster's `tags`. kubernetesObject: a JSON merge patch setting the
+     marker label to `null`, nothing else.
+
      Every cloud — postgresMigrations: **cannot**. Its evidence is its parent
      database's marker, and it has none of its own to remove; release the
      `postgres` resource instead. -/
@@ -1351,6 +1387,8 @@ history left in place"
       | .scaleway => Compute.Containers.releaseMarker creds h.raw fleet
       | .gcp      => notOnGcp "scalewayContainer"
       | .aws      => scalewayOnly "scalewayContainer" h.raw
+    | .kubernetesCluster, h => Kubernetes.release provider creds h.raw fleet
+    | .kubernetesObject, h => Kubernetes.releaseObject provider creds fleet h
     | .postgresMigrations, h =>
       throw (IO.userError s!"postgres-migrations/{h.raw}: has no ownership marker of its \
 own to remove — its evidence is the parent database's. Release the `postgres` resource \

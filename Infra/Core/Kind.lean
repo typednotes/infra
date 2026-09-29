@@ -48,6 +48,8 @@ def ProviderId.name : ProviderId → String
   | imageRegistry
   | postgres
   | postgresMigrations
+  | kubernetesCluster
+  | kubernetesObject
   -- provider-local: the escape hatch to concepts closer to one provider
   | s3Bucket
   | securityGroup
@@ -61,7 +63,7 @@ def ProviderId.name : ProviderId → String
 instance : Finite Kind where
   elems :=
     [.iam, .objectStore, .compute, .queues, .secrets, .imageRegistry, .postgres,
-     .postgresMigrations,
+     .postgresMigrations, .kubernetesCluster, .kubernetesObject,
      .s3Bucket, .securityGroup, .awsInstance,
      .scalewayFunctionNamespace, .scalewayFunction,
      .scalewayContainerNamespace, .scalewayContainer]
@@ -77,6 +79,8 @@ def Kind.name : Kind → String
   | .imageRegistry      => "image-registry"
   | .postgres           => "postgres"
   | .postgresMigrations  => "postgres-migrations"
+  | .kubernetesCluster  => "kubernetes-cluster"
+  | .kubernetesObject   => "kubernetes-object"
   | .s3Bucket           => "s3-bucket"
   | .securityGroup      => "security-group"
   | .awsInstance        => "aws-instance"
@@ -198,6 +202,26 @@ structure PostgresMigrationsObserved where
   applied : List (String × String)
   deriving Repr, DecidableEq, ToJson, FromJson
 
+/-- A managed Kubernetes cluster (EKS, GKE, Kapsule), identified by its
+    name. `clusterId` is the cloud's own identifier — an EKS ARN, a GKE
+    self-link, a Kapsule UUID — and `endpoint` the API server's URL, both
+    post-apply values. Nothing secret: the credential that reaches the API
+    server is minted per call, never observed. -/
+structure KubernetesClusterObserved where
+  handle    : Handle .kubernetesCluster
+  clusterId : String
+  endpoint  : String
+  deriving Repr, DecidableEq, ToJson, FromJson
+
+/-- An object inside a cluster, identified by its address
+    `<cluster>/<namespace>/<kind>/<name>` (`Infra.Specs.ObjectName`) — the
+    handle is the fleet name, as for a security group. `uid` is the one the
+    API server assigned. -/
+structure KubernetesObjectObserved where
+  handle : Handle .kubernetesObject
+  uid    : String
+  deriving Repr, DecidableEq, ToJson, FromJson
+
 structure S3BucketObserved where
   handle : Handle .s3Bucket
   arn    : String
@@ -273,6 +297,8 @@ structure ScalewayContainerObserved where
   | .imageRegistry     => ImageRegistryObserved
   | .postgres          => PostgresObserved
   | .postgresMigrations => PostgresMigrationsObserved
+  | .kubernetesCluster => KubernetesClusterObserved
+  | .kubernetesObject  => KubernetesObjectObserved
   | .s3Bucket          => S3BucketObserved
   | .securityGroup     => SecurityGroupObserved
   | .awsInstance       => AwsInstanceObserved
@@ -295,6 +321,8 @@ def observedHandle : (k : Kind) → ObservedOf k → Handle k
   | .imageRegistry,     o => ImageRegistryObserved.handle o
   | .postgres,          o => PostgresObserved.handle o
   | .postgresMigrations, o => PostgresMigrationsObserved.handle o
+  | .kubernetesCluster, o => KubernetesClusterObserved.handle o
+  | .kubernetesObject,  o => KubernetesObjectObserved.handle o
   | .s3Bucket,          o => S3BucketObserved.handle o
   | .securityGroup,     o => SecurityGroupObserved.handle o
   | .awsInstance,       o => AwsInstanceObserved.handle o
@@ -312,6 +340,8 @@ instance : (k : Kind) → ToJson (ObservedOf k)
   | .imageRegistry     => inferInstanceAs (ToJson ImageRegistryObserved)
   | .postgres          => inferInstanceAs (ToJson PostgresObserved)
   | .postgresMigrations => inferInstanceAs (ToJson PostgresMigrationsObserved)
+  | .kubernetesCluster => inferInstanceAs (ToJson KubernetesClusterObserved)
+  | .kubernetesObject  => inferInstanceAs (ToJson KubernetesObjectObserved)
   | .s3Bucket          => inferInstanceAs (ToJson S3BucketObserved)
   | .securityGroup     => inferInstanceAs (ToJson SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (ToJson AwsInstanceObserved)
@@ -333,6 +363,8 @@ instance : (k : Kind) → Repr (ObservedOf k)
   | .imageRegistry     => inferInstanceAs (Repr ImageRegistryObserved)
   | .postgres          => inferInstanceAs (Repr PostgresObserved)
   | .postgresMigrations => inferInstanceAs (Repr PostgresMigrationsObserved)
+  | .kubernetesCluster => inferInstanceAs (Repr KubernetesClusterObserved)
+  | .kubernetesObject  => inferInstanceAs (Repr KubernetesObjectObserved)
   | .s3Bucket          => inferInstanceAs (Repr S3BucketObserved)
   | .securityGroup     => inferInstanceAs (Repr SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (Repr AwsInstanceObserved)
@@ -350,6 +382,8 @@ instance : (k : Kind) → FromJson (ObservedOf k)
   | .imageRegistry     => inferInstanceAs (FromJson ImageRegistryObserved)
   | .postgres          => inferInstanceAs (FromJson PostgresObserved)
   | .postgresMigrations => inferInstanceAs (FromJson PostgresMigrationsObserved)
+  | .kubernetesCluster => inferInstanceAs (FromJson KubernetesClusterObserved)
+  | .kubernetesObject  => inferInstanceAs (FromJson KubernetesObjectObserved)
   | .s3Bucket          => inferInstanceAs (FromJson S3BucketObserved)
   | .securityGroup     => inferInstanceAs (FromJson SecurityGroupObserved)
   | .awsInstance       => inferInstanceAs (FromJson AwsInstanceObserved)
@@ -360,7 +394,7 @@ instance : (k : Kind) → FromJson (ObservedOf k)
 
 section Guards
 
-#guard card Kind = 15
+#guard card Kind = 17
 #guard card ProviderId = 3
 #guard card Nothing = 0
 

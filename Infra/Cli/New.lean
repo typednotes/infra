@@ -62,7 +62,7 @@ namespace Infra.Cli.New
     line `init` appends when converting a `lakefile.toml`, and into what
     `scaffold` prints when it keeps a lakefile it did not write — one string,
     so those three cannot disagree. -/
-private def infraRev : String := "v0.18.1"
+private def infraRev : String := "v0.19.0"
 
 /-- The dependency line a consumer's `lakefile.lean` needs, pinned to
     `infraRev`. -/
@@ -1036,6 +1036,26 @@ fleet catalogue in paris where
       -- never in this file and never in the plan.
       , secretEnv  := [(\"TOKEN\", scwToken)] }
 
+    -- ── Managed Kubernetes: a cluster, and objects inside it ──
+
+    -- Portable too (EKS, GKE, Kapsule). A pair of numerals needs its type.
+    -- A cluster's name must be valid on all three clouds — lowercase letters,
+    -- digits and `-` — so it is not derived from the project's name, which
+    -- may hold an underscore.
+    resource kubernetesCluster \"main\"
+      { nodeType  := \"GP1-S\"
+      , nodeCount := 3
+      , autoscale := ((2, 6) : Nat × Nat) }
+
+    -- An object's name is its address, <cluster>/<namespace>/<kind>/<name>,
+    -- and its cluster is this cloud's. The service selects `app = web`, the
+    -- label infra puts on the deployment's pods, and is ordered after it.
+    resource kubernetesObject \"main/default/deployment.apps/web\"
+      { shape := deployment (image := \"nginx:1.27\") (replicas := 2) (ports := [80])
+          (env := [.secret \"TOKEN\" \"" ++ name ++ "-scw-token\"]) }
+    resource kubernetesObject \"main/default/service/web\"
+      { shape := service 80 }
+
   provider gcp where
 
     -- `queues` on GCP is a Pub/Sub topic and is live. The other kinds here
@@ -1055,6 +1075,9 @@ fleet catalogue in paris where
 
 -- All three clouds appear.
 #guard catalogue.keys.providers = [.aws, .scaleway, .gcp]
+
+-- Every in-cluster object is addressable, on a cluster this fleet declares.
+#guard catalogue.plan.kubernetesIsSound
 "
 
 /-! ## Converting `lakefile.toml`
