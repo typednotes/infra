@@ -809,8 +809,8 @@ function — it is a number, so it tells the code the response was parsed at all
 - **Kubernetes on AWS.** EKS and the Kubernetes API behind it (a presigned
   STS token) have never been called against a real account. The leg is
   `lake test -- aws kubernetes`, from the Live test workflow with
-  `-f leg=kubernetes`, once the grants prepared in
-  `ci/aws-permissions-policy.json` are applied. Scaleway and GCP passed theirs
+  `-f leg=kubernetes`; its grants in `ci/aws-permissions-policy.json` and the
+  two-hour session were applied on 2026-09-29. Scaleway and GCP passed theirs
   on 2026-09-29, which settled the two facts only a live run could: OpenSSL 3
   verifies GKE's IP endpoint through `SSL_set1_host`, and a current Kapsule
   kubeconfig carries a usable token.

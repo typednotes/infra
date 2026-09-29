@@ -99,11 +99,13 @@ cloud account.
   Frankfurt — Paris's `europe-west9-a` was out of `e2-medium` for forty
   minutes, and a GKE create cannot be cancelled, only waited out. OpenSSL 3
   does verify GKE's IP endpoint.
-- [ ] **Run the live leg on AWS** from the Live test workflow
-  (`-f leg=kubernetes`), once the prepared grants are applied: the four
-  `Kubernetes…` statements in `ci/aws-permissions-policy.json` (`put-role-policy`) and
-  `aws iam update-role --role-name infra-ci --max-session-duration 7200`
-  (`ci/README.md`, "The Kubernetes leg"). The IAM roles exist.
+- [x] **Apply the AWS Kubernetes grants** (2026-09-29): the four
+  `Kubernetes…` statements in `ci/aws-permissions-policy.json`
+  (`put-role-policy`) and a 7200-second session on `infra-ci`.
+- [ ] **Run the live leg on AWS**: `gh workflow run live-test.yml -f
+  provider=aws -f leg=kubernetes` — after the push, since the remote
+  `live-test.yml` is the 0.20.0 one, which GitHub cannot parse. Bills an EKS
+  cluster for roughly 45 minutes.
 - [x] **Grant the CI identities the scan's new read access** (2026-09-29):
   `KubernetesReadOnly` on the Scaleway CI project, `ci/aws-permissions-policy.json`
   re-applied (`eks:ListClusters`/`DescribeCluster`), and on GCP the Kubernetes

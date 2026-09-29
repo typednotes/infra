@@ -587,8 +587,10 @@ destroys it. From the workflow, **AWS only**:
 gh workflow run live-test.yml -f provider=aws -f leg=kubernetes
 ```
 
-What the AWS run needs, **prepared in this repository and not yet applied**
-(2026-09-29):
+What the AWS run needs — the first two **applied 2026-09-29** (after 0.20.1),
+checked first against the live policy (the other ten statements identical)
+and with `aws accessanalyzer validate-policy` (no errors or security
+warnings):
 
 1. The four statements `KubernetesTestClusters` (`eks:*` on
    `ci-tests-infra-*` clusters and their node groups, in `eu-west-1`),
@@ -596,10 +598,11 @@ What the AWS run needs, **prepared in this repository and not yet applied**
    to EKS and EC2 only, and `iam:GetRole`, on the two roles below and nothing
    else) and `KubernetesServiceLinkedRoles` (EKS's two
    service-linked roles, created by the first cluster in an account — neither
-   exists in this one yet) in `ci/aws-permissions-policy.json`. Apply it as
-   above, with `put-role-policy`.
+   exists in this one yet) in `ci/aws-permissions-policy.json`, applied with
+   `put-role-policy` as above.
 2. A two-hour session: the workflow asks for `role-duration-seconds: 7200` on
-   this leg, and fails before creating anything until the role allows it:
+   this leg, and fails before creating anything unless the role allows it —
+   it now does:
 
    ```sh
    aws iam update-role --role-name infra-ci --max-session-duration 7200

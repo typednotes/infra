@@ -84,6 +84,13 @@ never reached them, but each answered GCP anyway — one by raising, one with a
 `.invalid` host. `SqsCloud.of` is the one place GCP is answered, with linen's
 `Cloud.Error.unsupported`.
 
+The AWS Kubernetes leg's grants — the four `Kubernetes…` statements and a
+two-hour session on `infra-ci` — were applied on 2026-09-29, so the leg can
+run from the Live test workflow once this release is pushed.
+`docs/ci-auth.md` now creates the role with that session and names its inline
+policy `infra-ci-live-tests`, as the role has it; it said `infra-ci-live-test`,
+which would have added a second policy beside the first.
+
 Scaffolded projects pin `v0.20.1` (`infraRev`).
 
 ## [0.20.0] — 2026-09-29

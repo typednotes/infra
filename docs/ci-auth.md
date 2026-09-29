@@ -231,11 +231,11 @@ aws iam create-role \
   --role-name infra-ci \
   --description "Assumed by GitHub Actions in typednotes/infra via OIDC" \
   --assume-role-policy-document file://ci/aws-trust-policy.json \
-  --max-session-duration 3600
+  --max-session-duration 7200
 
 aws iam put-role-policy \
   --role-name infra-ci \
-  --policy-name infra-ci-live-test \
+  --policy-name infra-ci-live-tests \
   --policy-document file://ci/aws-permissions-policy.json
 ```
 
