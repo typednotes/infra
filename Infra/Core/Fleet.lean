@@ -60,7 +60,7 @@ def Keys.providers (κ : Keys) : List ProviderId :=
                  Shape outside the modality, contents inside — a fleet may have three unknown
                  handles, never an unknown number of instances.
 
-    There is deliberately no for.lookup "everything else". There used to be one,
+    There is deliberately no field for "everything else". There used to be one,
     `outside : Status Unit`, meant to choose between a closed world
     (garbage-collect anything undeclared) and an open one. Nothing ever read
     it, and it could not have worked as a single verdict: closing the world
