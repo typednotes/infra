@@ -78,12 +78,14 @@ already carry:
   propose creating resources that already exist. `Cloud.Page.Listing` carries
   `truncated` and derives `complete` from it.
 - **Unsupported operations as values rather than raises.**
-  `Scaleway/Sqs.lean:206` raises, and `Aws/Protocols.lean:199` signs against a
+  `Scaleway/Sqs.lean:321` raises for GCP (`credentialsFor`), and
+  `Aws/Protocols.lean:199` signs against a
   deliberately `.invalid` host; `Cloud.Error.Class.unsupported` is returned
   instead.
-- **No panicking UTF-8 decode.** `Kinds/Secrets.lean` uses `String.fromUTF8!`
-  in two places; `linen` uses `String.fromUTF8?` and reports a `protocol`
-  error.
+- **No panicking UTF-8 decode.** `String.fromUTF8!` has six uses:
+  `Providers/Http.lean:158,161`, `Kinds/Secrets.lean:142,167`,
+  `Kinds/Postgres.lean:78` and `Gcp/Iam.lean:366` (counted 2026-09-29);
+  `linen` uses `String.fromUTF8?` and reports a `protocol` error.
 
 One thing deliberately **not** moved: `Scaleway/Sqs.lean`'s credential minting.
 It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
