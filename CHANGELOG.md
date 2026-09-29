@@ -27,6 +27,14 @@ active on 2026-09-29:
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
 
+## [0.21.3] — 2026-09-29
+
+### Changed: `linen` v1.9.1
+
+The dependency and resolved manifest now use `v1.9.1`, whose HTTP/2 stream-state
+regression tests deterministically distinguish half-closed stream resets from
+fully closed stream GOAWAY errors. Scaffolded projects pin `v0.21.3` (`infraRev`).
+
 ## [0.21.2] — 2026-09-29
 
 ### Changed: `linen` v1.9.0

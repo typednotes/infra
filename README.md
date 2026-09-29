@@ -34,7 +34,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.21.2 covers
+## What 0.21.3 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -77,7 +77,10 @@ warnings are gone. The complete AWS Kubernetes leg still needs a passing rerun.
 **Fixed in 0.21.2: EKS's default VPC converges** — observation recognises
 `network := "default"` from EC2's own flag, so a freshly created cluster is
 not replaced. The first-use service-linked-role read grant is covered, CI
-checks role reads before provisioning, and the dependency is `linen` v1.9.0.
+checks role reads before provisioning, and that release moved to `linen` v1.9.0.
+
+**0.21.3 pins Linen v1.9.1**, which makes its HTTP/2 stream-state regression
+tests deterministic on faster CI runners.
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -157,7 +160,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.21.2"
+rev = "v0.21.3"
 ```
 
 Then:
