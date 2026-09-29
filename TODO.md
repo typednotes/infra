@@ -107,10 +107,13 @@ still open is below, unchecked.
   (Kapsule refuses a cluster without a Private Network), Endpoints are the
   Service's (excluded from the scan), and the delete cascade above. A current
   Kapsule kubeconfig does carry a usable token.
-- [ ] **Run the live leg on GCP** — GCP_RESULT
+- [x] **Run the live leg on GCP**: passed, all four stages (2026-09-29), in
+  Frankfurt — Paris's `europe-west9-a` was out of `e2-medium` for forty
+  minutes, and a GKE create cannot be cancelled, only waited out. OpenSSL 3
+  does verify GKE's IP endpoint.
 - [ ] **Run the live leg on AWS** from the Live test workflow
-  (`-f leg=kubernetes`), once the prepared grants are applied: the three
-  statements in `ci/aws-permissions-policy.json` (`put-role-policy`) and
+  (`-f leg=kubernetes`), once the prepared grants are applied: the four
+  `Kubernetes…` statements in `ci/aws-permissions-policy.json` (`put-role-policy`) and
   `aws iam update-role --role-name infra-ci --max-session-duration 7200`
   (`ci/README.md`, "The Kubernetes leg"). The IAM roles exist.
 - [x] **Grant the CI identities the scan's new read access** (2026-09-29):

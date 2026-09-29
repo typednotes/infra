@@ -82,6 +82,20 @@
       }
     },
     {
+      "Sid": "KubernetesServiceLinkedRolesNotExercisedByCi",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "eks.amazonaws.com",
+            "eks-nodegroup.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "Ec2MutationsCannotBeNameScoped",
       "Effect": "Allow",
       "Action": [

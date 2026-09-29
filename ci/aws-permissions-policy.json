@@ -85,10 +85,21 @@
     {
       "Sid": "KubernetesPassTestRoles",
       "Effect": "Allow",
-      "Action": [
-        "iam:PassRole",
-        "iam:GetRole"
-      ],
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::616568506952:role/ci-tests-infra-eks-*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "eks.amazonaws.com",
+            "ec2.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "KubernetesReadTestRoles",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
       "Resource": "arn:aws:iam::616568506952:role/ci-tests-infra-eks-*"
     },
     {

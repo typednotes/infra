@@ -1644,7 +1644,9 @@ def gcpIdentityCheck : IO Unit := do
   kubernetes`. A managed cluster takes ten to twenty minutes to create and is
   billed by the hour, which is not something to put on every pull request —
   and the CI identities lack the grants (EKS, GKE and Kapsule
-  administration). **Not yet run** (2026-09-29); `docs/coverage.md` says so.
+  administration). **Passed on Scaleway and GCP** (2026-09-29, by hand); AWS
+  runs from the Live test workflow (`-f leg=kubernetes`) once its grants are
+  applied — `ci/README.md`, "The Kubernetes leg".
 
   Four stages over one cluster, `ci-tests-infra-k8s`:
 

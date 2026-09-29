@@ -34,7 +34,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.19.1 covers
+## What 0.20.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -46,9 +46,17 @@ through one Kubernetes API client for all three clouds). An object's fleet
 name is its address, `main/default/statefulset.apps/postgres`, so it cannot
 point at another cloud's cluster; it is marked by a label of its own, found
 by it when its line goes, and ordered after its cluster, its secrets and —
-for a Service — the workload it fronts. **Offline only so far**: no cluster
-has been created by infra yet (`example/KubernetesPostgres.lean`,
-`docs/kubernetes.md`).
+for a Service — the workload it fronts. **Run live in 0.20.0 on Scaleway and
+GCP**, four stages each — create, updates in place, orphans destroyed inside
+a cluster that stays, teardown; AWS's leg is prepared and not yet run
+(`example/KubernetesPostgres.lean`, `docs/kubernetes.md`).
+
+**New in 0.20.0: infra runs on `linen`'s `Linen.Cloud`** — credentials,
+transport, signing and error classification — and deletes its own copies.
+The first live Kubernetes runs found, among other things, that Kapsule's
+delete cascade removed the declared Private Network; it no longer cascades.
+One pre-existing defect is recorded rather than fixed: most AWS and Scaleway
+listings read a single page (`docs/coverage.md`, known defects).
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -88,7 +96,7 @@ any one of them:
 |---|---|
 | Verified against a real account | a three-stage sequence on **all three clouds**: 32 resources across 11 of the 14 kinds, created, converged, partly dropped, and destroyed. Stage 2 deletes resources whose lines are *gone* from the declaration, so it cannot pass unless membership works |
 | Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, that the marker decides (orphans found and destroyed, nothing else), dump round-trip and replay, fleet isolation and naming, `forget` releasing (unmarking, not deleting), orphans found on a cloud no longer declared, orphan recheck and retry, the same inside a Kubernetes cluster (an in-cluster orphan destroyed, an unmarked object at a declared address refused), and that a sweep deletes only what it created |
-| **Never run against an account** | Kubernetes on every cloud (an opt-in live leg exists, `lake test -- <cloud> kubernetes`, and has not run); AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
+| **Never run against an account** | Kubernetes on AWS (the opt-in leg passed on Scaleway and GCP, 2026-09-29); AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
 references, and a `# TODO` for anything HCL cannot express), and
@@ -127,7 +135,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.19.1"
+rev = "v0.20.0"
 ```
 
 Then:

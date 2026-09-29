@@ -1,4 +1,4 @@
-# Coverage in 0.19.1
+# Coverage in 0.20.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-29.
@@ -12,7 +12,7 @@ rather than repeating it, so there is one place to correct.
 |---|---|
 | **AWS** | implemented |
 | **Scaleway** | implemented |
-| **GCP** | **all the portable kinds have live clients** — seven GCP-specific (Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL) and the eighth, `postgresMigrations`, whose Postgres-wire backend is one client shared by all three clouds — and, since 0.19.0, `kubernetesCluster` (GKE) and `kubernetesObject` (one Kubernetes API client shared by all three), **not yet run live**. One stated limit: a serverless `postgres` declaration raises, since Cloud SQL has no such tier. `iam` now writes roles as well as reading them — an etag-guarded, member-scoped edit of the project IAM policy that leaves conditional bindings alone. Provider-local kinds report no counterpart rather than a missing client |
+| **GCP** | **all the portable kinds have live clients** — seven GCP-specific (Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM service accounts, Cloud SQL) and the eighth, `postgresMigrations`, whose Postgres-wire backend is one client shared by all three clouds — and, since 0.19.0, `kubernetesCluster` (GKE) and `kubernetesObject` (one Kubernetes API client shared by all three), **passed live in 0.20.0** (2026-09-29). One stated limit: a serverless `postgres` declaration raises, since Cloud SQL has no such tier. `iam` now writes roles as well as reading them — an etag-guarded, member-scoped edit of the project IAM policy that leaves conditional bindings alone. Provider-local kinds report no counterpart rather than a missing client |
 | Azure, OVH | not started |
 
 Adding a cloud is a `ProviderId` constructor, after which every total match
@@ -44,13 +44,17 @@ and Lean reports one as unreachable.
 | `kubernetesCluster` | EKS (+ a managed node group) | Kapsule (+ a pool) | no — GKE on GCP |
 | `kubernetesObject` | Kubernetes API | Kubernetes API | **yes, all three clouds** |
 
-**The two Kubernetes kinds (0.19.0) are implemented on all three clouds and
-exercised offline only — no cluster has been created by infra yet.** Every
+**The two Kubernetes kinds (0.19.0) are implemented on all three clouds, and
+since 0.20.0 have passed the live leg on Scaleway and GCP; AWS's is not yet
+run.** Every
 call is written against the providers' generated SDKs and discovery documents
 (checked 2026-09-29, recorded in `Infra/Providers/Kinds/Kubernetes.lean`);
 `Main.lean`'s `checkKubernetes`, the `#guard`s in `Infra/Specs/Kubernetes.lean`
-and `example/KubernetesPostgres.lean` are what has run; the opt-in live leg
-(`lake test -- <cloud> kubernetes`) is written and has not. An in-cluster
+and `example/KubernetesPostgres.lean` run offline; the opt-in live leg
+(`lake test -- <cloud> kubernetes`) passed on Scaleway and GCP on 2026-09-29
+— create, ownership read back, in-place updates, in-cluster orphans destroyed
+inside a cluster that stays, teardown, a clean account — and runs on AWS from
+the Live test workflow once its grants are applied (`ci/README.md`). An in-cluster
 object's fleet name is its address, `<cluster>/<namespace>/<kind>/<name>`, and
 its cluster is the same cloud's by construction. The design, its five hard
 edges and where it differs from the proposal: `docs/kubernetes.md`.
@@ -139,7 +143,7 @@ clients for those kinds, not one.
 | Orphans found on every cloud the declaration or `accounts` names | complete |
 | `check` / `plan` / `apply` / `destroy` / `dump` | complete |
 | `--refresh-secrets` — rewrite `fromEnv`/`composed` secrets whose stored value is stale, and every copy | offline only (`checkRefreshSecrets`); never run against an account. Not covered: `apiKeyFor`, a database's `masterPasswordSecret` — see below |
-| Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline only (`checkKubernetes`, `example/KubernetesPostgres.lean`); the live leg is written and has not run |
+| Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline (`checkKubernetes`, `example/KubernetesPostgres.lean`); live on **Scaleway and GCP**, all four stages (2026-09-29, by hand — opt-in, not in CI); AWS prepared for the Live test workflow, not yet run |
 | `destroy --keep-data` — a teardown that leaves databases, their histories, buckets, clusters and a database's password secret standing | offline only (`checkKeepData`); never run against an account |
 | `dump` snapshots replayed as offline test fixtures (`Snapshot.load`) | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
@@ -378,7 +382,7 @@ backstop step was *skipped*, which is the evidence that the driver's own
 teardown ran and left nothing behind — and the accounts were checked afterwards
 and are clean.
 
-**Thirteen of the seventeen kinds; 22 (cloud, kind) pairs.** (The two Kubernetes kinds have an opt-in leg of their own that has not run; `postgres` and `postgresMigrations` are below.)
+**Thirteen of the seventeen kinds; 22 (cloud, kind) pairs.** (The two Kubernetes kinds have an opt-in leg of their own, passed on Scaleway and GCP, not yet run on AWS; `postgres` and `postgresMigrations` are below.)
 
 **All three dependency patterns are exercised live.** The chain and the fan-out
 run on every cloud. The **fan-in** was Scaleway-only and is now covered: its
@@ -427,7 +431,7 @@ those are the same set.
 | Kind | Why not |
 |---|---|
 | `postgres` | Five to fifteen minutes to create and as long to delete, on every cloud — longer than the workflow's step timeout, so it would not be a slow test but a failing one |
-| `kubernetesCluster`, `kubernetesObject` | a cluster takes ten to twenty minutes to create and is billed by the hour; the leg exists, opt-in (`lake test -- <cloud> kubernetes`), and has not been run |
+| `kubernetesCluster`, `kubernetesObject` | a cluster takes ten to twenty minutes to create and is billed by the hour; the leg is opt-in (`lake test -- <cloud> kubernetes`) — passed on Scaleway and GCP by hand, runnable on AWS from the Live test workflow (`-f leg=kubernetes`) |
 
 Two kinds left this table, and both left it by removing the obstacle rather
 than by lowering the bar:
@@ -802,15 +806,14 @@ function — it is a number, so it tells the code the response was parsed at all
 
 ### Never run against any account
 
-- **Kubernetes, on every cloud.** `kubernetesCluster` (EKS, GKE, Kapsule) and
-  `kubernetesObject` (the Kubernetes API through the cluster's own CA) have
-  never been called against a real account. The live leg is
-  `lake test -- <cloud> kubernetes`, opt-in and not in CI (a cluster takes
-  ten to twenty minutes and is billed by the hour). Two facts only a live run
-  can settle: OpenSSL 3 verifying GKE's IP endpoint through `SSL_set1_host`,
-  and Kapsule's kubeconfig token being accepted as a bearer (the SDK says the
-  token user exists; that a current cluster still issues one is the run's to
-  show).
+- **Kubernetes on AWS.** EKS and the Kubernetes API behind it (a presigned
+  STS token) have never been called against a real account. The leg is
+  `lake test -- aws kubernetes`, from the Live test workflow with
+  `-f leg=kubernetes`, once the grants prepared in
+  `ci/aws-permissions-policy.json` are applied. Scaleway and GCP passed theirs
+  on 2026-09-29, which settled the two facts only a live run could: OpenSSL 3
+  verifies GKE's IP endpoint through `SSL_set1_host`, and a current Kapsule
+  kubeconfig carries a usable token.
 
 Rewritten after AWS's full leg passed, because most of what this section said
 about AWS is no longer true. It listed ECR, Secrets Manager and IAM as never

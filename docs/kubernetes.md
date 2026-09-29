@@ -1,7 +1,11 @@
 # Managed Kubernetes, and workloads as declared resources
 
-**Status: implemented, in 0.19.0 — offline only; not yet run against any
-account.** This page began as the proposal the implementation was judged
+**Status: implemented in 0.19.0; run live in 0.20.0 on Scaleway and GCP
+(2026-09-29), all four stages each; AWS's leg is prepared for the Live test
+workflow and not yet run.** The first runs found four things, fixed in 0.20.0:
+Kapsule requires a Private Network; its delete cascade deleted that network;
+Endpoints carry a Service's marker without an owner; the metrics groups answer
+503 until metrics-server is ready. This page began as the proposal the implementation was judged
 against — doc first, code after, in the spirit of `AGENTS.md` — and it
 remains the design doc. The body describes what now *is*; where the
 implementation deviated from the proposal, "Where the implementation
@@ -404,7 +408,10 @@ Checked against generated SDKs and discovery documents — not prose docs, the
   whose guards pin the ordering, the teardown order, `--keep-data`, and three
   refused siblings. Live: an opt-in leg on each cloud, `lake test -- <cloud>
   kubernetes` — four stages, the trimmed one dropping objects inside a cluster
-  that stays — written and **not yet run**.
+  that stays — **passed on Scaleway and GCP** (2026-09-29) and not yet run
+  on AWS. Settled by those runs: OpenSSL 3 verifies GKE's IP endpoint
+  through `SSL_set1_host`, and a current Kapsule kubeconfig carries a usable
+  token.
 
 ## Alternatives considered
 

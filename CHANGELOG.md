@@ -10,86 +10,6 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Pending: the halves of five moves that wait for a `linen` release
-
-Prepared in `linen` as local commits on top of v1.7.0 (2026-09-29), **not
-pushed or tagged**; `infra`'s side of each lands once it pins a release that
-carries them, deleting its own copy in the same change (`AGENTS.md`, "Linen"):
-
-| moved into `linen` | `infra`'s copy, to delete then |
-|---|---|
-| `Data.Json.Value.setField`, and the lenient `lookupText`/`lookupNat`/`lookupBool` | `JsonRead.setField`, `stringField`/`natField`/`boolField` (`liaison`'s `setField` goes too) |
-| `Cloud.Class.denied` split into `denied` / `unauthenticated` / `serviceDisabled`, with `isAuthFailure` | nothing yet — this unblocks the `Linen.Cloud` migration below, whose `readsAsRefused` needed exactly that split |
-| `System.Console.Ansi.style`, `dim`, `wanted` (and the pure `shouldColor`) | `Infra/Core/Ansi.lean` |
-| `ci/consumer/link-helpers.lean` + `check-link-helpers.sh`, a versioned canonical block of the link-flag helpers | the helper half of the `⟪native-link-flags⟫` block in `lakefile.lean` and `Infra/Cli/New.lean`, which would then carry linen's markers and be checked against the pinned tag |
-| a fallback CA bundle in `createClientContext` (`Network.TLS.fallbackCaBundle`) | the "point OpenSSL at the runner's CA bundle" steps in the scaffolded CI (`Infra/Cli/New.lean`) |
-
-`JsonRead.field` is already gone: it was `Data.Json.Value.lookup`, which
-every linen `infra` has pinned carries (0.19.0).
-
-### Pending: delete the code that has moved to `linen`
-`linen` 0.16.0 adds `Linen.Cloud`, a cloud-services layer that includes the
-building blocks this project has been carrying:
-
-| moved to `linen` | was here |
-|---|---|
-| `Cloud.Provider` — the three clouds, `Locality`, per-cloud region codes, `Region p` | `Infra/Core/Kind.lean` (`ProviderId`), `Infra/Core/Region.lean` |
-| `Cloud.Credentials` (+ `.Keychain`, `.Gcp`) — the three-source chain, redacting `Repr`, `normalizeEnv`, `sourceDescriptions` | `Infra/Core/Credentials.lean`, `Infra/Core/GcpAuth.lean` |
-| `Cloud.Endpoint` — per-service hosts and signing scopes | `Infra/Providers/Aws/Protocols.lean`, `Infra/Providers/{Scaleway,Gcp}/Rest.lean` |
-| `Cloud.Auth`, `Cloud.Transport` — signing and the single egress point | `Infra/Providers/Aws/Sign.lean`, `Infra/Providers/Http.lean` |
-| `Cloud.Protocol.{S3,AwsJson,GoogleRest,ScalewayRest}` — the four wire dialects | `Infra/Providers/Aws/Protocols.lean`, `.../{Scaleway,Gcp}/Rest.lean` |
-| `Cloud.Error` — the classified taxonomy, including the not-found code list | `Infra/Core/Backend.lean`'s `readsAsAbsent`, and the access-denied half of its `readsAsRefused` (0.17.2) |
-
-`readsAsRefused` is not a straight duplicate of `Cloud.Error.Class.denied`:
-`linen`'s `denied` also covers signature and credential failures
-(`SignatureDoesNotMatch`, `ExpiredToken`, …) and does not tell a disabled
-Google API from a hidden resource, and both of those must *not* read as
-"this one resource is not ours". The move therefore needs `linen` to split
-`denied` (refused-for-this-resource vs. not-authenticated vs. service off)
-first — now prepared there (`Class.unauthenticated`, `Class.serviceDisabled`),
-awaiting a release; see the table above.
-
-`linen` also gained the **data plane** these never had — object CRUD, message
-send/receive/ack, and secret reads — which `Infra/Providers/Kinds/*`
-deliberately excluded ("bucket-level operations only: no object CRUD").
-
-**Not done here yet, and why.** That first blocker is gone: the pin is
-`v1.0.0`, `lake update linen` has run, and `Linen.Cloud` builds here — so the
-"cannot yet be built" reason no longer applies and should not be reached for
-again. What remains is the part that was never mechanical: `ProviderId` and
-`Credentials` thread through most of `Infra/`, and `Region` is indexed by
-`ProviderId`, so switching to `Cloud.Provider` and `Cloud.Credentials` touches
-the engine as well as the providers. It is written down rather than
-half-applied.
-
-Note that `infra` still imports none of `Linen.Cloud` — only the general
-modules (`Crypto`, `Data`, `Network`, `System.Keychain`, `Text`) — so every
-duplicate listed above is still live in both repositories.
-
-Three corrections to take at the same time, all of which `linen`'s versions
-already carry:
-
-- **Pagination that reports whether it finished.** `Gcp/Storage.lean` and
-  `Gcp/PubSub.lean` cap at 50 pages, warn on stderr, and return a `List`
-  indistinguishable from a complete one — which their own comments explain is
-  dangerous, since a truncated listing read as complete makes the planner
-  propose creating resources that already exist. `Cloud.Page.Listing` carries
-  `truncated` and derives `complete` from it.
-- **Unsupported operations as values rather than raises.**
-  `Scaleway/Sqs.lean:321` raises for GCP (`credentialsFor`), and
-  `Aws/Protocols.lean:199` signs against a
-  deliberately `.invalid` host; `Cloud.Error.Class.unsupported` is returned
-  instead.
-- **No panicking UTF-8 decode.** `String.fromUTF8!` has six uses:
-  `Providers/Http.lean:158,161`, `Kinds/Secrets.lean:142,167`,
-  `Kinds/Postgres.lean:78` and `Gcp/Iam.lean:366` (counted 2026-09-29);
-  `linen` uses `String.fromUTF8?` and reports a `protocol` error.
-
-One thing deliberately **not** moved: `Scaleway/Sqs.lean`'s credential minting.
-It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
-credential holding that name — defensible for a tool that owns its fleet,
-unacceptable in a library, so `linen` reads a dedicated credential instead.
-
 ### Fixed: the page had been advertising 0.9.0 for two releases
 
 `site/index.html`'s "what's new" banner still read **0.9.0** — through 0.10.0,
@@ -140,6 +60,109 @@ The inline block loses `sed -i` along with Python: BSD sed reads the next
 argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
+
+## [0.20.0] — 2026-09-29
+
+### Changed: `linen` v1.8.0, and onto `Linen.Cloud`
+
+The pin moves from v1.7.0 to **v1.8.0**, which carries the halves of five
+moves prepared for it, and `infra` deletes its copy of each in the same change
+(`AGENTS.md`, "Linen"):
+
+| now `linen`'s | `infra`'s copy, deleted |
+|---|---|
+| `Data.Json.Value.setField`, `lookupText`/`lookupNat`/`lookupBool` | `JsonRead.setField`, `stringField`/`natField`/`boolField` (`JsonRead` keeps `arrayField`, `stringArrayField`) |
+| `System.Console.Ansi` (`style`, `wanted`, `Color.fgCode`, …) | `Infra/Core/Ansi.lean` |
+| `ci/consumer/link-helpers.lean` + `check-link-helpers.sh` | the helper half of the link-flag block, which `lakefile.lean` and `Infra/Cli/New.lean` now embed from linen and `ci/check-lakefile-sync.sh` checks with linen's script |
+| `Network.TLS.fallbackCaBundle` | the "point OpenSSL at the runner's CA bundle" steps, in this repository's workflows and the scaffolded ones |
+| `Cloud.Class.denied` split (`unauthenticated`, `serviceDisabled`, `isAuthFailure`) | — it unblocked the migration below |
+
+**The `Linen.Cloud` migration**, written down as pending since 0.16.0:
+
+- `Infra/Core/Credentials.lean` is linen's chain: `Credentials` is
+  `Cloud.Credentials`, and `Credentials.load` is
+  `Cloud.Credentials.Chain.loadFrom` with keychain service `infra`. The
+  sources and their order are unchanged. `Infra/Core/GcpAuth.lean` is
+  **deleted**, with `loadWithKeyFile` and `tokenFromKeyFile`: a key for a
+  non-default scope is `Gcp.parseKeyFile` → `Gcp.assertion` → `Gcp.exchange`.
+  A key file declaring another credential `type` (`external_account`,
+  `authorized_user`, …) is declined and the chain moves on.
+- `Infra/Providers/Http.lean` sends through `Cloud.Transport` and describes
+  failures with `Cloud.describeError`, rendered `HTTP <status> <code>:
+  <message> (request <id>)`; SigV4 is `Cloud.Auth.sigV4`.
+- `readsAsAbsent` and `readsAsRefused` classify with `Cloud.classify`, and a
+  signature or credential failure is no longer mistaken for "this one
+  resource is not ours".
+- **Listings that fail rather than truncate.** `Http.listAll` is
+  `Cloud.paginate`: past its page budget a listing fails, never returns as
+  complete. The six GCP listings use it — Storage and Pub/Sub used to stop at
+  50 pages with a warning — as do Kapsule and EKS clusters and the in-cluster
+  scan. **Most AWS and Scaleway listings do not yet** (below).
+- No `String.fromUTF8!` is left in library code: a response body, or a
+  secret's decoded value, that is not UTF-8 is an error naming it
+  (`Http.utf8Text`) instead of a panic.
+- linen's JSON encoder no longer writes `/` as `\/`, so request bodies holding
+  URLs or `apiVersion`s change bytes (not meaning); Kubernetes' YAML apply
+  decoder had refused `\/`. A Scaleway error keeps its `details`
+  ("invalid argument(s) (private_network_id: …)").
+
+One thing deliberately **not** moved: `Scaleway/Sqs.lean`'s credential minting.
+It makes "`infra` is this library's name" a rule, and its `reclaim` deletes any
+credential holding that name — defensible for a tool that owns its fleet,
+unacceptable in a library, so `linen` reads a dedicated credential instead.
+
+### Kubernetes, live: Scaleway passes; what the runs found
+
+`lake test -- scaleway kubernetes` passes all four stages (2026-09-29):
+create, ownership read back (the cluster by tag, objects by label), in-place
+updates, in-cluster orphans destroyed inside a cluster that stays, teardown,
+and an account left clean. A current Kapsule kubeconfig does carry a usable
+token.
+`lake test -- gcp kubernetes` passes too, in Frankfurt — Paris's
+`europe-west9-a` had no `e2-medium` to give for forty minutes, and a GKE
+create cannot be cancelled — which settles the other open question: OpenSSL 3
+verifies GKE's IP endpoint through `SSL_set1_host`.
+
+The first calls found four things, all fixed:
+
+- **Kapsule's delete deleted the declared Private Network.** It passed
+  `with_additional_resources=true`, which also deletes every attached volume
+  and any Private Network left empty — the declared one, which infra
+  references and never creates. That is the 2026-09-10 cascade again, one
+  kind over, and it happened to the CI project's network. The delete now
+  sends `false`, and the Scaleway leg asserts the network survives. The load
+  balancers and volumes a cluster made for its own Services and claims are
+  left standing — unmarked, not infra's — and `docs/coverage.md` says so.
+- **`network` is required on Scaleway** — Kapsule refuses a cluster without a
+  Private Network — and on AWS, with `clusterRole` and `nodeRole`.
+  `infra check` says so before any call; a Scaleway declaration without one
+  now fails the check.
+- **Endpoints are the Service's.** The endpoints controller copies a
+  Service's labels, the marker included, onto its Endpoints and sets no owner
+  reference, so the scan read it as an orphan. Excluded, like PVCs and Events
+  (`Kube.excludedFromScan`).
+- **The metrics groups are not asked.** `metrics.k8s.io` answers 503 until
+  metrics-server is ready — the whole first run — and serves nothing
+  deletable, so skipping its discovery changes no outcome.
+
+AWS's leg runs from the Live test workflow, `-f leg=kubernetes`, once the
+grants prepared in `ci/aws-permissions-policy.json` are applied and `infra-ci`
+allows a two-hour session (`ci/README.md`, "The Kubernetes leg"); the two IAM
+roles it names exist. The workflow refuses the leg for Scaleway and GCP,
+whose CI identities cannot create clusters.
+
+### Known defect, found and recorded: most AWS and Scaleway listings read one page
+
+About twenty-two listings that feed a backend's `list`, the orphan scan, or
+the lookups ownership and delete depend on make one request — on AWS, S3,
+SQS, Secrets Manager, Lambda, EC2, IAM, ECR and RDS; on Scaleway, secrets,
+containers, functions and their namespaces, IAM applications, registry
+namespaces, RDB and Serverless SQL; on GCP, Cloud SQL and GKE. Past one page
+(twenty items by Scaleway's default) an orphan is invisible and a declared
+resource reads as absent. Not a regression; `docs/coverage.md` lists it under
+known defects and `TODO.md` names every call site.
+
+Scaffolded projects pin `v0.20.0` (`infraRev`).
 
 ## [0.19.1] — 2026-09-29
 

@@ -50,8 +50,8 @@ file to compile.
 | `iam` | IAM users | IAM applications | no |
 | `postgres` | RDS | Managed Database | no — and routed on shape: a set `instanceClass` means a classic instance, capacity bounds mean serverless. Scaleway's Serverless SQL Database is implemented (`serverless-sqldb/v1alpha1`, capacity as `cpu_min`/`cpu_max`); AWS's Aurora Serverless v2 raises a named error, and GCP's Cloud SQL has no serverless tier at all, so it raises with the tier to set instead |
 | `postgresMigrations` | Postgres wire | Postgres wire | **yes** — one wire-protocol client for all three clouds, and route-driven: the only migration sets a backend can name are the declared ones (`docs/migrations.md`) |
-| `kubernetesCluster` | EKS + a managed node group | Kapsule + a pool | no — GKE on GCP. Not yet run live |
-| `kubernetesObject` | Kubernetes API | Kubernetes API | **yes** — one client for all three clouds; only the bearer token differs (see below). Not yet run live |
+| `kubernetesCluster` | EKS + a managed node group | Kapsule + a pool | no — GKE on GCP. Live on Scaleway and GCP (2026-09-29); not yet on AWS |
+| `kubernetesObject` | Kubernetes API | Kubernetes API | **yes** — one client for all three clouds; only the bearer token differs (see below). Live on Scaleway and GCP (2026-09-29); not yet on AWS |
 | `s3Bucket` | S3 | — | AWS-only kind |
 | `securityGroup` | EC2 security groups | — | AWS-only kind |
 | `awsInstance` | EC2 instances | — | AWS-only kind; the portable `compute` kind is serverless-shaped and cannot carry a required network reference |

@@ -590,10 +590,11 @@ gh workflow run live-test.yml -f provider=aws -f leg=kubernetes
 What the AWS run needs, **prepared in this repository and not yet applied**
 (2026-09-29):
 
-1. The three statements `KubernetesTestClusters` (`eks:*` on
+1. The four statements `KubernetesTestClusters` (`eks:*` on
    `ci-tests-infra-*` clusters and their node groups, in `eu-west-1`),
-   `KubernetesPassTestRoles` (`iam:PassRole`/`iam:GetRole` on the two roles
-   below, and nothing else) and `KubernetesServiceLinkedRoles` (EKS's two
+   `KubernetesPassTestRoles` and `KubernetesReadTestRoles` (`iam:PassRole`,
+   to EKS and EC2 only, and `iam:GetRole`, on the two roles below and nothing
+   else) and `KubernetesServiceLinkedRoles` (EKS's two
    service-linked roles, created by the first cluster in an account — neither
    exists in this one yet) in `ci/aws-permissions-policy.json`. Apply it as
    above, with `put-role-policy`.
@@ -616,9 +617,11 @@ What the AWS run needs, **prepared in this repository and not yet applied**
 read grants for clusters and nothing that creates one; the workflow refuses
 `leg=kubernetes` for them up front. Both legs passed on 2026-09-29, run from a
 laptop — Scaleway with an API key scoped to the CI project, GCP with a
-`gcloud` user token (one access token per run, about an hour: a regional GKE
-leg is close to that, and `lake test -- gcp destroy` with a fresh token
-finishes a teardown that outlived it). Scaleway also needs a Private Network
+`gcloud` user token (one access token per run, about an hour; the Frankfurt
+leg took sixteen minutes). If a GKE create stalls — the first attempt waited
+forty minutes on `ZONE_RESOURCE_POOL_EXHAUSTED` in Paris — it cannot be
+cancelled, and deleting it answers `FAILED_PRECONDITION` until Google gives
+up; then `lake test -- gcp destroy` removes it. Scaleway also needs a Private Network
 named `infra-ci-k8s` in the CI project — Kapsule refuses a cluster without
 one — **created by hand 2026-09-29**, free, and outside the sweep's prefix.
 

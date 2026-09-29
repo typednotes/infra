@@ -194,12 +194,14 @@ use, with an `iam:PassedToService` condition — the template does.
 
 ### Rows nothing verifies
 
-**The two Kubernetes rows have never run against an account either** — the
-live leg that would exercise them is opt-in and has not run. EKS's first
-cluster in an account may also need `iam:CreateServiceLinkedRole` for
-`AWSServiceRoleForAmazonEKS`, which is not in the template; the
-`KubernetesClustersNotExercisedByCi` and `KubernetesRolesNotExercisedByCi`
-Sids carry the caveat.
+**The AWS Kubernetes rows have never run against an account either** — the
+Kubernetes leg passed on Scaleway and GCP (2026-09-29) and runs on AWS from
+the Live test workflow once `ci/aws-permissions-policy.json`'s matching
+statements are applied (`ci/README.md`, "The Kubernetes leg"). EKS's first
+cluster and node group in an account create two service-linked roles
+(`AWSServiceRoleForAmazonEKS`, `…ForAmazonEKSNodegroup`), so the template
+carries `iam:CreateServiceLinkedRole` for exactly those two services; the
+three `Kubernetes…NotExercisedByCi` Sids carry the caveat.
 
 **`compute` (Lambda) and `postgres` (RDS) are not in any live test.** Lambda
 needs an ECR image to exist first, and RDS takes longer to create than the
