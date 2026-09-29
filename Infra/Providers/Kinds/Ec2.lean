@@ -60,6 +60,21 @@ private def version : String := "2016-11-15"
 private def items (parent : Text.XML.Element) (name : String) : List Text.XML.Element :=
   Query.listItems parent name "item"
 
+/-- Every instance `DescribeInstances` reports for `params`, every page.
+
+    `MaxResults` (5–1000) in, `nextToken` out (botocore, `ec2/2016-11-15`,
+    read 2026-09-29). EC2 strongly recommends paginated requests, and with a
+    filter a page may hold none of the matches while a later one does — so a
+    tag-filtered lookup follows the token exactly as the unfiltered listing
+    does. Not for an `InstanceId` lookup: EC2 refuses `MaxResults` alongside
+    instance ids, and one id names at most one instance. -/
+private def describeInstances (creds : Credentials) (ep : Endpoint)
+    (params : List (String × String) := []) : IO (List Text.XML.Element) := do
+  let roots ← Query.callAll creds ep "DescribeInstances" version
+    (params ++ [("MaxResults", "1000")]) "NextToken" (·.childText "nextToken")
+  return roots.flatMap fun root =>
+    (items root "reservationSet").flatMap fun r => items r "instancesSet"
+
 /-- Every tag on an EC2 object, as key/value pairs. Both the instance and the
     security group need it, and they are in different namespaces, so it lives
     at file scope rather than being written twice. -/
@@ -109,15 +124,16 @@ namespace Image
     `none` means the filter matched nothing, which in a region Amazon publishes
     to should not happen; the caller decides whether that is fatal. -/
 def latestAl2023 (creds : Credentials) (ep : Endpoint) : IO (Option String) := do
-  let root ← Query.call creds ep "DescribeImages" version
+  -- Every page: the newest image must be seen to be taken.
+  let roots ← Query.callAll creds ep "DescribeImages" version
     [ ("Owner.1", "amazon")
     , ("Filter.1.Name", "name")
     , ("Filter.1.Value.1", "al2023-ami-2023.*-kernel-*-x86_64")
     , ("Filter.2.Name", "state")
     , ("Filter.2.Value.1", "available")
     , ("Filter.3.Name", "architecture")
-    , ("Filter.3.Value.1", "x86_64") ]
-  let images := (items root "imagesSet").filterMap fun i =>
+    , ("Filter.3.Value.1", "x86_64") ] "NextToken" (·.childText "nextToken")
+  let images := (roots.flatMap (items · "imagesSet")).filterMap fun i =>
     match i.childText "imageId", i.childText "creationDate" with
     | some id, some created => some (created, id)
     | _,       _            => none
@@ -134,8 +150,11 @@ namespace SecurityGroup
 
 /-- Every group the credentials can see, as `(name, id, vpcId)`. -/
 def list (creds : Credentials) (ep : Endpoint) : IO (List (String × String × String)) := do
-  let root ← Query.call creds ep "DescribeSecurityGroups" version
-  return (items root "securityGroupInfo").filterMap fun g =>
+  -- Every page. Unpaginated, EC2 returns every group; the token is followed
+  -- regardless, so the listing is complete whichever way EC2 answers.
+  let roots ← Query.callAll creds ep "DescribeSecurityGroups" version [] "NextToken"
+    (·.childText "nextToken")
+  return (roots.flatMap (items · "securityGroupInfo")).filterMap fun g =>
     match g.childText "groupName" with
     | some n => some (n, (g.childText "groupId").getD "", (g.childText "vpcId").getD "")
     | none   => none
@@ -327,8 +346,7 @@ private def nameTag (i : Text.XML.Element) : Option String :=
     something that is genuinely gone. -/
 def list (creds : Credentials) (ep : Endpoint) :
     IO (List (String × String × String × String)) := do
-  let root ← Query.call creds ep "DescribeInstances" version
-  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
+  let instances ← describeInstances creds ep
   return instances.filterMap fun i =>
     let state := match i.child "instanceState" with
       | some st => (st.childText "name").getD ""
@@ -347,9 +365,8 @@ def list (creds : Credentials) (ep : Endpoint) :
     count" rule in one place, next to `list`'s copy of the same reasoning. -/
 def byName (creds : Credentials) (ep : Endpoint) (name : String) :
     IO (Option (String × String × String)) := do
-  let root ← Query.call creds ep "DescribeInstances" version
+  let instances ← describeInstances creds ep
     [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
-  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
   return instances.findSome? fun i =>
     let state := match i.child "instanceState" with
       | some st => (st.childText "name").getD ""
@@ -363,9 +380,8 @@ def byName (creds : Credentials) (ep : Endpoint) (name : String) :
     spec references it. -/
 def read (creds : Credentials) (ep : Endpoint) (name : String) :
     IO (String × String × String × Partial String × Partial String) := do
-  let root ← Query.call creds ep "DescribeInstances" version
+  let instances ← describeInstances creds ep
     [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
-  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
   let live := instances.filter fun i =>
     match i.child "instanceState" with
     | some st => (st.childText "name").getD "" != "terminated"
@@ -392,9 +408,8 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
     at the `Live.lean` call site instead of collapsed here. -/
 def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
     IO Evidence := do
-  let root ← Query.call creds ep "DescribeInstances" version
+  let instances ← describeInstances creds ep
     [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
-  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
   let live := instances.filter fun i =>
     match i.child "instanceState" with
     | some st => (st.childText "name").getD "" != "terminated"
@@ -409,9 +424,8 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
     marker, is left alone. -/
 def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) :
     IO Unit := do
-  let root ← Query.call creds ep "DescribeInstances" version
+  let instances ← describeInstances creds ep
     [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", name)]
-  let instances := (items root "reservationSet").flatMap fun r => items r "instancesSet"
   let live := instances.filter fun i =>
     match i.child "instanceState" with
     | some st => (st.childText "name").getD "" != "terminated"

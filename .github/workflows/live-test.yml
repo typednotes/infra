@@ -44,10 +44,6 @@ permissions:
 jobs:
   live:
     runs-on: ubuntu-24.04
-    env:
-      # Empty for the ordinary sequence; `kubernetes` selects the cluster leg
-      # (`lake test -- <provider> kubernetes`, `test/Live.lean`).
-      LEG_ARG: ${{ inputs.leg == 'kubernetes' && 'kubernetes' || '' }}
     # The environment is load-bearing, not decorative. The AWS role's trust
     # policy pins `sub` to `repo:typednotes/infra:environment:production`, so
     # the OIDC token only carries that claim when the job declares this — and
@@ -61,7 +57,13 @@ jobs:
     # the compensating control for the breadth of the policy, and it is the one
     # thing this file cannot enforce for itself.
     environment: production
+    # One `env:` block per job. A second one is a duplicate YAML key, which
+    # makes the whole file invalid: GitHub then records a zero-second failed
+    # run of it on every push, and refuses to dispatch it at all.
     env:
+      # Empty for the ordinary sequence; `kubernetes` selects the cluster leg
+      # (`lake test -- <provider> kubernetes`, `test/Live.lean`).
+      LEG_ARG: ${{ inputs.leg == 'kubernetes' && 'kubernetes' || '' }}
       # The value the test secret is created with. Not a secret in any real
       # sense — it exists for about a minute in a resource named
       # `ci-tests-infra-*` and is then deleted — but it is written here rather

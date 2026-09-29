@@ -328,11 +328,15 @@ Enumerated in `docs/coverage.md`'s limits, not left silent.
   `kubectl apply` last-applied reading). Defaults compare in their wire form
   (a `targetPort` of `0` is the port; an empty selector is `app = <name>`), so
   a declaration that spells a default out converges with one that does not.
-- **Numbers are re-encoded.** A manifest goes to the API server through
-  linen's JSON encoder, which writes a non-integer number with six significant
-  digits (`TODO.md`, "Watch"). Every number a typed shape writes is an
-  integer; a raw manifest holding a fractional one would be rounded — write
-  it as a string where Kubernetes accepts one (a quantity, `"0.5"`).
+- **Numbers are re-encoded, and never changed.** A manifest goes to the API
+  server through linen's JSON encoder, which writes a non-integer number with
+  six digits after the point — `1e-7` as `0.000000`. Every number a typed
+  shape writes is an integer; a raw manifest holding a number the encoder
+  would change is refused by `kubernetesIsSound` at compile time, and any
+  request body holding one is refused before it is sent
+  (`Infra.Core.JsonExact`, 0.20.1). One the encoder keeps — `0.5` — passes.
+  Write the others as a string where Kubernetes accepts one (a quantity,
+  `"1e-7"`), or as an integer in smaller units.
 - **Delete** is `propagationPolicy: Background`: the garbage collector takes
   the object's children. An object whose cluster the cloud no longer lists is
   gone with it, which is success.

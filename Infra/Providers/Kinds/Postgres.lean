@@ -65,9 +65,9 @@ def fetchMasterPassword (provider : ProviderId) (creds : Credentials) (secretNam
   | .scaleway =>
     -- Scaleway returns the value base64-encoded from a versioned endpoint.
     let pfx := Scaleway.regionalPrefix "secret-manager" "v1beta1" creds.region
-    let listing ← Scaleway.call creds "GET" (pfx ++ "/secrets")
-      (query := [("project_id", ← creds.requireProject)])
-    match (arrayField listing "secrets").find? (fun s => s.lookupText "name" == some secretName) with
+    let listing ← Scaleway.listAll creds "scaleway secrets" (pfx ++ "/secrets") "secrets"
+      (query := [("project_id", ← creds.requireProject), ("name", secretName)])
+    match listing.find? (fun s => s.lookupText "name" == some secretName) with
     | none => throw (IO.userError s!"scaleway secrets: no secret named '{secretName}'")
     | some s =>
       let id := (s.lookupText "id").getD ""
@@ -92,9 +92,12 @@ private def instances (root : Text.XML.Element) (result : String) : List Text.XM
   | none   => []
   | some r => Query.listItems r "DBInstances" "DBInstance"
 
+/-- Every instance, every page: `Marker` both ways, 100 a page by default
+    (botocore, `rds/2014-10-31`, read 2026-09-29). -/
 def list (creds : Credentials) (ep : Endpoint) : IO (List (String × String)) := do
-  let root ← Query.call creds ep "DescribeDBInstances" version
-  return (instances root "DescribeDBInstancesResult").filterMap fun i =>
+  let roots ← Query.callAll creds ep "DescribeDBInstances" version [] "Marker" fun root =>
+    (root.child "DescribeDBInstancesResult").bind (·.childText "Marker")
+  return (roots.flatMap (instances · "DescribeDBInstancesResult")).filterMap fun i =>
     match i.childText "DBInstanceIdentifier" with
     | some n =>
       let host := match i.child "Endpoint" with
@@ -211,9 +214,10 @@ private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "rdb" "v1" region
 
 private def listRaw (creds : Credentials) : IO (List (String × String × String × List String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/instances")
+  let instances ← Scaleway.listAll creds "scaleway rdb instances"
+      (prefix' creds.region ++ "/instances") "instances"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "instances").filterMap fun i =>
+  return instances.filterMap fun i =>
     match i.lookupText "name", i.lookupText "id" with
     | some n, some id =>
       let host := match i.lookup "endpoint" with
@@ -411,9 +415,9 @@ private def hostPortOfEndpoint (s : String) : String :=
     narrowed, and a fleet must not manage another project's databases. -/
 private def listRaw (creds : Credentials) : IO (List (String × String × String)) := do
   let project ← creds.requireProject
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/databases")
-    (query := [("project_id", project)])
-  return (arrayField reply "databases").filterMap fun d =>
+  let databases ← Scaleway.listAll creds "scaleway serverless sql databases"
+    (prefix' creds.region ++ "/databases") "databases" (query := [("project_id", project)])
+  return databases.filterMap fun d =>
     match d.lookupText "name", d.lookupText "id" with
     | some n, some id =>
         some (n, id, hostPortOfEndpoint ((d.lookupText "endpoint").getD ""))

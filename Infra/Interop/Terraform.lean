@@ -1,6 +1,7 @@
 import Infra.Core.Engine
 import Infra.Core.Region
 import Lean.Data.Json
+import Infra.Core.JsonExact
 
 /-
   Terraform / OpenTofu interoperability, in both directions.
@@ -281,9 +282,12 @@ its id by hand"])
         match Infra.Specs.renderManifest n shape (markerKey, "<fleet name>")
             (fun sec => s!"<secret {sec}>") with
         | .ok v =>
-          [.raw "manifest" s!"jsondecode({quote (Data.Json.Encode.encode v)})"]
-          ++ (if shape.secretNames.isEmpty then [] else
-              [.missing "env" "secret-sourced values are placeholders — wire the secrets up \
+          match Infra.Core.JsonExact.encodeExact "manifest" v with
+          | .error e => [.missing "manifest" e]
+          | .ok text =>
+            [.raw "manifest" s!"jsondecode({quote text})"]
+            ++ (if shape.secretNames.isEmpty then [] else
+                [.missing "env" "secret-sourced values are placeholders — wire the secrets up \
 in Terraform yourself"])
         | .error e => [.missing "manifest" e]
     | _, _ => [.missing "manifest" "computed — resolve by hand"]

@@ -57,9 +57,9 @@ def globalPrefix (product version : String) : String :=
     URL, where it could reach a proxy log. -/
 def call (creds : Credentials) (method path : String)
     (query : Query := []) (payload : Option Value := none) : IO Value := do
-  let body := match payload with
-    | some v => (Data.Json.Encode.encode v).toUTF8
-    | none   => ByteArray.empty
+  let body ← match payload with
+    | some v => Http.jsonBody s!"scaleway {method} {path}" v
+    | none   => pure ByteArray.empty
   let headers :=
     ("X-Auth-Token", creds.secretKey)
     :: (if body.isEmpty then [] else [("Content-Type", "application/json")])
@@ -82,6 +82,66 @@ def call (creds : Credentials) (method path : String)
   match Data.Json.Decode.decode text with
   | .ok v    => return v
   | .error m => throw (IO.userError s!"scaleway {method} {path}: malformed JSON response: {m}")
+
+-- ── Listing every page ──
+
+/-- The page size every listing asks for. Scaleway's list endpoints default to
+    a smaller page (commonly 20 or 50), and the stop rule below does not depend
+    on the server honouring this: it counts what actually came back. -/
+def listPageSize : Nat := 100
+
+/-- After a page: the next `(page, seen)` to fetch, or `none` if that was the
+    last. `returned` is how many items the page held; `total` is the reply's
+    `total_count`.
+
+    The rule is the generated SDK's, `scw.Client.doListAll`
+    (`scaleway-sdk-go`, `scw/client.go`, read 2026-09-29): pages are 1-based,
+    an empty page ends the listing, and otherwise the page count comes from
+    `total_count` against the items actually returned — not against the page
+    size asked for, which a server may cap below the request. Without a
+    `total_count` (no Scaleway listing omits it today) the listing runs until
+    an empty page, which costs one call and cannot stop early. -/
+def nextPage (page seen returned : Nat) (total : Option Nat) : Option (Nat × Nat) :=
+  let seen' := seen + returned
+  if returned == 0 then none
+  else match total with
+    | some t => if seen' ≥ t then none else some (page + 1, seen')
+    | none   => some (page + 1, seen')
+
+-- A full last page with a total: stop exactly at the total.
+#guard nextPage 1 0 100 (some 100) = none
+#guard nextPage 1 0 100 (some 101) = some (2, 100)
+#guard nextPage 2 100 1 (some 101) = none
+-- A server capping `page_size` at 50: the total, not the request, decides.
+#guard nextPage 1 0 50 (some 120) = some (2, 50)
+#guard nextPage 2 50 50 (some 120) = some (3, 100)
+#guard nextPage 3 100 20 (some 120) = none
+-- An empty page always ends it, total or not; no total runs to one.
+#guard nextPage 4 120 0 (some 500) = none
+#guard nextPage 1 0 7 none = some (2, 7)
+
+/-- Every item of a paged Scaleway listing: `GET path` with `query`, the items
+    read from `field`, through `Http.listAll` — which fails rather than
+    returning a truncated listing. `what` names the listing in that failure.
+
+    Every Scaleway listing in infra goes through here. Before 0.20.1 most read
+    one page at the server's default size, so a project with more than a page
+    of containers, secrets or policies was read as having only the first ones:
+    the planner proposed creating what existed, and the orphan scan could not
+    see what it should destroy. -/
+def listAll (creds : Credentials) (what path field : String) (query : Query := []) :
+    IO (List Value) :=
+  Http.listAll what fun token => do
+    -- The continuation carries the page to fetch and how many items have been
+    -- seen so far, which the stop rule needs.
+    let (page, seen) := match token.map (·.splitOn ":") with
+      | some [p, s] => (p.toNat?.getD 1, s.toNat?.getD 0)
+      | _           => (1, 0)
+    let reply ← call creds "GET" path
+      (query ++ [("page", some (toString page)), ("page_size", some (toString listPageSize))])
+    let items := JsonRead.arrayField reply field
+    let next := nextPage page seen items.length (reply.lookupNat "total_count")
+    return (items, next.map fun (p, s) => s!"{p}:{s}")
 
 -- ── Reading replies ──
 

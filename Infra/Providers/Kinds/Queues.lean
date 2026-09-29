@@ -41,10 +41,19 @@ private def target (op : String) : String := s!"AmazonSQS.{op}"
 def nameOfUrl (url : String) : String :=
   (url.splitOn "/").getLast?.getD url
 
-/-- Every queue the credentials can see, as `(name, url)`. -/
+/-- Every queue the credentials can see, as `(name, url)`, every page.
+
+    `NextToken` in and out, limit `MaxResults` — botocore's `sqs/2012-11-05`
+    `paginators-1.json`, read 2026-09-29. SQS returns at most 1000 URLs to a
+    request without `MaxResults` and then *no* token at all, so the limit is
+    what makes the listing pageable: without it a thousand-and-first queue is
+    silently not there. Scaleway's SQS-compatible API takes the same shape. -/
 def listQueues (creds : Credentials) (ep : Endpoint) : IO (List (String × String)) := do
-  let reply ← Json.call creds ep (target "ListQueues") (.object []) protocolVersion
-  let urls := stringArrayField reply "QueueUrls"
+  let urls ← Http.listAll s!"sqs queues ({ep.host})" fun token => do
+    let reply ← Json.call creds ep (target "ListQueues")
+      (.object ([("MaxResults", .number 1000)]
+        ++ (token.map fun t => [("NextToken", .string t)]).getD [])) protocolVersion
+    return (stringArrayField reply "QueueUrls", reply.lookupText "NextToken")
   return urls.map fun u => (nameOfUrl u, u)
 
 /-- A queue's URL, which most operations need in place of its name. -/

@@ -34,7 +34,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.20.0 covers
+## What 0.20.1 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -55,8 +55,12 @@ a cluster that stays, teardown; AWS's leg is prepared and not yet run
 transport, signing and error classification — and deletes its own copies.
 The first live Kubernetes runs found, among other things, that Kapsule's
 delete cascade removed the declared Private Network; it no longer cascades.
-One pre-existing defect is recorded rather than fixed: most AWS and Scaleway
-listings read a single page (`docs/coverage.md`, known defects).
+
+**New in 0.20.1: every listing reads every page**, on all three clouds, and
+fails rather than return a prefix — before, most AWS and Scaleway listings
+read one, so past a page an orphan was invisible. A request body holding a
+number the JSON encoder would change is refused instead of sent, and a
+project scaffolded by 0.20.0, which did not build, builds again.
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -135,7 +139,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.20.0"
+rev = "v0.20.1"
 ```
 
 Then:

@@ -79,6 +79,21 @@ jobs:
       # cheap to check offline, so it is checked.
       - name: Check the AWS CI policy document is well-formed
         run: ./ci/check-aws-policy.sh
+      # A workflow file GitHub cannot parse fails silently from here: it shows
+      # up only as a zero-second failed run on push. Linux only — the files
+      # are the same on both legs. Pinned, and checked against the release's
+      # own checksum list, because it is a binary fetched at run time.
+      - name: Check the workflow files are valid (actionlint)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          v=1.7.7
+          sha=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          tgz="actionlint_${v}_linux_amd64.tar.gz"
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${v}/${tgz}" -o "$RUNNER_TEMP/$tgz"
+          echo "$sha  $RUNNER_TEMP/$tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tgz" -C "$RUNNER_TEMP" actionlint
+          ./ci/check-workflows.sh "$RUNNER_TEMP/actionlint"
       # An unscoped Scaleway listing is evaluated against the whole
       # organization, so it both breaks a project-scoped credential and returns
       # other projects' resources — which `pullEntries` will match to a fleet

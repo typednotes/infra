@@ -20,6 +20,19 @@ are handled — AWS answers with an XML `<Error>`, Scaleway with JSON — and an
 unparseable body keeps its text rather than vanishing. "403" alone is not a
 diagnosis; `SignatureDoesNotMatch` is.
 
+Two more things every call shares (0.20.1):
+
+- **Every listing reads every page**, through `Http.listAll`, which fails
+  rather than return a prefix — a truncated listing read as complete plans
+  creating what exists and misses orphans. Scaleway listings go through
+  `Scaleway.listAll` (the generated SDK's stop rule), the AWS Query-protocol
+  ones through `Query.callAll`, and the rest follow their service's own
+  continuation, each cited against botocore's `paginators-1.json` or the
+  discovery document where it is written.
+- **Every JSON body is encoded exactly or not sent** (`Http.jsonBody`,
+  `Infra.Core.JsonExact`): a number linen's encoder would change is refused
+  with its value named.
+
 ## Wire dialects
 
 | Dialect | Shape | Used by |

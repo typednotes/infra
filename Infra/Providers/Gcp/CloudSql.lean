@@ -66,10 +66,15 @@ private def instancePath (project name : String) : String :=
     asserted — see `read`. -/
 def builtinUser : String := "postgres"
 
-/-- Every instance in the project, with its primary address. -/
+/-- Every instance in the project, with its primary address, every page:
+    `pageToken` in, `nextPageToken` out (the `sqladmin` v1beta4 discovery
+    document, revision 20260908, read 2026-09-29). -/
 def list (creds : Credentials) (project : String) : IO (List (String × String)) := do
-  let reply ← Gcp.call creds "GET" host (instances project)
-  return (arrayField reply "items").filterMap fun i =>
+  let items ← Http.listAll "gcp cloud sql instances" fun token => do
+    let reply ← Gcp.call creds "GET" host (instances project)
+      ((token.map fun t => [("pageToken", some t)]).getD [])
+    return (arrayField reply "items", reply.lookupText "nextPageToken")
+  return items.filterMap fun i =>
     (i.lookupText "name").map fun n =>
       let ip := (arrayField i "ipAddresses").findSome? fun a =>
         if a.lookupText "type" == some "PRIMARY" then a.lookupText "ipAddress" else none

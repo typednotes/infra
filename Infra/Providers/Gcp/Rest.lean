@@ -51,9 +51,9 @@ service-account key file, which names its own project")
 def call (creds : Credentials) (method host path : String)
     (query : Query := []) (payload : Option Value := none) : IO Value := do
   let token ← creds.requireToken .gcp
-  let body := match payload with
-    | some v => (Data.Json.Encode.encode v).toUTF8
-    | none   => ByteArray.empty
+  let body ← match payload with
+    | some v => Http.jsonBody s!"gcp {method} {host}{path}" v
+    | none   => pure ByteArray.empty
   let headers :=
     ("Authorization", "Bearer " ++ token)
     :: (if body.isEmpty then [] else [("Content-Type", "application/json")])

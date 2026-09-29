@@ -1,6 +1,7 @@
 import Linen.Data.Json.Encode
 import Linen.Data.Json.Decode
 import Lean.Data.Json
+import Infra.Core.JsonExact
 
 /-
   The pure half of the two Kubernetes kinds: what an in-cluster object is,
@@ -236,7 +237,9 @@ service's must also start with a letter)"
 #guard (objectNameProblem "main/default/service/1db" (.service 5432)).isSome
 
 /-- What is wrong with a shape on its own, if anything: ports in range, env
-    names present, a raw manifest that is a JSON object. -/
+    names present, a raw manifest that is a JSON object whose numbers survive
+    encoding (`Infra.Core.JsonExact` — a manifest is re-encoded to be sent,
+    and linen's encoder would change a number like `1e-7`). -/
 def ObjectShape.problem : ObjectShape → Option String
   | .deployment image _ ports env | .statefulSet image _ ports env _ =>
     if image.isEmpty then some "the image is empty"
@@ -251,9 +254,18 @@ def ObjectShape.problem : ObjectShape → Option String
   | .raw av k m =>
     if av.isEmpty || k.isEmpty then some "a raw object needs its apiVersion and kind"
     else match Data.Json.Decode.decode m with
-      | .ok (.object _) => none
+      | .ok v@(.object _) =>
+        match Infra.Core.JsonExact.lossyNumbers v with
+        | []     => none
+        | n :: _ => some s!"a raw manifest holds the number {n}, which would be sent as \
+{Data.Json.Encode.renderNumber n} — write it as a string, or as an integer in smaller units"
       | .ok _           => some "a raw manifest must be a JSON object"
       | .error e        => some s!"a raw manifest is not JSON: {e}"
+
+#guard (ObjectShape.raw "v1" "ConfigMap" "{\"data\": {\"a\": \"1e-7\"}, \"n\": 3}").problem = none
+#guard (ObjectShape.raw "v1" "ConfigMap" "{\"spec\": {\"ratio\": 0.5}}").problem = none
+-- A number the encoder would change is refused before any run.
+#guard (ObjectShape.raw "v1" "ConfigMap" "{\"spec\": {\"ratio\": 1e-7}}").problem.isSome
 
 /-! ## Rendering the manifest -/
 

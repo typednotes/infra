@@ -1,4 +1,4 @@
-# Coverage in 0.20.0
+# Coverage in 0.20.1
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-29.
@@ -1343,25 +1343,36 @@ where a defect is written down while it stands and deleted when it goes. What
 is left there is soft spots — proof obligations not discharged, and two
 mechanisms deliberately not built (an instance type is not checked against its
 region, a reference field is still an `Expr`) — rather than anything that
-misreports what it did to an account — with one exception, open:
+misreports what it did to an account.
 
-- **Most AWS and Scaleway listings read one page** (found 2026-09-29, open).
-  Ten listings follow their continuation and fail rather than truncate
-  (`Http.listAll`): the six GCP ones, Kapsule and EKS clusters, and the
-  in-cluster scan. About twenty-two that feed a backend's `list`, the orphan
-  scan, or the name-to-id lookups ownership and delete depend on make one
-  request: on AWS, S3 `ListBuckets`, SQS `ListQueues`, Secrets Manager
-  `ListSecrets`, Lambda, EC2 instances and security groups, IAM users, ECR,
-  RDS; on Scaleway, secrets, containers and functions (and both namespace
-  kinds), IAM applications (100 per page), registry namespaces, RDB and
-  Serverless SQL; on GCP, Cloud SQL and GKE. Scaleway's default page is
-  twenty. Past one page an orphan is invisible and a declared resource reads
-  as absent — a planned `CREATE` that collides. Per-listing detail and the
-  fix are `TODO.md`'s; until then, a project past one page of a kind is not
-  safely managed.
+The three that headed this list are closed. The first below is checked offline
+where it is pure and was exercised live, read-only, on all three clouds; the
+other two are checked offline:
 
-The two that headed this list are closed, and both closures are checked
-offline:
+- **Every listing reads every page** (0.20.1; the defect was found 2026-09-29).
+  Until then about twenty-two listings — on AWS, S3, SQS, Secrets Manager,
+  Lambda, EC2, IAM, ECR and RDS; on Scaleway, secrets, containers, functions
+  and both namespace kinds, IAM, registry namespaces, RDB and Serverless SQL;
+  on GCP, Cloud SQL — made one request, so past one page an orphan was
+  invisible and a declared resource read as absent. Every listing now goes
+  through `Http.listAll`, which fails rather than return a prefix: Scaleway's
+  through `Scaleway.listAll` (the generated SDK's stop rule, `nextPage`,
+  `#guard`ed), AWS's through each service's continuation as botocore's
+  `paginators-1.json` names it (`Query.callAll` for the Query-protocol
+  ones), GCP Cloud SQL through `pageToken`. The pass also found listings the
+  original enumeration missed — Scaleway IAM API keys, Private Networks and
+  the SQS credential's shared-copy lookup; AWS IAM `ListUserTags` (an
+  ownership read) and EC2 `DescribeImages`/`DescribeVpcs`/`DescribeSubnets`.
+  GKE's cluster listing has no pages, but reports `missingZones`
+  when it is incomplete, and a non-empty one now fails it. Four reads are
+  whole by the API's own shape and stay one call: Scaleway function runtimes
+  and Kapsule versions, RDS `ListTagsForResource`, GCP service-account keys.
+  The listings were called, read-only, against real AWS, Scaleway and GCP
+  accounts on 2026-09-29 — all but four reached only from a create or a
+  secret read (EC2 `DescribeVpcs`/`DescribeSubnets`, Kapsule Private
+  Networks, the Scaleway secret-by-name lookups), which run on the next live
+  leg. No account held more than a page, so the multi-page path itself is
+  covered by the guards, not by those calls.
 
 - **An orphan's references are still not recorded, and no longer need to be.**
   An orphan is a name and a region, not dependency edges, so orphan

@@ -45,12 +45,27 @@ private def readSubresource (creds : Credentials) (ep : Endpoint)
   | .ok e    => return some e
   | .error _ => return none      -- an empty body is a legitimate "unset"
 
-/-- Bucket names, from `ListAllMyBucketsResult`. -/
-def listBuckets (creds : Credentials) (ep : Endpoint) : IO (List String) := do
-  let root ← S3.callXml creds ep "GET"
-  match root.child "Buckets" with
-  | none    => return []
-  | some bs => return (bs.named "Bucket").filterMap (·.childText "Name")
+/-- Bucket names, from `ListAllMyBucketsResult`, every page.
+
+    `ContinuationToken` in, `continuation-token` out, limit `max-buckets`
+    (1–10000) — botocore's `s3/2006-03-01` `paginators-1.json` and
+    `service-2.json`, read 2026-09-29. AWS supports an unpaginated
+    `ListBuckets` only for accounts on the default bucket quota, so on AWS the
+    limit is sent (`maxBuckets`) and the token followed. Scaleway's
+    S3-compatible dialect does not document `max-buckets`, so it is not sent
+    there (`maxBuckets := none`); a token is still followed if one comes back,
+    which costs nothing if none ever does. -/
+def listBuckets (creds : Credentials) (ep : Endpoint) (maxBuckets : Option Nat := none) :
+    IO (List String) :=
+  Http.listAll s!"s3 buckets ({ep.host})" fun token => do
+    let query : Query :=
+      (maxBuckets.map fun n => [("max-buckets", some (toString n))]).getD []
+      ++ (token.map fun t => [("continuation-token", some t)]).getD []
+    let root ← S3.callXml creds ep "GET" (query := query)
+    let names := match root.child "Buckets" with
+      | none    => []
+      | some bs => (bs.named "Bucket").filterMap (·.childText "Name")
+    return (names, root.childText "ContinuationToken")
 
 /-- Whether versioning is enabled. `unknown` when the bucket reports no
     versioning document at all, which is distinct from reporting `Suspended`. -/

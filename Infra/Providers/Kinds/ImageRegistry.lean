@@ -46,10 +46,17 @@ namespace Ecr
 
 private def target (op : String) : String := s!"AmazonEC2ContainerRegistry_V20150921.{op}"
 
-/-- Every repository, as `(name, uri)`. -/
+/-- Every repository, as `(name, uri)`, every page: `nextToken` both ways,
+    `maxResults` 1–1000, 100 a page without it (botocore, `ecr/2015-09-21`,
+    read 2026-09-29). Not with `repositoryNames`, which ECR refuses alongside
+    `maxResults` — the by-name reads below name one repository. -/
 def list (creds : Credentials) (ep : Endpoint) : IO (List (String × String)) := do
-  let reply ← Json.call creds ep (target "DescribeRepositories") (.object [])
-  return (arrayField reply "repositories").filterMap fun r =>
+  let repos ← Http.listAll "ecr repositories" fun token => do
+    let reply ← Json.call creds ep (target "DescribeRepositories")
+      (.object ([("maxResults", .number 1000)]
+        ++ (token.map fun t => [("nextToken", .string t)]).getD []))
+    return (arrayField reply "repositories", reply.lookupText "nextToken")
+  return repos.filterMap fun r =>
     match r.lookupText "repositoryName", r.lookupText "repositoryUri" with
     | some n, some u => some (n, u)
     | some n, none   => some (n, "")
@@ -154,9 +161,10 @@ private def prefix' (region : String) : String :=
 
 /-- Every namespace, as `(name, id, endpoint)`. -/
 def listRaw (creds : Credentials) : IO (List (String × String × String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  let namespaces ← Scaleway.listAll creds "scaleway registry namespaces"
+      (prefix' creds.region ++ "/namespaces") "namespaces"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "namespaces").filterMap fun n =>
+  return namespaces.filterMap fun n =>
     match n.lookupText "name", n.lookupText "id" with
     | some nm, some id => some (nm, id, (n.lookupText "endpoint").getD "")
     | _,       _       => none

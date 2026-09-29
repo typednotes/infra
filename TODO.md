@@ -9,10 +9,11 @@ Pending moves into linen are tracked in `CHANGELOG.md` under `[Unreleased]`
 (see `AGENTS.md`, "## Linen"); this file is the wider list, and items that
 become moves should be recorded there too.
 
-**Status 2026-09-29.** Done, in 0.20.0, which pins linen **v1.8.0** — tagged
-locally in `../linen` and **not yet pushed**: the tag must reach the remote
-before infra's commits do, or infra's CI cannot resolve its `require`. What is
-still open is below, unchecked.
+**Status 2026-09-29.** 0.20.0 pins linen **v1.8.0** (on the remote). 0.20.1
+closes the rest that is infra's own: every listing pages, unsupported SQS
+operations are values, and lossy JSON numbers are refused. What is still open
+is below, unchecked — each waits on another repository or on a change to a
+cloud account.
 
 ## After the bump
 
@@ -41,11 +42,9 @@ still open is below, unchecked.
   SigV4 is `Cloud.Auth`; `readsAsAbsent`/`readsAsRefused` classify with
   `Cloud.classify`; the GCP listings page through `Cloud.paginate` and fail
   instead of truncating; no `String.fromUTF8!` is left in library code.
-  - [ ] **Unsupported operations as values**: `Scaleway/Sqs.lean`'s
-    `credentialsFor` still raises for GCP, and `Aws/Protocols.lean` still
-    signs GCP queues against a `.invalid` host, where
-    `Cloud.Error.Class.unsupported` would say so as a value. Behaviour is
-    correct (both fail loudly); only the shape differs.
+  - [x] **Unsupported operations as values** (0.20.1): `sqsEndpoint` and
+    `credentialsFor` take an `SqsCloud` (`aws | scaleway`), so GCP cannot
+    be asked; `SqsCloud.of` answers it with `Cloud.Error.unsupported`.
 - [x] **Terminal colour**: `Infra/Core/Ansi.lean` deleted for linen's
   `System.Console.Ansi` (0.20.0).
 
@@ -62,42 +61,31 @@ still open is below, unchecked.
 
 ## Found on the way
 
-- [ ] **Most AWS and Scaleway listings read one page** (and GCP's Cloud SQL
-  and GKE). Recorded in `docs/coverage.md`'s known defects and
-  `docs/diff-semantics.md`'s soft spots. Each needs its provider's
-  continuation, checked against the generated SDK rather than recalled:
-  - AWS — S3 `ListBuckets` (`Kinds/ObjectStore.lean:49`, shared with
-    Scaleway), SQS `ListQueues` (`Kinds/Queues.lean:45`, shared), Secrets
-    Manager `ListSecrets` (`Kinds/Secrets.lean:188`), Lambda
-    (`Kinds/Compute.lean:56`), EC2 `DescribeInstances` and
-    `DescribeSecurityGroups` (`Kinds/Ec2.lean:328`, `:136`), IAM `ListUsers`,
-    `ListAttachedUserPolicies`, `ListAccessKeys` (`Kinds/Iam.lean:80`, `:89`,
-    `:261`), ECR (`Kinds/ImageRegistry.lean:50`), RDS
-    (`Kinds/Postgres.lean:95`), EKS node groups (`Kinds/Kubernetes.lean:467`);
-  - Scaleway — secrets (`Kinds/Secrets.lean:316`, `:157`;
-    `Kinds/Postgres.lean:68`), containers and container namespaces
-    (`Kinds/Compute.lean:185`, `:340`, `:209`, `:439`), functions and
-    function namespaces (`:490`, `:498`, `:518`, `:726`), IAM applications,
-    policies and rules (`Kinds/Iam.lean:322`, `:392`, `:401`), registry
-    namespaces (`Kinds/ImageRegistry.lean:156`), RDB
-    (`Kinds/Postgres.lean:213`), Serverless SQL (`:412`), Kapsule pools
-    (`Kinds/Kubernetes.lean:233`), SQS credentials (`Scaleway/Sqs.lean:174`);
-  - GCP — Cloud SQL (`Gcp/CloudSql.lean:70`), GKE
-    (`Kinds/Kubernetes.lean:674`).
-  All should go through `Http.listAll`, which already fails rather than
-  truncates.
+- [x] **Every listing reads every page** (0.20.1). All of the call sites
+  listed here, and seven more the list had missed, go through `Http.listAll`
+  — `Scaleway.listAll`, `Query.callAll`, or the service's own continuation,
+  each checked against the generated SDK or discovery document. GKE's
+  cluster listing has no pages; `missingZones` fails it. `docs/coverage.md`,
+  "Known defects", records the closure.
 - [x] **Kapsule's delete deleted the declared Private Network**
   (`with_additional_resources=true`); now `false`, and the Scaleway
   Kubernetes leg asserts the network survives (0.20.0).
 
+- [x] **The 0.20.0 CI failures** (0.20.1): a scaffolded project did not
+  build (its catalogue's Kapsule cluster had no `network`), and
+  `live-test.yml` held a duplicate `env:` key, which made it invalid.
+  `ci/check-workflows.sh` (actionlint) now runs in CI.
+
 ## Watch
 
-- [ ] **JSON number precision.** linen's `Data.Json.Encode` writes non-integer
-  numbers with 6 significant digits. The GCP IAM read-modify-write
-  (`Gcp/Iam.lean:204`) re-encodes whole policies — safe only while every number
-  in them is an integer. The Kubernetes client re-encodes manifests too
-  (`Kube.Client.apply`): a raw manifest with a non-integer number would be
-  rounded — noted in `docs/kubernetes.md`, "Apply semantics".
+- [x] **JSON number precision** (0.20.1). Worse than rounding: linen writes a
+  non-integer with six digits after the point, so `1e-7` was sent as
+  `0.000000`. Every request body and the Terraform export now go through
+  `Infra.Core.JsonExact`, which refuses such a number and names it; a raw
+  manifest holding one fails `kubernetesIsSound` at compile time.
+  - [ ] **linen's renderer** should write the shortest representation that
+    reads back as the same `Float` (`CHANGELOG.md`, `[Unreleased]`). Not
+    changed from here: a linen session was active.
 
 ## Kubernetes
 

@@ -10,56 +10,81 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Fixed: the page had been advertising 0.9.0 for two releases
+Pending in `linen`, not a move: **`Data.Json.Encode.renderNumber` should
+round-trip.** It writes a non-integer through `Float.toString`, six digits
+after the point, so `1e-7` is sent as `0.000000`. infra refuses such a body
+(`Infra.Core.JsonExact`) rather than send it; once linen renders the shortest
+representation that reads back as the same `Float`, `lossyNumbers` of every
+value is `[]` and the guard costs nothing. (Not changed from here: a linen
+session was active on 2026-09-29.)
 
-`site/index.html`'s "what's new" banner still read **0.9.0** — through 0.10.0,
-0.10.1 and into this release — and `README.md`'s "What 0.9.0 covers" heading
-with it. The README's *body* underneath it was accurate; only the heading was
-stale, which is the worst shape for this kind of drift, since nothing about
-reading the section suggests the number above it is wrong.
+## [0.20.1] — 2026-09-29
 
-Fixing the two strings is the small half. `ci/check-release-version.sh` did
-not know about either, because neither is a `rev = ` line — so the release
-workflow, which gates a tag on that script, passed v0.10.0 and v0.10.1 with
-the page announcing a release two behind. The script now checks **nine**
-places rather than seven, `AGENTS.md`'s checklist names them, and it says to
-read the list off the script rather than counting by hand.
+### Fixed: a project scaffolded by 0.20.0 did not build
 
-One marker moved the other way: `ci/README.md`'s "as of 0.10.0" on its live-
-fleet table is now a date. It records when somebody last checked the table,
-not which release it belongs to, and a version there would be one more thing
-every release has to remember for no benefit.
+`infra new`'s reference `Catalogue.lean` declared a Kapsule cluster without
+`network`, which 0.20.0 made required, so its own
+`#guard catalogue.plan.kubernetesIsSound` failed and a fresh project's
+`lake build` with it. CI's scaffold step caught it on both legs — which is why
+the `v0.20.0` tag has no GitHub Release: the release gate waits for a green
+CI run of the tag. The catalogue now names `network := "main-pn"`, with a
+comment that it is a reference to a network that must already exist.
 
-### Changed: `ci/` is bash, all of it
+### Fixed: the Live test workflow was not a valid workflow
 
-`check-aws-policy.py` and `check-scaleway-scoping.py` are now `.sh`, and the
-scaffold step's inline Python here-doc is bash too — so every check in this
-repository is one language, and `AGENTS.md` says so.
+`live-test.yml` gave its one job two `env:` keys. A duplicate key makes the
+file invalid, and GitHub says so only by recording a zero-second failed run of
+it on every push — for a workflow that never runs on a push — and by refusing
+to dispatch it. The two blocks are one. `ci/check-workflows.sh` now runs
+actionlint (1.7.7, pinned and checksummed) in CI; on the 0.20.0 file it
+reports `key "env" is duplicated in "live" job`.
 
-JSON is not a reason to reach for Python: `jq` is pre-installed on both runner
-images (ubuntu-24.04 ships 1.7, macos-15 ships 1.8.2), and the script checks
-for it rather than assuming, since a missing interpreter must not produce an
-empty report that reads as a pass.
+### Fixed: every listing reads every page
 
-Both rewrites were validated by running the old and new versions side by side
-over deliberately broken inputs and diffing, rather than by watching them both
-pass on the current tree — which proves nothing, as the first draft of the
-scoping check demonstrated by silently matching nothing and passing. That
-exercise found three defects that the happy path could not:
+The known defect recorded in 0.20.0 is gone. Every listing goes through
+`Http.listAll` and fails rather than return a prefix:
 
-- the scoping check sorted findings lexically, so line 196 was reported before
-  line 67;
-- the policy check crashed inside `jq` when `Statement` was an object rather
-  than a list, and reported the crash as "is not valid JSON";
-- and, in the process, that the **Python** version raised an uncaught
-  `AttributeError` on a `Statement` holding non-objects. The bash version
-  reports `statement 0: must be an object, found string`, so this is one
-  behaviour that is better rather than merely equivalent.
+- **Scaleway** — `Scaleway.listAll`, on the generated SDK's rule
+  (`scw.Client.doListAll`): 1-based pages, an empty page ends it, otherwise
+  `total_count` against the items actually returned. Secrets, containers,
+  functions and both namespace kinds, IAM applications, policies, rules and
+  API keys, registry namespaces, RDB, Serverless SQL, Kapsule clusters and
+  pools, Private Networks, and the SQS credentials — whose reply key is now
+  the SDK's `sqs_credentials` rather than two guesses.
+- **AWS** — each service's continuation as botocore's `paginators-1.json`
+  names it: S3 `ListBuckets` (`max-buckets` sent on AWS only), SQS
+  `ListQueues` (`MaxResults` sent — SQS returns no token without it), Secrets
+  Manager, Lambda, ECR, EKS node groups, and through `Query.callAll` EC2
+  instances, security groups, images, VPCs and subnets, IAM users, attached
+  policies, access keys and `ListUserTags`, and RDS.
+- **GCP** — Cloud SQL through `pageToken`. GKE's cluster listing has no pages
+  but reports `missingZones` when incomplete; a non-empty one fails it.
 
-The inline block loses `sed -i` along with Python: BSD sed reads the next
-argument as a backup suffix and GNU sed does not, which is the dialect split
-that put Python there in the first place. Writing to a temporary file and
-moving it over needs no dialect.
+The pass found listings `TODO.md`'s enumeration had missed: Scaleway IAM API
+keys, Private Networks and the SQS credential's shared-copy lookup; AWS
+`ListUserTags` (an ownership read), `DescribeImages`, `DescribeVpcs` and
+`DescribeSubnets`. The listings were exercised live and read-only on all
+three clouds, save four reached only from a create or a secret read
+(`docs/coverage.md`).
+
+### Fixed: a number the JSON encoder would change is refused, not sent
+
+linen writes a non-integer number with six digits after the point, so `1e-7`
+went to a cloud as `0.000000`. Every request body and the Terraform export
+are now encoded through `Infra.Core.JsonExact`, which refuses a value holding
+such a number and names it; a raw Kubernetes manifest holding one fails
+`kubernetesIsSound` at compile time. Numbers the encoder keeps (`0.5`,
+integers) pass. The renderer itself is linen's to fix — see `[Unreleased]`.
+
+### Changed: the SQS clients cannot be asked about GCP
+
+`Aws.Json.sqsEndpoint` and `Scaleway.Sqs.credentialsFor` take an `SqsCloud`
+(`aws | scaleway`) instead of a `ProviderId`. GCP's queues are Pub/Sub and
+never reached them, but each answered GCP anyway — one by raising, one with a
+`.invalid` host. `SqsCloud.of` is the one place GCP is answered, with linen's
+`Cloud.Error.unsupported`.
+
+Scaffolded projects pin `v0.20.1` (`infraRev`).
 
 ## [0.20.0] — 2026-09-29
 
@@ -955,6 +980,60 @@ thought to ask, and the value of the guard is that it need not be asked
 live again.
 
 ## [0.11.0] — 2026-09-20
+
+The two sections below were written under `[Unreleased]` and not moved when
+this release was cut; they shipped here, and 0.20.1 moved them.
+
+### Fixed: the page had been advertising 0.9.0 for two releases
+
+`site/index.html`'s "what's new" banner still read **0.9.0** — through 0.10.0,
+0.10.1 and into this release — and `README.md`'s "What 0.9.0 covers" heading
+with it. The README's *body* underneath it was accurate; only the heading was
+stale, which is the worst shape for this kind of drift, since nothing about
+reading the section suggests the number above it is wrong.
+
+Fixing the two strings is the small half. `ci/check-release-version.sh` did
+not know about either, because neither is a `rev = ` line — so the release
+workflow, which gates a tag on that script, passed v0.10.0 and v0.10.1 with
+the page announcing a release two behind. The script now checks **nine**
+places rather than seven, `AGENTS.md`'s checklist names them, and it says to
+read the list off the script rather than counting by hand.
+
+One marker moved the other way: `ci/README.md`'s "as of 0.10.0" on its live-
+fleet table is now a date. It records when somebody last checked the table,
+not which release it belongs to, and a version there would be one more thing
+every release has to remember for no benefit.
+
+### Changed: `ci/` is bash, all of it
+
+`check-aws-policy.py` and `check-scaleway-scoping.py` are now `.sh`, and the
+scaffold step's inline Python here-doc is bash too — so every check in this
+repository is one language, and `AGENTS.md` says so.
+
+JSON is not a reason to reach for Python: `jq` is pre-installed on both runner
+images (ubuntu-24.04 ships 1.7, macos-15 ships 1.8.2), and the script checks
+for it rather than assuming, since a missing interpreter must not produce an
+empty report that reads as a pass.
+
+Both rewrites were validated by running the old and new versions side by side
+over deliberately broken inputs and diffing, rather than by watching them both
+pass on the current tree — which proves nothing, as the first draft of the
+scoping check demonstrated by silently matching nothing and passing. That
+exercise found three defects that the happy path could not:
+
+- the scoping check sorted findings lexically, so line 196 was reported before
+  line 67;
+- the policy check crashed inside `jq` when `Statement` was an object rather
+  than a list, and reported the crash as "is not valid JSON";
+- and, in the process, that the **Python** version raised an uncaught
+  `AttributeError` on a `Statement` holding non-objects. The bash version
+  reports `statement 0: must be an object, found string`, so this is one
+  behaviour that is better rather than merely equivalent.
+
+The inline block loses `sed -i` along with Python: BSD sed reads the next
+argument as a backup suffix and GNU sed does not, which is the dialect split
+that put Python there in the first place. Writing to a temporary file and
+moving it over needs no dialect.
 
 A minor bump rather than a patch, for the reason this file's header gives: it
 breaks the Lean API. `Backend.ownershipInfo` returns an `Evidence` instead of

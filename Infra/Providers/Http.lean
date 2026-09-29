@@ -1,4 +1,5 @@
 import Infra.Core.Credentials
+import Infra.Core.JsonExact
 import Linen.Cloud.Transport
 import Linen.Cloud.Error
 import Linen.Cloud.Page
@@ -46,6 +47,12 @@ def render (e : Cloud.Error) : String :=
     the raw body, truncated, when no dialect parses) and rendered by infra. -/
 def describe (status : Nat) (body : String) : String :=
   render (Cloud.describeError status body)
+
+/-- A JSON request body, refused if it holds a number linen's encoder would
+    change (`Infra.Core.JsonExact`). Every JSON body infra sends is built
+    here. -/
+def jsonBody (what : String) (v : Data.Json.Value) : IO ByteArray :=
+  return (← Infra.Core.JsonExact.encodeOrThrow what v).toUTF8
 
 /-- Build a request. `path` must already be canonical; `query` is passed
     separately so the signer and the wire agree on its rendering. -/

@@ -154,9 +154,9 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
   | .scaleway =>
     -- Scaleway returns the value base64-encoded from a versioned endpoint.
     let pfx := Scaleway.regionalPrefix "secret-manager" "v1beta1" creds.region
-    let listing ← Scaleway.call creds "GET" (pfx ++ "/secrets")
-        (query := [("project_id", ← creds.requireProject)])
-    match (arrayField listing "secrets").find? (fun s => s.lookupText "name" == some secretName) with
+    let listing ← Scaleway.listAll creds "scaleway secrets" (pfx ++ "/secrets") "secrets"
+        (query := [("project_id", ← creds.requireProject), ("name", secretName)])
+    match listing.find? (fun s => s.lookupText "name" == some secretName) with
     | none => throw (IO.userError s!"scaleway secrets: no secret named '{secretName}'")
     | some s =>
       let id := (s.lookupText "id").getD ""
@@ -184,11 +184,17 @@ private def tagsOf (s : Value) : List (String × String) :=
     | _,      _      => none
 
 /-- Every secret's name, with its tags — `ListSecrets` returns `Tags` on each
-    entry, so no second call is needed. -/
+    entry, so no second call is needed. Every page: `NextToken` both ways,
+    `MaxResults` 1–100 (botocore, `secretsmanager/2017-10-17`, read
+    2026-09-29). -/
 def listTagged (creds : Credentials) (ep : Endpoint) :
     IO (List (String × List (String × String))) := do
-  let reply ← Json.call creds ep (target "ListSecrets") (.object [])
-  return (arrayField reply "SecretList").filterMap fun s =>
+  let secrets ← Http.listAll "secrets manager secrets" fun token => do
+    let reply ← Json.call creds ep (target "ListSecrets")
+      (.object ([("MaxResults", .number 100)]
+        ++ (token.map fun t => [("NextToken", .string t)]).getD []))
+    return (arrayField reply "SecretList", reply.lookupText "NextToken")
+  return secrets.filterMap fun s =>
     (s.lookupText "Name").map fun n => (n, tagsOf s)
 
 /-- Every secret's name. -/
@@ -314,9 +320,9 @@ private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "secret-manager" "v1beta1" region
 
 private def listRaw (creds : Credentials) : IO (List (String × String × List String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/secrets")
-      (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "secrets").filterMap fun s =>
+  let secrets ← Scaleway.listAll creds "scaleway secrets" (prefix' creds.region ++ "/secrets")
+      "secrets" (query := [("project_id", ← creds.requireProject)])
+  return secrets.filterMap fun s =>
     match s.lookupText "name", s.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField s "tags")
     | _,      _      => none

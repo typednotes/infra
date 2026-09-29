@@ -109,7 +109,7 @@ private def sendOnce (a : Access) (caPath : String) (req : Request) : IO Respons
 def send (a : Access) (method path : String) (query : Query := [])
     (contentType : String := "application/json") (body : Option Value := none) :
     IO Response := do
-  let bytes := body.map fun v => (Data.Json.Encode.encode v).toUTF8
+  let bytes ← body.mapM (Http.jsonBody s!"kubernetes {method} {path}")
   let rendered := canonicalQuery query
   let req : Request :=
     { method := parseMethod method

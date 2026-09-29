@@ -1,3 +1,4 @@
+import Infra.Providers.Aws.Protocols
 import Infra.Providers.Scaleway.Rest
 import Linen.System.Keychain
 import Linen.Data.Ini
@@ -54,6 +55,7 @@ namespace Infra.Providers.Scaleway.Sqs
 
 open Infra.Core
 open Infra.Providers
+open Infra.Providers.Aws.Json (SqsCloud)
 open Infra.Providers.JsonRead
 open Data.Json (Value)
 
@@ -167,15 +169,16 @@ private def activate (creds : Credentials) (region project : String) :
 
 /-- The id of the credential holding our name, if one does.
 
-    Scaleway paginates list replies under a product-specific key, and the
-    reply for this one is not documented alongside the create call. Both
-    plausible spellings are read; the wrong one is simply an empty list, which
-    is cheaper than being wrong about which is right. -/
+    Every page (`Scaleway.listAll`), under the key the generated SDK names:
+    `ListSqsCredentialsResponse.sqs_credentials`, with `total_count`
+    (`scaleway-sdk-go`, `api/mnq/v1beta1/mnq_sdk.go`, read 2026-09-29). This
+    used to read one page under two guessed spellings — `credentials` as well —
+    because the reply was not documented next to the create call; the SDK
+    settles it. -/
 private def listed (creds : Credentials) (region project : String) :
     IO (List Value) := do
-  let reply ← Scaleway.call creds "GET" (prefix' region ++ "/sqs-credentials")
-    (query := [("project_id", project)])
-  return arrayField reply "sqs_credentials" ++ arrayField reply "credentials"
+  Scaleway.listAll creds "scaleway sqs credentials" (prefix' region ++ "/sqs-credentials")
+    "sqs_credentials" (query := [("project_id", project)])
 
 private def existingId (creds : Credentials) (region project : String) :
     IO (Option String) := do
@@ -263,9 +266,9 @@ private def secretsPrefix (region : String) : String :=
 
 /-- The shared copy's secret id, if there is one. -/
 private def storedId (creds : Credentials) (region project : String) : IO (Option String) := do
-  let reply ← Scaleway.call creds "GET" (secretsPrefix region ++ "/secrets")
-    (query := [("project_id", project), ("name", storedName)])
-  return (arrayField reply "secrets").findSome? fun x =>
+  let secrets ← Scaleway.listAll creds "scaleway secrets" (secretsPrefix region ++ "/secrets")
+    "secrets" (query := [("project_id", project), ("name", storedName)])
+  return secrets.findSome? fun x =>
     if x.lookupText "name" == some storedName then x.lookupText "id" else none
 
 /-- The same text the keychain holds (`storeInKeychainAccount`). -/
@@ -311,15 +314,13 @@ project, shared by every machine that runs infra here. A cache: deleting it cost
     AWS needs no separate step: its SQS accepts the same credentials as
     everything else. Scaleway does — see the module note — so the dedicated
     credential is fetched from the keychain, or provisioned and cached there
-    on first use. -/
-def credentialsFor (provider : ProviderId) (creds : Credentials) : IO Credentials := do
-  match provider with
+    on first use.
+
+    Takes an `SqsCloud`, so GCP — whose queues are Pub/Sub — cannot be asked:
+    `SqsCloud.of` answers it with linen's `unsupported`, once, at the caller. -/
+def credentialsFor (cloud : SqsCloud) (creds : Credentials) : IO Credentials := do
+  match cloud with
   | .aws => pure creds
-  -- GCP's queues are Pub/Sub, which this SQS client cannot speak. Raising
-  -- names the pairing rather than handing back a credential that would be
-  -- used to sign a request to a host that does not exist.
-  | .gcp => throw (IO.userError
-      "queues on gcp: Pub/Sub is not SQS-compatible, and no Pub/Sub backend exists yet")
   | .scaleway =>
     let project ← creds.requireProject
     let key := (project, creds.region)

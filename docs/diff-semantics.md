@@ -503,21 +503,6 @@ before applying anything. Cheap at every tier, fatal at none.
 
 ### Known soft spots
 
-- **Most AWS and Scaleway listings read one page** (found 2026-09-29, open).
-  Ten listings follow their continuation and fail rather than truncate
-  (`Http.listAll`): the six GCP ones, Kapsule and EKS clusters, and the
-  in-cluster scan. About twenty-two that feed a backend's `list`, the orphan
-  scan, or the name-to-id lookups ownership and delete depend on make one
-  request: on AWS, S3 `ListBuckets`, SQS `ListQueues`, Secrets Manager
-  `ListSecrets`, Lambda, EC2 instances and security groups, IAM users, ECR,
-  RDS; on Scaleway, secrets, containers and functions (and both namespace
-  kinds), IAM applications (100 per page), registry namespaces, RDB and
-  Serverless SQL; on GCP, Cloud SQL and GKE. Scaleway's default page is
-  twenty. Past one page an orphan is invisible and a declared resource reads
-  as absent — a planned `CREATE` that collides. Per-listing detail and the
-  fix are `TODO.md`'s; until then, a project past one page of a kind is not
-  safely managed.
-
 - **`Refines` is still not given for spec structures.** `Divergent` supersedes
   it in practice — `realises` is derived from `divergence`, so the boolean and
   the field list cannot disagree — but the `⊑` machinery is not what decides

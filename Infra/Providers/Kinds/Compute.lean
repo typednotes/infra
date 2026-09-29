@@ -53,9 +53,15 @@ namespace Lambda
 
 private def base : String := "/2015-03-31/functions"
 
+/-- Every function's name, every page: `Marker` in, `NextMarker` out, at
+    most 50 a page whatever `MaxItems` says (botocore, `lambda/2015-03-31`,
+    read 2026-09-29). -/
 def list (creds : Credentials) (ep : Endpoint) : IO (List String) := do
-  let reply ← RestJson.call creds ep "GET" base
-  return (arrayField reply "Functions").filterMap (Data.Json.Value.lookupText "FunctionName")
+  let fns ← Http.listAll "lambda functions" fun token => do
+    let reply ← RestJson.call creds ep "GET" base
+      ((token.map fun t => [("Marker", some t)]).getD [])
+    return (arrayField reply "Functions", reply.lookupText "NextMarker")
+  return fns.filterMap (Data.Json.Value.lookupText "FunctionName")
 
 /-- Configuration and image, which live behind different calls. -/
 def read (creds : Credentials) (ep : Endpoint) (name : String) :
@@ -183,9 +189,10 @@ private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "containers" "v1beta1" region
 
 private def listRaw (creds : Credentials) : IO (List (String × String × List String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
+  let containers ← Scaleway.listAll creds "scaleway containers"
+      (prefix' creds.region ++ "/containers") "containers"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "containers").filterMap fun c =>
+  return containers.filterMap fun c =>
     match c.lookupText "name", c.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField c "tags")
     | _,      _      => none
@@ -208,9 +215,10 @@ def readOwnership (creds : Credentials) (name : String) :
 
 private def listNamespacesRaw (creds : Credentials) :
     IO (List (String × String × List String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  let namespaces ← Scaleway.listAll creds "scaleway namespaces"
+      (prefix' creds.region ++ "/namespaces") "namespaces"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "namespaces").filterMap fun n =>
+  return namespaces.filterMap fun n =>
     match n.lookupText "name", n.lookupText "id" with
     | some nm, some i => some (nm, i, stringArrayField n "tags")
     | _,       _      => none
@@ -338,9 +346,10 @@ private def secretEnvArray (secretEnv : List (String × String)) : Value :=
 
 /-- The domain alongside the name, which `list` above does not need. -/
 def listFull (creds : Credentials) : IO (List (String × String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
+  let containers ← Scaleway.listAll creds "scaleway containers"
+      (prefix' creds.region ++ "/containers") "containers"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "containers").filterMap fun c =>
+  return containers.filterMap fun c =>
     match c.lookupText "name" with
     | some n => some (n, (c.lookupText "domain_name").getD "")
     | none   => none
@@ -437,9 +446,10 @@ def updateFull (creds : Credentials) (name image : String)
 
 /-- One namespace's description, by name. -/
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  let namespaces ← Scaleway.listAll creds "scaleway namespaces"
+      (prefix' creds.region ++ "/namespaces") "namespaces"
       (query := [("project_id", ← creds.requireProject)])
-  match (arrayField reply "namespaces").find? (fun n => n.lookupText "name" == some name) with
+  match namespaces.find? (fun n => n.lookupText "name" == some name) with
   | none   => return .unknown
   | some n => return match n.lookupText "description" with
                      | some d => .known d
@@ -488,17 +498,19 @@ private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "functions" "v1beta1" region
 
 private def listRaw (creds : Credentials) : IO (List (String × String × List String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/functions")
+  let functions ← Scaleway.listAll creds "scaleway functions"
+      (prefix' creds.region ++ "/functions") "functions"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "functions").filterMap fun f =>
+  return functions.filterMap fun f =>
     match f.lookupText "name", f.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField f "tags")
     | _,      _      => none
 
 def list (creds : Credentials) : IO (List (String × String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/functions")
+  let functions ← Scaleway.listAll creds "scaleway functions"
+      (prefix' creds.region ++ "/functions") "functions"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "functions").filterMap fun f =>
+  return functions.filterMap fun f =>
     match f.lookupText "name" with
     | some n => some (n, (f.lookupText "domain_name").getD "")
     | none   => none
@@ -517,9 +529,10 @@ def readOwnership (creds : Credentials) (name : String) :
 
 private def listNamespacesRaw (creds : Credentials) :
     IO (List (String × String × List String)) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  let namespaces ← Scaleway.listAll creds "scaleway namespaces"
+      (prefix' creds.region ++ "/namespaces") "namespaces"
       (query := [("project_id", ← creds.requireProject)])
-  return (arrayField reply "namespaces").filterMap fun n =>
+  return namespaces.filterMap fun n =>
     match n.lookupText "name", n.lookupText "id" with
     | some nm, some i => some (nm, i, stringArrayField n "tags")
     | _,       _      => none
@@ -724,9 +737,10 @@ def releaseNamespaceMarker (creds : Credentials) (name fleet : String) : IO Unit
 
 /-- One namespace's description, by name. -/
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
-  let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
+  let namespaces ← Scaleway.listAll creds "scaleway namespaces"
+      (prefix' creds.region ++ "/namespaces") "namespaces"
       (query := [("project_id", ← creds.requireProject)])
-  match (arrayField reply "namespaces").find? (fun n => n.lookupText "name" == some name) with
+  match namespaces.find? (fun n => n.lookupText "name" == some name) with
   | none   => return .unknown
   | some n => return match n.lookupText "description" with
                      | some d => .known d

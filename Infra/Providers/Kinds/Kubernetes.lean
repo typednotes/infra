@@ -193,14 +193,8 @@ private def infoOf (c : Value) : ClusterInfo :=
 /-- Every cluster in the fleet's project, all pages. -/
 def listRaw (creds : Credentials) : IO (List Value) := do
   let project ← creds.requireProject
-  -- Page-numbered rather than cursored: the "cursor" is the next page number,
-  -- and a short page is the last.
-  Http.listAll "scaleway kubernetes clusters" fun token => do
-    let page := (token.bind String.toNat?).getD 1
-    let reply ← Scaleway.call creds "GET" (pfx creds ++ "/clusters")
-      (query := [("project_id", project), ("page", toString page), ("page_size", "100")])
-    let cs := arrayField reply "clusters"
-    return (cs, if cs.length < 100 then none else some (toString (page + 1)))
+  Scaleway.listAll creds "scaleway kubernetes clusters" (pfx creds ++ "/clusters") "clusters"
+    (query := [("project_id", project)])
 
 def list (creds : Credentials) : IO (List ClusterInfo) :=
   return (← listRaw creds).map infoOf
@@ -231,8 +225,9 @@ def describe (creds : Credentials) (name : String) (withNetwork : Bool := true) 
     return some { c with network }
 
 def pools (creds : Credentials) (clusterId : String) : IO (List PoolInfo) := do
-  let reply ← Scaleway.call creds "GET" (pfx creds ++ s!"/clusters/{clusterId}/pools")
-  return (arrayField reply "pools").map fun p =>
+  let pools ← Scaleway.listAll creds "scaleway kubernetes pools"
+    (pfx creds ++ s!"/clusters/{clusterId}/pools") "pools"
+  return pools.map fun p =>
     let auto := (p.lookupBool "autoscaling").getD false
     { name := (p.lookupText "name").getD "", id := (p.lookupText "id").getD ""
       nodeType := (p.lookupText "node_type").getD ""
@@ -286,9 +281,12 @@ private def networkId (creds : Credentials) (name : String) : IO (Option String)
     throw (IO.userError "a Kapsule cluster needs `network`: the Private Network it is \
 attached to, by name — the API refuses a cluster without one, and infra references networks \
 and never creates one")
-  let reply ← Scaleway.call creds "GET" (vpc creds ++ "/private-networks")
+  -- Every page: the `name` filter matches names *containing* it, so the
+  -- exact match need not be on the first.
+  let networks ← Scaleway.listAll creds "scaleway private networks"
+      (vpc creds ++ "/private-networks") "private_networks"
       (query := [("project_id", ← creds.requireProject), ("name", name)])
-  match (arrayField reply "private_networks").find? (·.lookupText "name" == some name) with
+  match networks.find? (·.lookupText "name" == some name) with
   | some pn => return pn.lookupText "id"
   | none    => throw (IO.userError s!"kapsule: no private network named '{name}' in \
 {creds.region} — infra references networks by name and never creates one")
@@ -464,10 +462,15 @@ def describe (creds : Credentials) (name : String) (withNetwork : Bool := true) 
         clusterRole := match c.lookupText "roleArn" with
           | some r => .known r | none => .unknown }
 
+/-- Every node group, every page: `nextToken` both ways, `maxResults` 1–100
+    (botocore, `eks/2017-11-01`, read 2026-09-29). -/
 def pools (creds : Credentials) (cluster : String) : IO (List PoolInfo) := do
-  let reply ← RestJson.call creds (ep creds) "GET" s!"/clusters/{cluster}/node-groups"
+  let names ← Http.listAll s!"eks node groups of {cluster}" fun token => do
+    let reply ← RestJson.call creds (ep creds) "GET" s!"/clusters/{cluster}/node-groups"
+      ([("maxResults", some "100")] ++ (token.map fun t => [("nextToken", some t)]).getD [])
+    return (stringArrayField reply "nodegroups", reply.lookupText "nextToken")
   let mut out : List PoolInfo := []
-  for ng in stringArrayField reply "nodegroups" do
+  for ng in names do
     let d ← RestJson.call creds (ep creds) "GET" s!"/clusters/{cluster}/node-groups/{ng}"
     let g := (d.lookup "nodegroup").getD .null
     let sc := (g.lookup "scalingConfig").getD .null
@@ -489,15 +492,19 @@ subnets it uses — infra references networks and never creates one")
   let vpcId ← if network.startsWith "vpc-" then pure network else do
     -- `default` is the region's default VPC, as `default` is the project's
     -- default network on GCP; any other word is a `Name` tag.
-    let root ← Query.call creds (ec2 creds) "DescribeVpcs" "2016-11-15"
+    -- Every page, here and for the subnets: with a filter, EC2 may put the
+    -- match on a later page than the first.
+    let roots ← Query.callAll creds (ec2 creds) "DescribeVpcs" "2016-11-15"
       (if network == "default" then [("Filter.1.Name", "isDefault"), ("Filter.1.Value.1", "true")]
        else [("Filter.1.Name", "tag:Name"), ("Filter.1.Value.1", network)])
-    match (Query.listItems root "vpcSet" "item").head?.bind (·.childText "vpcId") with
+      "NextToken" (·.childText "nextToken")
+    match (roots.flatMap (Query.listItems · "vpcSet" "item")).head?.bind (·.childText "vpcId") with
     | some v => pure v
     | none   => throw (IO.userError s!"eks: no VPC named '{network}' in {creds.region}")
-  let root ← Query.call creds (ec2 creds) "DescribeSubnets" "2016-11-15"
-    [("Filter.1.Name", "vpc-id"), ("Filter.1.Value.1", vpcId)]
-  let subnets := (Query.listItems root "subnetSet" "item").filterMap (·.childText "subnetId")
+  let roots ← Query.callAll creds (ec2 creds) "DescribeSubnets" "2016-11-15"
+    [("Filter.1.Name", "vpc-id"), ("Filter.1.Value.1", vpcId)] "NextToken" (·.childText "nextToken")
+  let subnets := (roots.flatMap (Query.listItems · "subnetSet" "item")).filterMap
+    (·.childText "subnetId")
   if subnets.length < 2 then
     throw (IO.userError s!"eks: VPC {vpcId} has {subnets.length} subnet(s); EKS needs subnets \
 in at least two availability zones")
@@ -674,7 +681,15 @@ private def infoOf (c : Value) : ClusterInfo :=
 def list (creds : Credentials) : IO (List ClusterInfo) := do
   let project ← Gcp.requireProject creds
   let reply ← Gcp.call creds "GET" host s!"{base project creds.region}/clusters"
-  return (arrayField reply "clusters").map infoOf
+  -- Not paged: `ListClustersResponse` has no page token at all, only
+  -- `clusters` and `missingZones` (the `container` v1 discovery document,
+  -- revision 20260915, read 2026-09-29). `missingZones` is its incompleteness
+  -- signal — "the list of clusters returned may be missing those zones" — so
+  -- a non-empty one fails the listing rather than being read as complete,
+  -- for the same reason `Http.listAll` fails a truncated one.
+  match stringArrayField reply "missingZones" with
+  | [] => return (arrayField reply "clusters").map infoOf
+  | zones => throw (IO.userError s!"gke clusters: the listing reports missing zones ({String.intercalate ", " zones}), so it may be incomplete — and a listing read as complete when it is not would plan creating what exists and miss orphans. Nothing was changed")
 
 
 def get? (creds : Credentials) (name : String) : IO (Option Value) := do

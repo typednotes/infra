@@ -62,7 +62,7 @@ namespace Infra.Cli.New
     line `init` appends when converting a `lakefile.toml`, and into what
     `scaffold` prints when it keeps a lakefile it did not write — one string,
     so those three cannot disagree. -/
-private def infraRev : String := "v0.20.0"
+private def infraRev : String := "v0.20.1"
 
 /-- The dependency line a consumer's `lakefile.lean` needs, pinned to
     `infraRev`. -/
@@ -1016,10 +1016,16 @@ fleet catalogue in paris where
     -- A cluster's name must be valid on all three clouds — lowercase letters,
     -- digits and `-` — so it is not derived from the project's name, which
     -- may hold an underscore.
+    --
+    -- `network` is required on Scaleway and AWS: Kapsule refuses a cluster
+    -- without a Private Network, and EKS takes its subnets from a VPC. It is
+    -- a reference by name — infra never creates the network — so it must
+    -- already exist in the account. GKE defaults it.
     resource kubernetesCluster \"main\"
       { nodeType  := \"GP1-S\"
       , nodeCount := 3
-      , autoscale := ((2, 6) : Nat × Nat) }
+      , autoscale := ((2, 6) : Nat × Nat)
+      , network   := \"main-pn\" }
 
     -- An object's name is its address, <cluster>/<namespace>/<kind>/<name>,
     -- and its cluster is this cloud's. The service selects `app = web`, the

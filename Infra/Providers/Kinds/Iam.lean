@@ -77,9 +77,23 @@ private def members (root : Text.XML.Element) (result container : String) :
   | none   => []
   | some r => Query.listItems r container "member"
 
+/-- Every page of an IAM listing: `Marker` in, and out only while
+    `IsTruncated` — IAM's default page is 100 and it may return fewer even
+    when there are more (botocore, `iam/2010-05-08`, read 2026-09-29). The
+    members of each page's `container`, in order. -/
+private def listAllRoots (creds : Credentials) (action : String)
+    (params : List (String × String)) : IO (List Text.XML.Element) :=
+  Query.callAll creds Query.iamEndpoint action version params "Marker" fun root =>
+    root.child s!"{action}Result" |>.bind fun r =>
+      if r.childText "IsTruncated" == some "true" then r.childText "Marker" else none
+
+/-- `listAllRoots`, then the members of each page's `container`. -/
+private def listAllMembers (creds : Credentials) (action : String)
+    (params : List (String × String)) (container : String) : IO (List Text.XML.Element) := do
+  return (← listAllRoots creds action params).flatMap (members · s!"{action}Result" container)
+
 def list (creds : Credentials) : IO (List (String × String)) := do
-  let root ← Query.call creds Query.iamEndpoint "ListUsers" version
-  return (members root "ListUsersResult" "Users").filterMap fun m =>
+  return (← listAllMembers creds "ListUsers" [] "Users").filterMap fun m =>
     match m.childText "UserName", m.childText "Arn" with
     | some n, some a => some (n, a)
     | some n, none   => some (n, "")
@@ -87,10 +101,8 @@ def list (creds : Credentials) : IO (List (String × String)) := do
 
 /-- The ARNs of the managed policies attached to a user. -/
 def readPolicies (creds : Credentials) (name : String) : IO (Partial (List String)) := do
-  let root ← Query.call creds Query.iamEndpoint "ListAttachedUserPolicies" version
-    [("UserName", name)]
-  return .known ((members root "ListAttachedUserPoliciesResult" "AttachedPolicies").filterMap
-    (·.childText "PolicyArn"))
+  return .known ((← listAllMembers creds "ListAttachedUserPolicies" [("UserName", name)]
+    "AttachedPolicies").filterMap (·.childText "PolicyArn"))
 
 private def attach (creds : Credentials) (name arn : String) : IO Unit := do
   discard <| Query.call creds Query.iamEndpoint "AttachUserPolicy" version
@@ -184,11 +196,12 @@ private def listUserTagsReply : String :=
     is left `none`, matching every other kind's first tranche, though
     `ListUsers`'s own `CreateDate` is available if a later pass wants it. -/
 def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
-  let attempt ← (Query.call creds Query.iamEndpoint "ListUserTags" version
-    [("UserName", name)]).toBaseIO
+  -- Every page: IAM may truncate even below its default 100, and a marker on
+  -- a second page read as absent would call this fleet's user foreign.
+  let attempt ← (listAllRoots creds "ListUserTags" [("UserName", name)]).toBaseIO
   match attempt with
-  | .error _ => return .unreadable
-  | .ok root => return .tags (tagsOfListUserTags root) none
+  | .error _  => return .unreadable
+  | .ok roots => return .tags (roots.flatMap tagsOfListUserTags) none
 
 /-- Take this fleet's ownership marker off the user, leaving its other tags.
 
@@ -197,8 +210,8 @@ def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
     `ListUserTags`; a user carrying another fleet's marker, or none, is not
     written to. -/
 def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
-  let root ← Query.call creds Query.iamEndpoint "ListUserTags" version [("UserName", name)]
-  if (Marker.releaseTags fleet (tagsOfListUserTags root)).isSome then
+  let roots ← listAllRoots creds "ListUserTags" [("UserName", name)]
+  if (Marker.releaseTags fleet (roots.flatMap tagsOfListUserTags)).isSome then
     discard <| Query.call creds Query.iamEndpoint "UntagUser" version
       [("UserName", name), ("TagKeys.member.1", markerKey)]
 
@@ -259,10 +272,8 @@ has the narrow way to allow it and what allowing it costs.\n  {e}")
 
 /-- Every access key id a user has. Metadata only — never the secret half. -/
 def listAccessKeys (creds : Credentials) (userName : String) : IO (List String) := do
-  let root ← Query.call creds Query.iamEndpoint "ListAccessKeys" version
-    [("UserName", userName)]
-  return (members root "ListAccessKeysResult" "AccessKeyMetadata").filterMap
-    (·.childText "AccessKeyId")
+  return (← listAllMembers creds "ListAccessKeys" [("UserName", userName)]
+    "AccessKeyMetadata").filterMap (·.childText "AccessKeyId")
 
 def deleteAccessKey (creds : Credentials) (userName accessKeyId : String) : IO Unit := do
   discard <| Query.call creds Query.iamEndpoint "DeleteAccessKey" version
@@ -311,20 +322,18 @@ namespace Scw
 
 private def prefix' : String := Scaleway.globalPrefix "iam" "v1alpha1"
 
-/-- Scaleway's list endpoints default to 20 results a page. Every listing here
-    asks for the documented maximum instead, because a fleet's applications,
-    its policies and its keys are all things there can easily be more than
-    twenty of, and a truncated listing reads as "not there" — which for an
-    application means a create that fails on a name already taken, and for a
-    policy means a permission silently re-granted on every apply. -/
-private def pageSize : String := "100"
+-- Scaleway's list endpoints default to 20 results a page, and a truncated
+-- listing reads as "not there" — for an application a create that fails on a
+-- name already taken, for a policy a permission silently re-granted on every
+-- apply. Asking for 100 a page (what this module did until 0.20.1) only moved
+-- the cliff; every listing here now reads every page (`Scaleway.listAll`).
 
 private def listRaw (creds : Credentials) :
     IO (List (String × String × List String)) := do
   let org ← creds.requireOrganization
-  let reply ← Scaleway.call creds "GET" (prefix' ++ "/applications")
-    [("organization_id", some org), ("page_size", some pageSize)]
-  return (arrayField reply "applications").filterMap fun a =>
+  let apps ← Scaleway.listAll creds "scaleway iam applications" (prefix' ++ "/applications")
+    "applications" [("organization_id", some org)]
+  return apps.filterMap fun a =>
     match a.lookupText "name", a.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField a "tags")
     | _,      _      => none
@@ -392,15 +401,14 @@ def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
 private def policiesOf (creds : Credentials) (appId : String) :
     IO (List (String × String × List String × List String)) := do
   let org ← creds.requireOrganization
-  let reply ← Scaleway.call creds "GET" (prefix' ++ "/policies")
-    [ ("organization_id", some org), ("application_ids", some appId)
-    , ("page_size", some pageSize) ]
-  (arrayField reply "policies").filterMapM fun p => do
+  let policies ← Scaleway.listAll creds "scaleway iam policies" (prefix' ++ "/policies")
+    "policies" [("organization_id", some org), ("application_ids", some appId)]
+  policies.filterMapM fun p => do
     match p.lookupText "id", p.lookupText "name" with
     | some id, some nm =>
-      let rules ← Scaleway.call creds "GET" (prefix' ++ "/rules")
-        [("policy_id", some id), ("page_size", some pageSize)]
-      let sets := (arrayField rules "rules").flatMap (stringArrayField · "permission_set_names")
+      let rules ← Scaleway.listAll creds "scaleway iam rules" (prefix' ++ "/rules")
+        "rules" [("policy_id", some id)]
+      let sets := rules.flatMap (stringArrayField · "permission_set_names")
       return some (id, nm, stringArrayField p "tags", sets)
     | _, _ => return none
 
@@ -515,9 +523,9 @@ returned, and Scaleway will not show it again. Delete the key and retry.")
     description)`. Metadata only: `secret_key` is null here by design. -/
 def listApiKeys (creds : Credentials) : IO (List (String × String × String)) := do
   let org ← creds.requireOrganization
-  let reply ← Scaleway.call creds "GET" (prefix' ++ "/api-keys")
-    [("organization_id", some org), ("page_size", some pageSize)]
-  return (arrayField reply "api_keys").filterMap fun k =>
+  let keys ← Scaleway.listAll creds "scaleway iam api keys" (prefix' ++ "/api-keys")
+    "api_keys" [("organization_id", some org)]
+  return keys.filterMap fun k =>
     (k.lookupText "access_key").map fun access =>
       (access, (k.lookupText "application_id").getD "", (k.lookupText "description").getD "")
 

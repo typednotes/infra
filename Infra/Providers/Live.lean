@@ -154,8 +154,15 @@ recreate it outside infra, or narrow the fleet's `namePrefix` so it no longer ma
 
 /-- The SQS endpoint this cloud uses. Scaleway's queues are SQS-compatible, so
     only the host differs — the same reuse as object storage. -/
-private def sqsFor (provider : ProviderId) (creds : Credentials) : Endpoint :=
-  Json.sqsEndpoint provider creds.region
+private def sqsFor (cloud : Json.SqsCloud) (creds : Credentials) : Endpoint :=
+  Json.sqsEndpoint cloud creds.region
+
+/-- The SQS-speaking cloud behind `provider`, for the `.aws | .scaleway` queue
+    branches. GCP never reaches one — its queues are Pub/Sub and are matched
+    first — and if it did, it would fail with linen's `unsupported` rather
+    than sign a request for a host that does not exist. -/
+private def sqsCloud (provider : ProviderId) : IO Json.SqsCloud :=
+  orThrow (Json.SqsCloud.of provider)
 
 /-- The ECR endpoint. AWS only: Scaleway's registry is a different API, not an
     ECR-compatible one, so this kind really is two implementations. -/
@@ -365,8 +372,9 @@ def liveRead (provider : ProviderId) (creds : Credentials)
       discard <| Gcp.PubSub.readTopic creds project h.raw
       return { name := h.raw, visibilityTimeoutSec := .unknown }
     | .aws | .scaleway =>
-      let ep := sqsFor provider creds
-      let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+      let sqs ← sqsCloud provider
+      let ep := sqsFor sqs creds
+      let sqsCreds ← Scaleway.Sqs.credentialsFor sqs creds
       return { name := h.raw
                visibilityTimeoutSec := ← Queues.readVisibilityTimeout sqsCreds ep h.raw }
   -- `valueFrom` names an environment variable the cloud has never heard of,
@@ -492,11 +500,13 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
           { handle := ⟨n⟩, url := Gcp.Storage.bucketUrl n }
       | .aws | .scaleway =>
         let ep := s3For provider creds
-        return (← ObjectStore.listBuckets creds ep).map fun n =>
+        let maxBuckets := if provider == .aws then some 1000 else none
+        return (← ObjectStore.listBuckets creds ep maxBuckets).map fun n =>
           { handle := ⟨n⟩, url := ObjectStore.bucketUrl ep n }
     | .s3Bucket => do
       let ep := s3For provider creds
-      return (← ObjectStore.listBuckets creds ep).map fun n =>
+      let maxBuckets := if provider == .aws then some 1000 else none
+      return (← ObjectStore.listBuckets creds ep maxBuckets).map fun n =>
         { handle := ⟨n⟩, arn := s!"arn:aws:s3:::{n}", region := ep.region }
     | .securityGroup => do
       match provider with
@@ -533,8 +543,9 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
         -- a credential. Checked read-only instead (`Sqs.enabled`).
         if provider == .scaleway then
           unless ← Scaleway.Sqs.enabled creds do return []
-        let ep := sqsFor provider creds
-        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+        let sqs ← sqsCloud provider
+        let ep := sqsFor sqs creds
+        let sqsCreds ← Scaleway.Sqs.credentialsFor sqs creds
         return (← Queues.listQueues sqsCreds ep).map fun (name, url) =>
           { handle := ⟨name⟩, url }
     | .imageRegistry => do
@@ -726,8 +737,9 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
                          (fleet)
         return { handle := ⟨spec.name⟩, url := resource }
       | .aws | .scaleway =>
-        let ep := sqsFor provider creds
-        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+        let sqs ← sqsCloud provider
+        let ep := sqsFor sqs creds
+        let sqsCreds ← Scaleway.Sqs.credentialsFor sqs creds
         -- Scaleway's mnq queues cannot be tagged at all, so there is nothing
         -- to send there; ownership for them is on the name rung instead —
         -- see `Queues.readOwnershipByName`.
@@ -950,8 +962,9 @@ invocation, which is a worse failure than this one")
         let project ← Gcp.requireProject creds
         return { handle := h, url := ← Gcp.PubSub.readTopic creds project h.raw }
       | .aws | .scaleway =>
-        let ep := sqsFor provider creds
-        let sqsCreds ← Scaleway.Sqs.credentialsFor provider creds
+        let sqs ← sqsCloud provider
+        let ep := sqsFor sqs creds
+        let sqsCreds ← Scaleway.Sqs.credentialsFor sqs creds
         Queues.setVisibilityTimeout sqsCreds ep h.raw spec.visibilityTimeoutSec
         return { handle := h, url := ← Queues.queueUrl sqsCreds ep h.raw }
     | .imageRegistry, h, spec => do
@@ -1080,8 +1093,8 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
       | .gcp =>
         Gcp.PubSub.deleteTopic creds (← Gcp.requireProject creds) h.raw
       | .aws | .scaleway =>
-        Queues.deleteQueue (← Scaleway.Sqs.credentialsFor provider creds)
-          (sqsFor provider creds) h.raw
+        let sqs ← sqsCloud provider
+        Queues.deleteQueue (← Scaleway.Sqs.credentialsFor sqs creds) (sqsFor sqs creds) h.raw
     | .imageRegistry, h =>
       match provider with
       | .gcp      => do
@@ -1234,11 +1247,11 @@ history left in place"
     | .queues, h => do
       match provider with
       | .gcp      => Gcp.PubSub.readOwnership creds (← Gcp.requireProject creds) h.raw
-      | .aws      => Queues.readOwnership creds (sqsFor provider creds) h.raw
+      | .aws      => Queues.readOwnership creds (sqsFor .aws creds) h.raw
       -- The name rung: Scaleway's SQS shim implements no tagging at all.
       | .scaleway =>
-        Queues.readOwnershipByName (← Scaleway.Sqs.credentialsFor provider creds)
-          (sqsFor provider creds) h.raw
+        Queues.readOwnershipByName (← Scaleway.Sqs.credentialsFor .scaleway creds)
+          (sqsFor .scaleway creds) h.raw
   /- ── Releasing the marker, one rung per `(cloud, kind)` ──
 
      `Backend.release`: take this fleet's marker off one resource and leave
@@ -1327,7 +1340,7 @@ history left in place"
     | .queues, h => do
       match provider with
       | .gcp      => Gcp.PubSub.releaseMarker creds (← Gcp.requireProject creds) h.raw fleet
-      | .aws      => Queues.releaseMarker creds (sqsFor provider creds) h.raw fleet
+      | .aws      => Queues.releaseMarker creds (sqsFor .aws creds) h.raw fleet
       | .scaleway =>
         nameRung "queues" h.raw "Scaleway's SQS-compatible queues implement no tagging at all"
     | .imageRegistry, h => do

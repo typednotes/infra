@@ -167,6 +167,22 @@ def call (creds : Credentials) (ep : Endpoint) (action version : String)
     body (doubleEncodePath := true)
   parseXml s!"{ep.service} {action}" resp
 
+/-- Every page of a Query-protocol action, as the reply roots in order.
+
+    `tokenParam` is the request's continuation parameter and `nextToken` reads
+    the reply's — they differ per service (EC2's `NextToken` in and
+    `nextToken` out; IAM's `Marker`, only while `IsTruncated`; RDS's `Marker`
+    both ways; botocore's `paginators-1.json`, read 2026-09-29). Through
+    `Http.listAll`, so a listing still going after its page budget fails
+    rather than returning a prefix. -/
+def callAll (creds : Credentials) (ep : Endpoint) (action version : String)
+    (params : List (String × String)) (tokenParam : String)
+    (nextToken : Text.XML.Element → Option String) : IO (List Text.XML.Element) :=
+  Http.listAll s!"{ep.service} {action}" fun token => do
+    let root ← call creds ep action version
+      (params ++ (token.map fun t => [(tokenParam, t)]).getD [])
+    return ([root], nextToken root)
+
 end Query
 
 -- ══════════════════════════════════════════════════════════════
@@ -181,6 +197,38 @@ def secretsEndpoint (region : String) : Endpoint :=
 def ecrEndpoint (region : String) : Endpoint :=
   { host := s!"api.ecr.{region}.amazonaws.com", service := "ecr", region }
 
+/-- The clouds whose queues speak SQS — and so the only ones this client, and
+    `Scaleway.Sqs.credentialsFor`, can be asked about.
+
+    GCP is not here because its queues are Pub/Sub, a different protocol, and
+    `Live` routes them to `Gcp.PubSub` before any SQS code is reached. Until
+    0.20.1 both SQS functions took a `ProviderId` and answered GCP anyway — one
+    by raising, one with a `.invalid` host that never resolves — so the
+    impossible case was a runtime failure rather than a type error. -/
+inductive SqsCloud where
+  | aws
+  | scaleway
+  deriving DecidableEq, Repr
+
+/-- The cloud, in infra's enumeration. -/
+def SqsCloud.provider : SqsCloud → ProviderId
+  | .aws      => .aws
+  | .scaleway => .scaleway
+
+/-- The SQS-speaking cloud this is, or linen's `unsupported` — a value, not a
+    raise — for the one that is not. The single place the GCP case is
+    answered. -/
+def SqsCloud.of : ProviderId → Except Cloud.Error SqsCloud
+  | .aws      => .ok .aws
+  | .scaleway => .ok .scaleway
+  | .gcp      => .error (Cloud.Error.unsupported "gcp"
+      "SQS: its queues are Pub/Sub topics, served by Gcp.PubSub")
+
+#guard (Finite.elems (α := ProviderId)).all fun p =>
+  match SqsCloud.of p with
+  | .ok c    => c.provider == p
+  | .error e => p == .gcp && e.klass == .unsupported
+
 /-- SQS. Scaleway's queues are SQS-compatible, so the same client serves both —
     as with S3, only the host differs.
 
@@ -188,22 +236,17 @@ def ecrEndpoint (region : String) : Endpoint :=
     Queuing was never on the `scw.cloud` domain, and the old host here did not
     resolve at all. Confirmed against Scaleway's own AWS-CLI connection guide
     (`https://sqs.mnq.{region}.scaleway.com`). -/
-def sqsEndpoint (provider : ProviderId) (region : String) : Endpoint :=
-  match provider with
+def sqsEndpoint (cloud : SqsCloud) (region : String) : Endpoint :=
+  match cloud with
   | .aws      => { host := s!"sqs.{region}.amazonaws.com",      service := "sqs", region }
   | .scaleway => { host := s!"sqs.mnq.{region}.scaleway.com", service := "sqs", region }
-  -- GCP has no SQS-compatible API at all: its queues are Pub/Sub, a different
-  -- protocol that this client cannot speak. A `.invalid` host is a reserved
-  -- TLD that never resolves, so reaching here fails immediately and says why,
-  -- rather than signing a request against something plausible.
-  | .gcp      => { host := "gcp-queues-are-pubsub-not-sqs.invalid", service := "sqs", region }
 
 /-- Invoke an operation. `target` is the wire name, e.g.
     `secretsmanager.CreateSecret`; `version` selects the JSON protocol flavour
     (`1.1` for most services, `1.0` for SQS). -/
 def call (creds : Credentials) (ep : Endpoint) (target : String)
     (payload : Value) (version : String := "1.1") : IO Value := do
-  let body := (Data.Json.Encode.encode payload).toUTF8
+  let body ← Http.jsonBody s!"{ep.service} {target}" payload
   let resp ← Aws.call creds ep "POST" "/" []
     [ ("Content-Type", s!"application/x-amz-json-{version}")
     , ("X-Amz-Target", target) ]
@@ -225,9 +268,9 @@ def lambdaEndpoint (region : String) : Endpoint :=
     `/2015-03-31/functions`. -/
 def call (creds : Credentials) (ep : Endpoint) (method path : String)
     (query : Query := []) (payload : Option Value := none) : IO Value := do
-  let body := match payload with
-    | some v => (Data.Json.Encode.encode v).toUTF8
-    | none   => ByteArray.empty
+  let body ← match payload with
+    | some v => Http.jsonBody s!"{ep.service} {method} {path}" v
+    | none   => pure ByteArray.empty
   let headers := if body.isEmpty then [] else [("Content-Type", "application/json")]
   let resp ← Aws.call creds ep method path query headers body (doubleEncodePath := true)
   parseJson s!"{method} {path}" resp

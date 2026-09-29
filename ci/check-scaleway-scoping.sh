@@ -100,6 +100,53 @@ while IFS= read -r hit; do
 done < <(grep -rnE "$call_re" Infra/Providers --include='*.lean' \
          | sort -t: -k1,1 -k2,2n || true)
 
+# The paged form, `Scaleway.listAll` (0.20.1), which every collection listing
+# now uses. Its arguments span up to three lines — what, path, field, query —
+# so the call is read as those lines joined. Without this second pass the
+# check above matched three call sites instead of twenty-four and passed:
+# the first form had simply stopped being written.
+#
+# As above, a path built with `s!` names its parent in the path itself (a
+# cluster's pools), is not a plain `"/collection"` literal, and is not a
+# candidate.
+list_re='Scaleway\.listAll creds '
+listed=0
+while IFS= read -r hit; do
+  [ -n "$hit" ] || continue
+  file="${hit%%:*}"
+  rest="${hit#*:}"
+  line="${rest%%:*}"
+  call=$(sed -n "${line},$((line + 2))p" "$file" | tr '\n' ' ')
+  case "$call" in
+    *'++ "/'*) ;;
+    *) continue ;;
+  esac
+  collection=$(printf '%s' "$call" | sed -E 's|.*\+\+ "(/[a-z-]+)"\).*|\1|')
+  listed=$((listed + 1))
+  exempt "$collection" && continue
+  parent=$(parent_of "$collection")
+  if [ -n "$parent" ]; then
+    case "$call" in
+      *"\"$parent\""*) ;;
+      *) bad+=("$file:$line: GET $collection is not scoped by its parent '$parent'") ;;
+    esac
+    continue
+  fi
+  case "$call" in
+    *'"project_id"'*|*'"organization_id"'*) ;;
+    *) bad+=("$file:$line: GET $collection is not scoped to a project") ;;
+  esac
+done < <(grep -rnE "$list_re" Infra/Providers --include='*.lean' \
+         | sort -t: -k1,1 -k2,2n || true)
+
+# A pass that finds nothing is not a pass: every Scaleway kind lists through
+# `listAll`, so zero candidates means the pattern no longer matches the code.
+if [ "$listed" -eq 0 ]; then
+  echo "error: found no Scaleway.listAll collection listings — the pattern" \
+    "in $0 no longer matches the code, so nothing was checked" >&2
+  exit 2
+fi
+
 if [ ${#bad[@]} -ne 0 ]; then
   echo "error: unscoped Scaleway collection listing(s):" >&2
   printf '  - %s\n' "${bad[@]}" >&2
@@ -126,4 +173,4 @@ if [ ${#bad[@]} -ne 0 ]; then
   exit 1
 fi
 
-echo "scaleway listings: all project-scoped"
+echo "scaleway listings: all project-scoped ($listed paged listing(s) checked)"
