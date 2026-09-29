@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   live:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The environment is load-bearing, not decorative. The AWS role's trust
     # policy pins `sub` to `repo:typednotes/infra:environment:production`, so
     # the OIDC token only carries that claim when the job declares this — and

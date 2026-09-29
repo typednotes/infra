@@ -13,7 +13,13 @@ jobs:
       # the first CI failure here was Linux-only and cancelled macOS with it.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Pinned, not `ubuntu-latest`: since linen 1.2.0 every linking build
+        # on Linux compiles `duckdb_glibc_compat.c` and runs linen's
+        # sealed-DuckDB audit (`nm`), which fails loudly if the runner's
+        # libstdc++ needs a glibc symbol linen does not shim. It has only been
+        # measured on ubuntu-24.04, and linen pins its own runners for the
+        # same reason. Move to a newer image deliberately, not by default.
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
 
     steps:

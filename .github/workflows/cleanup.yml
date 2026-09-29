@@ -40,7 +40,7 @@ jobs:
   # sweeps all three; that is the point of the schedule — nobody chose, so
   # check everything.
   choose:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       clouds: ${{ steps.pick.outputs.clouds }}
     steps:
@@ -57,7 +57,7 @@ jobs:
 
   sweep:
     needs: choose
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # One job per cloud rather than one job sweeping all three, for two
       # reasons. It puts each sweep in the *same* concurrency group as that
