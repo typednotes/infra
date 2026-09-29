@@ -10,6 +10,18 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Pending: `linen` needs TLS client certificates
+
+`linen`'s TLS client context cannot present a certificate ("mutual TLS not
+supported yet", `ffi/tls.c`, checked 2026-09-29). Proposed in
+`docs/kubernetes.md`: a Scaleway Kapsule cluster's kubeconfig authenticates
+its admin user with a client certificate, so the `kubernetesCluster` /
+`kubernetesObject` kinds — if Kapsule offers no token-shaped kubeconfig
+user, which the generated SDK decides — need `linen` to add client-cert
+support to `linen_tls_client_ctx_create`, per linen's own contribution
+rules. Listed here rather than left implicit, for the reason the moves
+below are.
+
 ### Pending: `JsonRead.setField` belongs in `linen`
 
 "Rewrite one field of a JSON object, leaving every other field and their order
