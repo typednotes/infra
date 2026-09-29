@@ -141,6 +141,34 @@ argument as a backup suffix and GNU sed does not, which is the dialect split
 that put Python there in the first place. Writing to a temporary file and
 moving it over needs no dialect.
 
+## [0.19.1] — 2026-09-29
+
+### Changed: `linen` v1.7.0
+
+The pin moves from `v1.6.1`. Same toolchain (4.34.0). `infra` now builds 56 linen
+modules, up from 55: `Crypto.JOSE.JWS` imports the new
+`Crypto.ConstantTime`. Three of the modules it already built changed, and none
+of the changes alters what `infra` does:
+
+- **`Crypto.JOSE.JWS.verifySignature` compares HMAC signatures in constant
+  time.** `infra` signs one JWS, the GCP service-account assertion (RS256,
+  `Infra/Core/GcpAuth.lean`), and verifies only that one, in the offline
+  self-check (`Main.lean`). It never verifies an HMAC signature, so this is
+  linen's security fix, not a change in `infra`.
+- **`Network.HTTP.Client.Retry`** factors `parseRetryAfterMillis` and
+  `delayFor` out of `retryAfterMillis`/`delayBefore`, which keep their
+  behaviour. `Infra/Providers/Http.lean`'s `policy` is unchanged.
+- `Data.Hex`: a comment only.
+
+The other additions in 1.7.0 (`System.Process`, `System.LakeLog`,
+`System.Git.Remote`) are nothing `infra` imports, and `infra` has no copies of
+them to delete. linen's test library is now `LinenTest` rather than `Tests`,
+and `infra` defines no module of either name. `lake build`, `lake test`,
+`lake exe infra check`, every offline example and the `ci/` checks pass
+unchanged.
+
+Scaffolded projects pin `v0.19.1` (`infraRev`).
+
 ## [0.19.0] — 2026-09-29
 
 ### Added: managed Kubernetes, and the objects in it — `kubernetesCluster`, `kubernetesObject`
