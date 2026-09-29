@@ -551,8 +551,8 @@ def PostgresMigrationsSpec.historyIsSound {K : ProviderId → Kind → Type}
     `default` for the region's default VPC), and
     the cluster uses that VPC's subnets, which EKS requires in at least two
     availability zones; on GCP a VPC network (the project's `default` when
-    unset); on Scaleway a Private Network by name (Kapsule attaches one of
-    its own when unset). A cluster cannot change network on any of the three,
+    unset); on Scaleway a Private Network by name, which Kapsule requires.
+    Required on AWS and Scaleway (`Plan.kubernetesProblem`). A cluster cannot change network on any of the three,
     so a change is a `REPLACE`.
 
     `clusterRole` and `nodeRole` are AWS's: EKS requires an IAM role for the

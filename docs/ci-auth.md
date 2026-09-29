@@ -481,7 +481,8 @@ secrets.
 
 ## What is deliberately not here
 
-**A key file for GCP.** `Infra.Core.GcpAuth` can read a service-account JSON
+**A key file for GCP.** The credential chain (linen's `Cloud.Credentials.Gcp`,
+since 0.20.0) can read a service-account JSON
 key and mint its own token, and that is the right answer for a long-running
 process on a machine that cannot federate. It is the wrong answer for CI, where
 federation is available and a key file is a long-lived secret sitting in a

@@ -44,28 +44,15 @@ def host : String := "storage.googleapis.com"
 
 private def bucketPath (bucket : String) : String := s!"/storage/v1/b/{bucket}"
 
-/-- Every bucket in the project.
-
-    Paginated with a fuel bound rather than `partial`, and it says so when it
-    stops: a truncated list read as complete would make the planner propose
-    creating buckets that already exist. -/
-def listBuckets (creds : Credentials) (project : String) : IO (List String) := do
-  let rec go (fuel : Nat) (token : String) (acc : List String) : IO (List String) := do
-    match fuel with
-    | 0 =>
-      IO.eprintln "warning: gcp storage: stopped paginating buckets after 50 pages; \
-the list may be incomplete"
-      return acc
-    | fuel' + 1 =>
-      let query : Query :=
-        ("project", some project) :: (if token.isEmpty then [] else [("pageToken", some token)])
-      let reply ← Gcp.call creds "GET" host "/storage/v1/b" query
-      let here := (arrayField reply "items").filterMap (Data.Json.Value.lookupText "name")
-      let acc := acc ++ here
-      match reply.lookupText "nextPageToken" with
-      | some next => if next.isEmpty then return acc else go fuel' next acc
-      | none      => return acc
-  go 50 "" []
+/-- Every bucket in the project, every page (`Http.listAll`: a listing the
+    provider never finishes fails rather than being read as complete). -/
+def listBuckets (creds : Credentials) (project : String) : IO (List String) :=
+  Http.listAll "gcp storage buckets" fun token => do
+    let query : Query :=
+      ("project", some project) :: (token.map fun t => [("pageToken", some t)]).getD []
+    let reply ← Gcp.call creds "GET" host "/storage/v1/b" query
+    return ((arrayField reply "items").filterMap (Data.Json.Value.lookupText "name"),
+            reply.lookupText "nextPageToken")
 
 /-- Whether versioning is on.
 

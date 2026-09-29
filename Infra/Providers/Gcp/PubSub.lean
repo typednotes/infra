@@ -53,31 +53,16 @@ def topicName (project name : String) : String := s!"projects/{project}/topics/{
 private def topicPath (project name : String) : String :=
   "/v1/" ++ topicName project name
 
-/-- Every topic in the project, as short names paired with resource names.
-
-    Paginated with a fuel bound rather than `partial`: the API returns a
-    `nextPageToken` and a malfunctioning or hostile one could otherwise loop
-    forever. Fifty pages is far past any real project, and stopping short is
-    reported rather than silently truncating a list the planner will treat as
-    complete. -/
-def listTopics (creds : Credentials) (project : String) : IO (List (String × String)) := do
-  let rec go (fuel : Nat) (token : String) (acc : List (String × String)) :
-      IO (List (String × String)) := do
-    match fuel with
-    | 0 =>
-      IO.eprintln "warning: gcp pubsub: stopped paginating topics after 50 pages; \
-the list may be incomplete"
-      return acc
-    | fuel' + 1 =>
-      let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
-      let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/topics" query
-      let here := (arrayField reply "topics").filterMap fun t =>
-        (t.lookupText "name").map fun n => (Gcp.shortName n, n)
-      let acc := acc ++ here
-      match reply.lookupText "nextPageToken" with
-      | some next => if next.isEmpty then return acc else go fuel' next acc
-      | none      => return acc
-  go 50 "" []
+/-- Every topic in the project, as short names paired with resource names,
+    every page (`Http.listAll`: a listing the provider never finishes fails
+    rather than being read as complete). -/
+def listTopics (creds : Credentials) (project : String) : IO (List (String × String)) :=
+  Http.listAll "gcp pubsub topics" fun token => do
+    let query : Query := (token.map fun t => [("pageToken", some t)]).getD []
+    let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/topics" query
+    return ((arrayField reply "topics").filterMap fun t =>
+              (t.lookupText "name").map fun n => (Gcp.shortName n, n),
+            reply.lookupText "nextPageToken")
 
 /-- Create a topic. Returns its resource name.
 

@@ -1,12 +1,12 @@
 import Infra.Providers.Http
-import Linen.Crypto.SigV4
+import Linen.Cloud.Auth
 import Linen.Data.Time.Clock
 
 /-
   Signing AWS-family requests.
 
-  Joins `Infra.Core.Credentials` to Linen's `Crypto.SigV4` and hands back a
-  ready-to-send request. Every AWS protocol below this — REST-XML, Query,
+  Joins infra's endpoints to linen's `Cloud.Auth` (SigV4 over `Crypto.SigV4`)
+  and hands back a ready-to-send request. Every AWS protocol below this — REST-XML, Query,
   AWS-JSON, REST-JSON — differs only in how it *builds* the request; they all
   sign it the same way, so signing lives here once.
 
@@ -39,10 +39,13 @@ structure Endpoint where
       project, so every bucket scan silently looked in the wrong place. -/
   project : Option String := none
 
-/-- Sign and send, returning the response or raising the provider's own error.
+/-- Sign a request, at a given time, and hand back one ready to send.
 
-    `unsignedBody` is the S3 escape hatch for large payloads; everything here
-    hashes its body, which is what non-S3 services require anyway.
+    The signature is linen's (`Cloud.Auth.headersAt` with `.sigV4`, over
+    `Crypto.SigV4`), which returns every header it covers, `Host` included.
+    What infra adds is the Scaleway addressing: `Endpoint.project` rides on the
+    access key as `<key>@<project>`, the one way to address a project on an API
+    with no project parameter.
 
     `doubleEncodePath` reflects a genuine split in AWS's rules: S3 signs the
     path exactly as sent, every other service expects it encoded twice.
@@ -52,19 +55,12 @@ def signedRequestAt (creds : Credentials) (ep : Endpoint) (now : Data.Time.UTCTi
     (method path : String) (query : Query := [])
     (headers : List (String × String) := []) (body : ByteArray := ByteArray.empty)
     (doubleEncodePath : Bool := false) : IO Request := do
-  let sigHeaders ← Crypto.SigV4.sign
-    { accessKeyId := match ep.project with
-        | some p => creds.accessKey ++ "@" ++ p
-        | none   => creds.accessKey
-      secretAccessKey := creds.secretKey
-      sessionToken := creds.sessionToken }
-    ep.region ep.service now
-    { method, path, query
-      headers := ("Host", ep.host) :: headers
-      payload := body
-      doubleEncodePath }
-  return Http.request method ep.host path query
-    (("Host", ep.host) :: headers ++ sigHeaders)
+  let signer : Credentials := match ep.project with
+    | some p => { creds with accessKey := creds.accessKey ++ "@" ++ p }
+    | none   => creds
+  let authHeaders ← (Cloud.Auth.sigV4 signer ep.service ep.region).headersAt now ep.host
+    method path query headers body doubleEncodePath
+  return Http.request method ep.host path query (headers ++ authHeaders)
     (if body.isEmpty then none else some body)
 
 /-- Sign against the current wall clock. The signing time is a parameter of

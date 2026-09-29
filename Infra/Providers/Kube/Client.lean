@@ -90,8 +90,8 @@ def pemOfBase64 (b64 : String) : Option String :=
 /-- One request over TLS trusting only the cluster's CA. -/
 private def sendOnce (a : Access) (caPath : String) (req : Request) : IO Response := do
   let (sock, _) ← Data.Streaming.Network.getSocketTCP a.host a.port
-  Network.Socket.setRecvTimeout sock Http.timeoutMillis
-  Network.Socket.setSendTimeout sock Http.timeoutMillis
+  Network.Socket.setRecvTimeout sock Cloud.timeoutMillis
+  Network.Socket.setSendTimeout sock Cloud.timeoutMillis
   let ctx ← Network.TLS.createClientContextWithCA caPath
   let session ← Network.TLS.connectSocket ctx sock.raw a.host
   let conn : Connection :=
@@ -121,38 +121,38 @@ def send (a : Access) (method path : String) (query : Query := [])
         fun (n, v) => (Data.CI.mk' n, v)
       body := bytes
       isSecure := true
-      timeoutMillis := Http.timeoutMillis }
+      timeoutMillis := Cloud.timeoutMillis }
   IO.FS.withTempFile fun h caPath => do
     h.putStr a.caPem
     h.flush
-    withRetry Http.policy (sendOnce a caPath.toString req)
+    withRetry Cloud.retryPolicy (sendOnce a caPath.toString req)
 
 private def label (a : Access) (method path : String) : String :=
   s!"kubernetes {a.label} {method} {path}"
 
 private def parseBody (what : String) (resp : Response) : IO Value := do
-  let text := (Http.bodyText resp).trimAscii.toString
+  let text := (← Http.bodyText resp).trimAscii.toString
   if text.isEmpty then return .null
   match Data.Json.Decode.decode text with
   | .ok v    => return v
   | .error m => throw (IO.userError s!"{what}: malformed JSON response: {m}")
 
 /-- Call and require a 2xx; the API server's `Status` body is read for the
-    error (`{"reason":…,"message":…}`) through `Http.describeError`, which
+    error (`{"reason":…,"message":…}`) through `Cloud.describeError`, which
     already reads a flat `code`/`message`. -/
 def call (a : Access) (method path : String) (query : Query := [])
     (contentType : String := "application/json") (body : Option Value := none) : IO Value := do
   let resp ← send a method path query contentType body
   let status := resp.statusCode.statusCode
   unless 200 ≤ status && status ≤ 299 do
-    let text := Http.bodyText resp
+    let text := Http.errorText resp
     -- Kubernetes names the failure in `reason` (`NotFound`, `Forbidden`,
     -- `Conflict`, `Invalid`), which is the code worth keeping.
-    let described := Http.describeError status text
+    let described := Cloud.describeError status text
     let reason := match Data.Json.Decode.decode text with
       | .ok v => (v.lookupText "reason").getD described.code
       | .error _ => described.code
-    throw (IO.userError s!"{label a method path}: {toString { described with code := reason }}")
+    throw (IO.userError s!"{label a method path}: {Http.render { described with code := reason }}")
   parseBody (label a method path) resp
 
 /-- A GET that reads a 404 as `none`. -/
@@ -162,7 +162,7 @@ def get? (a : Access) (path : String) (query : Query := []) : IO (Option Value) 
   let status := resp.statusCode.statusCode
   unless 200 ≤ status && status ≤ 299 do
     throw (IO.userError s!"{label a "GET" path}: \
-{toString (Http.describeError status (Http.bodyText resp))}")
+{Http.describe status (Http.errorText resp)}")
   some <$> parseBody (label a "GET" path) resp
 
 -- ────────────────────────────────────────────────────────────────────
@@ -264,6 +264,37 @@ structure Found where
   uid    : String
   labels : List (String × String)
 
+/-- The resources the marker scan never looks in: core `persistentvolumeclaims`
+    and `endpoints`, and `events` in any group. See `listLabelled` for why
+    each. -/
+def excludedFromScan (apiVersion plural : String) : Bool :=
+  plural == "events" ||
+  (apiVersion == "v1" && (plural == "persistentvolumeclaims" || plural == "endpoints"))
+
+#guard excludedFromScan "v1" "endpoints" && excludedFromScan "v1" "persistentvolumeclaims"
+  && excludedFromScan "events.k8s.io/v1" "events" && excludedFromScan "v1" "events"
+#guard !excludedFromScan "v1" "services" && !excludedFromScan "v1" "configmaps"
+  && !excludedFromScan "apps/v1" "deployments"
+  -- an EndpointSlice is excluded by its owner reference, not here
+  && !excludedFromScan "discovery.k8s.io/v1" "endpointslices"
+
+/-- Aggregated API groups that serve only computed, read-only resources —
+    `get`/`list`, never `delete` — so the scan, which looks only at what it
+    can delete, would skip every resource in them anyway. Their discovery is
+    not asked: `metrics.k8s.io` answers `503` for as long as metrics-server is
+    not ready, which on a fresh one-node Kapsule cluster was the whole first
+    live run (2026-09-29), one note per plan. Skipping them changes no
+    outcome. -/
+def readOnlyGroups : List String :=
+  ["metrics.k8s.io", "custom.metrics.k8s.io", "external.metrics.k8s.io"]
+
+/-- Is this group-version one of `readOnlyGroups`? -/
+def isReadOnlyGroup (gv : String) : Bool :=
+  readOnlyGroups.any fun g => gv.startsWith (g ++ "/")
+
+#guard isReadOnlyGroup "metrics.k8s.io/v1beta1" && !isReadOnlyGroup "apps/v1"
+  && !isReadOnlyGroup "v1" && !isReadOnlyGroup "notmetrics.k8s.io/v1"
+
 /-- Every object carrying the label `key` (any value), across every
     namespace and every listable, deletable resource — except those this
     fleet must never claim as undeclared:
@@ -274,14 +305,21 @@ structure Found where
     * **PersistentVolumeClaims**: a StatefulSet's claim carries the marker
       from its template (so it says whose it is), and infra never deletes
       one (`docs/kubernetes.md`, hard edge 5);
+    * **Endpoints** (core `v1`): the endpoints controller creates one per
+      Service, with the Service's name, and **copies the Service's labels
+      onto it — the marker included** — but, unlike an EndpointSlice, sets no
+      owner reference. It is the Service's all the same, deleted with it; the
+      first live run read one as an orphan of this fleet (2026-09-29);
     * **Events**, which are the server's.
 
-    A group-version whose discovery answers `503` — an aggregated API whose
+    The metrics groups (`readOnlyGroups`) are not asked at all. Any other
+    group-version whose discovery answers `503` — an aggregated API whose
     backing service is down — is skipped with a note on stderr rather than
     failing every plan; any other failure raises. -/
 def listLabelled (a : Access) (cluster key : String) : IO (List Found) := do
   let mut out : List Found := []
   for gv in ← groupVersions a do
+    if isReadOnlyGroup gv then continue
     let resources ← match ← (resourcesOf a gv).toBaseIO with
       | .ok rs => pure rs
       | .error e =>
@@ -291,29 +329,26 @@ scanned for objects carrying this fleet's marker"
           pure []
         else throw e
     for r in resources do
-      if r.apiVersion == "v1" && (r.plural == "persistentvolumeclaims" || r.plural == "events") then
-        continue
-      if r.plural == "events" then continue
-      let mut token : Option String := none
-      for _ in [0:1000] do
+      if excludedFromScan r.apiVersion r.plural then continue
+      let items ← Http.listAll s!"kubernetes {a.label} {r.plural}" fun token => do
         let page ← call a "GET" s!"{r.root}/{r.plural}"
           ([("labelSelector", some key), ("limit", some "500")]
             ++ (token.map fun t => [("continue", some t)]).getD [])
-        for item in arrayField page "items" do
-          let md := (item.lookup "metadata").getD .null
-          if !(arrayField md "ownerReferences").isEmpty then continue
-          match md.lookupText "name" with
-          | none => pure ()
-          | some nm =>
-            let labels := match md.lookup "labels" with
-              | some (.object fs) => fs.filterMap fun (k, v) => v.asString.map (k, ·)
-              | _ => []
-            out := out ++ [{ name := { cluster, kind := r.kindSegment, name := nm
-                                       ns := if r.namespaced then (md.lookupText "namespace").getD "default"
-                                             else "_" }
-                             uid := (md.lookupText "uid").getD "", labels }]
-        token := (page.lookup "metadata").bind (Data.Json.Value.lookupText "continue") |>.filter (!·.isEmpty)
-        if token.isNone then break
+        return (arrayField page "items",
+                (page.lookup "metadata").bind (·.lookupText "continue"))
+      for item in items do
+        let md := (item.lookup "metadata").getD .null
+        if !(arrayField md "ownerReferences").isEmpty then continue
+        match md.lookupText "name" with
+        | none => pure ()
+        | some nm =>
+          let labels := match md.lookup "labels" with
+            | some (.object fs) => fs.filterMap fun (k, v) => v.asString.map (k, ·)
+            | _ => []
+          out := out ++ [{ name := { cluster, kind := r.kindSegment, name := nm
+                                     ns := if r.namespaced then (md.lookupText "namespace").getD "default"
+                                           else "_" }
+                           uid := (md.lookupText "uid").getD "", labels }]
   return out
 
 /-- Server-side apply: create the object if absent, and otherwise make this
@@ -334,7 +369,7 @@ def delete (a : Access) (r : Resource) (ns name : String) : IO Unit := do
   let status := resp.statusCode.statusCode
   unless (200 ≤ status && status ≤ 299) || status == 404 do
     throw (IO.userError s!"{label a "DELETE" (objectPath r ns name)}: \
-{toString (Http.describeError status (Http.bodyText resp))}")
+{Http.describe status (Http.errorText resp)}")
 
 /-- A JSON merge patch — for removing one label, and nothing else. -/
 def mergePatch (a : Access) (r : Resource) (ns name : String) (patch : Value) : IO Unit := do

@@ -77,7 +77,7 @@ def call (creds : Credentials) (method path : String)
       (if body.isEmpty then none else some body))).toBaseIO with
     | .ok r => pure r
     | .error e => throw (IO.userError s!"scaleway {method} {path}: {e}")
-  let text := (Http.bodyText resp).trimAscii.toString
+  let text := (← Http.bodyText resp).trimAscii.toString
   if text.isEmpty then return .null
   match Data.Json.Decode.decode text with
   | .ok v    => return v

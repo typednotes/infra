@@ -264,7 +264,7 @@ def checkPullAndPlan : IO Unit := do
 def checkCredentials : IO Unit := do
   let tmp ← IO.FS.createTempDir
   try
-    let paths := Paths.under tmp
+    let paths := Cloud.Paths.under tmp
     IO.FS.createDirAll (tmp / ".aws")
     IO.FS.writeFile paths.awsCredentials
       "[default]\n\
@@ -306,21 +306,19 @@ def checkCredentials : IO Unit := do
     unless mentions shown "<redacted>" do
       throw (IO.userError "Credentials rendering did not redact")
 
-    -- GCP's first source is added from above (`GcpAuth.loadWithKeyFile`), so
-    -- nothing in `Credentials` can try it — but the not-found message is built
-    -- there, and a source the user is never told about is a source they cannot
-    -- use. Order matters too: it is what decides whether an explicit key or
+    -- GCP's first source is the service-account key file, and a source the
+    -- user is never told about is a source they cannot use. Order matters too: it is what decides whether an explicit key or
     -- whatever `gcloud` last logged into wins.
     let gcpSources := sourceDescriptions paths .gcp "default"
-    for expected in [gcpKeyFileVar, "gcloud", "keychain", "GOOGLE_OAUTH_ACCESS_TOKEN"] do
+    for expected in [Cloud.gcpKeyFileVar, "gcloud", "keychain", "GOOGLE_OAUTH_ACCESS_TOKEN"] do
       unless gcpSources.any (mentions · expected) do
         throw (IO.userError s!"the gcp source list omits {expected}: {gcpSources}")
-    unless (gcpSources.head?.map (mentions · gcpKeyFileVar)).getD false do
+    unless (gcpSources.head?.map (mentions · Cloud.gcpKeyFileVar)).getD false do
       throw (IO.userError s!"the gcp source list does not lead with the key file: {gcpSources}")
 
     -- With no config, no keychain entry and no environment, the failure must
     -- name every place that was tried.
-    let empty := Paths.under (tmp / "nonexistent")
+    let empty := Cloud.Paths.under (tmp / "nonexistent")
     match ← IO.getEnv "AWS_ACCESS_KEY_ID" with
     | none =>
       match ← (loadFrom empty .aws).toBaseIO with
@@ -404,19 +402,24 @@ Signature=21cccf6f70b4372af8e137af9b15333d9485d91e393b87fc2b9e034f8ef7a77d"
 
   -- Error bodies: the provider's own code and message must survive, in both
   -- dialects, because "403" alone is not a diagnosis.
-  let xmlErr := Infra.Providers.Http.describeError 404
+  let xmlErr := Cloud.describeError 404
     "<?xml version=\"1.0\"?><Error><Code>NoSuchBucket</Code>\
 <Message>The specified bucket does not exist</Message><RequestId>TX1</RequestId></Error>"
   unless xmlErr.code == "NoSuchBucket" && xmlErr.requestId == some "TX1" do
     throw (IO.userError s!"XML error not parsed: {xmlErr.code}")
-  let jsonErr := Infra.Providers.Http.describeError 400
+  let jsonErr := Cloud.describeError 400
     "{\"message\":\"invalid argument\",\"type\":\"invalid_arguments\"}"
   unless jsonErr.message == "invalid argument" do
     throw (IO.userError s!"JSON error not parsed: {jsonErr.message}")
   -- An unparseable body keeps its text rather than vanishing.
-  let rawErr := Infra.Providers.Http.describeError 502 "upstream exploded"
+  let rawErr := Cloud.describeError 502 "upstream exploded"
   unless rawErr.message == "upstream exploded" do
     throw (IO.userError s!"raw error body lost: {rawErr.message}")
+  -- And infra renders it in the form `readsAsAbsent`/`readsAsRefused` parse.
+  unless Infra.Providers.Http.render xmlErr == "HTTP 404 NoSuchBucket: The specified bucket does not exist (request TX1)" do
+    throw (IO.userError s!"infra's rendering changed: {Infra.Providers.Http.render xmlErr}")
+  unless readsAsAbsent (Infra.Providers.Http.render xmlErr) do
+    throw (IO.userError "a rendered NoSuchBucket does not read as absent")
 
   -- `Content-MD5` on S3 bucket-configuration writes. Checked against
   -- `openssl dgst -md5 -binary | base64` rather than against this
@@ -1065,7 +1068,8 @@ def checkKeepData : IO Unit := do
 /- The marker decides inside a cluster too. -/
 fleet k8sFleet in paris where
   provider scaleway where
-    resource kubernetesCluster "main" { nodeType := "GP1-S", nodeCount := 3 }
+    resource kubernetesCluster "main"
+      { nodeType := "GP1-S", nodeCount := 3, network := "pn-typednotes" }
     resource kubernetesObject "main/default/statefulset.apps/postgres"
       { shape := Infra.Specs.statefulSet (image := "postgres:17") }
     resource kubernetesObject "main/default/service/postgres"
@@ -1250,13 +1254,14 @@ def checkVanishingResource : IO Unit := do
 def checkGcpAssertion : IO Unit := do
   let keyFile := "{\"type\":\"service_account\",\"project_id\":\"p\",\
 \"client_email\":\"ci@p.iam.gserviceaccount.com\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDpcDBZHjvbtp68\\nZJmXXFGQzgYVgOUZXMVs/mFiyelPoBrY2ZuQ+McU8m0xXzzGvEbe/isgChZ3g8+l\\nJsL900iwLetXfnhdqFU7j+WPpB1Jx/tfqG3qOFPR0tCPndwKFtVyn1nJjHmZYT5N\\n7RBSrVIfWhwa7y5tkpF19Rbrta0KH4d2+rXmYwFMT5Ft6wUpe6WifTdThfWNd47/\\nc6kdqkWZtzTE9q7RkWCNrqk1C+W5lU3HdaxYEGmGk5tSWWiM3ZjqO3IYPXylc/Yi\\nOZE2zCu6b59geQIuyp14kzDmHHp/qqNP0ykdKbyZTJgZr74Ug8mLDekupAl4Knd5\\nejWze0aXAgMBAAECggEABfU6ZqviNI4JUx7w2e9zQtI0pDaGol+/HN8JNppB/X7v\\n8HpCrC/in42TF+ApuZtzO5xvwVZAkzWmsRJiMP7u1gBLXLpPnCRVuJAdoyLkfyOU\\nLjGATKq6CPBBKR6K+n7xXQblexgTam9pmwI37m7vWk7UdM4x+H311HWNljUsK3FC\\nExQwifiT1eRcFLtGOYm5iNpJtLIbKZYguhb5rDoHYoqBflt5T9/R1cGMfcAR5V7J\\n6uF8hwcc1vvv/knNHbkbA9qOAz+imFFr6LDzFltOU4rrqg9/4BMciQRQUg+FBWS0\\nXUi8Z6X+UfQwyMkgsF6NQ+2F9Ii6M0haGh0WXgShkQKBgQD/IjVOr1j3enLrYKCi\\niVEy7L1aPxK9be4qx+W0n86e6jfaFNUx1u7eL+zKvNdWUWA4JPSr8LGYREcbJVns\\nYzO6VLfuiOjIcUvz45DQKcADoc0HT1KE235QMr9+HlLMtDka46Alo2Y4zYfmX0jY\\nR56CiHSMG1iSejwRMuYcq+fbAwKBgQDqOx7XoWP1cYNfydf2WMArgTrUW8y5PdjT\\ntJcSgmSjb3ALRsl8Dvhc/DTSb1g5Rm6JL7TSnUx4yCYWvdBVxOxiQ3F5fR705k2F\\npUZTkvTJ5GhaSgIs/SIryVG1RiD0kVOspV+MI/7M9iLB52ltRlQkCqQYS+ulUC/l\\nio3m92dn3QKBgQCMNZB2HYcW+gQNtpyQtkYZZmDpJ6B02eT5PcHO8cPrMWxgPPKs\\n4SGEmXHYOM9ecHogYK7VjwEKXPt2v6AbeKkEzWoHfNXw0dKbxYPf4hHT7SdvzPfc\\na4OPL1RtStzWAnUfgdiQ1qtmrAzzXYn60eEae0MRfDXAycwY54/uUcqpYQKBgCcK\\n670tnafP4AIbdvANIxsdU10KYDmQYZAIThY7veKwNJDsn7EaHbQCJhvdi2sgnlQn\\nq5Bfv9tyIUcxJITnai+G5mdFv986dDmOrwZHPJ5agDpsk6hEGWoLCJ+arOuXPcdN\\nWXvWlCY98NU5aY1ZZ7UKQQf7v6+yiglM6xJQst/RAoGAIWEVDnRDRTMupQ6yyPei\\nqwtb2/Ew+5iwjMLHAhUdRrDJbl/kmI6DC2yLkFA5YjHoqx+9kOXzZzmLae9V384y\\npPJ+UAHBFApKyTS/x/dRWY6fVvnGrk3SXgyOizCg+rOlBxTYacPMXiJlEuIGANBH\\ntgNxv+cGCEjoVJaNhTyrGYs=\\n-----END PRIVATE KEY-----\"}"
-  let sa ← match Infra.Core.GcpAuth.parse keyFile with
+  let sa ← match Cloud.Credentials.Gcp.parseKeyFile keyFile with
     | .ok sa   => pure sa
     | .error e => throw (IO.userError s!"gcp key parse: {e}")
   -- Nothing may render the private key, whatever is done with it.
   if ((toString sa).splitOn "PRIVATE KEY").length > 1 then
     throw (IO.userError "gcp: the service-account key leaked into its own Repr")
-  let jwt ← Infra.Core.GcpAuth.assertion sa Infra.Core.GcpAuth.defaultScope
+  let jwt ← orThrow (← Cloud.Credentials.Gcp.assertion sa Cloud.Gcp.cloudPlatformScope
+    (← Cloud.Credentials.Gcp.nowEpochSeconds))
   match jwt.splitOn "." with
   | [h, p, sig] =>
     let n ← Crypto.JOSE.FFI.base64urlDecode "6XAwWR4727aevGSZl1xRkM4GFYDlGVzFbP5hYsnpT6Aa2NmbkPjHFPJtMV88xrxG3v4rIAoWd4PPpSbC_dNIsC3rV354XahVO4_lj6QdScf7X6ht6jhT0dLQj53cChbVcp9ZyYx5mWE-Te0QUq1SH1ocGu8ubZKRdfUW67WtCh-Hdvq15mMBTE-RbesFKXulon03U4X1jXeO_3OpHapFmbc0xPau0ZFgja6pNQvluZVNx3WsWBBphpObUllojN2Y6jtyGD18pXP2IjmRNswrum-fYHkCLsqdeJMw5hx6f6qjT9MpHSm8mUyYGa--FIPJiw3pLqQJeCp3eXo1s3tGlw"
@@ -1358,15 +1363,17 @@ def selfCheck : IO Unit := do
 def gcpCheck (path : String) : IO UInt32 := do
   let contents ← try IO.FS.readFile path
     catch _ => IO.eprintln s!"error: cannot read {path}"; return 1
-  match Infra.Core.GcpAuth.parse contents with
-  | .error e => IO.eprintln s!"error: {path}: {e}"; return 1
+  match Cloud.Credentials.Gcp.parseKeyFile contents with
+  | .error e => IO.eprintln s!"error: {path}: {e.message}"; return 1
   | .ok sa =>
     IO.println s!"key file:   ok — {sa.clientEmail}"
     IO.println s!"project:    {sa.projectId.getD "(none in the key)"}"
-    let jwt ← try Infra.Core.GcpAuth.assertion sa Infra.Core.GcpAuth.defaultScope
-      catch e => IO.eprintln s!"error: could not sign the assertion: {e}"; return 1
+    let iat ← Cloud.Credentials.Gcp.nowEpochSeconds
+    let jwt ← match ← Cloud.Credentials.Gcp.assertion sa Cloud.Gcp.cloudPlatformScope iat with
+      | .ok j => pure j
+      | .error e => IO.eprintln s!"error: could not sign the assertion: {e.message}"; return 1
     IO.println s!"assertion:  ok — signed RS256, {jwt.length} chars"
-    match ← (Infra.Core.GcpAuth.exchange sa jwt).toBaseIO with
+    match ← Cloud.Credentials.Gcp.exchange Cloud.Transport.network sa jwt iat with
     | .error e =>
       IO.eprintln s!"error: the token exchange failed: {e}"
       IO.eprintln "  Common causes: the key is disabled or deleted; the IAM API is\n\
@@ -1375,7 +1382,7 @@ def gcpCheck (path : String) : IO UInt32 := do
       return 1
     | .ok token =>
       -- Length only. The token is a bearer credential for the whole project.
-      IO.println s!"token:      ok — {token.length} chars, not printed"
+      IO.println s!"token:      ok — {token.accessToken.length} chars, not printed"
       IO.println "\nThis key can authenticate. Point GOOGLE_APPLICATION_CREDENTIALS at it."
       return 0
 

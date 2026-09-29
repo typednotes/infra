@@ -40,8 +40,8 @@ private def readSubresource (creds : Credentials) (ep : Endpoint)
   if status == 404 then return none
   if !(200 ≤ status && status ≤ 299) then
     throw (IO.userError
-      (toString (Http.describeError status (Http.bodyText resp))))
-  match Text.XML.parse (Http.bodyText resp) with
+      (Http.describe status (Http.errorText resp)))
+  match Text.XML.parse (← Http.bodyText resp) with
   | .ok e    => return some e
   | .error _ => return none      -- an empty body is a legitimate "unset"
 

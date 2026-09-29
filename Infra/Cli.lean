@@ -2,7 +2,6 @@ import Infra.Core.Engine
 import Infra.Core.Credentials
 import Infra.Core.Region
 import Infra.Core.Bundle
-import Infra.Core.GcpAuth
 import Infra.Providers.Live
 import Infra.Providers.Placeholder
 import Infra.Providers.Snapshot
@@ -151,19 +150,16 @@ def liveFor (κ : Keys) (regions : Regions := {})
   -- what it left behind (see `Infra.Cli.run`).
   let clouds := κ.providers ++ extra.filter (!κ.providers.contains ·)
   for p in clouds do
-    -- Not `Credentials.load`: GCP has a fourth source that cannot live there
-    -- (minting a token from a service-account key needs HTTP, and HTTP needs
-    -- `Credentials`), and `loadWithKeyFile` is the one place that adds it — so
-    -- every front end offers the same sources rather than this one being
-    -- special. See `Infra.Core.GcpAuth.loadWithKeyFile`.
+    -- `Credentials.load` is linen's whole chain, GCP's service-account key
+    -- file first — every front end offers the same sources.
     let declared := κ.providers.contains p
     -- A cloud named only in `Accounts` is scanned if its credentials are
     -- there, and said out loud if they are not: nothing is declared on it, so
     -- nothing *needs* it — but whatever this fleet left there is not looked
     -- for, and that should not be silent.
-    let some c ← (if declared then some <$> Infra.Core.GcpAuth.loadWithKeyFile p
+    let some c ← (if declared then some <$> Credentials.load p
         else do
-          match ← (Infra.Core.GcpAuth.loadWithKeyFile p).toBaseIO with
+          match ← (Credentials.load p).toBaseIO with
           | .ok c => pure (some c)
           | .error _ =>
             IO.eprintln s!"note: {p.name} is named in this fleet's accounts but declares \
@@ -238,7 +234,7 @@ and neither the fleet nor the credentials say which region to scan, so it is not
 
     A total function over `ProviderId` rather than one named field per cloud:
     the enum is `Finite` and the rest of the library already treats it
-    uniformly (`Keys.providers`, `Credentials.envVars`), so a third cloud
+    uniformly (`Keys.providers`, `Cloud.envVars`), so a third cloud
     should be a row rather than a third copy of the check below. `none` for a
     provider means "do not check it", which is the right default for one a
     fleet does not use. -/
@@ -246,7 +242,7 @@ structure Accounts where
   expect : ProviderId → Option String := fun _ => none
 
 /-- The environment variable naming the expected account for each cloud,
-    alongside `Credentials.envVars` in spirit. -/
+    alongside `Cloud.envVars` in spirit. -/
 def Accounts.envVar : ProviderId → String
   | .aws      => "INFRA_EXPECT_AWS_ACCOUNT"
   | .scaleway => "INFRA_EXPECT_SCALEWAY_ORG"
@@ -266,7 +262,7 @@ def Accounts.envVar : ProviderId → String
 def Accounts.fromEnv : IO Accounts := do
   let mut table : List (ProviderId × String) := []
   for p in Finite.elems (α := ProviderId) do
-    if let some v := normalizeEnv (← IO.getEnv (Accounts.envVar p)) then
+    if let some v := Cloud.normalizeEnv (← IO.getEnv (Accounts.envVar p)) then
       table := (p, v) :: table
   return { expect := fun p => (table.find? fun e => e.1 == p).map (·.2) }
 

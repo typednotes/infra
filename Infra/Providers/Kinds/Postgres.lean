@@ -75,7 +75,7 @@ def fetchMasterPassword (provider : ProviderId) (creds : Credentials) (secretNam
       match reply.lookupText "data" with
       | some encoded =>
         match Data.Base64.decode encoded with
-        | some bytes => return String.fromUTF8! bytes
+        | some bytes => Http.utf8Text s!"secret '{secretName}'" bytes
         | none       => throw (IO.userError s!"secret '{secretName}': value is not valid base64")
       | none => throw (IO.userError s!"secret '{secretName}' holds no data")
 

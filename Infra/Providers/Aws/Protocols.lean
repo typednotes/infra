@@ -34,14 +34,14 @@ open Data.Json (Value)
 
 /-- Parse an XML reply, or say which call produced unreadable output. -/
 private def parseXml (what : String) (resp : Response) : IO Text.XML.Element := do
-  match Text.XML.parse (Http.bodyText resp) with
+  match Text.XML.parse (← Http.bodyText resp) with
   | .ok e    => return e
   | .error m => throw (IO.userError s!"{what}: malformed XML response: {m}")
 
 /-- Parse a JSON reply. An empty body becomes `null`: several AWS operations
     answer 200 with nothing at all. -/
 private def parseJson (what : String) (resp : Response) : IO Value := do
-  let text := (Http.bodyText resp).trimAscii.toString
+  let text := (← Http.bodyText resp).trimAscii.toString
   if text.isEmpty then return .null
   match Data.Json.Decode.decode text with
   | .ok v    => return v

@@ -1658,12 +1658,18 @@ def gcpIdentityCheck : IO Unit := do
   Prerequisites the declaration names and never creates: on AWS, the default
   VPC and two IAM roles, `ci-tests-infra-eks-cluster` (trusting `eks`, with
   `AmazonEKSClusterPolicy`) and `ci-tests-infra-eks-nodes` (trusting `ec2`,
-  with the three node policies); on GCP, the project's `default` network;
-  on Scaleway, nothing — Kapsule attaches a private network of its own. -/
+  with the three node policies); on GCP, the project's `default` network, in
+  Frankfurt rather than Paris — the first GKE run waited forty minutes on
+  `ZONE_RESOURCE_POOL_EXHAUSTED` for one `e2-medium` in `europe-west9-a`
+  (2026-09-29), and a GKE create cannot be cancelled;
+  on Scaleway, a Private Network named `infra-ci-k8s` in the CI project (Kapsule
+  requires one; created by hand 2026-09-29, free, not `ci-tests-infra-*` so no
+  sweep touches it). -/
 
 fleet k8sScalewayFull in paris where
   provider scaleway where
-    resource kubernetesCluster "ci-tests-infra-k8s" { nodeType := "DEV1-M", nodeCount := 1 }
+    resource kubernetesCluster "ci-tests-infra-k8s"
+      { nodeType := "DEV1-M", nodeCount := 1, network := "infra-ci-k8s" }
     resource kubernetesObject "ci-tests-infra-k8s/default/deployment.apps/ci-tests-infra-web"
       { shape := Infra.Specs.deployment (image := "nginx:1.27") (ports := [80]) }
     resource kubernetesObject "ci-tests-infra-k8s/default/service/ci-tests-infra-web"
@@ -1673,7 +1679,8 @@ fleet k8sScalewayFull in paris where
 
 fleet k8sScalewayRampUp in paris where
   provider scaleway where
-    resource kubernetesCluster "ci-tests-infra-k8s" { nodeType := "DEV1-M", nodeCount := 1 }
+    resource kubernetesCluster "ci-tests-infra-k8s"
+      { nodeType := "DEV1-M", nodeCount := 1, network := "infra-ci-k8s" }
     resource kubernetesObject "ci-tests-infra-k8s/default/deployment.apps/ci-tests-infra-web"
       { shape := Infra.Specs.deployment (image := "nginx:1.27") (replicas := 2) (ports := [80]) }
     resource kubernetesObject "ci-tests-infra-k8s/default/service/ci-tests-infra-web"
@@ -1683,7 +1690,8 @@ fleet k8sScalewayRampUp in paris where
 
 fleet k8sScalewayTrimmed in paris where
   provider scaleway where
-    resource kubernetesCluster "ci-tests-infra-k8s" { nodeType := "DEV1-M", nodeCount := 1 }
+    resource kubernetesCluster "ci-tests-infra-k8s"
+      { nodeType := "DEV1-M", nodeCount := 1, network := "infra-ci-k8s" }
     resource kubernetesObject "ci-tests-infra-k8s/default/deployment.apps/ci-tests-infra-web"
       { shape := Infra.Specs.deployment (image := "nginx:1.27") (replicas := 2) (ports := [80]) }
 
@@ -1719,7 +1727,7 @@ fleet k8sAwsTrimmed in ireland where
     resource kubernetesObject "ci-tests-infra-k8s/default/deployment.apps/ci-tests-infra-web"
       { shape := Infra.Specs.deployment (image := "nginx:1.27") (replicas := 2) (ports := [80]) }
 
-fleet k8sGcpFull in paris where
+fleet k8sGcpFull in frankfurt where
   provider gcp where
     resource kubernetesCluster "ci-tests-infra-k8s" { nodeType := "e2-medium", nodeCount := 1 }
     resource kubernetesObject "ci-tests-infra-k8s/default/deployment.apps/ci-tests-infra-web"
@@ -1729,7 +1737,7 @@ fleet k8sGcpFull in paris where
     resource kubernetesObject "ci-tests-infra-k8s/default/configmap/ci-tests-infra-cfg"
       { shape := Infra.Specs.rawObject "v1" "ConfigMap" "{\"data\": {\"stage\": \"full\"}}" }
 
-fleet k8sGcpRampUp in paris where
+fleet k8sGcpRampUp in frankfurt where
   provider gcp where
     resource kubernetesCluster "ci-tests-infra-k8s" { nodeType := "e2-medium", nodeCount := 1 }
     resource kubernetesObject "ci-tests-infra-k8s/default/deployment.apps/ci-tests-infra-web"
@@ -1739,11 +1747,36 @@ fleet k8sGcpRampUp in paris where
     resource kubernetesObject "ci-tests-infra-k8s/default/configmap/ci-tests-infra-cfg"
       { shape := Infra.Specs.rawObject "v1" "ConfigMap" "{\"data\": {\"stage\": \"ramp-up\"}}" }
 
-fleet k8sGcpTrimmed in paris where
+fleet k8sGcpTrimmed in frankfurt where
   provider gcp where
     resource kubernetesCluster "ci-tests-infra-k8s" { nodeType := "e2-medium", nodeCount := 1 }
     resource kubernetesObject "ci-tests-infra-k8s/default/deployment.apps/ci-tests-infra-web"
       { shape := Infra.Specs.deployment (image := "nginx:1.27") (replicas := 2) (ports := [80]) }
+
+/-- The Private Network the Scaleway leg attaches its cluster to. -/
+def scalewayK8sNetwork : String := "infra-ci-k8s"
+
+/-- After the Scaleway leg: the declared Private Network is still there.
+
+    Kapsule's `with_additional_resources` deletes a cluster's *empty* Private
+    Network along with it — the declared one, which infra references and never
+    creates. The first live run did exactly that (2026-09-29), silently: every
+    stage passed and the CI project lost its network. The delete now sends
+    `false`; this is the check that it stays so, and it can only be live —
+    the cascade happens on Scaleway's side. -/
+def assertScalewayNetworkSurvives : IO Unit := do
+  let (_, credsOf) ← Infra.Cli.liveFor k8sScalewayFull.keys k8sScalewayFull.regions liveFleet
+  let some creds := credsOf .scaleway
+    | throw (IO.userError "[scaleway-k8s] no Scaleway credentials to check the network with")
+  let reply ← Infra.Providers.Scaleway.call creds "GET"
+      (Infra.Providers.Scaleway.regionalPrefix "vpc" "v2" creds.region ++ "/private-networks")
+      (query := [("project_id", ← creds.requireProject), ("name", scalewayK8sNetwork)])
+  unless (Infra.Providers.JsonRead.arrayField reply "private_networks").any
+      (·.lookupText "name" == some scalewayK8sNetwork) do
+    throw (IO.userError s!"[scaleway-k8s] the declared Private Network '{scalewayK8sNetwork}' \
+is gone: deleting the cluster took it with it (`with_additional_resources`). Recreate it by hand \
+in the CI project; it is free")
+  progress s!"[scaleway-k8s] the declared Private Network '{scalewayK8sNetwork}' is still there"
 
 /-- The Kubernetes stages for one cloud. -/
 def kubernetesStagesFor : String → Option (List Stage)
@@ -2435,9 +2468,18 @@ def main (args : List String) : IO UInt32 := do
     let some stages := kubernetesStagesFor p
       | do IO.eprintln s!"error: unknown provider '{p}'\n\n{usage}"; return 1
     let some (st0 :: _) := some stages | return 1
-    match ← (liveSequence s!"{p}-k8s" st0.κ (if p == "aws" then .aws
-        else if p == "gcp" then .gcp else .scaleway) stages st0.regions).toBaseIO with
-    | .ok _    => progress s!"[{p}-k8s] ok — all {stages.length} stages"; return 0
+    let result ← (liveSequence s!"{p}-k8s" st0.κ (if p == "aws" then .aws
+        else if p == "gcp" then .gcp else .scaleway) stages st0.regions).toBaseIO
+    -- Checked on failure too: a failed run tears down as well, and a
+    -- teardown is exactly where the cascade would strike.
+    let networkOk ← if p != "scaleway" then pure true else
+      match ← assertScalewayNetworkSurvives.toBaseIO with
+      | .ok _    => pure true
+      | .error e => IO.eprintln s!"error: {e}"; pure false
+    match result with
+    | .ok _    =>
+      if !networkOk then return 1
+      progress s!"[{p}-k8s] ok — all {stages.length} stages"; return 0
     | .error e => IO.eprintln s!"error: {e}"; return 1
   | ["scaleway", "perimeter"] =>
     match ← scalewayPerimeterCheck.toBaseIO with

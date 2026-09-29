@@ -54,25 +54,14 @@ def repositoryUri (project location name : String) : String :=
 /-- Every Docker repository in the project and location, with its URI. -/
 def list (creds : Credentials) (project location : String) :
     IO (List (String × String)) := do
-  let rec go (fuel : Nat) (token : String) (acc : List (String × String)) :
-      IO (List (String × String)) := do
-    match fuel with
-    | 0 =>
-      IO.eprintln "warning: gcp artifact registry: stopped paginating repositories \
-after 50 pages; the list may be incomplete"
-      return acc
-    | fuel' + 1 =>
-      let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
-      let reply ← Gcp.call creds "GET" host (parent project location) query
-      let here := (arrayField reply "repositories").filterMap fun r =>
-        (r.lookupText "name").map fun n =>
-          let short := Gcp.shortName n
-          (short, repositoryUri project location short)
-      let acc := acc ++ here
-      match reply.lookupText "nextPageToken" with
-      | some next => if next.isEmpty then return acc else go fuel' next acc
-      | none      => return acc
-  go 50 "" []
+  Http.listAll "gcp artifact registry repositories" fun token => do
+    let query : Query := (token.map fun t => [("pageToken", some t)]).getD []
+    let reply ← Gcp.call creds "GET" host (parent project location) query
+    let here := (arrayField reply "repositories").filterMap fun r =>
+      (r.lookupText "name").map fun n =>
+        let short := Gcp.shortName n
+        (short, repositoryUri project location short)
+    return (here, reply.lookupText "nextPageToken")
 
 /-- Whether tags are immutable.
 

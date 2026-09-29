@@ -610,7 +610,8 @@ and then spoken to directly (`Kube.Client`, one client for all three clouds).
      ├─ delete  DELETE, propagationPolicy Background; 404 is success
      └─ list    discovery over every group-version, a label-selector
                 list of each listable+deletable resource (owned objects,
-                PVCs and Events excluded) — plus a GET of each declared
+                PVCs, Endpoints and Events excluded; the metrics groups
+                not asked) — plus a GET of each declared
                 address, so an unmarked object at a declared name is SEEN
                 and refused (foreignDeclared), never adopted
 ```

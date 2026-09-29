@@ -1,394 +1,99 @@
 import Infra.Core.Kind
-import Linen.Data.Ini
-import Linen.Data.Yaml
-import Linen.System.Keychain
+import Linen.Cloud.Credentials.Chain
 
 /-
-  Where cloud credentials come from.
+  Where cloud credentials come from: linen's chain, with infra's keychain
+  service.
 
-  Three sources, tried in order, first hit wins:
+  The chain itself — the CLI config files, the OS credential store, the
+  environment, and for GCP a service-account key file (RFC 7523) and `gcloud`
+  first — is `Linen.Cloud.Credentials` (`Cloud.Credentials.Chain.load`). It
+  lived here, and in `Infra.Core.GcpAuth`, until infra moved onto
+  `Linen.Cloud` (0.20.0); linen's copy is now the only one. What stays is the
+  seam between the two:
 
-    1. the CLI config files the official tools already write
-    2. the OS credential store
-    3. environment variables
+  * **`Credentials` is `Cloud.Credentials`**, so every signature in infra
+    keeps its name.
+  * **The keychain service is `"infra"`**, not linen's default `"linen"`, so
+    credentials a user stored with an older infra — and the shared Scaleway
+    Queues credential cache (`Scaleway.Sqs`) — are still found, and the
+    not-found message names the service that was actually searched.
+  * **Failures raise.** The engine is written against `IO` exceptions, and
+    linen answers `Except Cloud.Error`; `orThrow` is the one conversion.
 
-  Resolves `docs/authentication.md`'s open question. Config files come first
-  because a machine that already has `aws configure` or `scw init` run on it
-  should just work; environment variables come last because they are the
-  override of last resort and the one CI sets.
-
-  Nothing here ever logs a secret, and nothing here writes one anywhere but
-  the OS keychain.
-  `Credentials`' `Repr` redacts, so a stray `dbg_trace` or error message cannot
-  leak one by accident.
+  Nothing here ever logs a secret: `Cloud.Credentials`' `Repr` redacts.
 -/
 
 namespace Infra.Core
 
-open Data.Ini (Ini)
-open Data.Yaml (Value)
+/-- What is needed to sign a request to one cloud: linen's structure. -/
+abbrev Credentials := Cloud.Credentials
 
-/-- What is needed to sign a request to one cloud. -/
-structure Credentials where
-  accessKey    : String
-  secretKey    : String
-  region       : String
-  /-- Present only for temporary credentials (STS, instance roles). -/
-  sessionToken : Option String := none
-  /-- Scaleway scopes created resources to a project; AWS has no equivalent and
-      leaves this empty. Creates fail without it, so it travels with the
-      credentials rather than being asked for at each call site. -/
-  projectId    : Option String := none
-  /-- Scaleway IAM is organization-scoped rather than project-scoped, so a
-      second identifier is needed for that one product. AWS has no analogue. -/
-  organizationId : Option String := none
-  /-- An OAuth2 bearer token.
+/-- The files the official CLIs write, parameterised so the chain can run
+    against a scratch directory. -/
+abbrev Paths := Cloud.Paths
 
-      GCP is the first cloud here that does not sign its requests: there is no
-      access-key pair to derive a signature from, only a short-lived token sent
-      as `Authorization: Bearer …`. So `accessKey` and `secretKey` are empty
-      for GCP and this carries the credential instead.
+/-- The same cloud, in linen's enumeration. -/
+def ProviderId.toCloud : ProviderId → Cloud.Provider
+  | .aws      => .aws
+  | .scaleway => .scaleway
+  | .gcp      => .gcp
 
-      Minting one from a service-account key needs an RS256 *signature*, which
-      Linen can verify but not produce — see `docs/authentication.md`. Until it
-      can, the token comes from `gcloud` or from the environment. -/
-  accessToken : Option String := none
+#guard (Finite.elems (α := ProviderId)).all fun p => p.toCloud.name == p.name
 
-/-- Redacting. The secret and any session token are never rendered, so no
-    amount of debug printing or error formatting can spill them. -/
-instance : Repr Credentials where
-  reprPrec c _ :=
-    let tok := if c.sessionToken.isSome then "<redacted>" else "none"
-    let bearer := if c.accessToken.isSome then "<redacted>" else "none"
-    f!"Credentials \{ accessKey := {repr c.accessKey}, secretKey := <redacted>, \
-region := {repr c.region}, sessionToken := {tok}, accessToken := {bearer} }"
-
-instance : ToString Credentials where
-  toString c := toString (repr c)
-
-/-- The files the official CLIs write. Parameterised rather than read from
-    `$HOME` at the point of use, so the chain can be exercised against a
-    scratch directory. -/
-structure Paths where
-  awsCredentials : System.FilePath
-  awsConfig      : System.FilePath
-  scwConfig      : System.FilePath
-
-/-- The conventional locations, relative to `home`. -/
-def Paths.under (home : System.FilePath) : Paths where
-  awsCredentials := home / ".aws" / "credentials"
-  awsConfig      := home / ".aws" / "config"
-  scwConfig      := home / ".config" / "scw" / "config.yaml"
-
-/-- The conventional locations for the current user. -/
-def Paths.default : IO Paths := do
-  let home := (← IO.getEnv "HOME").getD "."
-  return Paths.under home
-
-private def readIfExists (p : System.FilePath) : IO (Option String) := do
-  if ← p.pathExists then return some (← IO.FS.readFile p) else return none
-
--- ── Source 1: the CLI config files ──
-
-/-- The AWS profile to read, from `$AWS_PROFILE`, defaulting to `default`. -/
-def awsProfile : IO String := do
-  return (← IO.getEnv "AWS_PROFILE").getD "default"
-
-/-- Read `~/.aws/credentials` and `~/.aws/config`.
-
-    The two files name the same profile differently: `credentials` uses
-    `[dev]` while `config` uses `[profile dev]` — except for the default
-    profile, which is `[default]` in both. Both spellings are tried rather
-    than assuming, since `aws configure` writes whichever suits the file. -/
-def fromAwsFiles (paths : Paths) (profile : String) : IO (Option Credentials) := do
-  let some credText ← readIfExists paths.awsCredentials | return none
-  let credIni ← match Data.Ini.parse credText with
-    | .ok i    => pure i
-    | .error e => throw (IO.userError s!"{paths.awsCredentials}: {e}")
-  let some accessKey := credIni.lookup profile "aws_access_key_id" | return none
-  let some secretKey := credIni.lookup profile "aws_secret_access_key" | return none
-  -- The region normally lives in the other file.
-  let configIni ← match ← readIfExists paths.awsConfig with
-    | none      => pure ({} : Ini)
-    | some text => match Data.Ini.parse text with
-      | .ok i    => pure i
-      | .error e => throw (IO.userError s!"{paths.awsConfig}: {e}")
-  let configSection := if profile == "default" then "default" else s!"profile {profile}"
-  let region :=
-    (configIni.lookup configSection "region").getD
-      ((credIni.lookup profile "region").getD "")
-  return some
-    { accessKey, secretKey, region
-      sessionToken := credIni.lookup profile "aws_session_token" }
-
-/-- Read `~/.config/scw/config.yaml`. -/
-def fromScalewayFile (paths : Paths) : IO (Option Credentials) := do
-  let some text ← readIfExists paths.scwConfig | return none
-  let doc ← match Data.Yaml.parse text with
-    | .ok v    => pure v
-    | .error e => throw (IO.userError s!"{paths.scwConfig}: {e}")
-  let str (k : String) : Option String := (doc.get? k).bind (·.asString?)
-  let some accessKey := str "access_key" | return none
-  let some secretKey := str "secret_key" | return none
-  return some
-    { accessKey, secretKey
-      region         := (str "default_region").getD ""
-      projectId      := str "default_project_id"
-      organizationId := str "default_organization_id" }
-
-/-- Ask the `gcloud` CLI for a token, the way the other two clouds' config
-    files are read: whatever the official tool has already set up should just
-    work.
-
-    GCP is different in kind from the other two, though, and the difference is
-    worth naming. AWS and Scaleway keep a *long-lived* secret on disk that this
-    library reads and signs with. `gcloud` keeps a refresh token and mints
-    short-lived access tokens on demand, and minting one directly would need an
-    RS256 signature over a service-account key — which Linen can verify but not
-    produce. So this shells out rather than reading a file.
-
-    Two consequences, both real:
-
-    - **The token expires**, typically within the hour. A long apply can outlive
-      one. There is no refresh here; the failure is a 401 partway through.
-    - **It needs `gcloud` on PATH and logged in.** A missing binary is not an
-      error, it is a source that has nothing to offer, so it falls through to
-      the keychain and then the environment — which is what CI uses.
-
-    Both go away if `linen` gains RSA signing; the types here would not
-    change. See `docs/authentication.md`. -/
-def fromGcloud : IO (Option Credentials) := do
-  let run (args : Array String) : IO (Option String) := do
-    try
-      let out ← IO.Process.output { cmd := "gcloud", args }
-      if out.exitCode == 0 then
-        let v := out.stdout.trimAscii.toString
-        -- `gcloud config get-value` prints this for an unset key.
-        return if v.isEmpty || v == "(unset)" then none else some v
-      else return none
-    catch _ => return none          -- no gcloud on PATH: nothing to offer
-  let some token ← run #["auth", "print-access-token"] | return none
-  return some
-    { accessKey := "", secretKey := "", accessToken := some token
-      projectId := ← run #["config", "get-value", "project"]
-      region := (← run #["config", "get-value", "compute/region"]).getD "" }
-
-/-- The variable naming a GCP service-account key file — the long-lived
-    credential that cloud has, and the closest thing it offers to the API-key
-    pair the other two use.
-
-    The *name* lives here, with the other sources, even though the source
-    itself cannot: reading one means minting a token, which needs HTTP, which
-    needs this module. `GcpAuth.keyFileVar` is this string and
-    `GcpAuth.loadWithKeyFile` is what tries it — written down once so a
-    diagnostic here cannot name a variable no loader reads. -/
-def gcpKeyFileVar : String := "GOOGLE_APPLICATION_CREDENTIALS"
-
--- ── Source 2: the OS credential store ──
-
-/-- The keychain service these entries live under. -/
+/-- The keychain service infra's entries live under. -/
 def keychainService : String := "infra"
 
-/-- Read credentials from an arbitrary keychain account under `keychainService`.
+/-- Raise a linen error as an `IO` error carrying its message. -/
+def orThrow {α : Type} : Except Cloud.Error α → IO α
+  | .ok a    => pure a
+  | .error e => throw (IO.userError e.message)
 
-    Stored as an INI body — `access_key`, `secret_key`, `region`,
-    optional `session_token` — so the same parser reads it as reads
-    `~/.aws/credentials`, and so a human can inspect the entry.
-
-    A missing entry is `none`, not an error: on a machine with no keychain
-    service at all the call fails, and that must fall through to the next
-    source rather than abort the chain.
-
-    Not every credential in the chain names a `ProviderId` — a dedicated
-    per-product credential (e.g. Scaleway's SQS-specific key, see
-    `Infra.Providers.Scaleway.Sqs`) needs its own account name. -/
-def fromKeychainAccount (account : String) : IO (Option Credentials) := do
-  let entry := System.Keychain.Entry.new keychainService account
-  let raw ← try
-      pure (some (← entry.getPassword))
-    catch _ => pure none
-  let some text := raw | return none
-  let ini ← match Data.Ini.parse text with
-    | .ok i    => pure i
-    | .error _ => return none      -- a malformed entry is not a usable one
-  let some accessKey := ini.lookupGlobal "access_key" | return none
-  let some secretKey := ini.lookupGlobal "secret_key" | return none
-  return some
-    { accessKey, secretKey
-      region := (ini.lookupGlobal "region").getD ""
-      sessionToken := ini.lookupGlobal "session_token" }
-
-def fromKeychain (provider : ProviderId) : IO (Option Credentials) :=
-  fromKeychainAccount provider.name
-
-/-- Write credentials to an arbitrary keychain account under `keychainService`.
-    See `fromKeychainAccount`. -/
-def storeInKeychainAccount (account : String) (c : Credentials) : IO Unit := do
-  let entry := System.Keychain.Entry.new keychainService account
-  let body := Data.Ini.render
-    { globals :=
-        [("access_key", c.accessKey), ("secret_key", c.secretKey), ("region", c.region)]
-        ++ (match c.sessionToken with
-            | some t => [("session_token", t)]
-            | none   => []) }
-  entry.setPassword body
-
--- ── Source 3: the environment ──
-
-/-- The environment variables each cloud's own tooling reads. -/
-def envVars : ProviderId → (String × String × String × Option String)
-  | .aws      => ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION",
-                  some "AWS_SESSION_TOKEN")
-  | .scaleway => ("SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_REGION", none)
-  -- GCP has no access-key pair. The first two are empty and `fromEnvironment`
-  -- branches on that rather than requiring them; the token is the credential.
-  | .gcp      => ("", "", "GOOGLE_CLOUD_REGION", some "GOOGLE_OAUTH_ACCESS_TOKEN")
-
-/-- "Set but empty" means unset.
-
-    The distinction matters more than it looks. A CI runner binds a variable to
-    an undefined secret by setting it to the *empty string* rather than leaving
-    it out — GitHub Actions does exactly this — so `IO.getEnv` returns
-    `some ""` and a naive read yields credentials with an empty access key.
-    Those fail much later, inside a TLS handshake or as an opaque provider
-    error, with nothing pointing at the cause. Treating empty as absent makes
-    the chain fall through to its not-found message, which names every place it
-    looked.
-
-    Pure, and separate from the `IO` that reads the variable, so the rule is
-    checkable by `#guard` — Lean has no `setenv`, so the environment source
-    itself cannot be driven from a self-check. -/
-def normalizeEnv : Option String → Option String
-  | some v => if v.trimAscii.isEmpty then none else some v
-  | none   => none
-
-/-- An environment variable, with `normalizeEnv` applied. -/
-private def getEnvNonEmpty (name : String) : IO (Option String) :=
-  normalizeEnv <$> IO.getEnv name
-
-def fromEnvironment (provider : ProviderId) : IO (Option Credentials) := do
-  let (kv, sv, rv, tv) := envVars provider
-  let region := (← getEnvNonEmpty rv).getD ""
-  match provider with
-  | .gcp =>
-    -- A bearer token is the whole credential; there is no pair to require.
-    let some accessToken ← getEnvNonEmpty "GOOGLE_OAUTH_ACCESS_TOKEN" | return none
-    return some
-      { accessKey := "", secretKey := "", region, accessToken := some accessToken
-        projectId := ← getEnvNonEmpty "GOOGLE_CLOUD_PROJECT" }
-  | .aws | .scaleway =>
-    let some accessKey ← getEnvNonEmpty kv | return none
-    let some secretKey ← getEnvNonEmpty sv | return none
-    let sessionToken ← match tv with
-      | some v => getEnvNonEmpty v
-      | none   => pure none
-    let projectId ← match provider with
-      | .scaleway => getEnvNonEmpty "SCW_DEFAULT_PROJECT_ID"
-      | _         => pure none
-    let organizationId ← match provider with
-      | .scaleway => getEnvNonEmpty "SCW_DEFAULT_ORGANIZATION_ID"
-      | _         => pure none
-    return some { accessKey, secretKey, region, sessionToken, projectId, organizationId }
-
--- ── The chain ──
-
-/-- Where each source would have looked, for the not-found message. Naming
-    every one is the difference between a usable error and a mystery.
-
-    Four for GCP, in the order they are tried, and the first is one this module
-    cannot try itself — see `gcpKeyFileVar`. Not private, because `infra check`
-    asserts the list: a source the user is never told about is a source they
-    cannot use. -/
+/-- Where each source looks, in the order they are tried — for the not-found
+    message, and asserted by `infra check`. -/
 def sourceDescriptions (paths : Paths) (provider : ProviderId) (profile : String) :
     List String :=
-  let (kv, sv, _, _) := envVars provider
-  match provider with
-  | .aws =>
-    [ s!"config file {paths.awsCredentials} (profile [{profile}])"
-    , s!"keychain service '{keychainService}' account 'aws'"
-    , s!"environment {kv} and {sv}" ]
-  | .scaleway =>
-    [ s!"config file {paths.scwConfig}"
-    , s!"keychain service '{keychainService}' account 'scaleway'"
-    , s!"environment {kv} and {sv}" ]
-  | .gcp =>
-    -- The key file is listed first because that is the order it is tried in,
-    -- even though this module cannot try it: `GcpAuth.loadWithKeyFile` adds
-    -- that source from above (an import cycle keeps it out of here) and every
-    -- front end goes through it, so by the time this message is built the key
-    -- file has already declined.
-    [ s!"a service-account key file named by {gcpKeyFileVar}"
-    , "`gcloud auth print-access-token` (is the CLI installed and logged in?)"
-    , s!"keychain service '{keychainService}' account 'gcp'"
-    , "environment GOOGLE_OAUTH_ACCESS_TOKEN" ]
+  Cloud.sourceDescriptions paths provider.toCloud profile keychainService
 
-/-- Try each source in order and return the first that yields credentials.
-
-    A source that is merely absent falls through; a source that is *present but
-    malformed* raises, because silently skipping a config file with a typo in
-    it would look exactly like having no credentials at all. -/
+/-- The whole chain from `paths`, raising a message that names every source
+    when none has credentials. -/
 def loadFrom (paths : Paths) (provider : ProviderId) : IO Credentials := do
-  let profile ← awsProfile
-  let fromFiles ← match provider with
-    | .aws      => fromAwsFiles paths profile
-    | .scaleway => fromScalewayFile paths
-    -- Not a file for GCP: `gcloud` mints the token rather than storing one.
-    | .gcp      => fromGcloud
-  let found ← match fromFiles with
-    | some c => pure (some c)
-    | none   => do
-      match ← fromKeychain provider with
-      | some c => pure (some c)
-      | none   => fromEnvironment provider
-  match found with
-  | some c => return c
-  | none =>
-    let tried := String.join ((sourceDescriptions paths provider profile).map (s!"\n  - {·}"))
-    throw (IO.userError s!"no {provider.name} credentials found; tried:{tried}")
+  orThrow (← Cloud.Credentials.Chain.loadFrom Cloud.Transport.network paths provider.toCloud
+    (service := keychainService))
 
-/-- Load credentials for a cloud from the conventional locations. -/
+/-- Load credentials for a cloud from the conventional locations — the whole
+    chain, GCP's key file included (it used to need `GcpAuth.loadWithKeyFile`,
+    because minting a token needed HTTP above this module; linen's chain takes
+    a transport instead). -/
 def Credentials.load (provider : ProviderId) : IO Credentials := do
-  loadFrom (← Paths.default) provider
+  loadFrom (← Cloud.Paths.default) provider
 
-/-- The OAuth2 bearer token, or a clear failure.
+/-- A named keychain account under infra's service, for a credential that is
+    not a cloud's main one (Scaleway's Queues key). -/
+def fromKeychainAccount (account : String) : IO (Option Credentials) :=
+  Cloud.Credentials.Keychain.fromAccount account keychainService
 
-    Every GCP call carries one and nothing else, so its absence is not a
-    subtle failure — it is a 401 on the first request with no indication of
-    which of the three sources was supposed to supply it. -/
-def Credentials.requireToken (c : Credentials) (provider : ProviderId) : IO String := do
-  match c.accessToken with
-  | some t => return t
-  | none   => throw (IO.userError
-      s!"no {provider.name} access token; point {gcpKeyFileVar} at a \
-service-account key, run `gcloud auth login`, or set GOOGLE_OAUTH_ACCESS_TOKEN")
+def storeInKeychainAccount (account : String) (c : Credentials) : IO Unit :=
+  Cloud.Credentials.Keychain.storeInAccount account c keychainService
 
-/-- The Scaleway project, or a clear failure. Creating anything on Scaleway
-    needs one, and its absence otherwise surfaces as an opaque API error. -/
-def Credentials.requireProject (c : Credentials) : IO String := do
-  match c.projectId with
-  | some p => return p
-  | none   => throw (IO.userError
-      "no Scaleway project configured; set SCW_DEFAULT_PROJECT_ID or \
-default_project_id in ~/.config/scw/config.yaml")
+/-- The bearer token, or a clear failure. -/
+def Credentials.requireToken (c : Credentials) (provider : ProviderId) : IO String :=
+  orThrow (Cloud.Credentials.requireToken c provider.toCloud)
 
-/-- The Scaleway organization, or a clear failure. IAM is organization-scoped
-    and fails opaquely without one. -/
-def Credentials.requireOrganization (c : Credentials) : IO String := do
-  match c.organizationId with
-  | some o => return o
-  | none   => throw (IO.userError
-      "no Scaleway organization configured; set SCW_DEFAULT_ORGANIZATION_ID or \
-default_organization_id in ~/.config/scw/config.yaml")
+/-- The project (Scaleway's, or GCP's), or a clear failure. -/
+def Credentials.requireProject (c : Credentials) : IO String :=
+  orThrow (Cloud.Credentials.requireProject c)
 
-/-- The region, or a clear failure. Most APIs are regional and a blank region
-    produces a baffling signing error much later, so it is caught here.
+/-- The Scaleway organization, or a clear failure. -/
+def Credentials.requireOrganization (c : Credentials) : IO String :=
+  orThrow (Cloud.Credentials.requireOrganization c)
 
-    Only reached for a cloud the fleet does not place itself. The declaration
-    is the better answer of the three the message offers, so it is named
-    first — see `Infra.Core.Region`. -/
+/-- The region, or a clear failure. Worded for infra, which has a better
+    answer than linen's generic one: only reached for a cloud the fleet does
+    not place itself, so declaring where the fleet is comes first. -/
 def Credentials.requireRegion (c : Credentials) (provider : ProviderId) : IO String := do
   if c.region.isEmpty then
-    let (_, _, rv, _) := envVars provider
+    let (_, _, rv, _) := Cloud.envVars provider.toCloud
     throw (IO.userError
       s!"no region configured for {provider.name}; declare where the fleet is \
 (`fleet myFleet in paris where …`), or set {rv}, or set the region in its config file")
@@ -396,12 +101,8 @@ def Credentials.requireRegion (c : Credentials) (provider : ProviderId) : IO Str
 
 /-! ## Self-checks -/
 
--- An undefined CI secret arrives as `some ""`, and must read as absent, so the
--- credential chain reports "not found" instead of building empty credentials
--- that fail later inside a TLS handshake.
-#guard normalizeEnv (some "") = none
-#guard normalizeEnv (some "   ") = none
-#guard normalizeEnv none = none
-#guard normalizeEnv (some "SCWXXXXXXXXXXXXXXXXX") = some "SCWXXXXXXXXXXXXXXXXX"
+-- The not-found message names infra's keychain service, not linen's.
+#guard ((sourceDescriptions (Cloud.Paths.under "/h") .aws "default")[1]!.splitOn "'infra'").length == 2
+#guard (sourceDescriptions (Cloud.Paths.under "/h") .gcp "default").length == 4
 
 end Infra.Core

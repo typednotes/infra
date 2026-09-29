@@ -18,6 +18,12 @@ on:
         required: true
         type: choice
         options: [aws, scaleway, gcp]
+      leg:
+        description: 'Which sequence: the ordinary fleet, or a Kubernetes cluster (aws only; ~45 min, billed by the hour)'
+        required: false
+        default: fleet
+        type: choice
+        options: [fleet, kubernetes]
 
 # Never two live runs at once against the same account: the second would see
 # the first's queue and the convergence check would be meaningless. Queued
@@ -38,6 +44,10 @@ permissions:
 jobs:
   live:
     runs-on: ubuntu-24.04
+    env:
+      # Empty for the ordinary sequence; `kubernetes` selects the cluster leg
+      # (`lake test -- <provider> kubernetes`, `test/Live.lean`).
+      LEG_ARG: ${{ inputs.leg == 'kubernetes' && 'kubernetes' || '' }}
     # The environment is load-bearing, not decorative. The AWS role's trust
     # policy pins `sub` to `repo:typednotes/infra:environment:production`, so
     # the OIDC token only carries that claim when the job declares this — and
@@ -128,6 +138,16 @@ jobs:
           echo "Compare with: aws iam get-role --role-name infra-ci \\"
           echo "  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition'"
 
+      # The Kubernetes leg runs on AWS only from here. Scaleway's and GCP's CI
+      # identities hold the scan's *read* grants for clusters and nothing that
+      # creates one; their legs were run by hand (2026-09-29, docs/coverage.md).
+      # Refused up front, rather than failing twenty minutes in on a 403.
+      - name: Kubernetes leg — supported provider
+        if: inputs.leg == 'kubernetes' && inputs.provider != 'aws'
+        run: |
+          echo "::error::the Kubernetes leg runs from this workflow on aws only; the ${{ inputs.provider }} CI identity cannot create clusters. Run \`lake test -- ${{ inputs.provider }} kubernetes\` by hand (ci/README.md, \"The Kubernetes leg\")."
+          exit 1
+
       - name: Authenticate to AWS (OIDC)
         if: inputs.provider == 'aws'
         uses: aws-actions/configure-aws-credentials@v6
@@ -135,6 +155,12 @@ jobs:
           role-to-assume: ${{ env.AWS_ROLE_ARN_CLEAN }}
           aws-region: eu-west-1
           role-session-name: infra-live-test
+          # An EKS create, four stages and a delete outlast the default hour,
+          # and credentials that expire mid-teardown strand a billed cluster.
+          # Two hours needs the role's MaxSessionDuration raised to match
+          # (ci/README.md, "The Kubernetes leg"); until it is, this step
+          # fails, before anything is created.
+          role-duration-seconds: ${{ inputs.leg == 'kubernetes' && 7200 || 3600 }}
 
       # GCP via Workload Identity Federation: no key material anywhere. GitHub
       # mints an OIDC token, GCP's STS trades it for a short-lived one for the
@@ -213,8 +239,11 @@ jobs:
       # seconds each way. That is about nine minutes at worst, and a step
       # timeout must exceed the worst case or a slow-but-working run is
       # reported as a failure.
-      - name: Live round trip — ${{ inputs.provider }}
-        timeout-minutes: 16
+      # The Kubernetes leg: EKS takes ten to twenty minutes each way, plus a
+      # node group, plus four stages — sixty minutes is the ceiling, not the
+      # expectation.
+      - name: Live round trip — ${{ inputs.provider }} ${{ inputs.leg }}
+        timeout-minutes: ${{ inputs.leg == 'kubernetes' && 60 || 16 }}
         env:
           # Scaleway only. AWS arrives from the OIDC step as real environment
           # variables, and GCP's token likewise — neither is passed here, and
@@ -228,7 +257,7 @@ jobs:
           # are organization-scoped. CI can read them, not change them — see
           # ci/README.md, "Read-only grants for the scan".
           SCW_DEFAULT_ORGANIZATION_ID: ${{ inputs.provider == 'scaleway' && secrets.SCW_DEFAULT_ORGANIZATION_ID || '' }}
-        run: lake test -- ${{ inputs.provider }}
+        run: lake test -- ${{ inputs.provider }} $LEG_ARG
 
       # If the driver died between create and delete — a killed runner, a
       # cancelled job, a failed assertion — this is the backstop.
@@ -240,9 +269,13 @@ jobs:
       # the same way, and could leave more behind than it cleaned up. The first
       # extended AWS run did exactly that: the same security-group error twice,
       # once from the test and once from its own backstop.
+      # `destroy` and `sweep` are the same for both legs: the Kubernetes fleets
+      # carry the same marker and the same `ci-tests-infra-` prefix, and both
+      # modes scan every kind. An EKS delete (node group, then cluster) takes
+      # up to twenty minutes.
       - name: Backstop teardown
         if: failure() || cancelled()
-        timeout-minutes: 6
+        timeout-minutes: ${{ inputs.leg == 'kubernetes' && 30 || 6 }}
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}

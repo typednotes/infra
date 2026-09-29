@@ -74,6 +74,38 @@
       "Resource": "arn:aws:iam::616568506952:user/ci-tests-infra-*"
     },
     {
+      "Sid": "KubernetesTestClusters",
+      "Effect": "Allow",
+      "Action": "eks:*",
+      "Resource": [
+        "arn:aws:eks:eu-west-1:616568506952:cluster/ci-tests-infra-*",
+        "arn:aws:eks:eu-west-1:616568506952:nodegroup/ci-tests-infra-*/*/*"
+      ]
+    },
+    {
+      "Sid": "KubernetesPassTestRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole",
+        "iam:GetRole"
+      ],
+      "Resource": "arn:aws:iam::616568506952:role/ci-tests-infra-eks-*"
+    },
+    {
+      "Sid": "KubernetesServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "eks.amazonaws.com",
+            "eks-nodegroup.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "NeverMintUsableCredentials",
       "Effect": "Deny",
       "Action": [

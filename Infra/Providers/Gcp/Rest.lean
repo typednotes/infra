@@ -17,7 +17,7 @@ import Infra.Providers.JsonRead
   derive from a long-lived secret held by the caller; a Google call carries a
   bearer token that was minted elsewhere — by `gcloud`, by a service-account
   assertion, or by federating a CI runner's OIDC token. See
-  `Infra.Core.GcpAuth`. By the time a call reaches here the question of where
+  linen's `Cloud.Credentials.Gcp`. By the time a call reaches here the question of where
   the token came from has been settled, and this file does not care.
 -/
 
@@ -59,7 +59,7 @@ def call (creds : Credentials) (method host path : String)
     :: (if body.isEmpty then [] else [("Content-Type", "application/json")])
   let resp ← Http.sendChecked (Http.request method host path query headers
     (if body.isEmpty then none else some body))
-  let text := (Http.bodyText resp).trimAscii.toString
+  let text := (← Http.bodyText resp).trimAscii.toString
   -- A `DELETE` answers `200` with an empty body, which is not a JSON parse
   -- failure but would be reported as one.
   if text.isEmpty then return .null

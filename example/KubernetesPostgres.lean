@@ -126,7 +126,7 @@ private def teardown : List String :=
 /- A namespace the fleet declares, as a raw object, is created before the
    objects in it — the same name-borne kind of edge. -/
 fleet withNamespace in paris where
-  resource scaleway kubernetesCluster "main" { nodeType := "GP1-S" }
+  resource scaleway kubernetesCluster "main" { nodeType := "GP1-S", network := "pn-typednotes" }
   resource scaleway kubernetesObject "main/apps/deployment.apps/web"
     { shape := deployment (image := "nginx:1.27") }
   resource scaleway kubernetesObject "main/_/namespace/apps"
@@ -158,7 +158,7 @@ fleet crossCloudObject in paris where
 
 /- An address whose kind disagrees with its shape. -/
 fleet wrongKind in paris where
-  resource scaleway kubernetesCluster "main" { nodeType := "GP1-S" }
+  resource scaleway kubernetesCluster "main" { nodeType := "GP1-S", network := "pn-typednotes" }
   resource scaleway kubernetesObject "main/default/deployment.apps/web"
     { shape := service 80 }
 
@@ -167,9 +167,21 @@ fleet wrongKind in paris where
 /- A fixed pool spelled as an autoscale range would never converge. -/
 fleet fixedRange in paris where
   resource scaleway kubernetesCluster "main"
-    { nodeType := "GP1-S", autoscale := ((3, 3) : Nat × Nat) }
+    { nodeType := "GP1-S", autoscale := ((3, 3) : Nat × Nat), network := "pn-typednotes" }
 
 #guard !fixedRange.plan.kubernetesIsSound
+
+/- A Kapsule cluster with no Private Network: the API refuses it
+   (`invalid_arguments`, "a Private Network is mandatory for this cluster
+   type" — the first live create, 2026-09-29), so `infra check` refuses it
+   first. EKS likewise needs `network` and its two roles; GKE defaults all
+   three. -/
+fleet noNetwork in paris where
+  resource scaleway kubernetesCluster "main" { nodeType := "GP1-S" }
+
+#guard !noNetwork.plan.kubernetesIsSound
+#guard ((noNetwork.plan.kubernetesProblem.getD "").splitOn
+  "network is required on scaleway").length > 1
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "kubernetes-postgres" kubernetesPostgres

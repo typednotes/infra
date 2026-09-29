@@ -101,26 +101,15 @@ def parseSeconds (s : String) : Option Nat :=
 /-- Every service in the project and location, with its status. -/
 def list (creds : Credentials) (project location : String) :
     IO (List (String × String)) := do
-  let rec go (fuel : Nat) (token : String) (acc : List (String × String)) :
-      IO (List (String × String)) := do
-    match fuel with
-    | 0 =>
-      IO.eprintln "warning: gcp cloud run: stopped paginating services after 50 \
-pages; the list may be incomplete"
-      return acc
-    | fuel' + 1 =>
-      let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
-      let reply ← Gcp.call creds "GET" host (parent project location) query
-      let here := (arrayField reply "services").filterMap fun s =>
-        (s.lookupText "name").map fun n =>
-          -- `terminalCondition.type` is the closest thing to a one-word status.
-          let status := (s.lookup "terminalCondition").bind (Data.Json.Value.lookupText "state")
-          (Gcp.shortName n, status.getD "")
-      let acc := acc ++ here
-      match reply.lookupText "nextPageToken" with
-      | some next => if next.isEmpty then return acc else go fuel' next acc
-      | none      => return acc
-  go 50 "" []
+  Http.listAll "gcp cloud run services" fun token => do
+    let query : Query := (token.map fun t => [("pageToken", some t)]).getD []
+    let reply ← Gcp.call creds "GET" host (parent project location) query
+    let here := (arrayField reply "services").filterMap fun s =>
+      (s.lookupText "name").map fun n =>
+        -- `terminalCondition.type` is the closest thing to a one-word status.
+        let status := (s.lookup "terminalCondition").bind (Data.Json.Value.lookupText "state")
+        (Gcp.shortName n, status.getD "")
+    return (here, reply.lookupText "nextPageToken")
 
 /-- The first container of the service's template, which is the one this kind
     manages. A service with none is malformed rather than empty. -/

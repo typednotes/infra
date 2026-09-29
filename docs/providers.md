@@ -420,13 +420,13 @@ additionally needs `default_project_id`, and `iam` needs
 
 | | AWS (EKS) | GCP (GKE) | Scaleway (Kapsule) |
 |---|---|---|---|
-| `network` | a VPC by `Name` tag, `vpc-…` id or `default`; its subnets (at least two AZs) — **required** | a VPC network; the project's `default` when unset | a Private Network by name; Kapsule attaches its own when unset |
+| `network` | a VPC by `Name` tag, `vpc-…` id or `default`; its subnets (at least two AZs) — **required** | a VPC network; the project's `default` when unset | a Private Network by name — **required** (the API refuses a cluster without one) |
 | roles | `clusterRole`, `nodeRole` — **required**, ARN or role name | — | — |
 | pool | one managed node group, `infra-pool-N` | one node pool; a regional cluster with its nodes in one zone, so `nodeCount` is the total | one pool, in `<region>-1` |
 | autoscale | the group's bounds only — **needs the Cluster Autoscaler** to act | native | native |
 | kube API token | presigned STS `GetCallerIdentity`, header `x-k8s-aws-id` | the OAuth bearer | the kubeconfig's token |
 | who may call it | the identity that created the cluster (`bootstrapClusterCreatorAdminPermissions`); others need an access entry | IAM roles on the project (`container.developer` and up) | the kubeconfig's admin token |
-| delete | node groups first, then the cluster | the cluster | `with_additional_resources` — volumes, load balancers, emptied private networks |
+| delete | node groups first, then the cluster | the cluster | the cluster alone (`with_additional_resources=false`: `true` would delete the declared, emptied Private Network) |
 | etcd encryption at rest (prose docs, 2026-09-29) | envelope encryption of API data by default on current versions | storage-layer encryption by default | **not established** |
 
 The Kapsule row's last cell is the one to read twice: a workload's secret

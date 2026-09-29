@@ -1,4 +1,5 @@
 import Infra.Core.Action
+import Linen.Cloud.Error
 import Infra.Core.Ownership
 
 /-
@@ -9,68 +10,76 @@ namespace Infra.Core
 
 open Infra.Specs (SpecOf)
 
-/-- Whether a provider's error says the resource is not there.
+/-- The `(status, code)` pairs a rendered failure carries, read back from
+    infra's `HTTP <status> <code>: <message>` form (`Http.render`) — every
+    occurrence, since a message may wrap another. The code is the token
+    between the status and the next `:`, minus any `namespace#` an AWS JSON
+    service puts in front of it; `""` when there is none (`(HTTP 404)`,
+    `HTTP 403 : …`).
 
-    Matched on the rendered message because `Http.sendChecked` flattens its
-    structured `ApiError` into an `IO.userError`, and `Infra.Core` sits below
-    `Infra.Providers` so the structure is not reachable from here anyway.
-    Substring matching on a curated list of codes is the honest version of
-    that: narrow, and wrong only by omission — an unrecognised not-found code
-    surfaces as a hard error, which is the safe direction.
+    Matched on the rendered message because `Http.sendChecked` raises an
+    `IO.userError`, and `Infra.Core` sits below the providers anyway: the
+    structure does not reach here, so it is re-read, narrowly. -/
+def failuresIn (msg : String) : List (Nat × String) :=
+  (msg.splitOn "HTTP ").drop 1 |>.filterMap fun rest =>
+    let digits := rest.toList.takeWhile Char.isDigit
+    if digits.length != 3 then none else
+    let status := (String.ofList digits).toNat!
+    let after := (rest.drop 3).toString
+    let code :=
+      if after.startsWith " " && !after.startsWith " :" then
+        let raw := ((after.drop 1).toString.splitOn ":").headD ""
+        -- A code is one token; anything with a space in it is prose.
+        if (raw.splitOn " ").length == 1 then (raw.splitOn "#").getLastD raw else ""
+      else ""
+    some (status, code)
 
-    It must stay narrow. Treating a *permission* error as "absent" would make
-    the engine propose creating a resource that already exists, which on a
-    second apply means a duplicate rather than a failure. -/
+#guard failuresIn "s3 GET x: HTTP 404 NoSuchBucket: gone (request r)" == [(404, "NoSuchBucket")]
+#guard failuresIn "HTTP 403 com.amazonaws.secretsmanager#AccessDeniedException: no" == [(403, "AccessDeniedException")]
+#guard failuresIn "kubernetes-object/x: not found (HTTP 404)" == [(404, "")]
+#guard failuresIn "HTTP 403 : AccessDenied" == [(403, "")]
+#guard failuresIn "connection reset by peer" == []
+
+/-- Whether a provider's error says the resource is not there: linen's
+    classification (`Cloud.classify`) of a status and code this message
+    carries is `notFound`.
+
+    It must stay narrow — linen's not-found list is explicit on purpose.
+    Treating a *permission* error as "absent" would make the engine propose
+    creating a resource that already exists, which on a second apply means a
+    duplicate rather than a failure. -/
 def readsAsAbsent (msg : String) : Bool :=
-  let codes :=
-    [ "NoSuchBucket", "NoSuchKey", "NoSuchEntity", "QueueDoesNotExist"
-    , "ResourceNotFoundException", "ResourceNotFound", "NotFoundException"
-    , "InvalidAMIID.NotFound", "InvalidGroup.NotFound", "InvalidInstanceID.NotFound"
-    , "DBInstanceNotFound", "RepositoryNotFoundException"
-    , "HTTP 404" ]
-  codes.any fun c => (msg.splitOn c).length > 1
+  (failuresIn msg).any fun (status, code) => Cloud.classify status code == .notFound
 
 /-- Whether a provider's error says *this caller may not see this resource*:
-    a 403 whose code is one of the access-denied codes below.
+    a 403 whose code is one of linen's `Cloud.deniedCodes`, and that linen —
+    reading the message too — classifies as `denied`, not `serviceDisabled`.
 
     Used for exactly one decision (`Engine.claimUndeclared`): an undeclared
     resource whose marker read is refused is not this fleet's — warned about by
     name and left alone — rather than a failed run. Every other caller keeps
     treating a refusal as the error it is.
 
-    Matched on the rendered message for the reason `readsAsAbsent` is, and
-    narrow in the same direction: an unrecognised code is a hard error, never a
-    refusal. The codes, each as `Http.describeError` renders it:
+    Narrow in the same direction as `readsAsAbsent`: the code must be one of
+    the denied codes, *and* the status a 403 — linen's own `classify` falls
+    back on the status and would call any 403 `denied`, which here would read
+    an unrecognised refusal as "not ours". So:
 
-    * `AccessDenied` — S3 (and so Scaleway Object Storage) and the AWS query
-      protocols; `AccessDeniedException` and a namespaced
-      `…#AccessDeniedException` — the AWS JSON protocols. Observed: `HTTP 403
-      AccessDenied: Access Denied` from `GetBucketTagging` on a Scaleway bucket
-      whose bucket policy does not name the caller (2026-09-24).
-    * `UnauthorizedOperation` — EC2.
-    * `permissions_denied` — Scaleway's REST APIs. Observed: `HTTP 403
-      permissions_denied: insufficient permissions` (2026-09-23).
-    * `PERMISSION_DENIED` — Google. Observed.
+    * **not** a signature or credential failure (`SignatureDoesNotMatch`,
+      `InvalidAccessKeyId`, …) — linen's `unauthenticated`, nothing to do with
+      this resource;
+    * **not** a Google API that is switched off, which Google answers as
+      `PERMISSION_DENIED` too — linen's `serviceDisabled`, and "unreadable, so
+      not ours" must never widen from one resource to a whole kind.
 
-    **Not** a refusal, though also a 403:
-
-    * a signature or credential failure (`SignatureDoesNotMatch`,
-      `InvalidAccessKeyId`, …) — nothing to do with this resource;
-    * a Google API that is not enabled. Google answers it as `PERMISSION_DENIED`
-      too, but it says the whole service is off, not that one resource is
-      hidden, and "unreadable, so not ours" must never widen from one resource
-      to a whole kind. Recognised by its code (`SERVICE_DISABLED`) and by its
-      message, which is what `describeError` keeps. -/
+    Observed refusals: `HTTP 403 AccessDenied` from `GetBucketTagging` on a
+    Scaleway bucket whose bucket policy does not name the caller (2026-09-24);
+    `HTTP 403 permissions_denied` from Scaleway (2026-09-23);
+    `PERMISSION_DENIED` from Google. -/
 def readsAsRefused (msg : String) : Bool :=
-  let refusals := ["AccessDenied", "AccessDeniedException", "UnauthorizedOperation",
-                   "permissions_denied", "PERMISSION_DENIED"]
-  let serviceOff := ["SERVICE_DISABLED", "has not been used in project", "it is disabled"]
-  -- The code is the token between `HTTP 403 ` and the next `:`, minus any
-  -- `namespace#` an AWS JSON service puts in front of it.
-  let codes := (msg.splitOn "HTTP 403 ").drop 1 |>.map fun rest =>
-    let code := (rest.splitOn ":").headD ""
-    (code.splitOn "#").getLastD code
-  codes.any (refusals.contains ·) && !serviceOff.any fun s => (msg.splitOn s).length > 1
+  (failuresIn msg).any fun (status, code) =>
+    status == 403 && Cloud.deniedCodes.contains code
+      && Cloud.classifyMessage status code msg == .denied
 
 #guard readsAsRefused "s3 GET s3.fr-par.scw.cloud/docs.typednotes.org?tagging: HTTP 403 AccessDenied: Access Denied (request tx1)"
 #guard readsAsRefused "HTTP 403 AccessDenied: Access Denied (request tx1)"

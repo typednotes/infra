@@ -135,23 +135,12 @@ at compile time — rename it there.")
     The fleet keys on the bare name, so the email's local part is what is
     returned; `emailOf` reconstructs the rest. -/
 def list (creds : Credentials) (project : String) : IO (List (String × String)) := do
-  let rec go (fuel : Nat) (token : String) (acc : List (String × String)) :
-      IO (List (String × String)) := do
-    match fuel with
-    | 0 =>
-      IO.eprintln "warning: gcp iam: stopped paginating service accounts after 50 \
-pages; the list may be incomplete"
-      return acc
-    | fuel' + 1 =>
-      let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
-      let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/serviceAccounts" query
-      let here := (arrayField reply "accounts").filterMap fun a =>
-        (a.lookupText "email").map fun e => ((e.splitOn "@").headD e, e)
-      let acc := acc ++ here
-      match reply.lookupText "nextPageToken" with
-      | some next => if next.isEmpty then return acc else go fuel' next acc
-      | none      => return acc
-  go 50 "" []
+  Http.listAll "gcp iam service accounts" fun token => do
+    let query : Query := (token.map fun t => [("pageToken", some t)]).getD []
+    let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/serviceAccounts" query
+    let here := (arrayField reply "accounts").filterMap fun a =>
+      (a.lookupText "email").map fun e => ((e.splitOn "@").headD e, e)
+    return (here, reply.lookupText "nextPageToken")
 
 /-! ### The project's IAM policy
 
@@ -363,7 +352,7 @@ def createKey (creds : Credentials) (project accountId : String) :
   | none => throw (IO.userError s!"gcp iam: the key for '{accountId}' was created but carried no privateKeyData, and Google will not return it again. Delete the key and retry.")
   | some encoded =>
     match Data.Base64.decode encoded with
-    | some bytes => return (keyId, String.fromUTF8! bytes)
+    | some bytes => return (keyId, ← Http.utf8Text s!"gcp iam: the key for '{accountId}'" bytes)
     | none       => throw (IO.userError
         s!"gcp iam: the key for '{accountId}' is not valid base64")
 

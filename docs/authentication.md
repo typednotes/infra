@@ -317,10 +317,12 @@ GCP's is not an API-key pair, because that cloud has none, but it is the same
 kind of thing: a long-lived secret on disk, exchanged for an hour's token on
 every run.
 
-All three are found by **one chain, `Infra.Core.GcpAuth.loadWithKeyFile`**,
-which both front ends call — `Infra.Cli.liveFor` and
-`Infra.Providers.liveFromEnvironment` — so which sources exist does not depend
-on which entry point you came through. It did until 0.8.0:
+All three are found by **one chain, `Infra.Core.Credentials.load`** — since
+0.20.0 a thin wrapper over linen's `Cloud.Credentials.Chain.loadFrom`, with
+keychain service `infra` — which both front ends call, `Infra.Cli.liveFor`
+and `Infra.Providers.liveFromEnvironment`, so which sources exist does not
+depend on which entry point you came through. (Until 0.20.0 the chain was
+infra's own, `Infra.Core.GcpAuth.loadWithKeyFile`.) It did until 0.8.0:
 `liveFromEnvironment` called `Credentials.load`, which *cannot* try a key file
 (minting a token from one needs HTTP, and HTTP needs `Credentials`), so a
 consumer's own code had one source fewer than the CLI and a GCP key silently
@@ -333,11 +335,15 @@ they are tried.
 Four sources, tried in this order:
 
 1. **`GOOGLE_APPLICATION_CREDENTIALS`** — a path to a service-account key
-   file. `Infra.Core.GcpAuth` reads it, builds an RFC 7523 assertion, signs it
-   RS256 and exchanges it for an access token. No `gcloud` needed. For a path
-   that does not come from the environment — a flag, a check command, a key
-   handed to a library — `GcpAuth.tokenFromKeyFile` takes one directly, and is
-   the only way to ask for a scope other than the default.
+   file. linen's `Cloud.Credentials.Gcp` reads it, builds an RFC 7523
+   assertion, signs it RS256 and exchanges it for an access token. No
+   `gcloud` needed. A file that declares another credential `type` —
+   `external_account`, `authorized_user`, … — is declined rather than
+   misread, and the chain moves on. For a key that does not come from the
+   environment, or a scope other than the default, call the pieces directly:
+   `Gcp.parseKeyFile`, `Gcp.assertion sa scope now`, `Gcp.exchange` (the
+   offline check in `Main.lean`, `checkGcpAssertion`, is the worked example).
+   infra's `GcpAuth.tokenFromKeyFile` went with the move.
 2. **`gcloud auth print-access-token`** — whatever the developer last logged
    into.
 3. **The OS keychain**, under service `infra`, account `gcp`.

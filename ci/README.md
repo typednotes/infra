@@ -577,6 +577,51 @@ rather than procedural: the role's trust policy pins `sub` to
 `repo:typednotes/infra:environment:production`, so removing the line does not
 loosen the gate, it breaks OIDC entirely.
 
+### The Kubernetes leg
+
+`lake test -- <provider> kubernetes` creates one managed cluster,
+`ci-tests-infra-k8s`, walks it through four stages (`test/Live.lean`) and
+destroys it. From the workflow, **AWS only**:
+
+```sh
+gh workflow run live-test.yml -f provider=aws -f leg=kubernetes
+```
+
+What the AWS run needs, **prepared in this repository and not yet applied**
+(2026-09-29):
+
+1. The three statements `KubernetesTestClusters` (`eks:*` on
+   `ci-tests-infra-*` clusters and their node groups, in `eu-west-1`),
+   `KubernetesPassTestRoles` (`iam:PassRole`/`iam:GetRole` on the two roles
+   below, and nothing else) and `KubernetesServiceLinkedRoles` (EKS's two
+   service-linked roles, created by the first cluster in an account — neither
+   exists in this one yet) in `ci/aws-permissions-policy.json`. Apply it as
+   above, with `put-role-policy`.
+2. A two-hour session: the workflow asks for `role-duration-seconds: 7200` on
+   this leg, and fails before creating anything until the role allows it:
+
+   ```sh
+   aws iam update-role --role-name infra-ci --max-session-duration 7200
+   ```
+
+3. The two roles the declaration names and never creates — **created
+   2026-09-29**: `ci-tests-infra-eks-cluster` (trusts `eks.amazonaws.com`,
+   `AmazonEKSClusterPolicy`) and `ci-tests-infra-eks-nodes` (trusts
+   `ec2.amazonaws.com`, `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`,
+   `AmazonEC2ContainerRegistryReadOnly`). They carry the `ci-tests-infra-`
+   prefix, and no sweep touches them: no kind lists IAM roles. Plus the
+   region's default VPC, which exists.
+
+**Scaleway and GCP run by hand**, because their CI identities hold the scan's
+read grants for clusters and nothing that creates one; the workflow refuses
+`leg=kubernetes` for them up front. Both legs passed on 2026-09-29, run from a
+laptop — Scaleway with an API key scoped to the CI project, GCP with a
+`gcloud` user token (one access token per run, about an hour: a regional GKE
+leg is close to that, and `lake test -- gcp destroy` with a fresh token
+finishes a teardown that outlived it). Scaleway also needs a Private Network
+named `infra-ci-k8s` in the CI project — Kapsule refuses a cluster without
+one — **created by hand 2026-09-29**, free, and outside the sweep's prefix.
+
 ### Approving a run
 
 Both this workflow and Cleanup stop here. In the Actions UI, or:

@@ -9,10 +9,10 @@ Pending moves into linen are tracked in `CHANGELOG.md` under `[Unreleased]`
 (see `AGENTS.md`, "## Linen"); this file is the wider list, and items that
 become moves should be recorded there too.
 
-**Status 2026-09-29.** The infra-only items are done (0.19.0). The linen
-halves are prepared as local commits in `../linen` on top of v1.7.0 —
-`9dca31c`, `352ff11`, `868512f`, `9f5fc3f`, `4149d18` — **not pushed or
-tagged**; each infra half below waits for a linen release that carries it.
+**Status 2026-09-29.** Done, in 0.20.0, which pins linen **v1.8.0** — tagged
+locally in `../linen` and **not yet pushed**: the tag must reach the remote
+before infra's commits do, or infra's CI cannot resolve its `require`. What is
+still open is below, unchecked.
 
 ## After the bump
 
@@ -29,38 +29,66 @@ tagged**; each infra half below waits for a linen release that carries it.
 ## Duplicates of linen
 
 - [x] **`JsonRead.field`** replaced by `Data.Json.Value.lookup`.
-- [ ] **`JsonRead.setField`** (and `stringField`/`natField`/`boolField`):
-  linen side prepared (`Data.Json.Value.setField`, `lookupText`/`lookupNat`/
-  `lookupBool`, commit `9dca31c`). Waits for a linen release; then delete
-  infra's and liaison's copies (`liaison/Liaison/Egress/Credential.lean:214`).
-- [ ] **The `Linen.Cloud` migration.** The blocker — splitting
-  `Cloud.Error.Class.denied` — is prepared in linen (`352ff11`:
-  `unauthenticated`, `serviceDisabled`, `isAuthFailure`, `classifyMessage`),
-  and waits for a release. The migration steps themselves are unchanged:
-  - `Core/Credentials.lean`, `Core/GcpAuth.lean` → `Cloud.Credentials(.Gcp)`.
-    linen's is stricter: it refuses an `http://` `token_uri` (infra rewrites it
-    to https, `GcpAuth.lean:167`) and one with a query string.
-  - `Providers/Http.lean:110-161`, `Aws/Sign.lean` → `Cloud.Transport`/`Cloud.Auth`.
-  - `Gcp/Storage.lean:56`, `Gcp/PubSub.lean:68` stop at 50 pages with a warning;
-    `Cloud.Page` records whether a listing was truncated. (L overall)
-- [ ] **Terminal colour.** linen side prepared (`868512f`: `style`, `dim`,
-  `wanted`, `shouldColor`). Waits for a release; then delete
-  `Infra/Core/Ansi.lean` (keeping its colour-per-verb constants as linen
-  `Color.fgCode`s).
+- [x] **`JsonRead.setField`** and `stringField`/`natField`/`boolField`: gone,
+  for linen's `Value.setField` and `lookupText`/`lookupNat`/`lookupBool`
+  (0.20.0). `JsonRead` keeps `arrayField` and `stringArrayField`.
+  - [ ] liaison's copy (`liaison/Liaison/Egress/Credential.lean:214`) —
+    liaison's to delete when it pins v1.8.0.
+- [x] **The `Linen.Cloud` migration** (0.20.0): `Core/Credentials.lean` is
+  linen's chain (`Cloud.Credentials.Chain.loadFrom`, keychain service
+  `infra`); `Core/GcpAuth.lean` is deleted; `Providers/Http.lean` sends
+  through `Cloud.Transport` and describes errors with `Cloud.describeError`;
+  SigV4 is `Cloud.Auth`; `readsAsAbsent`/`readsAsRefused` classify with
+  `Cloud.classify`; the GCP listings page through `Cloud.paginate` and fail
+  instead of truncating; no `String.fromUTF8!` is left in library code.
+  - [ ] **Unsupported operations as values**: `Scaleway/Sqs.lean`'s
+    `credentialsFor` still raises for GCP, and `Aws/Protocols.lean` still
+    signs GCP queues against a `.invalid` host, where
+    `Cloud.Error.Class.unsupported` would say so as a value. Behaviour is
+    correct (both fail loudly); only the shape differs.
+- [x] **Terminal colour**: `Infra/Core/Ansi.lean` deleted for linen's
+  `System.Console.Ansi` (0.20.0).
 
 ## Workarounds that linen could remove
 
-- [ ] **The native link-flag block.** linen side prepared (`9f5fc3f`): a
-  versioned canonical block, `ci/consumer/link-helpers.lean`, and
-  `ci/consumer/check-link-helpers.sh`, which linen's own consumer CI job now
-  splices in and checks. Once released, infra's block takes linen's markers
-  for its helper half and `ci/check-lakefile-sync.sh` also runs linen's
-  checker against the pinned tag. The Lake change (a dependency's
-  `moreLinkArgs` reaching a dependent's executable) is not proposed.
-- [ ] **CA bundles in scaffolds.** linen side prepared (`9f5fc3f`): a
-  fallback bundle in `createClientContext`, `fallbackCaBundle`. Once
-  released, the scaffolded "point OpenSSL at the runner's CA bundle" steps
-  can go.
+- [x] **The native link-flag block**: `lakefile.lean` and
+  `Infra/Cli/New.lean` embed linen's canonical block, and
+  `ci/check-lakefile-sync.sh` runs linen's `check-link-helpers.sh` on both
+  (0.20.0). The Lake change (a dependency's `moreLinkArgs` reaching a
+  dependent's executable) is not proposed.
+- [x] **CA bundles in scaffolds**: the "point OpenSSL at the runner's CA
+  bundle" steps are gone from this repository's workflows and the scaffolded
+  ones, for linen's `fallbackCaBundle` (0.20.0).
+
+## Found on the way
+
+- [ ] **Most AWS and Scaleway listings read one page** (and GCP's Cloud SQL
+  and GKE). Recorded in `docs/coverage.md`'s known defects and
+  `docs/diff-semantics.md`'s soft spots. Each needs its provider's
+  continuation, checked against the generated SDK rather than recalled:
+  - AWS — S3 `ListBuckets` (`Kinds/ObjectStore.lean:49`, shared with
+    Scaleway), SQS `ListQueues` (`Kinds/Queues.lean:45`, shared), Secrets
+    Manager `ListSecrets` (`Kinds/Secrets.lean:188`), Lambda
+    (`Kinds/Compute.lean:56`), EC2 `DescribeInstances` and
+    `DescribeSecurityGroups` (`Kinds/Ec2.lean:328`, `:136`), IAM `ListUsers`,
+    `ListAttachedUserPolicies`, `ListAccessKeys` (`Kinds/Iam.lean:80`, `:89`,
+    `:261`), ECR (`Kinds/ImageRegistry.lean:50`), RDS
+    (`Kinds/Postgres.lean:95`), EKS node groups (`Kinds/Kubernetes.lean:467`);
+  - Scaleway — secrets (`Kinds/Secrets.lean:316`, `:157`;
+    `Kinds/Postgres.lean:68`), containers and container namespaces
+    (`Kinds/Compute.lean:185`, `:340`, `:209`, `:439`), functions and
+    function namespaces (`:490`, `:498`, `:518`, `:726`), IAM applications,
+    policies and rules (`Kinds/Iam.lean:322`, `:392`, `:401`), registry
+    namespaces (`Kinds/ImageRegistry.lean:156`), RDB
+    (`Kinds/Postgres.lean:213`), Serverless SQL (`:412`), Kapsule pools
+    (`Kinds/Kubernetes.lean:233`), SQS credentials (`Scaleway/Sqs.lean:174`);
+  - GCP — Cloud SQL (`Gcp/CloudSql.lean:70`), GKE
+    (`Kinds/Kubernetes.lean:674`).
+  All should go through `Http.listAll`, which already fails rather than
+  truncates.
+- [x] **Kapsule's delete deleted the declared Private Network**
+  (`with_additional_resources=true`); now `false`, and the Scaleway
+  Kubernetes leg asserts the network survives (0.20.0).
 
 ## Watch
 
@@ -74,10 +102,17 @@ tagged**; each infra half below waits for a linen release that carries it.
 ## Kubernetes
 
 - [x] implement docs/kubernetes.md — 0.19.0, offline only.
-- [ ] **Run the live leg** on each cloud, `lake test -- <cloud> kubernetes`,
-  and move `docs/coverage.md`'s rows. Two facts only it can settle: OpenSSL 3
-  verifying GKE's IP endpoint through `SSL_set1_host`, and a current Kapsule
-  cluster's kubeconfig still carrying a usable token.
+- [x] **Run the live leg on Scaleway**: passed, all four stages
+  (2026-09-29), after three fixes it found — `network` is required
+  (Kapsule refuses a cluster without a Private Network), Endpoints are the
+  Service's (excluded from the scan), and the delete cascade above. A current
+  Kapsule kubeconfig does carry a usable token.
+- [ ] **Run the live leg on GCP** — GCP_RESULT
+- [ ] **Run the live leg on AWS** from the Live test workflow
+  (`-f leg=kubernetes`), once the prepared grants are applied: the three
+  statements in `ci/aws-permissions-policy.json` (`put-role-policy`) and
+  `aws iam update-role --role-name infra-ci --max-session-duration 7200`
+  (`ci/README.md`, "The Kubernetes leg"). The IAM roles exist.
 - [x] **Grant the CI identities the scan's new read access** (2026-09-29):
   `KubernetesReadOnly` on the Scaleway CI project, `ci/aws-permissions-policy.json`
   re-applied (`eks:ListClusters`/`DescribeCluster`), and on GCP the Kubernetes

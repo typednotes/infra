@@ -340,8 +340,23 @@ def Plan.kubernetesProblem {κ : Keys} (T : Plan κ) : Option String :=
             let count : Nat := match s.nodeCount with
               | .known e => e.asLit.getD 1
               | .unknown => 1
+            let lit (f : Partial (Expr κ.Key String)) : String :=
+              match f with | .known e => e.asLit.getD "" | .unknown => ""
+            let networkIs : String := if p == .aws
+              then "the VPC (Name tag, vpc-… id, or `default`) whose subnets EKS uses"
+              else "the Private Network Kapsule attaches the cluster to"
             (if (s.nodeType.asLit.getD "").isEmpty then
               [s!"{slot}: nodeType must be a non-empty literal"] else [])
+            -- What each cloud refuses a cluster without, said before any call:
+            -- EKS needs subnets (from `network`) and its two roles; Kapsule
+            -- needs a Private Network ("mandatory for this cluster type",
+            -- the API's own words, 2026-09-29). GKE defaults all three.
+            ++ (if p != .gcp && (lit s.network).isEmpty then
+              [s!"{slot}: network is required on {p.name} — {networkIs}; infra references \
+networks by name and never creates one"] else [])
+            ++ (if p == .aws && ((lit s.clusterRole).isEmpty || (lit s.nodeRole).isEmpty) then
+              [s!"{slot}: clusterRole and nodeRole are required on aws — EKS needs an IAM \
+role for the control plane and one for the nodes"] else [])
             ++ (if asc.2 == 0 && count == 0 then
               [s!"{slot}: a pool of zero nodes that does not autoscale runs nothing"] else [])
             ++ (if asc.2 != 0 && asc.1 > asc.2 then

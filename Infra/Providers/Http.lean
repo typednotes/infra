@@ -1,21 +1,30 @@
 import Infra.Core.Credentials
+import Linen.Cloud.Transport
+import Linen.Cloud.Error
+import Linen.Cloud.Page
 import Linen.Network.HTTP.Client.Retry
 import Linen.Network.HTTP.Simple
 import Linen.Network.HTTP.Types.URI
 import Linen.Data.CaseInsensitive
-import Linen.Text.XML
-import Linen.Data.Json.Decode
 
 /-
-  The one place provider calls go out.
+  The one place provider calls go out — on linen's transport.
 
-  Wraps Linen's HTTP client with the timeout and retry policy every cloud API
-  wants, and turns a non-2xx response into an error carrying *the provider's
-  own* code and message rather than a bare status number — the difference
-  between "403" and "SignatureDoesNotMatch", which is the whole diagnosis.
+  Sending, retrying and reading a failure are `Linen.Cloud`'s
+  (`Cloud.Transport.network`, `Cloud.retryPolicy`, `Cloud.describeError`, and
+  the four error dialects it reads: S3/AWS XML, AWS-JSON, Scaleway JSON and
+  Google's nested JSON). They lived here until infra moved onto `Linen.Cloud`
+  (0.20.0). What stays is infra's side of the seam:
 
-  Both wire dialects are handled: AWS and S3-compatible services answer with an
-  XML `<Error>` document, Scaleway with JSON.
+  * **The rendering.** A failure becomes an `IO.userError` reading
+    `HTTP <status> <code>: <message> (request <id>)` — the provider's own code
+    and message, not a bare status, since "403" is not a diagnosis and
+    "SignatureDoesNotMatch" is. `Backend.readsAsAbsent` and `readsAsRefused`
+    read the status and code back out of exactly this form, and classify them
+    with linen's taxonomy.
+  * **The request builders**, `request` and `requestPresigned`, which the
+    protocol dialects above (`Aws.Protocols`, `Scaleway.Rest`, `Gcp.Rest`)
+    still use.
 -/
 
 namespace Infra.Providers.Http
@@ -23,87 +32,20 @@ namespace Infra.Providers.Http
 open Network.HTTP.Client
 open Network.HTTP.Types
 
-/-- How provider calls behave under failure.
+/-- How any single read or write may block. linen's value. -/
+def timeoutMillis : Nat := Cloud.timeoutMillis
 
-    Slightly more patient than Linen's default, because a cloud control plane
-    throttling a burst of creates is normal rather than exceptional, and
-    because `Retry-After` is honoured when the service sends one. -/
-def policy : RetryPolicy :=
-  { maxAttempts := 5, baseDelayMillis := 200, maxDelayMillis := 20000 }
+/-- A failure as infra renders it: `HTTP <status> <code>: <message> (request <id>)`.
+    The form `readsAsAbsent`/`readsAsRefused` parse. -/
+def render (e : Cloud.Error) : String :=
+  let rid := match e.requestId with | some r => s!" (request {r})" | none => ""
+  let code := if e.code.isEmpty then "" else s!" {e.code}"
+  s!"HTTP {e.status}{code}: {e.message}{rid}"
 
-/-- How long any single read or write may block. -/
-def timeoutMillis : Nat := 30000
-
-/-- A failed API call, as the provider described it. -/
-structure ApiError where
-  status    : Nat
-  /-- The provider's error code, e.g. `NoSuchBucket`. Empty if it sent none. -/
-  code      : String
-  message   : String
-  requestId : Option String := none
-  deriving Repr
-
-instance : ToString ApiError where
-  toString e :=
-    let rid := match e.requestId with | some r => s!" (request {r})" | none => ""
-    let code := if e.code.isEmpty then "" else s!" {e.code}"
-    s!"HTTP {e.status}{code}: {e.message}{rid}"
-
-/-- Read an AWS/S3-style `<Error><Code>…</Code><Message>…</Message></Error>`. -/
-def parseXmlError (body : String) : Option (String × String × Option String) :=
-  match Text.XML.parse body with
-  | .error _ => none
-  | .ok root =>
-    -- Some services wrap the error, so accept it at the root or one level in.
-    let err := if root.name.local' == "Error" then some root else root.child "Error"
-    err.map fun e =>
-      ((e.childText "Code").getD "", (e.childText "Message").getD "",
-       (e.childText "RequestId").orElse fun _ => e.childText "RequestID")
-
-/-- Read a JSON error body. Scaleway uses `{"message":…,"type":…}`; the AWS
-    JSON protocols use `{"__type":…,"message":…}`, sometimes capitalised. -/
-def parseJsonError (body : String) : Option (String × String) :=
-  match Data.Json.Decode.decode body with
-  | .error _ => none
-  | .ok v =>
-    match v with
-    | .object fields =>
-      let get (k : String) : Option String :=
-        (fields.find? (·.1 == k)).bind fun (_, x) =>
-          match x with | .string s => some s | _ => none
-      let code := (get "__type").orElse fun _ => (get "type" |>.orElse fun _ => get "code")
-      let msg  := (get "message").orElse fun _ => get "Message"
-      -- Google nests it: `{"error":{"code":404,"status":"NOT_FOUND","message":…}}`.
-      -- Read through one level when the flat lookup found nothing, or every
-      -- GCP failure renders as `HTTP 404 :` with the explanation — the only
-      -- part worth having — discarded.
-      let nested : Option (String × String) :=
-        (fields.find? (·.1 == "error")).bind fun (_, e) =>
-          match e with
-          | .object inner =>
-            let innerGet (k : String) : Option String :=
-              (inner.find? (·.1 == k)).bind fun (_, x) =>
-                match x with | .string v => some v | _ => none
-            some ((innerGet "status").getD "", (innerGet "message").getD "")
-          | _ => none
-      match code, msg with
-      | none, none => some (nested.getD ("", ""))
-      | _, _       => some (code.getD "", msg.getD "")
-    | _ => none
-
-/-- Turn a response body into the best error description available, falling
-    back to the raw body so nothing is ever silently swallowed. -/
-def describeError (status : Nat) (body : String) : ApiError :=
-  match parseXmlError body with
-  | some (code, message, rid) => { status, code, message, requestId := rid }
-  | none =>
-    match parseJsonError body with
-    | some (code, message) => { status, code, message }
-    | none =>
-      -- Neither dialect: keep the body, truncated, rather than discard it.
-      let trimmed := body.trimAscii.toString
-      let shown := if trimmed.length > 400 then (trimmed.take 400).toString ++ "…" else trimmed
-      { status, code := "", message := if shown.isEmpty then "(empty response body)" else shown }
+/-- A non-2xx response, described by linen (`Cloud.describeError`, which keeps
+    the raw body, truncated, when no dialect parses) and rendered by infra. -/
+def describe (status : Nat) (body : String) : String :=
+  render (Cloud.describeError status body)
 
 /-- Build a request. `path` must already be canonical; `query` is passed
     separately so the signer and the wire agree on its rendering. -/
@@ -142,22 +84,57 @@ def requestPresigned (method : String) (host path queryString : String)
     isSecure := true
     timeoutMillis := timeoutMillis }
 
-/-- Send a request, retrying transient failures. Does not inspect the status:
-    see `sendChecked`. -/
+/-- Send a request through linen's transport, retrying transient failures
+    (`Cloud.retryPolicy`). Does not inspect the status: see `sendChecked`. -/
 def send (req : Request) : IO Response :=
-  executeWithRetry policy req
+  Cloud.Transport.network.send req
+
+/-- A response body for an *error* message: lossy, since refusing to decode
+    would discard the only diagnostic there is. -/
+def errorText (resp : Response) : String := Cloud.bodyTextLossy resp
 
 /-- Send a request and require a 2xx, raising the provider's own error
     otherwise. -/
 def sendChecked (req : Request) : IO Response := do
   let resp ← send req
-  let status := resp.statusCode.statusCode
-  if 200 ≤ status && status ≤ 299 then
-    return resp
-  else
-    throw (IO.userError (toString (describeError status (String.fromUTF8! resp.body))))
+  if Cloud.isSuccess resp then return resp
+  throw (IO.userError (describe (Cloud.statusOf resp) (errorText resp)))
 
-/-- The response body as text. -/
-def bodyText (resp : Response) : String := String.fromUTF8! resp.body
+/-- The response body as text, or a failure if it is not UTF-8 — a result is
+    never read from a body decoded with replacement characters. -/
+def bodyText (resp : Response) : IO String :=
+  Infra.Core.orThrow (Cloud.bodyText resp)
+
+/-- Decoded bytes as text — a secret's value, a key file — or a failure naming
+    `what` if they are not UTF-8. Replaces `String.fromUTF8!`, which panicked:
+    a secret holding binary would have crashed the run rather than said so. -/
+def utf8Text (what : String) (bytes : ByteArray) : IO String :=
+  match String.fromUTF8? bytes with
+  | some s => pure s
+  | none   => throw (IO.userError s!"{what}: the value is not UTF-8 text")
+
+/-- Every item of a listing the provider hands back in pages, read with
+    linen's `Cloud.paginate` — which records whether the page budget ran out
+    before the provider said it was done.
+
+    `fetch` gets the previous page's continuation (`none` for the first) and
+    answers the page's items and the next continuation (`none`, or empty, when
+    it is the last). A listing still going after `maxPages` pages **fails**,
+    naming `what`: a truncated listing read as complete makes the planner
+    propose creating resources that exist, and the orphan scan miss the ones
+    it should destroy. (The GCP listings used to stop at 50 pages with a
+    warning and return what they had, indistinguishable from complete.) -/
+def listAll {α : Type} (what : String)
+    (fetch : Option String → IO (List α × Option String))
+    (maxPages : Nat := Cloud.defaultMaxPages) : IO (List α) := do
+  let page (c : Option Cloud.Cursor) : IO (Except Cloud.Error (Cloud.Page α)) := do
+    let (items, next) ← fetch (c.map (·.token))
+    return .ok { items, next := (next.filter (!·.isEmpty)).map Cloud.Cursor.mk }
+  let listing ← Infra.Core.orThrow (← Cloud.paginate maxPages page)
+  if listing.truncated then
+    throw (IO.userError s!"{what}: the listing was still going after {listing.pagesRead} pages, \
+so it is incomplete — and a listing read as complete when it is not would plan creating what \
+exists and miss orphans. Nothing was changed")
+  return listing.items
 
 end Infra.Providers.Http

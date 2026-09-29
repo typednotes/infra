@@ -50,7 +50,10 @@ import Infra.Core.Stage
   * **Kapsule** (scaleway-sdk-go `api/k8s/v1/k8s_sdk.go`): `CreateClusterRequest`
     takes `type`, `version` (required), `cni`, `tags`, `pools`
     (`node_type`, `size`, `autoscaling`, `min_size`, `max_size`, `zone`) and
-    an optional `private_network_id`; the kubeconfig
+    `private_network_id` — optional in the SDK, but **mandatory** for a
+    `kapsule` cluster, as the API answers (`invalid_arguments`, "a Private
+    Network is mandatory for this cluster type", 2026-09-29, the first live
+    call); the kubeconfig
     (`GET …/clusters/{id}/kubeconfig`, base64 in a `scw.File`) carries a
     **token** user (`Kubeconfig.GetToken`, and a `redacted` parameter that
     hides "the legacy token") — so no TLS client certificate is needed, and
@@ -190,14 +193,14 @@ private def infoOf (c : Value) : ClusterInfo :=
 /-- Every cluster in the fleet's project, all pages. -/
 def listRaw (creds : Credentials) : IO (List Value) := do
   let project ← creds.requireProject
-  let mut out : List Value := []
-  for page in [1:1000] do
+  -- Page-numbered rather than cursored: the "cursor" is the next page number,
+  -- and a short page is the last.
+  Http.listAll "scaleway kubernetes clusters" fun token => do
+    let page := (token.bind String.toNat?).getD 1
     let reply ← Scaleway.call creds "GET" (pfx creds ++ "/clusters")
       (query := [("project_id", project), ("page", toString page), ("page_size", "100")])
     let cs := arrayField reply "clusters"
-    out := out ++ cs
-    if cs.length < 100 then break
-  return out
+    return (cs, if cs.length < 100 then none else some (toString (page + 1)))
 
 def list (creds : Credentials) : IO (List ClusterInfo) :=
   return (← listRaw creds).map infoOf
@@ -279,7 +282,10 @@ private def resolveVersion (creds : Credentials) (declared : String) : IO String
 '{declared}' is offered in {creds.region} (offered: {", ".intercalate names})")
 
 private def networkId (creds : Credentials) (name : String) : IO (Option String) := do
-  if name.isEmpty then return none
+  if name.isEmpty then
+    throw (IO.userError "a Kapsule cluster needs `network`: the Private Network it is \
+attached to, by name — the API refuses a cluster without one, and infra references networks \
+and never creates one")
   let reply ← Scaleway.call creds "GET" (vpc creds ++ "/private-networks")
       (query := [("project_id", ← creds.requireProject), ("name", name)])
   match (arrayField reply "private_networks").find? (·.lookupText "name" == some name) with
@@ -357,14 +363,32 @@ def update (creds : Credentials) (s : ProviderSpec .kubernetesCluster) : IO Clus
   | some c' => return c'
   | none    => throw (IO.userError s!"kapsule cluster {s.name}: not found after update")
 
-/-- Delete, with the volumes, load balancers and emptied private networks
-    Kapsule made for it (`with_additional_resources`) — the cluster's data
-    goes with it, which is why the kind `holdsData`. Waits until the cluster
-    is no longer listed, so a replace does not collide with its own name. -/
+/-- Delete the cluster, and **only** the cluster: `with_additional_resources`
+    is `false`, explicitly.
+
+    It used to be `true`, on the reading that it removed what Kapsule had made
+    for the cluster. What it removes is every volume attached to it —
+    `retain` ones included — its load balancers, and any Private Network left
+    empty, which is the **declared** `network`: required since Kapsule made it
+    mandatory, and a network infra references and never creates. The first
+    live run deleted the CI project's network exactly so (2026-09-29) — the
+    2026-09-10 cascade again, one kind over. Nothing Scaleway deletes on the
+    cluster's behalf carries this fleet's marker, so none of it is infra's to
+    delete.
+
+    **Not covered, and said so** (`docs/coverage.md`): load balancers and
+    volumes the cluster created for its own Services and claims are left
+    standing — unmarked, named after the cluster id — and are billed until
+    removed. Deleting the fleet's `LoadBalancer` Services and claims before
+    the cluster lets the cluster clean up after itself.
+
+    The cluster's data goes with it, which is why the kind `holdsData`. Waits
+    until the cluster is no longer listed, so a replace does not collide with
+    its own name. -/
 def delete (creds : Credentials) (name : String) : IO Unit := do
   let some c ← describe creds name false | return
   discard <| Scaleway.call creds "DELETE" (pfx creds ++ s!"/clusters/{c.id}")
-    (query := [("with_additional_resources", "true")])
+    (query := [("with_additional_resources", "false")])
   await s!"kapsule cluster {name} deletion" do return (← describe creds name false).isNone
 
 def release (creds : Credentials) (name fleet : String) : IO Unit := do
@@ -395,16 +419,11 @@ private def tagsOf (v : Value) : List (String × String) :=
   | some (.object fs) => fs.filterMap fun (k, x) => x.asString.map (k, ·)
   | _ => []
 
-def list (creds : Credentials) : IO (List String) := do
-  let mut out : List String := []
-  let mut token : Option String := none
-  for _ in [0:1000] do
+def list (creds : Credentials) : IO (List String) :=
+  Http.listAll "eks clusters" fun token => do
     let reply ← RestJson.call creds (ep creds) "GET" "/clusters"
       ([("maxResults", some "100")] ++ (token.map fun t => [("nextToken", some t)]).getD [])
-    out := out ++ stringArrayField reply "clusters"
-    token := reply.lookupText "nextToken"
-    if token.isNone then break
-  return out
+    return (stringArrayField reply "clusters", reply.lookupText "nextToken")
 
 /-- A VPC's id and, if it has one, its `Name` tag — both spellings a
     declaration may use for it, newline-separated for

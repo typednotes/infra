@@ -202,7 +202,8 @@ This is the section worth reading before trusting anything. Correctness of
 
   Live-tested through the CLI, which was the only path that tried the key file
   at the time. Since 0.8.0 the source is added in one place
-  (`GcpAuth.loadWithKeyFile`) that both the CLI and
+  (then `GcpAuth.loadWithKeyFile`; since 0.20.0 `Credentials.load`, on
+  linen's `Cloud.Credentials.Chain`) that both the CLI and
   `Providers.liveFromEnvironment` call, so **every cloud can be driven by a
   long-lived stored credential from either entry point** — a key pair for AWS
   and Scaleway, a service-account key file for GCP. The one-place-ness is
@@ -1197,7 +1198,8 @@ What this cannot reach, enumerated:
 |---|---|---|
 | `postgresMigrations` | rows in a database, not a cloud object: there is nothing to find, and its delete is a no-op FORGET | nothing to destroy: the schema dies with its database |
 | a `kubernetesObject` in a cluster the declaration no longer names (neither declared nor in a `forget`) | an object is reached through its cluster's API server, and the scan looks only in the declaration's clusters | nothing to reach: that cluster is an orphan itself, and deleting it deletes everything in it |
-| an in-cluster object with an owner, a PersistentVolumeClaim, or an Event | a controller's child is its parent's; claims are never deleted (hard edge 5); events are the server's | excluded from the scan by construction |
+| a load balancer or block volume a Kapsule cluster created for itself (a `LoadBalancer` Service, a claim) | unmarked, named after the cluster id; Scaleway's only way to take them with the cluster, `with_additional_resources`, also deletes the declared Private Network once it is empty — and did, on the first live run (2026-09-29) — so infra deletes the cluster alone | left standing and billed; delete the fleet's `LoadBalancer` Services and claims before the cluster, or remove them by hand. EKS and GKE deletes cascade to neither network nor volumes |
+| an in-cluster object with an owner, a PersistentVolumeClaim, an Endpoints, or an Event | a controller's child is its parent's; claims are never deleted (hard edge 5); an Endpoints is its Service's — the controller copies the Service's labels, marker included, and sets no owner reference (found by the first live run, 2026-09-29); events are the server's | excluded from the scan by construction |
 | objects of an aggregated API whose discovery answers `503` | its backing service is down, so its resources cannot be listed | skipped with a note on stderr, and scanned again on the next run |
 | a cloud named neither in the declaration nor in `accounts` (or named only in `accounts` and without credentials on this machine) | it is not loaded, so it is not scanned | keep a cloud in `accounts` until the apply that empties it, then drop it |
 | a name-rung resource named outside the fleet's prefixes | nothing on it says it is this fleet's | name it under the prefix, or add its prefix with `namePrefixes` — listing `<fleet name>-` too, since setting any prefix replaces the default |
@@ -1338,7 +1340,22 @@ where a defect is written down while it stands and deleted when it goes. What
 is left there is soft spots — proof obligations not discharged, and two
 mechanisms deliberately not built (an instance type is not checked against its
 region, a reference field is still an `Expr`) — rather than anything that
-misreports what it did to an account.
+misreports what it did to an account — with one exception, open:
+
+- **Most AWS and Scaleway listings read one page** (found 2026-09-29, open).
+  Ten listings follow their continuation and fail rather than truncate
+  (`Http.listAll`): the six GCP ones, Kapsule and EKS clusters, and the
+  in-cluster scan. About twenty-two that feed a backend's `list`, the orphan
+  scan, or the name-to-id lookups ownership and delete depend on make one
+  request: on AWS, S3 `ListBuckets`, SQS `ListQueues`, Secrets Manager
+  `ListSecrets`, Lambda, EC2 instances and security groups, IAM users, ECR,
+  RDS; on Scaleway, secrets, containers and functions (and both namespace
+  kinds), IAM applications (100 per page), registry namespaces, RDB and
+  Serverless SQL; on GCP, Cloud SQL and GKE. Scaleway's default page is
+  twenty. Past one page an orphan is invisible and a declared resource reads
+  as absent — a planned `CREATE` that collides. Per-listing detail and the
+  fix are `TODO.md`'s; until then, a project past one page of a kind is not
+  safely managed.
 
 The two that headed this list are closed, and both closures are checked
 offline:

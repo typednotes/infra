@@ -139,7 +139,7 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
       -- Base64 in the wire format: the API's encoding of a byte string, not
       -- an attempt to obscure anything.
       match Data.Base64.decode encoded with
-      | some bytes => return String.fromUTF8! bytes
+      | some bytes => Http.utf8Text s!"gcp secret '{secretName}'" bytes
       | none       => throw (IO.userError
           s!"gcp secret '{secretName}': value is not valid base64")
     | none => throw (IO.userError
@@ -164,7 +164,7 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
       match reply.lookupText "data" with
       | some encoded =>
         match Data.Base64.decode encoded with
-        | some bytes => return String.fromUTF8! bytes
+        | some bytes => Http.utf8Text s!"secret '{secretName}'" bytes
         | none       => throw (IO.userError s!"secret '{secretName}': value is not valid base64")
       | none => throw (IO.userError s!"secret '{secretName}' holds no data")
 

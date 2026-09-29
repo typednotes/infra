@@ -61,23 +61,12 @@ private def labelsOf (s : Value) : List (String × String) :=
     listing returns on each secret object, so no second call is needed. -/
 def listTagged (creds : Credentials) (project : String) :
     IO (List (String × List (String × String))) := do
-  let rec go (fuel : Nat) (token : String) (acc : List (String × List (String × String))) :
-      IO (List (String × List (String × String))) := do
-    match fuel with
-    | 0 =>
-      IO.eprintln "warning: gcp secret manager: stopped paginating secrets after 50 \
-pages; the list may be incomplete"
-      return acc
-    | fuel' + 1 =>
-      let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
-      let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/secrets" query
-      let here := (arrayField reply "secrets").filterMap fun s =>
-        (s.lookupText "name").map fun n => (Gcp.shortName n, labelsOf s)
-      let acc := acc ++ here
-      match reply.lookupText "nextPageToken" with
-      | some next => if next.isEmpty then return acc else go fuel' next acc
-      | none      => return acc
-  go 50 "" []
+  Http.listAll "gcp secret manager secrets" fun token => do
+    let query : Query := (token.map fun t => [("pageToken", some t)]).getD []
+    let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/secrets" query
+    let here := (arrayField reply "secrets").filterMap fun s =>
+      (s.lookupText "name").map fun n => (Gcp.shortName n, labelsOf s)
+    return (here, reply.lookupText "nextPageToken")
 
 /-- Every secret in the project, by short name. -/
 def list (creds : Credentials) (project : String) : IO (List String) := do

@@ -66,8 +66,10 @@ resource scaleway kubernetesCluster "main"
   `Name` tag, a `vpc-…` id, or `default` for the region's default VPC), whose
   subnets the cluster uses — EKS requires them in at least two availability
   zones, so `network` is required there; on GCP a VPC network (the project's
-  `default` when unset); on Scaleway a Private Network by name (Kapsule
-  attaches one of its own when unset). No cloud can move a live cluster to
+  `default` when unset); on Scaleway a Private Network by name, which
+  Kapsule requires ("a Private Network is mandatory for this cluster type",
+  the API's answer to the first live create, 2026-09-29) — so `network` is
+  required there too, and `infra check` says so before any call. No cloud can move a live cluster to
   another network, so a change is a `REPLACE`.
 - `clusterRole` and `nodeRole` are AWS's: EKS requires an IAM role for the
   control plane and one for the nodes, as an ARN or a role name in the
@@ -182,8 +184,11 @@ teardown deletes a workload before its cluster, and an apply that removes a
 cluster and its objects destroys the objects first — no special case, just
 the DAG (`example/KubernetesPostgres.lean` pins both directions). When the
 cluster line alone is removed, the cluster is an orphan whose cloud-side
-deletion takes everything with it (Kapsule with
-`with_additional_resources`; EKS after its node groups, which it requires).
+deletion takes everything in it (EKS after its node groups, which it
+requires). Kapsule's delete passes `with_additional_resources=false`: `true`
+also deletes the declared Private Network once empty — it did, on the first
+live run — and every attached volume, so the load balancers and volumes a
+Kapsule cluster made for itself are left standing (`docs/coverage.md`).
 
 The subtle case is the *scan*: an orphaned workload is found by listing
 marked objects inside the clusters the declaration names — declared, or named
@@ -198,7 +203,13 @@ What the scan lists, and does not: every top-level resource the API server
 serves that can be listed and deleted, across all namespaces, with a label
 selector on the marker key — except **objects with an owner**
 (`ownerReferences`: a controller's child is its parent's), **PersistentVolume
-Claims** (hard edge 5), and **Events**. A group-version whose discovery
+Claims** (hard edge 5), core **Endpoints** — the endpoints controller copies a
+Service's labels, the marker included, onto its Endpoints and sets no owner
+reference, so the first live run read one as an orphan (2026-09-29) — and
+**Events** (`Kube.excludedFromScan`). The metrics groups
+(`metrics.k8s.io` and its custom/external siblings) are not asked: they serve
+only computed, undeletable resources, and `metrics.k8s.io` answers `503` until
+metrics-server is ready. Any other group-version whose discovery
 answers `503` — an aggregated API whose backing service is down — is skipped
 with a note on stderr rather than failing every plan.
 
@@ -351,8 +362,10 @@ Checked against generated SDKs and discovery documents — not prose docs, the
 - **Kapsule** (scaleway-sdk-go `api/k8s/v1/k8s_sdk.go`): `CreateClusterRequest`
   takes `type`, `version` (required — so an unset version is resolved to the
   highest `GET …/versions` offers), `cni`, `tags`, `pools` (`node_type`,
-  `size`, `autoscaling`, `min_size`, `max_size`, `zone`) and an optional
-  `private_network_id`; `DeleteClusterRequest.with_additional_resources`;
+  `size`, `autoscaling`, `min_size`, `max_size`, `zone`) and
+  `private_network_id` (optional in the SDK, mandatory for `kapsule` per the
+  API, 2026-09-29); `DeleteClusterRequest.with_additional_resources`, which
+  deletes volumes, load balancers and *empty Private Networks* — sent `false`;
   the token-bearing kubeconfig above.
 - **DNS-1123** as the object-name rule, as enforced by the API server's own
   validation (labels for namespaces and a StatefulSet's name, subdomains for
