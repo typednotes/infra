@@ -1171,6 +1171,91 @@ def checkKubernetes : IO Unit := do
   | .error _ => pure ()
   IO.println "kubernetes: ok (an in-cluster orphan is destroyed, an unmarked declared object is refused, a service follows its workload, and keep-data keeps the cluster; an unreachable API server is an error, not absence)"
 
+/-- Replay provider waits without sleeping: HTTP time counts toward the
+    deadline, a stable status still has a heartbeat, and a failed EKS create
+    does not spend thirty minutes polling or prevent its own deletion. -/
+def checkKubernetesWaiters : IO Unit := do
+  let clock ← IO.mkRef (0 : Nat)
+  let calls ← IO.mkRef (0 : Nat)
+  let lines ← IO.mkRef ([] : List String)
+  let report := fun line => lines.modify (· ++ [line])
+  let sleep := fun (ms : UInt32) => clock.modify (· + ms.toNat)
+  Infra.Providers.Kinds.Kubernetes.awaitStatus "test cluster" (do
+    calls.modify (· + 1)
+    return ((← calls.get) == 5, if (← calls.get) == 5 then "ACTIVE" else "CREATING"))
+    (attempts := 10) (every := 5000) (now := clock.get) (sleep := sleep) (report := report)
+  let beats ← lines.get
+  unless beats == ["[test cluster] waiting (up to 50s)…",
+      "[test cluster] 0s of 50s — CREATING", "[test cluster] 15s of 50s — CREATING",
+      "[test cluster] done after 20s — ACTIVE"] do
+    throw (IO.userError s!"a stable Kubernetes wait lost its heartbeat: {beats}")
+  clock.set 0; calls.set 0; lines.set []
+  -- Each HTTP call takes 1.2s: two calls and one sleep exhaust a 3s
+  -- budget. Counting sleeps alone would poll a third time and run for 6.6s.
+  let timed ← (Infra.Providers.Kinds.Kubernetes.awaitStatus "slow cluster" (do
+    calls.modify (· + 1)
+    clock.modify (· + 1200)
+    return (false, "CREATING"))
+    (attempts := 3) (every := 1000) (now := clock.get) (sleep := sleep)
+    (report := report)).toBaseIO
+  match timed with
+  | .ok _ => throw (IO.userError "a Kubernetes wait ignored its wall-clock deadline")
+  | .error e =>
+    unless (← calls.get) == 2 && mentions (toString e) "last status: CREATING" do
+      throw (IO.userError s!"a Kubernetes timeout did not account for HTTP time: {e}")
+  clock.set 0; calls.set 0; lines.set []
+  Infra.Providers.Kinds.Kubernetes.awaitStatus "changing cluster" (do
+    calls.modify (· + 1)
+    let n ← calls.get
+    return (n == 3, if n == 1 then "CREATING" else if n == 2 then "UPDATING" else "ACTIVE"))
+    (attempts := 5) (every := 1000) (now := clock.get) (sleep := sleep) (report := report)
+  unless (← lines.get).any (mentions · "1s of 5s — UPDATING") do
+    throw (IO.userError "a Kubernetes status change waited for the next heartbeat")
+  -- All four waiter targets, including failed-create cleanup and degraded
+  -- (non-terminal) nodes; the acceptors come from botocore, not guesses.
+  let r := fun status => some (Data.Json.Value.object [("status", .string status)])
+  for (target, status, done) in
+      [ (Infra.Providers.Kinds.Kubernetes.Eks.WaitFor.clusterActive, "CREATING", false)
+      , (.clusterActive, "ACTIVE", true), (.nodegroupActive, "UPDATING", false)
+      , (.nodegroupActive, "DEGRADED", false), (.nodegroupActive, "ACTIVE", true)
+      , (.clusterDeleted, "DELETING", false), (.nodegroupDeleted, "DELETING", false)
+      , (.nodegroupDeleted, "CREATE_FAILED", false) ] do
+    unless (Infra.Providers.Kinds.Kubernetes.Eks.waitState target (r status)).toOption == some (done, status) do
+      throw (IO.userError s!"wrong EKS waiter result for {repr target}, {status}")
+  for (target, status) in
+      [ (Infra.Providers.Kinds.Kubernetes.Eks.WaitFor.clusterActive, "FAILED")
+      , (.clusterActive, "DELETING"), (.nodegroupActive, "CREATE_FAILED")
+      , (.nodegroupDeleted, "DELETE_FAILED"), (.clusterDeleted, "ACTIVE")
+      , (.clusterDeleted, "CREATING"), (.clusterDeleted, "PENDING") ] do
+    match Infra.Providers.Kinds.Kubernetes.Eks.waitState target (r status) with
+    | .ok _ => throw (IO.userError s!"EKS waited on a terminal failure: {repr target}, {status}")
+    | .error e => unless mentions e status do throw (IO.userError s!"EKS failure lost its status: {e}")
+  for target in [Infra.Providers.Kinds.Kubernetes.Eks.WaitFor.clusterDeleted, .nodegroupDeleted] do
+    unless (Infra.Providers.Kinds.Kubernetes.Eks.waitState target none).toOption == some (true, "absent") do
+      throw (IO.userError "EKS deletion did not finish on not-found")
+  for target in [Infra.Providers.Kinds.Kubernetes.Eks.WaitFor.clusterActive, .nodegroupActive,
+      .clusterDeleted, .nodegroupDeleted] do
+    match Infra.Providers.Kinds.Kubernetes.Eks.waitState target (some (.object [])) with
+    | .ok _ => throw (IO.userError "EKS read a malformed status as success or absence")
+    | .error _ => pure ()
+  let failed : Data.Json.Value := .object
+    [("status", .string "CREATE_FAILED"), ("health", .object [("issues", .array #[.object
+      [("code", .string "NodeCreationFailure"), ("message", .string "Instances failed to join"),
+       ("resourceIds", .array #[.string "i-test"]) ]])])]
+  calls.set 0
+  match ← (Infra.Providers.Kinds.Kubernetes.awaitStatus "failed nodes" (do
+      calls.modify (· + 1)
+      match Infra.Providers.Kinds.Kubernetes.Eks.waitState .nodegroupActive (some failed) with
+      | .ok state => return state
+      | .error e => throw (IO.userError e))
+      (attempts := 5) (every := 1000) (now := clock.get) (sleep := sleep)
+      (report := report)).toBaseIO with
+  | .ok _ => throw (IO.userError "EKS accepted a failed node group")
+  | .error e =>
+    unless (← calls.get) == 1 && mentions (toString e) "NodeCreationFailure: Instances failed to join (i-test)" do
+      throw (IO.userError s!"EKS did not fail immediately with its health issue: {e}")
+  IO.println "kubernetes waits: ok (elapsed deadlines, status changes and heartbeats; EKS failure states, health issues and failed-create cleanup)"
+
 /-- Checks the empty declaration: what `destroy` reconciles against.
 
     Two claims worth pinning. First, `Plan.absent` deletes what exists and
@@ -1361,6 +1446,7 @@ def selfCheck : IO Unit := do
   checkRefreshSecrets
   checkKeepData
   checkKubernetes
+  checkKubernetesWaiters
   checkGcpAssertion
   checkVanishingResource
   checkSecretsRequestToken

@@ -121,7 +121,7 @@ def validFleetName (name : String) : Bool :=
 
 #guard validFleetName "typednotes" && validFleetName "ci-tests-infra" && validFleetName "a_b1"
 #guard !validFleetName "" && !validFleetName "myFleet" && !validFleetName "1st"
-#guard !validFleetName "a.b" && !validFleetName (String.mk (List.replicate 64 'a'))
+#guard !validFleetName "a.b" && !validFleetName (String.ofList (List.replicate 64 'a'))
 
 /-! ## The marker, written into a free-text field
 

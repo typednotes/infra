@@ -94,6 +94,15 @@
       ]
     },
     {
+      "Sid": "KubernetesReadServiceLinkedRolesNotExercisedByCi",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": [
+        "arn:aws:iam::ACCOUNT:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
+        "arn:aws:iam::ACCOUNT:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"
+      ]
+    },
+    {
       "Sid": "KubernetesServiceLinkedRolesNotExercisedByCi",
       "Effect": "Allow",
       "Action": "iam:CreateServiceLinkedRole",

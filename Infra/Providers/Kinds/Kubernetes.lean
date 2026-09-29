@@ -154,15 +154,55 @@ def nextPoolName (current : String) : String :=
 #guard nextPoolName "infra-pool-1" = "infra-pool-2"
 #guard nextPoolName "default" = "infra-pool-1"
 
-/-- Poll `step` until it says done, a second apart per `every`, for at most
-    `attempts` rounds; say what was awaited when giving up. -/
+/-- Flushed stderr: a provider wait is progress, never part of a CLI's output
+    document, and must remain visible while `push` is still inside a create. -/
+private def waitProgress (line : String) : IO Unit := do
+  let h ← IO.getStderr
+  h.putStrLn line
+  h.flush
+
+/-- Poll a provider's `(done, status)`, with a monotonic deadline that includes
+    HTTP time. Report immediately, on status changes, every fifteen seconds,
+    and on completion. The default budget is thirty minutes, not thirty
+    minutes of sleeps plus nine hundred HTTP calls.
+
+    `now`, `sleep` and `report` let the offline checks replay slow calls and
+    long waits without a cloud or real sleeps. No waiter can interrupt a call
+    already in flight; the transport bounds that call separately. -/
+def awaitStatus (what : String) (step : IO (Bool × String))
+    (attempts : Nat := 900) (every : UInt32 := 2000)
+    (now : IO Nat := IO.monoMsNow) (sleep : UInt32 → IO Unit := fun ms => IO.sleep ms)
+    (report : String → IO Unit := waitProgress) : IO Unit := do
+  let start ← now
+  let budget := attempts * every.toNat
+  let deadline := start + budget
+  let mut lastStatus := "not yet polled"
+  let mut lastBeat := start
+  report s!"[{what}] waiting (up to {budget / 1000}s)…"
+  for i in [0:attempts] do
+    if (← now) ≥ deadline then break
+    let (done, status) ← step
+    let time ← now
+    let secs := (time - start) / 1000
+    if done then
+      report s!"[{what}] done after {secs}s — {status}"
+      return
+    if i == 0 || status != lastStatus || time - lastBeat ≥ 15000 then
+      report s!"[{what}] {secs}s of {budget / 1000}s — {status}"
+      lastBeat := time
+    lastStatus := status
+    if time ≥ deadline then break
+    sleep (UInt32.ofNat (min every.toNat (deadline - time)))
+  let secs := ((← now) - start) / 1000
+  throw (IO.userError s!"{what}: still not done after {secs}s (budget {budget / 1000}s; \
+last status: {lastStatus}). It may still be in progress — check the console before retrying.")
+
+/-- The boolean form for callers without a provider status. -/
 def await (what : String) (step : IO Bool) (attempts : Nat := 900) (every : UInt32 := 2000) :
-    IO Unit := do
-  for _ in [0:attempts] do
-    if ← step then return
-    IO.sleep every
-  throw (IO.userError s!"{what}: still not done after {attempts * every.toNat / 1000}s. It \
-may still be in progress — check the console before retrying.")
+    IO Unit :=
+  awaitStatus what (do
+    let done ← step
+    return (done, if done then "ready" else "pending")) attempts every
 
 /-- Base64url without padding, as the EKS token format wants. -/
 def base64Url (bytes : ByteArray) : String :=
@@ -304,14 +344,16 @@ private def poolBody (s : ProviderSpec .kubernetesCluster) (name zone : String) 
     , ("zone", .string zone), ("tags", .array #[]) ]
 
 private def awaitReady (creds : Credentials) (id what : String) : IO Unit :=
-  await what do
+  awaitStatus what do
     let c ← Scaleway.call creds "GET" (pfx creds ++ s!"/clusters/{id}")
-    return c.lookupText "status" == some "ready"
+    let status := (c.lookupText "status").getD "unknown"
+    return (status == "ready", status)
 
 private def awaitPoolReady (creds : Credentials) (poolId what : String) : IO Unit :=
-  await what do
+  awaitStatus what do
     let p ← Scaleway.call creds "GET" (pfx creds ++ s!"/pools/{poolId}")
-    return p.lookupText "status" == some "ready"
+    let status := (p.lookupText "status").getD "unknown"
+    return (status == "ready", status)
 
 def create (creds : Credentials) (s : ProviderSpec .kubernetesCluster) (fleet : String) :
     IO ClusterInfo := do
@@ -389,7 +431,9 @@ def delete (creds : Credentials) (name : String) : IO Unit := do
   let some c ← describe creds name false | return
   discard <| Scaleway.call creds "DELETE" (pfx creds ++ s!"/clusters/{c.id}")
     (query := [("with_additional_resources", "false")])
-  await s!"kapsule cluster {name} deletion" do return (← describe creds name false).isNone
+  awaitStatus s!"kapsule cluster {name} deletion" do
+    let c ← describe creds name false
+    return (c.isNone, (c.map (·.status)).getD "absent")
 
 def release (creds : Credentials) (name fleet : String) : IO Unit := do
   let some c := (← listRaw creds).find? (·.lookupText "name" == some name) | return
@@ -523,10 +567,52 @@ requires one for the control plane (`clusterRole`) and one for the nodes (`nodeR
   let partition := ((callerArn.splitOn ":").drop 1).headD "aws"
   return s!"arn:{partition}:iam::{account}:role/{role}"
 
-private def status (creds : Credentials) (path field : String) : IO (Option String) := do
+/-- The four EKS waiter targets, kept distinct: a failed create is still a
+    resource whose deletion can succeed. Failure acceptors are botocore's
+    `eks/2017-11-01/waiters-2.json`, checked 2026-09-29. -/
+inductive WaitFor where
+  | clusterActive | clusterDeleted | nodegroupActive | nodegroupDeleted
+  deriving BEq, Repr
+
+/-- Classify the resource from DescribeCluster/DescribeNodegroup. Only an
+    actual not-found is successful deletion; a malformed reply is not absence.
+    Include EKS health issues in a failure, rather than hiding a node's join
+    error behind a thirty-minute timeout. -/
+def waitState (target : WaitFor) (resource : Option Value) : Except String (Bool × String) := do
+  let deleting := target == .clusterDeleted || target == .nodegroupDeleted
+  let some r := resource
+    | if deleting then return (true, "absent") else throw "resource disappeared while waiting for ACTIVE"
+  let some status := r.lookupText "status" | throw "EKS response has no resource status"
+  let failures := match target with
+    | .clusterActive    => ["DELETING", "FAILED"]
+    | .clusterDeleted   => ["ACTIVE", "CREATING", "PENDING"]
+    | .nodegroupActive  => ["CREATE_FAILED"]
+    | .nodegroupDeleted => ["DELETE_FAILED"]
+  if failures.contains status then
+    let health := (r.lookup "health").getD .null
+    let issues := (arrayField health "issues").map fun issue =>
+      let code := (issue.lookupText "code").getD "unknown"
+      let message := (issue.lookupText "message").getD ""
+      let ids := stringArrayField issue "resourceIds"
+      s!"{code}{if message.isEmpty then "" else ": " ++ message}\
+{if ids.isEmpty then "" else " (" ++ String.intercalate ", " ids ++ ")"}"
+    throw s!"status {status}{if issues.isEmpty then "" else ": " ++ String.intercalate "; " issues}"
+  return (!deleting && status == "ACTIVE", status)
+
+private def resource (creds : Credentials) (path field : String) : IO (Option Value) := do
   match ← (RestJson.call creds (ep creds) "GET" path).toBaseIO with
-  | .ok v    => return (v.lookup field).bind (Data.Json.Value.lookupText "status")
+  | .ok v    =>
+    let some r := v.lookup field
+      | throw (IO.userError s!"eks GET {path}: response has no '{field}'")
+    return some r
   | .error e => if readsAsAbsent (toString e) then return none else throw e
+
+private def awaitResource (creds : Credentials) (path field what : String) (target : WaitFor) :
+    IO Unit :=
+  awaitStatus what do
+    match waitState target (← resource creds path field) with
+    | .ok state => return state
+    | .error e  => throw (IO.userError s!"{what}: {e}")
 
 private def createPool (creds : Credentials) (s : ProviderSpec .kubernetesCluster)
     (subnets : List String) (poolName fleet : String) : IO Unit := do
@@ -540,16 +626,16 @@ private def createPool (creds : Credentials) (s : ProviderSpec .kubernetesCluste
       , ("scalingConfig", .object [("minSize", .number lo.toFloat),
           ("maxSize", .number hi.toFloat), ("desiredSize", .number desired.toFloat)])
       , ("tags", .object [(markerKey, .string fleet)]) ]))
-  await s!"eks node group {s.name}/{poolName}" do
-    return (← status creds s!"/clusters/{s.name}/node-groups/{poolName}" "nodegroup") == some "ACTIVE"
+  awaitResource creds s!"/clusters/{s.name}/node-groups/{poolName}" "nodegroup"
+    s!"eks node group {s.name}/{poolName}" .nodegroupActive
 
 private def deletePool (creds : Credentials) (cluster poolName : String) : IO Unit := do
   discard <| RestJson.call creds (ep creds) "DELETE" s!"/clusters/{cluster}/node-groups/{poolName}"
-  await s!"eks node group {cluster}/{poolName} deletion" do
-    return (← status creds s!"/clusters/{cluster}/node-groups/{poolName}" "nodegroup").isNone
+  awaitResource creds s!"/clusters/{cluster}/node-groups/{poolName}" "nodegroup"
+    s!"eks node group {cluster}/{poolName} deletion" .nodegroupDeleted
 
 private def awaitActive (creds : Credentials) (name what : String) : IO Unit :=
-  await what do return (← status creds s!"/clusters/{name}" "cluster") == some "ACTIVE"
+  awaitResource creds s!"/clusters/{name}" "cluster" what .clusterActive
 
 def create (creds : Credentials) (s : ProviderSpec .kubernetesCluster) (fleet : String) :
     IO ClusterInfo := do
@@ -599,9 +685,8 @@ def update (creds : Credentials) (s : ProviderSpec .kubernetesCluster) (fleet : 
       s!"/clusters/{s.name}/node-groups/{pool.name}/update-config" []
       (some (.object [("scalingConfig", .object [("minSize", .number lo.toFloat),
         ("maxSize", .number hi.toFloat), ("desiredSize", .number desired.toFloat)])]))
-    await s!"eks node group {s.name}/{pool.name}" do
-      return (← status creds s!"/clusters/{s.name}/node-groups/{pool.name}" "nodegroup")
-        == some "ACTIVE"
+    awaitResource creds s!"/clusters/{s.name}/node-groups/{pool.name}" "nodegroup"
+      s!"eks node group {s.name}/{pool.name}" .nodegroupActive
   match ← describe creds s.name with
   | some c' => return c'
   | none    => throw (IO.userError s!"eks cluster {s.name}: not found after update")
@@ -612,7 +697,7 @@ def delete (creds : Credentials) (name : String) : IO Unit := do
   if (← describe creds name false).isNone then return
   for p in ← pools creds name do deletePool creds name p.name
   discard <| RestJson.call creds (ep creds) "DELETE" s!"/clusters/{name}"
-  await s!"eks cluster {name} deletion" do return (← describe creds name false).isNone
+  awaitResource creds s!"/clusters/{name}" "cluster" s!"eks cluster {name} deletion" .clusterDeleted
 
 /-- `UntagResource` (`DELETE /tags/{resourceArn}?tagKeys=…`), only while the
     marker names this fleet. The ARN's `:`s make this a path outside the
@@ -752,11 +837,12 @@ def pools (creds : Credentials) (name : String) : IO (List PoolInfo) := do
 private def awaitOp (creds : Credentials) (op : Value) (what : String) : IO Unit := do
   let project ← Gcp.requireProject creds
   let name := (op.lookupText "name").getD ""
-  await what do
+  awaitStatus what do
     let o ← Gcp.call creds "GET" host s!"{base project creds.region}/operations/{name}"
     if let some err := o.lookup "error" then
       throw (IO.userError s!"gke {what}: {(err.lookupText "message").getD (Data.Json.Encode.encode err)}")
-    return o.lookupText "status" == some "DONE"
+    let status := (o.lookupText "status").getD "unknown"
+    return (status == "DONE", status)
 
 /-- The first zone of the region, for a regional cluster whose nodes live in
     one zone (so a pool's size is its total, as on the other clouds). -/

@@ -10,6 +10,32 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Fixed: Kubernetes live-test timeouts and silent provisioning
+
+The Live test job now budgets the live step **plus** its backstop and
+setup/build: 100 minutes for Kubernetes (60 + 30 + 10), thirty for the ordinary
+fleet (16 + 6 + 8). Its previous twenty-minute job cap overrode Kubernetes's
+sixty-minute step limit and could kill cleanup before it ran.
+
+Every Kubernetes provider wait reports flushed status progress, roughly every
+fifteen seconds and on status changes, with elapsed time and completion.
+The default thirty-minute deadline includes HTTP time rather than only the
+poll sleeps. EKS cluster activation/deletion and node-group activation/deletion
+use botocore's failure acceptors and include health issues in failures; a
+failed-create node group remains deletable. `checkKubernetesWaiters` replays
+deadlines, progress, failure states and failed-create cleanup offline.
+
+Also removed two Lean build warnings: `String.mk` in the fleet-name guard is
+now `String.ofList`, and the unused migrations-update handle is not bound.
+
+The completed AWS run also exposed a missing `iam:GetRole` on EKS's
+service-linked roles: its control plane took about eight minutes to create,
+then node-group creation could not check whether
+`AWSServiceRoleForAmazonEKSNodegroup` existed. The CI policy and operator
+template now grant that read on the two exact EKS service-linked-role ARNs;
+the existing create grant does not imply read access. The run cleaned up, but
+the complete AWS Kubernetes round trip still needs a successful rerun.
+
 Pending in `linen` — none changed from here, because a linen session was
 active on 2026-09-29:
 

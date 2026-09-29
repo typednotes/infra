@@ -105,7 +105,8 @@ any one of them:
 |---|---|
 | Verified against a real account | a three-stage sequence on **all three clouds**: 32 resources across 11 of the 14 kinds, created, converged, partly dropped, and destroyed. Stage 2 deletes resources whose lines are *gone* from the declaration, so it cannot pass unless membership works |
 | Verified offline, every build | signing, diffing, DAG scheduling, credentials, composed secrets, that the marker decides (orphans found and destroyed, nothing else), dump round-trip and replay, fleet isolation and naming, `forget` releasing (unmarking, not deleting), orphans found on a cloud no longer declared, orphan recheck and retry, the same inside a Kubernetes cluster (an in-cluster orphan destroyed, an unmarked object at a declared address refused), and that a sweep deletes only what it created |
-| **Never run against an account** | Kubernetes on AWS (the opt-in leg passed on Scaleway and GCP, 2026-09-29); AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
+| **AWS Kubernetes: complete leg not yet passed** | EKS control-plane creation/deletion exercised; node-group IAM validation failed, with the missing grants now fixed (2026-09-29). The opt-in leg passed on Scaleway and GCP |
+| **Never run against an account** | AWS Lambda and RDS, Scaleway's `postgres` and `scalewayFunction`, GCP Cloud SQL — the kinds a test cannot arrange. Most `update` paths: only `queues` has one that runs, and only on two clouds |
 
 It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
 references, and a `# TODO` for anything HCL cannot express), and

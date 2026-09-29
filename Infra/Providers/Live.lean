@@ -1068,7 +1068,7 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
       return { handle := h, url }
     -- The same body as `create`: the resource *is* its history, so
     -- "update" is "apply the pending suffix" and the backend says which.
-    | .postgresMigrations, h, spec => Migrations.apply provider creds spec
+    | .postgresMigrations, _, spec => Migrations.apply provider creds spec
     | .kubernetesCluster, _, spec => Kubernetes.update provider creds spec fleet
     | .kubernetesObject, _, spec => Kubernetes.applyObject provider creds fleet spec
 

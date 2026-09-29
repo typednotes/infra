@@ -587,6 +587,16 @@ destroys it. From the workflow, **AWS only**:
 gh workflow run live-test.yml -f provider=aws -f leg=kubernetes
 ```
 
+This leg provisions one EKS control plane and then one managed node group;
+teardown deletes the node group before the control plane. The four stages
+reuse the same cluster. Allow roughly 45 minutes for the round trip. The job
+budget is **100 minutes**, covering the sixty-minute live step, thirty-minute
+backstop and ten minutes for setup/build; the two-hour AWS session below
+covers it. Provider waits print flushed status heartbeats roughly every
+fifteen seconds, including provisioning and deletion, and EKS's waiter failure
+states fail immediately with the cloud's health issues. Details and offline
+regressions: [`../docs/kubernetes.md`](../docs/kubernetes.md#provisioning-waits-and-ci-budgets).
+
 What the AWS run needs — the first two **applied 2026-09-29** (after 0.20.1),
 checked first against the live policy (the other ten statements identical)
 and with `aws accessanalyzer validate-policy` (no errors or security
@@ -597,8 +607,8 @@ warnings):
    `KubernetesPassTestRoles` and `KubernetesReadTestRoles` (`iam:PassRole`,
    to EKS and EC2 only, and `iam:GetRole`, on the two roles below and nothing
    else) and `KubernetesServiceLinkedRoles` (EKS's two
-   service-linked roles, created by the first cluster in an account — neither
-   exists in this one yet) in `ci/aws-permissions-policy.json`, applied with
+   service-linked roles, created by the first cluster/node group in an
+   account) in `ci/aws-permissions-policy.json`, applied with
    `put-role-policy` as above.
 2. A two-hour session: the workflow asks for `role-duration-seconds: 7200` on
    this leg, and fails before creating anything unless the role allows it —
@@ -615,6 +625,17 @@ warnings):
    `AmazonEC2ContainerRegistryReadOnly`). They carry the `ci-tests-infra-`
    prefix, and no sweep touches them: no kind lists IAM roles. Plus the
    region's default VPC, which exists.
+
+The subsequent run [36622819059](https://github.com/typednotes/infra/actions/runs/36622819059)
+exposed one more read grant: EKS checks whether its service-linked role exists
+**as the caller**, before creating a node group. `KubernetesReadServiceLinkedRoles`
+grants `iam:GetRole` on the two exact service-linked-role ARNs; it is separate
+from the two declared roles and from `CreateServiceLinkedRole`. **Applied
+2026-09-29**: the other fourteen statements were unchanged, Access Analyzer
+reported no errors or security warnings, and IAM simulation allowed both
+reads while denying an unrelated role. The control plane took about eight
+minutes to create, then node-group creation failed on this missing read;
+teardown removed the cluster. The complete leg still needs a passing rerun.
 
 **Scaleway and GCP run by hand**, because their CI identities hold the scan's
 read grants for clusters and nothing that creates one; the workflow refuses
@@ -667,11 +688,14 @@ empty; the `empty` stage *is* the teardown.
 Before any of that the job builds, runs the offline suite, and checks that the
 chosen provider's credentials are present — a missing repository secret fails
 there, naming the variable, rather than later as an opaque 403. What those
-credentials are and how they were provisioned is `docs/ci-auth.md`. The live
-step is capped at sixteen minutes and the job at twenty, sized from the
+credentials are and how they were provisioned is `docs/ci-auth.md`. For the
+ordinary fleet the live step is capped at sixteen minutes and the job at
+thirty, including six minutes for backstop teardown and eight for setup/build.
+The live-step budget is sized from the
 driver's `settleSeconds := 180` polls plus create and delete of what stage 1
 declares — twelve resources on AWS and Scaleway, ten on GCP, pinned by `#guard`
-in `test/Live.lean`.
+in `test/Live.lean`. Kubernetes has the larger budgets above; its provisioning
+waits run before the stage's convergence poll, and report progress separately.
 
 ### Repeating a run
 

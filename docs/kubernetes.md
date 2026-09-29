@@ -1,8 +1,10 @@
 # Managed Kubernetes, and workloads as declared resources
 
 **Status: implemented in 0.19.0; run live in 0.20.0 on Scaleway and GCP
-(2026-09-29), all four stages each; AWS's leg is prepared for the Live test
-workflow and not yet run.** The first runs found four things, fixed in 0.20.0:
+(2026-09-29), all four stages each; AWS's workflow runs created and deleted the
+control plane but failed node-group IAM validation, with those grants now
+fixed; the complete round trip has not passed yet.** The first runs found four
+things, fixed in 0.20.0:
 Kapsule requires a Private Network; its delete cascade deleted that network;
 Endpoints carry a Service's marker without an owner; the metrics groups answer
 503 until metrics-server is ready. This page began as the proposal the implementation was judged
@@ -84,6 +86,46 @@ resource scaleway kubernetesCluster "main"
 - `holdsData`: deleting a cluster deletes everything in it — namespaces,
   volumes, every workload. `destroy --keep-data` keeps clusters standing for
   the same reason it keeps databases.
+
+### Provisioning waits and CI budgets
+
+A cluster create waits for its control plane and node pool before returning;
+the objects scheduled after it need that API server. On AWS those are two
+serial operations: EKS must be `ACTIVE` before a managed node group can be
+created. Teardown reverses them: delete the node group, wait for not-found,
+then delete the control plane and wait again. The live test's four stages
+reuse one cluster; they do not provision four clusters.
+
+The shared `awaitStatus` loop (unreleased) reports its operation immediately,
+then elapsed seconds and the provider's status on the first poll, on a status
+change, and roughly every fifteen seconds, with a completion line. It writes
+flushed stderr so progress remains visible during a create without becoming
+part of a CLI's JSON/YAML output. The default thirty-minute budget includes
+HTTP time, measured with a monotonic clock; an already-running HTTP call is
+bounded by the transport, not interrupted by the waiter.
+
+EKS's four wait targets follow botocore's
+`eks/2017-11-01/waiters-2.json` (checked 2026-09-29): cluster activation fails
+on `FAILED` or `DELETING`, node-group activation on `CREATE_FAILED`, node-group
+deletion on `DELETE_FAILED`, and cluster deletion on `ACTIVE`, `CREATING` or
+`PENDING`. Errors include `health.issues` codes, messages and resource IDs.
+A failed-create node group can still be deleted; `CREATE_FAILED` is not a
+deletion failure. Only not-found completes deletion, and missing status in
+a successful response is an error. GKE keeps reporting operation errors
+immediately; Kapsule reports its cluster/pool status through the same loop.
+
+The Live test workflow gives its Kubernetes job **100 minutes**: a sixty-minute
+live step, a thirty-minute backstop, and ten minutes for setup/build. The
+ordinary fleet gets thirty minutes: sixteen for the live step, six for the
+backstop, and eight for setup/build. Both jobs must outlast their live step
+**and** cleanup; the previous twenty-minute job cap overrode Kubernetes's
+sixty-minute step allowance. AWS's two-hour credentials cover the larger job.
+Changing the workflow affects subsequent runs, not a job already running.
+
+Verification: `checkKubernetesWaiters` replays a stable status, a changing one,
+slow HTTP calls, all four EKS targets, failed-create cleanup and a failure with
+health issues, without sleeping or touching a cloud. `ci/check-workflows.sh`
+validates the workflow with actionlint.
 
 ### `kubernetesObject`
 

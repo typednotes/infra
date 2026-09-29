@@ -71,9 +71,11 @@ jobs:
       # `secretsAreSound` refuses a literal at compile time. That guard is the
       # feature, so the test respects it rather than working around it.
       CI_TESTS_INFRA_SECRET: not-a-real-secret-created-and-destroyed-by-ci
-    # A hung provider call must not hold a runner, and must not skip teardown:
-    # the step timeout below is shorter, so the job's own cleanup still runs.
-    timeout-minutes: 20
+    # Budget the live step AND its backstop, plus setup/build: 60 + 30 + 10
+    # minutes for Kubernetes, 16 + 6 + 8 for the ordinary fleet. A shorter
+    # job timeout kills the runner before its longer step timeout or cleanup
+    # can run (the first AWS Kubernetes run on 0.21.0 had a 20-minute cap).
+    timeout-minutes: ${{ inputs.leg == 'kubernetes' && 100 || 30 }}
     steps:
       - uses: actions/checkout@v5
 

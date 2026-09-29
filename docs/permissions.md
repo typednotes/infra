@@ -192,16 +192,22 @@ passing a role, so a policy with every `lambda:*` action and no `PassRole`
 still cannot create a function. Scope it to the execution role you actually
 use, with an `iam:PassedToService` condition — the template does.
 
-### Rows nothing verifies
+### Rows without complete live verification
 
-**The AWS Kubernetes rows have never run against an account either** — the
-Kubernetes leg passed on Scaleway and GCP (2026-09-29) and runs on AWS from
-the Live test workflow once `ci/aws-permissions-policy.json`'s matching
-statements are applied (`ci/README.md`, "The Kubernetes leg"). EKS's first
+**The AWS Kubernetes round trip has not passed yet.** Its 2026-09-29 workflow
+runs created and deleted the control plane, but failed on node-group IAM
+validation; Scaleway and GCP passed all four stages. AWS runs from the Live
+test workflow with `ci/aws-permissions-policy.json`'s matching statements
+(`ci/README.md`, "The Kubernetes leg"). EKS's first
 cluster and node group in an account create two service-linked roles
 (`AWSServiceRoleForAmazonEKS`, `…ForAmazonEKSNodegroup`), so the template
-carries `iam:CreateServiceLinkedRole` for exactly those two services; the
-three `Kubernetes…NotExercisedByCi` Sids carry the caveat.
+carries `iam:CreateServiceLinkedRole` for exactly those two services **and
+`iam:GetRole` on their two exact ARNs**. Creating a role does not imply being
+allowed to check whether it already exists: the second run failed after eight
+minutes creating its control plane because `CreateNodegroup` could not read
+`AWSServiceRoleForAmazonEKSNodegroup`. The `Kubernetes…NotExercisedByCi` Sids
+retain the caveat that the complete cluster/node-group/object round trip has
+not passed.
 
 **`compute` (Lambda) and `postgres` (RDS) are not in any live test.** Lambda
 needs an ECR image to exist first, and RDS takes longer to create than the

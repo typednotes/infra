@@ -30,6 +30,10 @@ import Infra
       lake exe kubernetes-postgres plan       -- reads the Scaleway account
       lake exe kubernetes-postgres apply      -- creates a billable cluster
 
+  Live provisioning and deletion report the provider's status and elapsed
+  time on stderr, roughly every fifteen seconds while waiting. A cluster's
+  API must be ready before its in-cluster objects can be applied.
+
   `destroy --keep-data` keeps the cluster (it holds the volumes) and removes
   the objects; the StatefulSet's PersistentVolumeClaim outlives it either
   way — Kubernetes keeps claims, and infra never deletes one.

@@ -45,8 +45,10 @@ and Lean reports one as unreachable.
 | `kubernetesObject` | Kubernetes API | Kubernetes API | **yes, all three clouds** |
 
 **The two Kubernetes kinds (0.19.0) are implemented on all three clouds, and
-since 0.20.0 have passed the live leg on Scaleway and GCP; AWS's is not yet
-run.** Every
+since 0.20.0 have passed the live leg on Scaleway and GCP; AWS's has run but
+not passed the complete round trip.** EKS control-plane creation and deletion
+worked; node-group creation failed on IAM validation (2026-09-29), with the
+missing grants fixed (`ci/README.md`). Every
 call is written against the providers' generated SDKs and discovery documents
 (checked 2026-09-29, recorded in `Infra/Providers/Kinds/Kubernetes.lean`);
 `Main.lean`'s `checkKubernetes`, the `#guard`s in `Infra/Specs/Kubernetes.lean`
@@ -144,7 +146,8 @@ clients for those kinds, not one.
 | `check` / `plan` / `apply` / `destroy` / `dump` / `render` | complete |
 | `render` — the declared in-cluster objects as the YAML `apply` sends, like `helm template`; offline, secrets as placeholders | offline (`example/KubernetesPostgres.lean`'s guards; the YAML emitter round-tripped through linen's parser, and read by PyYAML on 57 ambiguous strings) |
 | `--refresh-secrets` — rewrite `fromEnv`/`composed` secrets whose stored value is stale, and every copy | offline only (`checkRefreshSecrets`); never run against an account. Not covered: `apiKeyFor`, a database's `masterPasswordSecret` — see below |
-| Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline (`checkKubernetes`, `example/KubernetesPostgres.lean`); live on **Scaleway and GCP**, all four stages (2026-09-29, by hand — opt-in, not in CI); AWS prepared for the Live test workflow, not yet run |
+| Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline (`checkKubernetes`, `example/KubernetesPostgres.lean`); live on **Scaleway and GCP**, all four stages (2026-09-29, by hand — opt-in); AWS control-plane create/delete exercised in CI, complete leg not yet passed (node-group IAM validation grants fixed, 2026-09-29) |
+| Kubernetes provisioning waits (unreleased) | all three clouds: elapsed-time deadlines and flushed status heartbeats; EKS's four cluster/node-group waiter targets use botocore's failure acceptors and report health issues; offline replay in `checkKubernetesWaiters` |
 | `destroy --keep-data` — a teardown that leaves databases, their histories, buckets, clusters and a database's password secret standing | offline only (`checkKeepData`); never run against an account |
 | `dump` snapshots replayed as offline test fixtures (`Snapshot.load`) | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
@@ -383,7 +386,7 @@ backstop step was *skipped*, which is the evidence that the driver's own
 teardown ran and left nothing behind — and the accounts were checked afterwards
 and are clean.
 
-**Thirteen of the seventeen kinds; 22 (cloud, kind) pairs.** (The two Kubernetes kinds have an opt-in leg of their own, passed on Scaleway and GCP, not yet run on AWS; `postgres` and `postgresMigrations` are below.)
+**Thirteen of the seventeen kinds; 22 (cloud, kind) pairs.** (The two Kubernetes kinds have an opt-in leg of their own, passed on Scaleway and GCP, not yet passed on AWS; `postgres` and `postgresMigrations` are below.)
 
 **All three dependency patterns are exercised live.** The chain and the fan-out
 run on every cloud. The **fan-in** was Scaleway-only and is now covered: its
@@ -805,16 +808,20 @@ function — it is a number, so it tells the code the response was parsed at all
   a serverless `postgres` declaration works on exactly one of the three
   clouds.
 
-### Never run against any account
+### AWS Kubernetes: the complete round trip has not passed
 
-- **Kubernetes on AWS.** EKS and the Kubernetes API behind it (a presigned
-  STS token) have never been called against a real account. The leg is
-  `lake test -- aws kubernetes`, from the Live test workflow with
-  `-f leg=kubernetes`; its grants in `ci/aws-permissions-policy.json` and the
-  two-hour session were applied on 2026-09-29. Scaleway and GCP passed theirs
-  on 2026-09-29, which settled the two facts only a live run could: OpenSSL 3
-  verifies GKE's IP endpoint through `SSL_set1_host`, and a current Kapsule
-  kubeconfig carries a usable token.
+The opt-in workflow leg has created and deleted an EKS control plane against
+the real account (2026-09-29). Its node-group creation failed on IAM validation:
+first the declared role's `iam:ListAttachedRolePolicies`, then the service-linked
+role's `iam:GetRole`. Both grants are now applied, but the complete
+cluster/node-group/object round trip still needs a passing rerun. The leg is
+`lake test -- aws kubernetes`, from the Live test workflow with
+`-f leg=kubernetes`; `ci/README.md` records its grants and two-hour session.
+Scaleway and GCP passed theirs on 2026-09-29, which settled the two facts only
+a live run could: OpenSSL 3 verifies GKE's IP endpoint through `SSL_set1_host`,
+and a current Kapsule kubeconfig carries a usable token.
+
+### Never run against any account
 
 Rewritten after AWS's full leg passed, because most of what this section said
 about AWS is no longer true. It listed ECR, Secrets Manager and IAM as never

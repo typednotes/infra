@@ -106,6 +106,15 @@
       "Resource": "arn:aws:iam::616568506952:role/ci-tests-infra-eks-*"
     },
     {
+      "Sid": "KubernetesReadServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": [
+        "arn:aws:iam::616568506952:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
+        "arn:aws:iam::616568506952:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"
+      ]
+    },
+    {
       "Sid": "KubernetesServiceLinkedRoles",
       "Effect": "Allow",
       "Action": "iam:CreateServiceLinkedRole",

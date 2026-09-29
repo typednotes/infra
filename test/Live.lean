@@ -1640,15 +1640,22 @@ def gcpIdentityCheck : IO Unit := do
 
 /-! ## Kubernetes: a cluster, and objects inside it
 
-  **Opt-in, and not part of any leg CI runs:** `lake test -- <cloud>
+  **Opt-in, and not part of the ordinary CI fleet:** `lake test -- <cloud>
   kubernetes`. A managed cluster takes ten to twenty minutes to create and is
   billed by the hour, which is not something to put on every pull request —
-  and the CI identities lack the grants (EKS, GKE and Kapsule
-  administration). **Passed on Scaleway and GCP** (2026-09-29, by hand); AWS
-  runs from the Live test workflow (`-f leg=kubernetes`) once its grants are
-  applied — `ci/README.md`, "The Kubernetes leg".
+  and Scaleway's and GCP's CI identities have only cluster read grants.
+  **Passed on Scaleway and GCP** (2026-09-29, by hand); AWS runs from the
+  Live test workflow (`-f leg=kubernetes`). Its control-plane create/delete
+  worked, but node-group IAM validation failed; the missing grants are now
+  applied — `ci/README.md`, "The Kubernetes leg". The complete AWS leg has
+  not passed yet.
 
   Four stages over one cluster, `ci-tests-infra-k8s`:
+
+  Provisioning and deletion report provider status through `awaitStatus`,
+  before the stage's convergence poll starts. The workflow budgets sixty
+  minutes for this sequence, thirty for the backstop and ten for setup/build;
+  its job timeout must cover all three (`docs/kubernetes.md`).
 
   | stage | declares |
   |---|---|
