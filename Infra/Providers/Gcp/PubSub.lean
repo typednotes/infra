@@ -72,9 +72,9 @@ the list may be incomplete"
       let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
       let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/topics" query
       let here := (arrayField reply "topics").filterMap fun t =>
-        (stringField t "name").map fun n => (Gcp.shortName n, n)
+        (t.lookupText "name").map fun n => (Gcp.shortName n, n)
       let acc := acc ++ here
-      match stringField reply "nextPageToken" with
+      match reply.lookupText "nextPageToken" with
       | some next => if next.isEmpty then return acc else go fuel' next acc
       | none      => return acc
   go 50 "" []
@@ -87,7 +87,7 @@ the list may be incomplete"
 def createTopic (creds : Credentials) (project name markerValue : String) : IO String := do
   let reply ← Gcp.call creds "PUT" host (topicPath project name)
     (payload := some (.object [("labels", .object [(markerKey, .string markerValue)])]))
-  return (stringField reply "name").getD (topicName project name)
+  return (reply.lookupText "name").getD (topicName project name)
 
 /-- A topic object's labels, as pairs. -/
 private def labelsOf (topic : Value) : List (String × String) :=
@@ -135,7 +135,7 @@ def releaseMarker (creds : Credentials) (project name fleet : String) : IO Unit 
     list and the read does not fail a pull. -/
 def readTopic (creds : Credentials) (project name : String) : IO String := do
   let reply ← Gcp.call creds "GET" host (topicPath project name)
-  return (stringField reply "name").getD (topicName project name)
+  return (reply.lookupText "name").getD (topicName project name)
 
 /-- Delete a topic. Already gone is not an error.
 

@@ -51,7 +51,7 @@ import Linen.Data.Base64
   1. **The policy object is edited, not rebuilt.** `setIamPolicy` takes back
      the whole object, and a reconstruction from the fields this library knows
      about would drop `auditConfigs` and anything Google adds later.
-     `JsonRead.setField` replaces the `bindings` key and copies the rest
+     linen's `Data.Json.Value.setField` replaces the `bindings` key and copies the rest
      through untouched; each binding is edited the same way, so a field on a
      binding that is not `members` survives too.
   2. **The `etag` is sent back.** It is inside the policy object and therefore
@@ -146,9 +146,9 @@ pages; the list may be incomplete"
       let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
       let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/serviceAccounts" query
       let here := (arrayField reply "accounts").filterMap fun a =>
-        (stringField a "email").map fun e => ((e.splitOn "@").headD e, e)
+        (a.lookupText "email").map fun e => ((e.splitOn "@").headD e, e)
       let acc := acc ++ here
-      match stringField reply "nextPageToken" with
+      match reply.lookupText "nextPageToken" with
       | some next => if next.isEmpty then return acc else go fuel' next acc
       | none      => return acc
   go 50 "" []
@@ -192,7 +192,7 @@ def readPolicies (creds : Credentials) (project accountId : String) :
     return .unknown
   | .ok policy =>
     let roles := (arrayField policy "bindings").filterMap fun b =>
-      if (stringArrayField b "members").contains member then stringField b "role" else none
+      if (stringArrayField b "members").contains member then b.lookupText "role" else none
     return .known roles.eraseDups
 
 /-- Make this service account's project-level roles be exactly `wanted`.
@@ -238,12 +238,12 @@ declared for '{accountId}' cannot be reconciled.\n  This needs \
   let conditional := bindings.filter fun b =>
     isConditional b && (stringArrayField b "members").contains member
   unless conditional.isEmpty do
-    throw (IO.userError s!"gcp iam: '{accountId}' appears in {conditional.length} conditional role binding(s) on project '{project}' — {String.intercalate ", " (conditional.filterMap (stringField · "role"))}. A conditional binding is a different grant from an unconditional one of the same role, and `policies` cannot express the condition, so rewriting it here would change what it means. Remove the condition, or take this identity out of those bindings, and `plan` will converge.")
+    throw (IO.userError s!"gcp iam: '{accountId}' appears in {conditional.length} conditional role binding(s) on project '{project}' — {String.intercalate ", " (conditional.filterMap (Data.Json.Value.lookupText "role"))}. A conditional binding is a different grant from an unconditional one of the same role, and `policies` cannot express the condition, so rewriting it here would change what it means. Remove the condition, or take this identity out of those bindings, and `plan` will converge.")
   -- Edit in place: each binding keeps every field it had, minus this member
   -- where it is no longer wanted and plus it where it now is.
   let edited := bindings.filterMap fun b =>
     if isConditional b then some b else
-    match stringField b "role" with
+    match b.lookupText "role" with
     | none      => some b
     | some role =>
       let ms := stringArrayField b "members"
@@ -251,16 +251,16 @@ declared for '{accountId}' cannot be reconciled.\n  This needs \
         if wanted.contains role then (if ms.contains member then ms else ms ++ [member])
         else ms.filter (· != member)
       if ms'.isEmpty then none
-      else some (setField b "members" (.array (ms'.map Value.string).toArray))
+      else some (b.setField "members" (.array (ms'.map Value.string).toArray))
   -- Roles asked for that no unconditional binding covers yet.
   let covered := bindings.filterMap fun b =>
-    if isConditional b then none else stringField b "role"
+    if isConditional b then none else b.lookupText "role"
   let added := (wanted.filter (!covered.contains ·)).eraseDups.map fun role =>
     Value.object [("role", .string role), ("members", .array #[.string member])]
   let bindings' := edited ++ added
   if bindings' == bindings then
     return ()
-  let policy' := setField policy "bindings" (.array bindings'.toArray)
+  let policy' := policy.setField "bindings" (.array bindings'.toArray)
   discard <| Gcp.call creds "POST" crmHost s!"/v1/projects/{project}:setIamPolicy"
     (payload := some (.object [("policy", policy')]))
 
@@ -280,7 +280,7 @@ def create (creds : Credentials) (project accountId markerValue : String)
         , ("description", .string (encodeMarkerText markerValue)) ]) ]
   let reply ← Gcp.call creds "POST" host s!"/v1/projects/{project}/serviceAccounts"
     (payload := some payload)
-  let email := (stringField reply "email").getD (emailOf project accountId)
+  let email := (reply.lookupText "email").getD (emailOf project accountId)
   unless policies.isEmpty do
     setPolicies creds project accountId policies
   return email
@@ -298,7 +298,7 @@ def create (creds : Credentials) (project accountId markerValue : String)
 def readOwnership (creds : Credentials) (project accountId : String) : IO Evidence := do
   match ← (Gcp.call creds "GET" host (saPath project accountId)).toBaseIO with
   | .error _ => return .unreadable
-  | .ok sa   => return .tags (decodeMarkerText ((stringField sa "description").getD "")) none
+  | .ok sa   => return .tags (decodeMarkerText ((sa.lookupText "description").getD "")) none
 
 /-- Re-assert the marker on an existing account.
 
@@ -325,7 +325,7 @@ def putMarker (creds : Credentials) (project accountId markerValue : String) : I
     everything else stay. -/
 def releaseMarker (creds : Credentials) (project accountId fleet : String) : IO Unit := do
   let sa ← Gcp.call creds "GET" host (saPath project accountId)
-  let description := (stringField sa "description").getD ""
+  let description := (sa.lookupText "description").getD ""
   let stripped := Marker.stripMarkerText fleet description
   if stripped != description then
     discard <| Gcp.call creds "PATCH" host (saPath project accountId)
@@ -358,8 +358,8 @@ def createKey (creds : Credentials) (project accountId : String) :
     (payload := some (.object
       [ ("privateKeyType", .string "TYPE_GOOGLE_CREDENTIALS_FILE")
       , ("keyAlgorithm", .string "KEY_ALG_RSA_2048") ]))
-  let keyId := ((stringField reply "name").getD "").splitOn "/" |>.getLast!
-  match stringField reply "privateKeyData" with
+  let keyId := ((reply.lookupText "name").getD "").splitOn "/" |>.getLast!
+  match reply.lookupText "privateKeyData" with
   | none => throw (IO.userError s!"gcp iam: the key for '{accountId}' was created but carried no privateKeyData, and Google will not return it again. Delete the key and retry.")
   | some encoded =>
     match Data.Base64.decode encoded with
@@ -381,8 +381,8 @@ def listUserKeys (creds : Credentials) (project accountId : String) :
   let reply ← Gcp.call creds "GET" host (saPath project accountId ++ "/keys")
     [("keyTypes", some "USER_MANAGED")]
   return (arrayField reply "keys").filterMap fun k =>
-    if stringField k "keyType" == some "SYSTEM_MANAGED" then none
-    else (stringField k "name").map fun n => (n.splitOn "/").getLast!
+    if k.lookupText "keyType" == some "SYSTEM_MANAGED" then none
+    else (k.lookupText "name").map fun n => (n.splitOn "/").getLast!
 
 /-- Delete one key. Already gone is not an error, and neither is a
     Google-managed key refusing to be deleted — those are not ours to remove

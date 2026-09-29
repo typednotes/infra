@@ -70,9 +70,9 @@ def builtinUser : String := "postgres"
 def list (creds : Credentials) (project : String) : IO (List (String × String)) := do
   let reply ← Gcp.call creds "GET" host (instances project)
   return (arrayField reply "items").filterMap fun i =>
-    (stringField i "name").map fun n =>
+    (i.lookupText "name").map fun n =>
       let ip := (arrayField i "ipAddresses").findSome? fun a =>
-        if stringField a "type" == some "PRIMARY" then stringField a "ipAddress" else none
+        if a.lookupText "type" == some "PRIMARY" then a.lookupText "ipAddress" else none
       (n, ip.getD "")
 
 /-- Instance class, master user, version and storage size.
@@ -83,15 +83,15 @@ def list (creds : Credentials) (project : String) : IO (List (String × String))
 def read (creds : Credentials) (project name : String) :
     IO (String × String × Partial String × Partial Nat) := do
   let i ← Gcp.call creds "GET" host (instancePath project name)
-  let tier := ((i.lookup "settings").bind (stringField · "tier")).getD ""
+  let tier := ((i.lookup "settings").bind (Data.Json.Value.lookupText "tier")).getD ""
   let version : Partial String :=
-    match stringField i "databaseVersion" with
+    match i.lookupText "databaseVersion" with
     | some v => .known v
     | none   => .unknown
   let storage : Partial Nat :=
-    match (i.lookup "settings").bind (stringField · "dataDiskSizeGb") with
+    match (i.lookup "settings").bind (Data.Json.Value.lookupText "dataDiskSizeGb") with
     -- Cloud SQL reports it as a *string* holding an integer, which is why this
-    -- goes through `toNat?` rather than `natField`.
+    -- goes through `toNat?` rather than `lookupNat`.
     | some g => match g.toNat? with
                 | some n => .known n
                 | none   => .unknown

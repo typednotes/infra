@@ -97,20 +97,20 @@ def awaitLro (creds : Credentials) (host version : String) (reply : Value)
     -- An operation carrying an error is a failure of the *work*, not of the
     -- call that reported it, so it has to be raised here or it is lost.
     if let some err := current.lookup "error" then
-      let msg := (stringField err "message").getD (Data.Json.Encode.encode err)
+      let msg := (err.lookupText "message").getD (Data.Json.Encode.encode err)
       throw (IO.userError s!"gcp {label}: the operation failed: {msg}")
-    if (boolField current "done").getD false then
+    if (current.lookupBool "done").getD false then
       return (current.lookup "response").getD current
     match fuel with
     | 0 =>
-      let name := (stringField current "name").getD "(unnamed)"
+      let name := (current.lookupText "name").getD "(unnamed)"
       throw (IO.userError s!"gcp {label}: the operation did not finish in \
 {attempts}s\n  operation: {name}\n  It may still be running — check the \
 console before retrying, because a retry can collide with work that is about \
 to succeed.")
     | fuel' + 1 =>
       IO.sleep 1000
-      let some name := stringField current "name"
+      let some name := current.lookupText "name"
         | throw (IO.userError s!"gcp {label}: the operation has no name, so it \
 cannot be polled")
       go fuel' (← call creds "GET" host s!"/{version}/{name}")
@@ -132,19 +132,19 @@ def awaitSqlOperation (creds : Credentials) (project : String) (reply : Value)
     if let some err := current.lookup "error" then
       let errs := arrayField err "errors"
       let msg := match errs.head? with
-        | some e => (stringField e "message").getD "(no message)"
+        | some e => (e.lookupText "message").getD "(no message)"
         | none   => (Data.Json.Encode.encode err)
       throw (IO.userError s!"gcp {label}: the operation failed: {msg}")
-    if (stringField current "status") == some "DONE" then return ()
+    if (current.lookupText "status") == some "DONE" then return ()
     match fuel with
     | 0 =>
-      let name := (stringField current "name").getD "(unnamed)"
+      let name := (current.lookupText "name").getD "(unnamed)"
       throw (IO.userError s!"gcp {label}: the operation did not finish in \
 {attempts}s\n  operation: {name}\n  Cloud SQL work can outlast this; check \
 the console rather than retrying blind.")
     | fuel' + 1 =>
       IO.sleep 1000
-      let some name := stringField current "name"
+      let some name := current.lookupText "name"
         | throw (IO.userError s!"gcp {label}: the operation has no name, so it \
 cannot be polled")
       go fuel' (← call creds "GET" sqlAdminHost

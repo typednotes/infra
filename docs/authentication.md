@@ -170,10 +170,10 @@ Exporting `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` without `AWS_REGION`
 is the easy way to hit this, since the config-file source usually supplies the
 region and the environment source does not have to.
 
-### Running in CI needs a CA bundle
+### Running in CI no longer needs a CA bundle step
 
-Not a credential problem, but it surfaces at the same moment and looks like
-one, so it belongs here. A live call from a CI runner can fail with:
+Not a credential problem, but it surfaced at the same moment and looked like
+one. A live call from a CI runner used to fail with:
 
 ```
 uncaught exception: error:0A000086:SSL routines::certificate verify failed
@@ -183,21 +183,20 @@ Linen's TLS client calls `SSL_CTX_set_default_verify_paths`, which resolves
 against the *compile-time* `OPENSSLDIR` of the OpenSSL it was built against —
 and Lean's toolchain bundles a static OpenSSL whose `OPENSSLDIR` points at the
 machine that built it (`/opt/homebrew/etc/openssl@3` in the macOS toolchain).
-On a fresh runner that path does not exist, so there is no trust store and
-every certificate fails to verify.
+On a fresh runner that path does not exist, so there was no trust store.
 
-The fix is to point OpenSSL at the runner's own bundle, which
-`set_default_verify_paths` honours:
+Since linen 1.8.0 (`infra` 0.20.0) the client context also loads the first
+readable of `/etc/ssl/certs/ca-certificates.crt`,
+`/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem` and
+`/etc/ssl/cert.pem` when `SSL_CERT_FILE` is unset and the compiled-in default
+file is missing (`Network.TLS.fallbackCaBundle` says which), so the
+workflows — this repository's and the ones `infra new` writes — no longer
+carry a step for it. `SSL_CERT_FILE` still overrides, for a machine whose
+bundle lives somewhere else:
 
 ```yaml
-- run: |
-    echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
-    echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
+- run: echo "SSL_CERT_FILE=/path/to/ca-bundle.crt" >> "$GITHUB_ENV"
 ```
-
-`infra`'s own CI never hit this because it runs only the offline self-checks;
-the first live call from CI is where it appears. See `typednotes-infra`'s
-workflows for a working example.
 
 ### Which account, verified before anything happens
 

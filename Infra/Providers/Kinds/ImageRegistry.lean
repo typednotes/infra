@@ -50,7 +50,7 @@ private def target (op : String) : String := s!"AmazonEC2ContainerRegistry_V2015
 def list (creds : Credentials) (ep : Endpoint) : IO (List (String × String)) := do
   let reply ← Json.call creds ep (target "DescribeRepositories") (.object [])
   return (arrayField reply "repositories").filterMap fun r =>
-    match stringField r "repositoryName", stringField r "repositoryUri" with
+    match r.lookupText "repositoryName", r.lookupText "repositoryUri" with
     | some n, some u => some (n, u)
     | some n, none   => some (n, "")
     | _,      _      => none
@@ -63,7 +63,7 @@ def readImmutable (creds : Credentials) (ep : Endpoint) (name : String) :
   match (arrayField reply "repositories").head? with
   | none   => return .unknown
   | some r =>
-    match stringField r "imageTagMutability" with
+    match r.lookupText "imageTagMutability" with
     | some "IMMUTABLE" => return .known true
     | some _           => return .known false
     | none             => return .unknown
@@ -86,7 +86,7 @@ def create (creds : Credentials) (ep : Endpoint) (name markerValue : String)
               ("tags", .array #[.object
                 [("Key", .string markerKey), ("Value", .string markerValue)]])])
   match reply.lookup "repository" with
-  | some r => return (stringField r "repositoryUri").getD ""
+  | some r => return (r.lookupText "repositoryUri").getD ""
   | none   => return ""
 
 /-- One repository's tags, by ARN. -/
@@ -95,7 +95,7 @@ private def tagsOfArn (creds : Credentials) (ep : Endpoint) (arn : String) :
   let tagged ← Json.call creds ep (target "ListTagsForResource")
     (.object [("resourceArn", .string arn)])
   return (arrayField tagged "tags").filterMap fun t =>
-    match stringField t "Key", stringField t "Value" with
+    match t.lookupText "Key", t.lookupText "Value" with
     | some k, some v => some (k, v)
     | _,      _      => none
 
@@ -108,7 +108,7 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) : IO Evi
       (.object [("repositoryNames", .array #[.string name])])).toBaseIO with
   | .error _ => return .unreadable
   | .ok reply =>
-    match (arrayField reply "repositories").head?.bind (stringField · "repositoryArn") with
+    match (arrayField reply "repositories").head?.bind (Data.Json.Value.lookupText "repositoryArn") with
     | none     => return .unreadable
     | some arn => return .tags (← tagsOfArn creds ep arn) none
 
@@ -121,7 +121,7 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) : IO Evi
 def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : IO Unit := do
   let reply ← Json.call creds ep (target "DescribeRepositories")
     (.object [("repositoryNames", .array #[.string name])])
-  match (arrayField reply "repositories").head?.bind (stringField · "repositoryArn") with
+  match (arrayField reply "repositories").head?.bind (Data.Json.Value.lookupText "repositoryArn") with
   | none     => pure ()
   | some arn =>
     if (Marker.releaseTags fleet (← tagsOfArn creds ep arn)).isSome then
@@ -157,8 +157,8 @@ def listRaw (creds : Credentials) : IO (List (String × String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "namespaces").filterMap fun n =>
-    match stringField n "name", stringField n "id" with
-    | some nm, some id => some (nm, id, (stringField n "endpoint").getD "")
+    match n.lookupText "name", n.lookupText "id" with
+    | some nm, some id => some (nm, id, (n.lookupText "endpoint").getD "")
     | _,       _       => none
 
 def list (creds : Credentials) : IO (List (String × String)) := do
@@ -191,7 +191,7 @@ def create (creds : Credentials) (name markerValue : String) : IO String := do
     (payload := some (.object
       [ ("name", .string name), ("project_id", .string project)
       , ("description", .string (encodeMarkerText markerValue)) ]))
-  return (stringField reply "endpoint").getD ""
+  return (reply.lookupText "endpoint").getD ""
 
 /-- The marker, decoded back out of the description. See `create`. -/
 def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
@@ -200,7 +200,7 @@ def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
   | some id =>
     match ← (Scaleway.call creds "GET" (prefix' creds.region ++ s!"/namespaces/{id}")).toBaseIO with
     | .error _ => return .unreadable
-    | .ok n    => return .tags (decodeMarkerText ((stringField n "description").getD "")) none
+    | .ok n    => return .tags (decodeMarkerText ((n.lookupText "description").getD "")) none
 
 /-- Re-assert the marker, for the same reason S3's tag write is repeated on
     update: a description cleared by hand would otherwise leave the namespace
@@ -224,7 +224,7 @@ def releaseMarker (creds : Credentials) (name fleet : String) : IO Unit := do
   | none    => pure ()
   | some id =>
     let n ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/namespaces/{id}")
-    let description := (stringField n "description").getD ""
+    let description := (n.lookupText "description").getD ""
     let stripped := Marker.stripMarkerText fleet description
     if stripped != description then
       discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/namespaces/{id}")

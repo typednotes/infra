@@ -112,12 +112,12 @@ pages; the list may be incomplete"
       let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
       let reply ← Gcp.call creds "GET" host (parent project location) query
       let here := (arrayField reply "services").filterMap fun s =>
-        (stringField s "name").map fun n =>
+        (s.lookupText "name").map fun n =>
           -- `terminalCondition.type` is the closest thing to a one-word status.
-          let status := (s.lookup "terminalCondition").bind (stringField · "state")
+          let status := (s.lookup "terminalCondition").bind (Data.Json.Value.lookupText "state")
           (Gcp.shortName n, status.getD "")
       let acc := acc ++ here
-      match stringField reply "nextPageToken" with
+      match reply.lookupText "nextPageToken" with
       | some next => if next.isEmpty then return acc else go fuel' next acc
       | none      => return acc
   go 50 "" []
@@ -133,16 +133,16 @@ def read (creds : Credentials) (project location name : String) :
         × Partial String) := do
   let svc ← Gcp.call creds "GET" host (servicePath project location name)
   let container := firstContainer svc
-  let image := (container.bind (stringField · "image")).getD ""
+  let image := (container.bind (Data.Json.Value.lookupText "image")).getD ""
   let memory : Partial Nat :=
     match container.bind (fun c => (c.lookup "resources").bind (fun r =>
-        (r.lookup "limits").bind (stringField · "memory"))) with
+        (r.lookup "limits").bind (Data.Json.Value.lookupText "memory"))) with
     | some m => match parseMemoryMi m with
                 | some n => .known n
                 | none   => .unknown
     | none   => .unknown
   let timeout : Partial Nat :=
-    match (svc.lookup "template").bind (stringField · "timeout") with
+    match (svc.lookup "template").bind (Data.Json.Value.lookupText "timeout") with
     | some t => match parseSeconds t with
                 | some n => .known n
                 | none   => .unknown
@@ -152,7 +152,7 @@ def read (creds : Credentials) (project location name : String) :
     | none => .unknown
     | some c =>
       .known ((arrayField c "env").filterMap fun e =>
-        match stringField e "name", stringField e "value" with
+        match e.lookupText "name", e.lookupText "value" with
         | some k, some v => some (k, v)
         -- An env var backed by a secret reports `valueSource`, not `value`.
         -- It cannot be compared against a literal, so it is dropped rather
@@ -160,7 +160,7 @@ def read (creds : Credentials) (project location name : String) :
         -- a rule it cannot represent.
         | _,      _      => none)
   let serviceAccount : Partial String :=
-    match (svc.lookup "template").bind (stringField · "serviceAccount") with
+    match (svc.lookup "template").bind (Data.Json.Value.lookupText "serviceAccount") with
     | some sa => if sa.isEmpty then .unknown else .known sa
     | none    => .unknown
   return (image, memory, timeout, env, serviceAccount)

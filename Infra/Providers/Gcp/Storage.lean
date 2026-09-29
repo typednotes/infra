@@ -60,9 +60,9 @@ the list may be incomplete"
       let query : Query :=
         ("project", some project) :: (if token.isEmpty then [] else [("pageToken", some token)])
       let reply ← Gcp.call creds "GET" host "/storage/v1/b" query
-      let here := (arrayField reply "items").filterMap (stringField · "name")
+      let here := (arrayField reply "items").filterMap (Data.Json.Value.lookupText "name")
       let acc := acc ++ here
-      match stringField reply "nextPageToken" with
+      match reply.lookupText "nextPageToken" with
       | some next => if next.isEmpty then return acc else go fuel' next acc
       | none      => return acc
   go 50 "" []
@@ -77,7 +77,7 @@ def readVersioning (creds : Credentials) (bucket : String) : IO (Partial Bool) :
   match reply.lookup "versioning" with
   | none => return .unknown
   | some v =>
-    match boolField v "enabled" with
+    match v.lookupBool "enabled" with
     | some b => return .known b
     | none   => return .unknown
 

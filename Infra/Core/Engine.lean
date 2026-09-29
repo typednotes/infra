@@ -1,5 +1,5 @@
 import Infra.Core.Backend
-import Infra.Core.Ansi
+import Linen.System.Console.Ansi
 
 /-
   The sync loop: observe the world, work out what has to change, and — when
@@ -7,6 +7,8 @@ import Infra.Core.Ansi
 -/
 
 namespace Infra.Core
+
+open System.Console
 
 -- ══════════════════════════════════════════════════════════════
 -- Pull
@@ -457,14 +459,14 @@ def Action.render {κ : Keys} (a : Action κ) : String := s!"{a.verb} {a.slot}"
     Creating is safe, updating is reversible, replacing destroys and recreates,
     deleting just destroys — so they run green, yellow, magenta, red. -/
 def Action.colour {κ : Keys} : Action κ → String
-  | .create ..  => Ansi.green
-  | .update ..  => Ansi.yellow
-  | .replace .. => Ansi.magenta
+  | .create ..  => Ansi.Color.green.fgCode
+  | .update ..  => Ansi.Color.yellow.fgCode
+  | .replace .. => Ansi.Color.magenta.fgCode
   -- Blue for a history's FORGET: it touches no cloud.
-  | .delete _ k _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
-  | .deleteOrphan _ k _ _ => if k == .postgresMigrations then Ansi.blue else Ansi.red
+  | .delete _ k _ => if k == .postgresMigrations then Ansi.Color.blue.fgCode else Ansi.Color.red.fgCode
+  | .deleteOrphan _ k _ _ => if k == .postgresMigrations then Ansi.Color.blue.fgCode else Ansi.Color.red.fgCode
   -- Blue, like FORGET: nothing is destroyed; the resource stops being ours.
-  | .release .. => Ansi.blue
+  | .release .. => Ansi.Color.blue.fgCode
 
 /-- `render`, with the verb coloured. Identical to `render` when `colour` is
     off, which is what keeps a rendered plan matchable as plain text. -/
@@ -681,7 +683,8 @@ structure PushOptions where
   /-- Colour the rendered lines. **Off by default**, deliberately: every
       existing caller — including `infra check`, which matches rendered lines
       as plain text — keeps getting plain strings, and only a caller that knows
-      it is talking to a terminal turns it on. See `Infra.Core.Ansi`. -/
+      it is talking to a terminal turns it on. See linen's `System.Console.Ansi`
+      (`style`, `wanted`), which is where this lived as `Infra.Core.Ansi`. -/
   colour : Bool := false
   /-- Rewrite every declared secret whose stored value is no longer the one
       the declaration would write, and every resource holding a copy of one
@@ -1023,12 +1026,12 @@ refusing to delete it")
     let evidence ← (bs.backendAt p region).ownershipInfo k ⟨nm⟩
     unless claimsUndeclared boundary p k nm evidence do
       return { st with log := s!"{a.renderStyled opts.colour} \
-{Ansi.style opts.colour Ansi.dim "... already not this fleet's"}" :: st.log }
+{Ansi.style opts.colour Ansi.faintCode "... already not this fleet's"}" :: st.log }
   | _ => pure ()
   let entries ← runAction bs T st.entries a
   return { entries
            log := s!"{a.renderStyled opts.colour} \
-{Ansi.style opts.colour Ansi.green "... ok"}" :: st.log }
+{Ansi.style opts.colour Ansi.Color.green.fgCode "... ok"}" :: st.log }
 
 /-- Declared resources that exist but are **not** this fleet's, by slot, with
     the verdict in English.
@@ -1120,7 +1123,7 @@ exclude it deliberately, or delete it and let this fleet create it — see docs/
     | true, some es => refreshSecrets bs T es planned (foreign.map (·.1))
     | _, _          => pure {}
   let reasons := refreshed.reasons.map fun r =>
-    Ansi.style opts.colour Ansi.dim s!"refresh-secrets: {r}"
+    Ansi.style opts.colour Ansi.faintCode s!"refresh-secrets: {r}"
   let work ← match orderActions T (planned ++ refreshed.actions) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)
@@ -1133,10 +1136,10 @@ exclude it deliberately, or delete it and let this fleet create it — see docs/
   -- is simply "nothing to do", below the brake.
   if !opts.apply then
     if work.isEmpty then
-      return reasons ++ [Ansi.style opts.colour Ansi.dim "nothing to do"]
+      return reasons ++ [Ansi.style opts.colour Ansi.faintCode "nothing to do"]
     return reasons ++ (work.map fun a =>
-        Ansi.style opts.colour Ansi.dim "would " ++ a.renderStyled opts.colour) ++
-      [Ansi.style opts.colour Ansi.dim "(dry run — nothing changed)"]
+        Ansi.style opts.colour Ansi.faintCode "would " ++ a.renderStyled opts.colour) ++
+      [Ansi.style opts.colour Ansi.faintCode "(dry run — nothing changed)"]
   -- The brake, and note what it is *not* asked on: a declaration that asks for
   -- nothing to exist. That is a teardown, it is the explicit statement this
   -- check exists to demand, and it is recognisable from the target itself —
@@ -1171,7 +1174,7 @@ exclude it deliberately, or delete it and let this fleet create it — see docs/
     | some es => pure es
     | none    => pullEntries (κ := κ) bs
   if work.isEmpty then
-    return reasons ++ [Ansi.style opts.colour Ansi.dim "nothing to do"]
+    return reasons ++ [Ansi.style opts.colour Ansi.faintCode "nothing to do"]
   let mut st : Progress κ := { entries, log := reasons.reverse }
   -- Orphan deletions are the one part of the work-list with no dependency
   -- edges to sort by: a resource whose declaration is gone has no spec, so

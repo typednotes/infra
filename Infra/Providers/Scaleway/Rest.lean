@@ -85,10 +85,9 @@ def call (creds : Credentials) (method path : String)
 
 -- ── Reading replies ──
 
--- Reply accessors (`field`, `stringField`, `natField`, `arrayField`, …) live in
--- `Infra.Providers.JsonRead`. They started here, but SQS — an AWS protocol —
--- needs the same ones, which made this the wrong home for them. Scaleway call
--- sites should `open Infra.Providers.JsonRead`.
+-- Reply accessors: linen's `Data.Json.Value.lookup` / `lookupText` /
+-- `lookupNat` / `lookupBool`, and `Infra.Providers.JsonRead`'s `arrayField`
+-- and `stringArrayField` for the two infra-specific list reads.
 
 -- ── Tags ──
 

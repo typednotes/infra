@@ -44,3 +44,14 @@ else
   diff -u "$a" "$b" >&2 || true
   exit 1
 fi
+
+# And the helper half of the block is linen's canonical copy at the pinned
+# tag, in both places. linen ships the checker with the block, so this asks
+# the pinned checkout — not whatever linen's main says today.
+checker=.lake/packages/linen/ci/consumer/check-link-helpers.sh
+if [ ! -x "$checker" ]; then
+  echo "error: $checker not found — build first, so the pinned linen is checked out" >&2
+  exit 1
+fi
+"$checker" lakefile.lean
+"$checker" Infra/Cli/New.lean

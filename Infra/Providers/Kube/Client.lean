@@ -150,7 +150,7 @@ def call (a : Access) (method path : String) (query : Query := [])
     -- `Conflict`, `Invalid`), which is the code worth keeping.
     let described := Http.describeError status text
     let reason := match Data.Json.Decode.decode text with
-      | .ok v => (stringField v "reason").getD described.code
+      | .ok v => (v.lookupText "reason").getD described.code
       | .error _ => described.code
     throw (IO.userError s!"{label a method path}: {toString { described with code := reason }}")
   parseBody (label a method path) resp
@@ -204,11 +204,11 @@ def resourcesOf (a : Access) (apiVersion : String) : IO (List Resource) := do
   let doc ← call a "GET" (prefixOf apiVersion)
   return (arrayField doc "resources").filterMap fun r =>
     let verbs := stringArrayField r "verbs"
-    match stringField r "name", stringField r "kind" with
+    match r.lookupText "name", r.lookupText "kind" with
     | some plural, some kind =>
       if (plural.splitOn "/").length == 1 && verbs.contains "list" && verbs.contains "delete" then
         some { root := prefixOf apiVersion, plural
-               namespaced := (boolField r "namespaced").getD true, apiVersion, kind }
+               namespaced := (r.lookupBool "namespaced").getD true, apiVersion, kind }
       else none
     | _, _ => none
 
@@ -231,7 +231,7 @@ def resourceOfSegment (a : Access) (kindSeg : String) : IO Resource := do
     | _               => (kindSeg, "")
   let version ← if group.isEmpty then pure "v1" else do
     let doc ← call a "GET" s!"/apis/{group}"
-    match (doc.lookup "preferredVersion").bind (stringField · "groupVersion") with
+    match (doc.lookup "preferredVersion").bind (Data.Json.Value.lookupText "groupVersion") with
     | some gv => pure gv
     | none    => throw (IO.userError s!"kubernetes {a.label}: API group {group} has no \
 preferred version")
@@ -246,7 +246,7 @@ def groupVersions (a : Access) : IO (List String) := do
   let core := stringArrayField (← call a "GET" "/api") "versions"
   let groups := arrayField (← call a "GET" "/apis") "groups"
   let named := groups.filterMap fun g =>
-    (g.lookup "preferredVersion").bind (stringField · "groupVersion")
+    (g.lookup "preferredVersion").bind (Data.Json.Value.lookupText "groupVersion")
   return core ++ named
 
 /-- The path of one object. -/
@@ -302,17 +302,17 @@ scanned for objects carrying this fleet's marker"
         for item in arrayField page "items" do
           let md := (item.lookup "metadata").getD .null
           if !(arrayField md "ownerReferences").isEmpty then continue
-          match stringField md "name" with
+          match md.lookupText "name" with
           | none => pure ()
           | some nm =>
             let labels := match md.lookup "labels" with
               | some (.object fs) => fs.filterMap fun (k, v) => v.asString.map (k, ·)
               | _ => []
             out := out ++ [{ name := { cluster, kind := r.kindSegment, name := nm
-                                       ns := if r.namespaced then (stringField md "namespace").getD "default"
+                                       ns := if r.namespaced then (md.lookupText "namespace").getD "default"
                                              else "_" }
-                             uid := (stringField md "uid").getD "", labels }]
-        token := (page.lookup "metadata").bind (stringField · "continue") |>.filter (!·.isEmpty)
+                             uid := (md.lookupText "uid").getD "", labels }]
+        token := (page.lookup "metadata").bind (Data.Json.Value.lookupText "continue") |>.filter (!·.isEmpty)
         if token.isNone then break
   return out
 

@@ -325,7 +325,7 @@ private def listRaw (creds : Credentials) :
   let reply ← Scaleway.call creds "GET" (prefix' ++ "/applications")
     [("organization_id", some org), ("page_size", some pageSize)]
   return (arrayField reply "applications").filterMap fun a =>
-    match stringField a "name", stringField a "id" with
+    match a.lookupText "name", a.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField a "tags")
     | _,      _      => none
 
@@ -396,7 +396,7 @@ private def policiesOf (creds : Credentials) (appId : String) :
     [ ("organization_id", some org), ("application_ids", some appId)
     , ("page_size", some pageSize) ]
   (arrayField reply "policies").filterMapM fun p => do
-    match stringField p "id", stringField p "name" with
+    match p.lookupText "id", p.lookupText "name" with
     | some id, some nm =>
       let rules ← Scaleway.call creds "GET" (prefix' ++ "/rules")
         [("policy_id", some id), ("page_size", some pageSize)]
@@ -504,7 +504,7 @@ def createApiKey (creds : Credentials) (appId description : String) :
     (payload := some (.object
       [ ("application_id", .string appId)
       , ("description", .string description) ]))
-  match stringField reply "access_key", stringField reply "secret_key" with
+  match reply.lookupText "access_key", reply.lookupText "secret_key" with
   | some access, some secret => return (access, secret)
   | some _, none => throw (IO.userError
       "scaleway iam: the API key was created but its secret key was not \
@@ -518,8 +518,8 @@ def listApiKeys (creds : Credentials) : IO (List (String × String × String)) :
   let reply ← Scaleway.call creds "GET" (prefix' ++ "/api-keys")
     [("organization_id", some org), ("page_size", some pageSize)]
   return (arrayField reply "api_keys").filterMap fun k =>
-    (stringField k "access_key").map fun access =>
-      (access, (stringField k "application_id").getD "", (stringField k "description").getD "")
+    (k.lookupText "access_key").map fun access =>
+      (access, (k.lookupText "application_id").getD "", (k.lookupText "description").getD "")
 
 /-- Delete one API key. Already gone is not an error: this is reached from a
     secret's teardown, which may run twice if an apply failed part way. -/
@@ -554,7 +554,7 @@ def create (creds : Credentials) (name markerValue : String)
     (payload := some (.object
       [ ("name", .string name), ("organization_id", .string org)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
-  let id := (stringField reply "id").getD ""
+  let id := (reply.lookupText "id").getD ""
   unless policies.isEmpty do
     setPolicies creds name markerValue policies
   return id

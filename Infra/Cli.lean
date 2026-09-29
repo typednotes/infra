@@ -31,6 +31,8 @@ import Infra.Providers
 
 namespace Infra.Cli
 
+open System.Console
+
 open Infra.Core
 open Infra.Specs (MigrationDecl)
 
@@ -309,7 +311,7 @@ SCW_DEFAULT_ORGANIZATION_ID) so the check can run")
     -- own: account and region together are the whole of "where is this about
     -- to build", and reading them apart is what let a fleet aimed at the right
     -- account in the wrong region look fine.
-    IO.println s!"{p.name}: {actual} in {c.region} {Ansi.style colour Ansi.green "ok"}"
+    IO.println s!"{p.name}: {actual} in {c.region} {Ansi.style colour Ansi.Color.green.fgCode "ok"}"
 
 /-! ## Migration sources
 
@@ -411,17 +413,17 @@ def placeholderMigrationSources {κ : Keys} (T : Plan κ) : Plan κ :=
     those are defined rather than in three files that can drift from it. -/
 def offlinePlan {κ : Keys} (target : Plan κ) (headline : String := "") : IO Unit := do
   let colour ← Ansi.wanted
-  unless headline.isEmpty do IO.println s!"{Ansi.style colour Ansi.bold headline}\n"
+  unless headline.isEmpty do IO.println s!"{Ansi.style colour Ansi.boldCode headline}\n"
   for line in ← push Infra.Providers.all (placeholderMigrationSources target) (worldOf []) { colour } do
     IO.println line
   let remote := (migrationSourceUrls target).length
   if remote > 0 then
-    IO.println (Ansi.style colour Ansi.dim
+    IO.println (Ansi.style colour Ansi.faintCode
       s!"\n{remote} migration source(s) are URLs and were not fetched: the order between \
 histories their SQL implies, and their content, are checked by `plan`.")
-  IO.println (Ansi.style colour Ansi.dim
+  IO.println (Ansi.style colour Ansi.faintCode
     "\nThat was the placeholder backend — no cloud was contacted.")
-  IO.println (Ansi.style colour Ansi.dim
+  IO.println (Ansi.style colour Ansi.faintCode
     "For the real thing: `plan` (reads), then `apply` (changes).")
 
 /-- What `dump` writes: a `Snapshot` of the account as this fleet sees it,
@@ -647,7 +649,7 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
     match ← act.toBaseIO with
     | .ok _    => return 0
     | .error e =>
-      IO.eprintln s!"{Ansi.style colour Ansi.red "error"}: {e}"
+      IO.eprintln s!"{Ansi.style colour Ansi.Color.red.fgCode "error"}: {e}"
       return 1
   match args with
   | [] | ["check"] => reporting selfCheck
@@ -700,8 +702,8 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
       -- Said, since an `unmanaged` slot produces no plan line.
       if r.keepData then
         for slot in keptSlots F.plan world found.orphans do
-          IO.println s!"{Ansi.style colour Ansi.blue "KEEP"} {slot} \
-{Ansi.style colour Ansi.dim "(--keep-data)"}"
+          IO.println s!"{Ansi.style colour Ansi.Color.blue.fgCode "KEEP"} {slot} \
+{Ansi.style colour Ansi.faintCode "(--keep-data)"}"
       -- No teardown special-case here: `push` decides that from the target,
       -- because `Plan.absent` declares nothing and that is exactly what a
       -- teardown is. `--force` stays for the other case, a declaration that

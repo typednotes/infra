@@ -103,17 +103,6 @@ jobs:
           build: false
           test: false
 
-      # Same reason as the live test: Lean's bundled OpenSSL looks for a trust
-      # store at a path that does not exist on a runner, so every HTTPS call
-      # fails with `certificate verify failed` until it is pointed at the real
-      # bundle.
-      - name: Point OpenSSL at the runner's CA bundle
-        run: |
-          for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
-            if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
-          done
-          echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
-
       # Only this cloud's auth runs. Which cloud is actually *touched* does
       # not depend on these steps either: `liveFor` authenticates exactly the
       # providers the key family it is handed declares resources in, so a

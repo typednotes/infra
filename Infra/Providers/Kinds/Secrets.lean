@@ -134,7 +134,7 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
     let project ← Gcp.requireProject creds
     let reply ← Gcp.call creds "GET" Gcp.SecretManager.host
       s!"/v1/projects/{project}/secrets/{secretName}/versions/latest:access"
-    match (reply.lookup "payload").bind (stringField · "data") with
+    match (reply.lookup "payload").bind (Data.Json.Value.lookupText "data") with
     | some encoded =>
       -- Base64 in the wire format: the API's encoding of a byte string, not
       -- an attempt to obscure anything.
@@ -148,7 +148,7 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
     let ep := Json.secretsEndpoint creds.region
     let reply ← Json.call creds ep "secretsmanager.GetSecretValue"
       (.object [("SecretId", .string secretName)])
-    match stringField reply "SecretString" with
+    match reply.lookupText "SecretString" with
     | some v => return v
     | none   => throw (IO.userError s!"secret '{secretName}' holds no string value")
   | .scaleway =>
@@ -156,12 +156,12 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
     let pfx := Scaleway.regionalPrefix "secret-manager" "v1beta1" creds.region
     let listing ← Scaleway.call creds "GET" (pfx ++ "/secrets")
         (query := [("project_id", ← creds.requireProject)])
-    match (arrayField listing "secrets").find? (fun s => stringField s "name" == some secretName) with
+    match (arrayField listing "secrets").find? (fun s => s.lookupText "name" == some secretName) with
     | none => throw (IO.userError s!"scaleway secrets: no secret named '{secretName}'")
     | some s =>
-      let id := (stringField s "id").getD ""
+      let id := (s.lookupText "id").getD ""
       let reply ← Scaleway.call creds "GET" (pfx ++ s!"/secrets/{id}/versions/latest/access")
-      match stringField reply "data" with
+      match reply.lookupText "data" with
       | some encoded =>
         match Data.Base64.decode encoded with
         | some bytes => return String.fromUTF8! bytes
@@ -179,7 +179,7 @@ private def target (op : String) : String := s!"secretsmanager.{op}"
 /-- A secret entry's `Tags`, as `(key, value)` pairs. -/
 private def tagsOf (s : Value) : List (String × String) :=
   (arrayField s "Tags").filterMap fun t =>
-    match stringField t "Key", stringField t "Value" with
+    match t.lookupText "Key", t.lookupText "Value" with
     | some k, some v => some (k, v)
     | _,      _      => none
 
@@ -189,7 +189,7 @@ def listTagged (creds : Credentials) (ep : Endpoint) :
     IO (List (String × List (String × String))) := do
   let reply ← Json.call creds ep (target "ListSecrets") (.object [])
   return (arrayField reply "SecretList").filterMap fun s =>
-    (stringField s "Name").map fun n => (n, tagsOf s)
+    (s.lookupText "Name").map fun n => (n, tagsOf s)
 
 /-- Every secret's name. -/
 def list (creds : Credentials) (ep : Endpoint) : IO (List String) := do
@@ -248,7 +248,7 @@ def create (creds : Credentials) (ep : Endpoint) (name value markerValue : Strin
              , ("ClientRequestToken", .string (← requestToken))
              , ("Tags", .array (tags.map fun (k, v) =>
                  Value.object [("Key", .string k), ("Value", .string v)]).toArray) ])
-  return (stringField reply "VersionId").getD ""
+  return (reply.lookupText "VersionId").getD ""
 
 /-- Tags, for `Ownership.ownershipOf`. `DescribeSecret` embeds them directly,
     so this is one call, not a list-then-fetch. `createdAt` is left `none`
@@ -284,7 +284,7 @@ def putValue (creds : Credentials) (ep : Endpoint) (name value : String) : IO St
   let reply ← Json.call creds ep (target "PutSecretValue")
     (.object [ ("SecretId", .string name), ("SecretString", .string value)
              , ("ClientRequestToken", .string (← requestToken)) ])
-  return (stringField reply "VersionId").getD ""
+  return (reply.lookupText "VersionId").getD ""
 
 /-- Delete immediately rather than entering the recovery window.
 
@@ -317,7 +317,7 @@ private def listRaw (creds : Credentials) : IO (List (String × String × List S
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/secrets")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "secrets").filterMap fun s =>
-    match stringField s "name", stringField s "id" with
+    match s.lookupText "name", s.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField s "tags")
     | _,      _      => none
 
@@ -350,14 +350,14 @@ def readOwnership (creds : Credentials) (name : String) :
 def describeVersion (creds : Credentials) (name : String) : IO String := do
   let id ← requireId creds name
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/secrets/{id}")
-  return (stringField reply "version_count").getD ""
+  return (reply.lookupText "version_count").getD ""
 
 /-- Scaleway takes the value base64-encoded. -/
 private def addVersion (creds : Credentials) (id value : String) : IO String := do
   let reply ← Scaleway.call creds "POST"
     (prefix' creds.region ++ s!"/secrets/{id}/versions")
     (payload := some (.object [("data", .string (Data.Base64.encode value.toUTF8))]))
-  return (stringField reply "revision").getD ""
+  return (reply.lookupText "revision").getD ""
 
 /-- `markerValue` is written as a flat tag, encoded via `Scaleway.encodeTag`
     — see that function's doc comment for the serialisation convention, and
@@ -370,7 +370,7 @@ def create (creds : Credentials) (name value markerValue : String)
     (payload := some (.object
       [ ("name", .string name), ("project_id", .string project)
       , ("tags", .array (tags.map (Value.string <| Scaleway.encodeTag ·)).toArray) ]))
-  match stringField reply "id" with
+  match reply.lookupText "id" with
   | some id => addVersion creds id value
   | none    => throw (IO.userError s!"scaleway secrets: create returned no id for '{name}'")
 

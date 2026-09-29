@@ -65,11 +65,11 @@ after 50 pages; the list may be incomplete"
       let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
       let reply ← Gcp.call creds "GET" host (parent project location) query
       let here := (arrayField reply "repositories").filterMap fun r =>
-        (stringField r "name").map fun n =>
+        (r.lookupText "name").map fun n =>
           let short := Gcp.shortName n
           (short, repositoryUri project location short)
       let acc := acc ++ here
-      match stringField reply "nextPageToken" with
+      match reply.lookupText "nextPageToken" with
       | some next => if next.isEmpty then return acc else go fuel' next acc
       | none      => return acc
   go 50 "" []
@@ -85,7 +85,7 @@ def readImmutable (creds : Credentials) (project location name : String) :
   match reply.lookup "dockerConfig" with
   | none => return .unknown
   | some cfg =>
-    match boolField cfg "immutableTags" with
+    match cfg.lookupBool "immutableTags" with
     | some b => return .known b
     | none   => return .unknown
 

@@ -122,7 +122,7 @@ def enabled (creds : Credentials) : IO Bool := do
   let project ← creds.requireProject
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/sqs-info")
     (query := [("project_id", project)])
-  return stringField reply "status" == some "enabled"
+  return reply.lookupText "status" == some "enabled"
 
 /-- Does this error mean "it is already there"? -/
 private def alreadyExists (msg : String) : Bool :=
@@ -180,7 +180,7 @@ private def listed (creds : Credentials) (region project : String) :
 private def existingId (creds : Credentials) (region project : String) :
     IO (Option String) := do
   return (← listed creds region project).findSome? fun c =>
-    if stringField c "name" == some credentialName then stringField c "id" else none
+    if c.lookupText "name" == some credentialName then c.lookupText "id" else none
 
 /-- Whether `accessKey` is one of `project`'s SQS credentials in `region` —
     read-only. What a keychain entry must pass before it is used: the entry
@@ -190,7 +190,7 @@ private def existingId (creds : Credentials) (region project : String) :
 private def belongsTo (creds : Credentials) (region project accessKey : String) :
     IO Bool := do
   return (← listed creds region project).any fun c =>
-    stringField c "access_key" == some accessKey
+    c.lookupText "access_key" == some accessKey
 
 /-- Delete the credential holding our name, so a fresh one can take it.
 
@@ -226,7 +226,7 @@ private def mint (creds : Credentials) (region project : String) : IO Credential
           [ ("can_publish", .bool true)
           , ("can_receive", .bool true)
           , ("can_manage",  .bool true) ]) ]))
-  match stringField reply "access_key", stringField reply "secret_key" with
+  match reply.lookupText "access_key", reply.lookupText "secret_key" with
   | some accessKey, some secretKey => return { accessKey, secretKey, region }
   | _, _ => throw (IO.userError
       "scaleway sqs-credentials: no access_key/secret_key in the response")
@@ -266,7 +266,7 @@ private def storedId (creds : Credentials) (region project : String) : IO (Optio
   let reply ← Scaleway.call creds "GET" (secretsPrefix region ++ "/secrets")
     (query := [("project_id", project), ("name", storedName)])
   return (arrayField reply "secrets").findSome? fun x =>
-    if stringField x "name" == some storedName then stringField x "id" else none
+    if x.lookupText "name" == some storedName then x.lookupText "id" else none
 
 /-- The same text the keychain holds (`storeInKeychainAccount`). -/
 private def renderStored (c : Credentials) : String :=
@@ -279,7 +279,7 @@ private def fromSecretManager (creds : Credentials) (region project : String) :
   let some id ← storedId creds region project | return none
   let reply ← Scaleway.call creds "GET"
     (secretsPrefix region ++ s!"/secrets/{id}/versions/latest/access")
-  let some data := stringField reply "data" | return none
+  let some data := reply.lookupText "data" | return none
   let some bytes := Data.Base64.decode data | return none
   let some text := String.fromUTF8? bytes | return none
   let .ok ini := Data.Ini.parse text | return none
@@ -300,7 +300,7 @@ private def toSecretManager (creds : Credentials) (region project : String)
           , ("tags", .array #[.string (Scaleway.encodeTag ("infra-internal", "sqs-credential"))])
           , ("description", .string "The Queues (SQS) credential infra minted for this \
 project, shared by every machine that runs infra here. A cache: deleting it costs one mint.") ]))
-      match stringField reply "id" with
+      match reply.lookupText "id" with
       | some id => pure id
       | none => throw (IO.userError "scaleway secrets: create returned no id")
   discard <| Scaleway.call creds "POST" (secretsPrefix region ++ s!"/secrets/{id}/versions")

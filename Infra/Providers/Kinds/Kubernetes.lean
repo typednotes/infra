@@ -180,11 +180,11 @@ private def vpc (creds : Credentials) : String :=
   Scaleway.regionalPrefix "vpc" "v2" creds.region
 
 private def infoOf (c : Value) : ClusterInfo :=
-  { name := (stringField c "name").getD ""
-    id := (stringField c "id").getD ""
-    endpoint := (stringField c "cluster_url").getD ""
-    status := (stringField c "status").getD ""
-    version := (stringField c "version").getD ""
+  { name := (c.lookupText "name").getD ""
+    id := (c.lookupText "id").getD ""
+    endpoint := (c.lookupText "cluster_url").getD ""
+    status := (c.lookupText "status").getD ""
+    version := (c.lookupText "version").getD ""
     tags := (stringArrayField c "tags").map Scaleway.decodeTag }
 
 /-- Every cluster in the fleet's project, all pages. -/
@@ -219,10 +219,10 @@ def describe (creds : Credentials) (name : String) (withNetwork : Bool := true) 
     if !withNetwork then return some c
     -- The private network, by name, which is how a declaration names it.
     let raw ← Scaleway.call creds "GET" (pfx creds ++ s!"/clusters/{c.id}")
-    let network ← match stringField raw "private_network_id" with
+    let network ← match raw.lookupText "private_network_id" with
       | some pn =>
         match ← (Scaleway.call creds "GET" (vpc creds ++ s!"/private-networks/{pn}")).toBaseIO with
-        | .ok v    => pure (Partial.known ((stringField v "name").getD pn))
+        | .ok v    => pure (Partial.known ((v.lookupText "name").getD pn))
         | .error _ => pure .unknown
       | none => pure .unknown
     return some { c with network }
@@ -230,11 +230,11 @@ def describe (creds : Credentials) (name : String) (withNetwork : Bool := true) 
 def pools (creds : Credentials) (clusterId : String) : IO (List PoolInfo) := do
   let reply ← Scaleway.call creds "GET" (pfx creds ++ s!"/clusters/{clusterId}/pools")
   return (arrayField reply "pools").map fun p =>
-    let auto := (boolField p "autoscaling").getD false
-    { name := (stringField p "name").getD "", id := (stringField p "id").getD ""
-      nodeType := (stringField p "node_type").getD ""
-      count := (natField p "size").getD 0
-      autoscale := if auto then ((natField p "min_size").getD 0, (natField p "max_size").getD 0)
+    let auto := (p.lookupBool "autoscaling").getD false
+    { name := (p.lookupText "name").getD "", id := (p.lookupText "id").getD ""
+      nodeType := (p.lookupText "node_type").getD ""
+      count := (p.lookupNat "size").getD 0
+      autoscale := if auto then ((p.lookupNat "min_size").getD 0, (p.lookupNat "max_size").getD 0)
                    else (0, 0) }
 
 /-- The API server's CA and the kubeconfig's token.
@@ -244,7 +244,7 @@ def pools (creds : Credentials) (clusterId : String) : IO (List PoolInfo) := do
     an object needs it) and handed straight to the request, never stored. -/
 def credentialsOf (creds : Credentials) (clusterId : String) : IO (String × String) := do
   let file ← Scaleway.call creds "GET" (pfx creds ++ s!"/clusters/{clusterId}/kubeconfig")
-  let yaml ← match (stringField file "content").bind Data.Base64.decode |>.bind String.fromUTF8? with
+  let yaml ← match (file.lookupText "content").bind Data.Base64.decode |>.bind String.fromUTF8? with
     | some y => pure y
     | none   => throw (IO.userError s!"kapsule cluster {clusterId}: the kubeconfig could not \
 be decoded")
@@ -270,7 +270,7 @@ certificate-authority-data or token")
     cloud's default has to be looked up. -/
 private def resolveVersion (creds : Credentials) (declared : String) : IO String := do
   let reply ← Scaleway.call creds "GET" (pfx creds ++ "/versions")
-  let names := (arrayField reply "versions").filterMap (stringField · "name")
+  let names := (arrayField reply "versions").filterMap (Data.Json.Value.lookupText "name")
   let ok := names.filter fun v => declared.isEmpty || k8sVersionMatches declared v
   let key (v : String) : List Nat := (v.splitOn ".").map fun p => p.toNat?.getD 0
   match ok.mergeSort (fun a b => key a ≥ key b) with
@@ -282,8 +282,8 @@ private def networkId (creds : Credentials) (name : String) : IO (Option String)
   if name.isEmpty then return none
   let reply ← Scaleway.call creds "GET" (vpc creds ++ "/private-networks")
       (query := [("project_id", ← creds.requireProject), ("name", name)])
-  match (arrayField reply "private_networks").find? (stringField · "name" == some name) with
-  | some pn => return stringField pn "id"
+  match (arrayField reply "private_networks").find? (·.lookupText "name" == some name) with
+  | some pn => return pn.lookupText "id"
   | none    => throw (IO.userError s!"kapsule: no private network named '{name}' in \
 {creds.region} — infra references networks by name and never creates one")
 
@@ -300,12 +300,12 @@ private def poolBody (s : ProviderSpec .kubernetesCluster) (name zone : String) 
 private def awaitReady (creds : Credentials) (id what : String) : IO Unit :=
   await what do
     let c ← Scaleway.call creds "GET" (pfx creds ++ s!"/clusters/{id}")
-    return stringField c "status" == some "ready"
+    return c.lookupText "status" == some "ready"
 
 private def awaitPoolReady (creds : Credentials) (poolId what : String) : IO Unit :=
   await what do
     let p ← Scaleway.call creds "GET" (pfx creds ++ s!"/pools/{poolId}")
-    return stringField p "status" == some "ready"
+    return p.lookupText "status" == some "ready"
 
 def create (creds : Credentials) (s : ProviderSpec .kubernetesCluster) (fleet : String) :
     IO ClusterInfo := do
@@ -321,7 +321,7 @@ def create (creds : Credentials) (s : ProviderSpec .kubernetesCluster) (fleet : 
     , ("apiserver_cert_sans", .array #[]) ]
     ++ (pn.map fun id => [("private_network_id", .string id)]).getD [])
   let reply ← Scaleway.call creds "POST" (pfx creds ++ "/clusters") (payload := some body)
-  let id := (stringField reply "id").getD ""
+  let id := (reply.lookupText "id").getD ""
   awaitReady creds id s!"kapsule cluster {s.name}"
   match ← describe creds s.name with
   | some c => return c
@@ -342,7 +342,7 @@ def update (creds : Credentials) (s : ProviderSpec .kubernetesCluster) : IO Clus
     -- A new pool first, ready before the old one goes: pods reschedule onto it.
     let fresh ← Scaleway.call creds "POST" (pfx creds ++ s!"/clusters/{c.id}/pools")
       (payload := some (poolBody s (nextPoolName pool.name) s!"{creds.region}-1"))
-    awaitPoolReady creds ((stringField fresh "id").getD "") s!"kapsule pool for {s.name}"
+    awaitPoolReady creds ((fresh.lookupText "id").getD "") s!"kapsule pool for {s.name}"
     discard <| Scaleway.call creds "DELETE" (pfx creds ++ s!"/pools/{pool.id}")
   else
     let (lo, hi, desired) := scaling s
@@ -368,11 +368,11 @@ def delete (creds : Credentials) (name : String) : IO Unit := do
   await s!"kapsule cluster {name} deletion" do return (← describe creds name false).isNone
 
 def release (creds : Credentials) (name fleet : String) : IO Unit := do
-  let some c := (← listRaw creds).find? (stringField · "name" == some name) | return
+  let some c := (← listRaw creds).find? (·.lookupText "name" == some name) | return
   match Scaleway.dropTag (markerKey, fleet) (stringArrayField c "tags") with
   | none => return
   | some rest =>
-    discard <| Scaleway.call creds "PATCH" (pfx creds ++ s!"/clusters/{(stringField c "id").getD ""}")
+    discard <| Scaleway.call creds "PATCH" (pfx creds ++ s!"/clusters/{(c.lookupText "id").getD ""}")
       (payload := some (.object [("tags", .array (rest.map Value.string).toArray)]))
 
 end Kapsule
@@ -402,7 +402,7 @@ def list (creds : Credentials) : IO (List String) := do
     let reply ← RestJson.call creds (ep creds) "GET" "/clusters"
       ([("maxResults", some "100")] ++ (token.map fun t => [("nextToken", some t)]).getD [])
     out := out ++ stringArrayField reply "clusters"
-    token := stringField reply "nextToken"
+    token := reply.lookupText "nextToken"
     if token.isNone then break
   return out
 
@@ -430,19 +430,19 @@ def describe (creds : Credentials) (name : String) (withNetwork : Bool := true) 
   | .error e => if readsAsAbsent (toString e) then return none else throw e
   | .ok reply =>
     let c := (reply.lookup "cluster").getD .null
-    let vpcId := (c.lookup "resourcesVpcConfig").bind (stringField · "vpcId")
+    let vpcId := (c.lookup "resourcesVpcConfig").bind (Data.Json.Value.lookupText "vpcId")
     let network ← match vpcId, withNetwork with
       | some v, true => Partial.known <$> vpcSpellings creds v
       | some v, false => pure (Partial.known v)
       | none, _ => pure .unknown
     return some
-      { name := (stringField c "name").getD name, id := (stringField c "arn").getD ""
-        endpoint := (stringField c "endpoint").getD ""
-        status := (stringField c "status").getD ""
-        caB64 := ((c.lookup "certificateAuthority").bind (stringField · "data")).getD ""
-        version := (stringField c "version").getD ""
+      { name := (c.lookupText "name").getD name, id := (c.lookupText "arn").getD ""
+        endpoint := (c.lookupText "endpoint").getD ""
+        status := (c.lookupText "status").getD ""
+        caB64 := ((c.lookup "certificateAuthority").bind (Data.Json.Value.lookupText "data")).getD ""
+        version := (c.lookupText "version").getD ""
         tags := tagsOf c, network
-        clusterRole := match stringField c "roleArn" with
+        clusterRole := match c.lookupText "roleArn" with
           | some r => .known r | none => .unknown }
 
 def pools (creds : Credentials) (cluster : String) : IO (List PoolInfo) := do
@@ -452,12 +452,12 @@ def pools (creds : Credentials) (cluster : String) : IO (List PoolInfo) := do
     let d ← RestJson.call creds (ep creds) "GET" s!"/clusters/{cluster}/node-groups/{ng}"
     let g := (d.lookup "nodegroup").getD .null
     let sc := (g.lookup "scalingConfig").getD .null
-    let lo := (natField sc "minSize").getD 0
-    let hi := (natField sc "maxSize").getD 0
+    let lo := (sc.lookupNat "minSize").getD 0
+    let hi := (sc.lookupNat "maxSize").getD 0
     out := out ++ [{ name := ng, nodeType := (stringArrayField g "instanceTypes").headD ""
-                     count := (natField sc "desiredSize").getD 0
+                     count := (sc.lookupNat "desiredSize").getD 0
                      autoscale := if lo == hi then (0, 0) else (lo, hi)
-                     nodeRole := match stringField g "nodeRole" with
+                     nodeRole := match g.lookupText "nodeRole" with
                        | some r => .known r | none => .unknown }]
   return out
 
@@ -497,7 +497,7 @@ requires one for the control plane (`clusterRole`) and one for the nodes (`nodeR
 
 private def status (creds : Credentials) (path field : String) : IO (Option String) := do
   match ← (RestJson.call creds (ep creds) "GET" path).toBaseIO with
-  | .ok v    => return (v.lookup field).bind (stringField · "status")
+  | .ok v    => return (v.lookup field).bind (Data.Json.Value.lookupText "status")
   | .error e => if readsAsAbsent (toString e) then return none else throw e
 
 private def createPool (creds : Credentials) (s : ProviderSpec .kubernetesCluster)
@@ -637,14 +637,14 @@ private def labelsOf (c : Value) : List (String × String) :=
   | _ => []
 
 private def infoOf (c : Value) : ClusterInfo :=
-  let ep := (stringField c "endpoint").getD ""
-  { name := (stringField c "name").getD "", id := (stringField c "selfLink").getD ""
+  let ep := (c.lookupText "endpoint").getD ""
+  { name := (c.lookupText "name").getD "", id := (c.lookupText "selfLink").getD ""
     endpoint := if ep.isEmpty then "" else s!"https://{ep}"
-    status := (stringField c "status").getD ""
-    caB64 := ((c.lookup "masterAuth").bind (stringField · "clusterCaCertificate")).getD ""
-    version := (stringField c "currentMasterVersion").getD ""
+    status := (c.lookupText "status").getD ""
+    caB64 := ((c.lookup "masterAuth").bind (Data.Json.Value.lookupText "clusterCaCertificate")).getD ""
+    version := (c.lookupText "currentMasterVersion").getD ""
     tags := labelsOf c
-    network := match stringField c "network" with | some n => .known n | none => .unknown }
+    network := match c.lookupText "network" with | some n => .known n | none => .unknown }
 
 /-- Every cluster in the region.
 
@@ -670,24 +670,24 @@ def describe (creds : Credentials) (name : String) : IO (Option ClusterInfo) :=
 
 def pools (creds : Credentials) (name : String) : IO (List PoolInfo) := do
   let some c ← get? creds name | return []
-  let total := (natField c "currentNodeCount").getD 0
+  let total := (c.lookupNat "currentNodeCount").getD 0
   return (arrayField c "nodePools").map fun p =>
     let a := (p.lookup "autoscaling").getD .null
-    { name := (stringField p "name").getD ""
-      nodeType := ((p.lookup "config").bind (stringField · "machineType")).getD ""
+    { name := (p.lookupText "name").getD ""
+      nodeType := ((p.lookup "config").bind (Data.Json.Value.lookupText "machineType")).getD ""
       count := total
-      autoscale := if (boolField a "enabled").getD false
-        then ((natField a "minNodeCount").getD 0, (natField a "maxNodeCount").getD 0) else (0, 0) }
+      autoscale := if (a.lookupBool "enabled").getD false
+        then ((a.lookupNat "minNodeCount").getD 0, (a.lookupNat "maxNodeCount").getD 0) else (0, 0) }
 
 /-- Wait for a Container API operation (its own shape: `status` `DONE`). -/
 private def awaitOp (creds : Credentials) (op : Value) (what : String) : IO Unit := do
   let project ← Gcp.requireProject creds
-  let name := (stringField op "name").getD ""
+  let name := (op.lookupText "name").getD ""
   await what do
     let o ← Gcp.call creds "GET" host s!"{base project creds.region}/operations/{name}"
     if let some err := o.lookup "error" then
-      throw (IO.userError s!"gke {what}: {(stringField err "message").getD (Data.Json.Encode.encode err)}")
-    return stringField o "status" == some "DONE"
+      throw (IO.userError s!"gke {what}: {(err.lookupText "message").getD (Data.Json.Encode.encode err)}")
+    return o.lookupText "status" == some "DONE"
 
 /-- The first zone of the region, for a regional cluster whose nodes live in
     one zone (so a pool's size is its total, as on the other clouds). -/
@@ -783,7 +783,7 @@ def release (creds : Credentials) (name fleet : String) : IO Unit := do
   let op ← Gcp.call creds "POST" host s!"{base project creds.region}/clusters/{name}:setResourceLabels"
     (payload := some (.object
       [ ("resourceLabels", .object ((labels.filter (·.1 != markerKey)).map fun (k, v) => (k, .string v)))
-      , ("labelFingerprint", .string ((stringField c "labelFingerprint").getD "")) ]))
+      , ("labelFingerprint", .string ((c.lookupText "labelFingerprint").getD "")) ]))
   awaitOp creds op s!"cluster {name} release"
 
 end Gke
@@ -953,7 +953,7 @@ def listObjects (provider : ProviderId) (creds : Credentials) (routes : List Clu
       let r ← locate a n
       if let some live ← Kube.get? a (Kube.objectPath r n.ns n.name) then
         out := out ++ [{ handle := ⟨full⟩
-                         uid := ((live.lookup "metadata").bind (stringField · "uid")).getD "" }]
+                         uid := ((live.lookup "metadata").bind (Data.Json.Value.lookupText "uid")).getD "" }]
   return out
 
 private def liveObject (provider : ProviderId) (creds : Credentials) (h : String) :
@@ -1006,7 +1006,7 @@ exist — it is created first in the same apply, so this means it was deleted")
     | .error e => throw (IO.userError s!"kubernetes-object/{s.name}: {e}")
   let applied ← Kube.apply a r n.ns n.name manifest
   return { handle := ⟨s.name⟩
-           uid := ((applied.lookup "metadata").bind (stringField · "uid")).getD "" }
+           uid := ((applied.lookup "metadata").bind (Data.Json.Value.lookupText "uid")).getD "" }
 
 /-- Delete. An object whose cluster the cloud no longer lists is gone with
     it, which is success; an object already gone is too. -/

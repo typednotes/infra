@@ -52,7 +52,7 @@ def scalewayOwner (creds : Credentials) : IO (Option String) := do
   let attempt ← (do
     let prefix' := Scaleway.globalPrefix "iam" "v1alpha1"
     let reply ← Scaleway.call creds "GET" s!"{prefix'}/api-keys/{creds.accessKey}"
-    return JsonRead.stringField reply "organization_id").toBaseIO
+    return reply.lookupText "organization_id").toBaseIO
   match attempt with
   | .ok (some org) => return some org
   | _              => return creds.organizationId

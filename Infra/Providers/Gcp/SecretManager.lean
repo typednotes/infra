@@ -72,9 +72,9 @@ pages; the list may be incomplete"
       let query : Query := if token.isEmpty then [] else [("pageToken", some token)]
       let reply ← Gcp.call creds "GET" host s!"/v1/projects/{project}/secrets" query
       let here := (arrayField reply "secrets").filterMap fun s =>
-        (stringField s "name").map fun n => (Gcp.shortName n, labelsOf s)
+        (s.lookupText "name").map fun n => (Gcp.shortName n, labelsOf s)
       let acc := acc ++ here
-      match stringField reply "nextPageToken" with
+      match reply.lookupText "nextPageToken" with
       | some next => if next.isEmpty then return acc else go fuel' next acc
       | none      => return acc
   go 50 "" []
@@ -89,7 +89,7 @@ def list (creds : Credentials) (project : String) : IO (List String) := do
     call rather than a list-and-sort. -/
 def describeVersion (creds : Credentials) (project name : String) : IO String := do
   let reply ← Gcp.call creds "GET" host (secretPath project name ++ "/versions/latest")
-  return ((stringField reply "name").map Gcp.shortName).getD ""
+  return ((reply.lookupText "name").map Gcp.shortName).getD ""
 
 /-- Add a version holding `value`. Returns the version identifier.
 
@@ -100,7 +100,7 @@ def addVersion (creds : Credentials) (project name value : String) : IO String :
     [("payload", .object [("data", .string (Data.Base64.encode value.toUTF8))])]
   let reply ← Gcp.call creds "POST" host (secretPath project name ++ ":addVersion")
     (payload := some payload)
-  return ((stringField reply "name").map Gcp.shortName).getD ""
+  return ((reply.lookupText "name").map Gcp.shortName).getD ""
 
 /-- Create the secret, then give it its first value.
 

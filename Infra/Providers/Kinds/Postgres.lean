@@ -59,7 +59,7 @@ def fetchMasterPassword (provider : ProviderId) (creds : Credentials) (secretNam
     let ep := Json.secretsEndpoint creds.region
     let reply ← Json.call creds ep "secretsmanager.GetSecretValue"
       (.object [("SecretId", .string secretName)])
-    match stringField reply "SecretString" with
+    match reply.lookupText "SecretString" with
     | some v => return v
     | none   => throw (IO.userError s!"secret '{secretName}' holds no string value")
   | .scaleway =>
@@ -67,12 +67,12 @@ def fetchMasterPassword (provider : ProviderId) (creds : Credentials) (secretNam
     let pfx := Scaleway.regionalPrefix "secret-manager" "v1beta1" creds.region
     let listing ← Scaleway.call creds "GET" (pfx ++ "/secrets")
       (query := [("project_id", ← creds.requireProject)])
-    match (arrayField listing "secrets").find? (fun s => stringField s "name" == some secretName) with
+    match (arrayField listing "secrets").find? (fun s => s.lookupText "name" == some secretName) with
     | none => throw (IO.userError s!"scaleway secrets: no secret named '{secretName}'")
     | some s =>
-      let id := (stringField s "id").getD ""
+      let id := (s.lookupText "id").getD ""
       let reply ← Scaleway.call creds "GET" (pfx ++ s!"/secrets/{id}/versions/latest/access")
-      match stringField reply "data" with
+      match reply.lookupText "data" with
       | some encoded =>
         match Data.Base64.decode encoded with
         | some bytes => return String.fromUTF8! bytes
@@ -214,10 +214,10 @@ private def listRaw (creds : Credentials) : IO (List (String × String × String
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/instances")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "instances").filterMap fun i =>
-    match stringField i "name", stringField i "id" with
+    match i.lookupText "name", i.lookupText "id" with
     | some n, some id =>
       let host := match i.lookup "endpoint" with
-        | some e => (stringField e "ip").getD ""
+        | some e => (e.lookupText "ip").getD ""
         | none   => ""
       some (n, id, host, stringArrayField i "tags")
     | _, _ => none
@@ -241,16 +241,16 @@ def read (creds : Credentials) (name : String) :
     IO (String × String × Partial String × Partial Nat) := do
   let id ← requireId creds name
   let i ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/instances/{id}")
-  let cls := (stringField i "node_type").getD ""
+  let cls := (i.lookupText "node_type").getD ""
   -- Scaleway reports the engine as e.g. `PostgreSQL-16`; only the version part
   -- is comparable with what a target writes.
-  let ver := match stringField i "engine" with
+  let ver := match i.lookupText "engine" with
     | some e => match (e.splitOn "-").getLast? with
       | some v => Partial.known v
       | none   => .unknown
     | none => .unknown
   let storage := match i.lookup "volume" with
-    | some v => match natField v "size" with
+    | some v => match v.lookupNat "size" with
       -- Reported in bytes; targets are written in gigabytes.
       | some bytes => Partial.known (bytes / 1000000000)
       | none       => .unknown
@@ -273,7 +273,7 @@ def create (creds : Credentials)
       , ("project_id", .string project)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
   return match reply.lookup "endpoint" with
-    | some e => (stringField e "ip").getD ""
+    | some e => (e.lookupText "ip").getD ""
     | none   => ""
 
 def modify (creds : Credentials) (name nodeType : String) : IO Unit := do
@@ -414,9 +414,9 @@ private def listRaw (creds : Credentials) : IO (List (String × String × String
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/databases")
     (query := [("project_id", project)])
   return (arrayField reply "databases").filterMap fun d =>
-    match stringField d "name", stringField d "id" with
+    match d.lookupText "name", d.lookupText "id" with
     | some n, some id =>
-        some (n, id, hostPortOfEndpoint ((stringField d "endpoint").getD ""))
+        some (n, id, hostPortOfEndpoint ((d.lookupText "endpoint").getD ""))
     | _, _ => none
 
 def list (creds : Credentials) : IO (List (String × String)) := do
@@ -467,7 +467,7 @@ def create (creds : Credentials) (name _masterUsername _password engineVersion :
       , ("version", .string version)
       , ("cpu_min", .number (Float.ofNat minCapacity))
       , ("cpu_max", .number (Float.ofNat maxCapacity)) ]))
-  return hostPortOfEndpoint ((stringField reply "endpoint").getD "")
+  return hostPortOfEndpoint ((reply.lookupText "endpoint").getD "")
 
 /-- Change the capacity range. -/
 def modify (creds : Credentials) (name : String) (minCapacity maxCapacity : Nat) : IO Unit := do
@@ -489,7 +489,7 @@ def readOwnership (creds : Credentials) (name : String) : IO Evidence := do
   | .ok id   =>
     match ← (Scaleway.call creds "GET" (prefix' creds.region ++ s!"/databases/{id}")).toBaseIO with
     | .error _ => return .unreadable
-    | .ok d    => return .named name (stringField d "created_at")
+    | .ok d    => return .named name (d.lookupText "created_at")
 
 /-- Delete the database. -/
 def delete (creds : Credentials) (name : String) : IO Unit := do

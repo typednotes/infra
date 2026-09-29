@@ -55,7 +55,7 @@ private def base : String := "/2015-03-31/functions"
 
 def list (creds : Credentials) (ep : Endpoint) : IO (List String) := do
   let reply ← RestJson.call creds ep "GET" base
-  return (arrayField reply "Functions").filterMap (stringField · "FunctionName")
+  return (arrayField reply "Functions").filterMap (Data.Json.Value.lookupText "FunctionName")
 
 /-- Configuration and image, which live behind different calls. -/
 def read (creds : Credentials) (ep : Endpoint) (name : String) :
@@ -64,15 +64,15 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
   let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
   let cfg := (whole.lookup "Configuration").getD whole
   let image := match whole.lookup "Code" with
-    | some c => (stringField c "ImageUri").getD ""
+    | some c => (c.lookupText "ImageUri").getD ""
     | none   => ""
-  let role := match stringField cfg "Role" with
+  let role := match cfg.lookupText "Role" with
     | some r => Partial.known r
     | none   => .unknown
-  let memory := match natField cfg "MemorySize" with
+  let memory := match cfg.lookupNat "MemorySize" with
     | some m => Partial.known m
     | none   => .unknown
-  let timeout := match natField cfg "Timeout" with
+  let timeout := match cfg.lookupNat "Timeout" with
     | some t => Partial.known t
     | none   => .unknown
   let env := match cfg.lookup "Environment" with
@@ -145,7 +145,7 @@ def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : 
   let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
   if (Marker.releaseTags fleet (tagsOf whole)).isSome then
     let cfg := (whole.lookup "Configuration").getD whole
-    let some arn := stringField cfg "FunctionArn"
+    let some arn := cfg.lookupText "FunctionArn"
       | throw (IO.userError s!"lambda '{name}': GetFunction reported no FunctionArn")
     let signedPath := s!"/2017-03-31/tags/{arn}"
     let req ← Aws.signedRequest creds ep "DELETE" signedPath [("tagKeys", some markerKey)]
@@ -186,7 +186,7 @@ private def listRaw (creds : Credentials) : IO (List (String × String × List S
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "containers").filterMap fun c =>
-    match stringField c "name", stringField c "id" with
+    match c.lookupText "name", c.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField c "tags")
     | _,      _      => none
 
@@ -211,7 +211,7 @@ private def listNamespacesRaw (creds : Credentials) :
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "namespaces").filterMap fun n =>
-    match stringField n "name", stringField n "id" with
+    match n.lookupText "name", n.lookupText "id" with
     | some nm, some i => some (nm, i, stringArrayField n "tags")
     | _,       _      => none
 
@@ -243,18 +243,18 @@ def read (creds : Credentials) (name : String) :
     IO (Partial Nat × Partial Nat × Partial (List (String × String)) × String) := do
   let id ← requireId creds name
   let c ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{id}")
-  let memory := match natField c "memory_limit" with
+  let memory := match c.lookupNat "memory_limit" with
     | some m => Partial.known m
     | none   => .unknown
-  let timeout := match natField c "max_concurrency" with
-    | some _ => match natField c "timeout" with
+  let timeout := match c.lookupNat "max_concurrency" with
+    | some _ => match c.lookupNat "timeout" with
       | some t => Partial.known t
       | none   => .unknown
     | none => .unknown
   let env := match c.lookup "environment_variables" with
     | some e => Partial.known (envOf e)
     | none   => .unknown
-  return (memory, timeout, env, (stringField c "registry_image").getD "")
+  return (memory, timeout, env, (c.lookupText "registry_image").getD "")
 
 /-- `markerValue` is written as a flat tag (`Scaleway.encodeTag`) at create —
     see the 2026-09-10 incident in `AGENTS.md`. -/
@@ -341,8 +341,8 @@ def listFull (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/containers")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "containers").filterMap fun c =>
-    match stringField c "name" with
-    | some n => some (n, (stringField c "domain_name").getD "")
+    match c.lookupText "name" with
+    | some n => some (n, (c.lookupText "domain_name").getD "")
     | none   => none
 
 /-- Every namespace, as `(name, id)`. -/
@@ -357,7 +357,7 @@ def readFull (creds : Credentials) (name : String) :
   let id ← requireId creds name
   let c ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{id}")
   let optNat (field : String) : Partial Nat :=
-    match natField c field with
+    match c.lookupNat field with
     | some n => .known n
     | none   => .unknown
   let env := match c.lookup "environment_variables" with
@@ -376,7 +376,7 @@ def readFull (creds : Credentials) (name : String) :
   -- Reporting it truthfully is the fix rather than excluding it from the
   -- table: a container genuinely cannot move namespace, so a *changed*
   -- declaration really does need a replace, and that is worth detecting.
-  let nsName ← match stringField c "namespace_id" with
+  let nsName ← match c.lookupText "namespace_id" with
     | none    => pure ""
     | some id => do
       match (← listNamespaces creds).find? (·.2 == id) with
@@ -386,7 +386,7 @@ def readFull (creds : Credentials) (name : String) :
       | none        => pure ""
   return (optNat "port", optNat "min_scale", optNat "max_scale", optNat "memory_limit",
           optNat "cpu_limit", optNat "timeout", env,
-          (stringField c "registry_image").getD "", nsName)
+          (c.lookupText "registry_image").getD "", nsName)
 
 /-- `markerValue` is written as a flat tag (`Scaleway.encodeTag`) at create —
     see the 2026-09-10 incident in `AGENTS.md`. This is the exact create path
@@ -410,7 +410,7 @@ def createFull (creds : Credentials) (name image ns markerValue : String)
       , ("environment_variables", envObject env)
       , ("secret_environment_variables", secretEnvArray secretEnv)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
-  return (stringField reply "domain_name").getD ""
+  return (reply.lookupText "domain_name").getD ""
 
 def updateFull (creds : Credentials) (name image : String)
     (port minScale maxScale memoryMb cpuLimit timeoutSec : Nat)
@@ -427,7 +427,7 @@ def updateFull (creds : Credentials) (name image : String)
       , ("timeout", .string s!"{timeoutSec}s")
       , ("environment_variables", envObject env)
       , ("secret_environment_variables", secretEnvArray secretEnv) ]))
-  return (stringField reply "domain_name").getD ""
+  return (reply.lookupText "domain_name").getD ""
 
 /-! ### Namespace CRUD
 
@@ -439,9 +439,9 @@ def updateFull (creds : Credentials) (name image : String)
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
       (query := [("project_id", ← creds.requireProject)])
-  match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
+  match (arrayField reply "namespaces").find? (fun n => n.lookupText "name" == some name) with
   | none   => return .unknown
-  | some n => return match stringField n "description" with
+  | some n => return match n.lookupText "description" with
                      | some d => .known d
                      | none   => .known ""
 
@@ -458,8 +458,8 @@ def createNamespace (creds : Credentials) (name description markerValue : String
       [ ("name", .string name), ("description", .string description)
       , ("project_id", .string project)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
-  return ((stringField reply "id").getD "",
-          (stringField reply "registry_endpoint").getD "")
+  return ((reply.lookupText "id").getD "",
+          (reply.lookupText "registry_endpoint").getD "")
 
 def updateNamespace (creds : Credentials) (name description : String) : IO Unit := do
   let id ← namespaceIdOfName creds name
@@ -491,7 +491,7 @@ private def listRaw (creds : Credentials) : IO (List (String × String × List S
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/functions")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "functions").filterMap fun f =>
-    match stringField f "name", stringField f "id" with
+    match f.lookupText "name", f.lookupText "id" with
     | some n, some i => some (n, i, stringArrayField f "tags")
     | _,      _      => none
 
@@ -499,8 +499,8 @@ def list (creds : Credentials) : IO (List (String × String)) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/functions")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "functions").filterMap fun f =>
-    match stringField f "name" with
-    | some n => some (n, (stringField f "domain_name").getD "")
+    match f.lookupText "name" with
+    | some n => some (n, (f.lookupText "domain_name").getD "")
     | none   => none
 
 private def requireId (creds : Credentials) (name : String) : IO String := do
@@ -520,7 +520,7 @@ private def listNamespacesRaw (creds : Credentials) :
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
       (query := [("project_id", ← creds.requireProject)])
   return (arrayField reply "namespaces").filterMap fun n =>
-    match stringField n "name", stringField n "id" with
+    match n.lookupText "name", n.lookupText "id" with
     | some nm, some i => some (nm, i, stringArrayField n "tags")
     | _,       _      => none
 
@@ -551,10 +551,10 @@ def read (creds : Credentials) (name : String) :
     IO (String × Partial (Option String) × String) := do
   let id ← requireId creds name
   let f ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/functions/{id}")
-  let runtime := (stringField f "runtime").getD ""
+  let runtime := (f.lookupText "runtime").getD ""
   -- The bucket comes back as the environment variable it was written into.
   let bucket := match f.lookup "environment_variables" with
-    | some e => Partial.known (stringField e "SOURCE_BUCKET")
+    | some e => Partial.known (e.lookupText "SOURCE_BUCKET")
     | none   => .unknown
   -- The namespace, resolved from its id. Reported for the same reason
   -- `Containers.readFull` reports it: `Divergent .scalewayFunction` compares
@@ -562,7 +562,7 @@ def read (creds : Credentials) (name : String) :
   -- blanking it makes every pull propose a replace and the fleet never
   -- converges. The container had exactly that bug and it cost a
   -- twelve-minute CI timeout to see.
-  let nsName ← match stringField f "namespace_id" with
+  let nsName ← match f.lookupText "namespace_id" with
     | none    => pure ""
     | some nsId => do
       match (← listNamespaces creds).find? (·.2 == nsId) with
@@ -585,7 +585,7 @@ private def envFor (bucket : Option (Handle .s3Bucket)) : Value :=
     which is why it is fetched rather than hardcoded. -/
 def listRuntimes (creds : Credentials) : IO (List String) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/runtimes")
-  return (arrayField reply "runtimes").filterMap fun r => stringField r "name"
+  return (arrayField reply "runtimes").filterMap fun r => r.lookupText "name"
 
 def create (creds : Credentials) (name runtime ns handler markerValue : String)
     (bucket : Option (Handle .s3Bucket)) : IO String := do
@@ -601,7 +601,7 @@ def create (creds : Credentials) (name runtime ns handler markerValue : String)
       , ("environment_variables", envFor bucket)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))).toBaseIO
   match attempt with
-  | .ok reply => return (stringField reply "domain_name").getD ""
+  | .ok reply => return (reply.lookupText "domain_name").getD ""
   | .error e =>
     -- "invalid runtime" is the one refusal here with a knowable answer, so
     -- ask for it rather than making the operator go and look.
@@ -659,7 +659,7 @@ def deployCode (creds : Credentials) (name : String) (zip : ByteArray) :
   let reply ← Scaleway.call creds "GET"
     (prefix' creds.region ++ s!"/functions/{id}/upload-url")
     (query := [("content_length", some (toString zip.size))])
-  let some url := stringField reply "url"
+  let some url := reply.lookupText "url"
     | throw (IO.userError
         s!"function '{name}': upload-url reply carried no 'url'")
   let (host, path, queryString) ← splitUrl url
@@ -726,9 +726,9 @@ def releaseNamespaceMarker (creds : Credentials) (name fleet : String) : IO Unit
 def readNamespace (creds : Credentials) (name : String) : IO (Partial String) := do
   let reply ← Scaleway.call creds "GET" (prefix' creds.region ++ "/namespaces")
       (query := [("project_id", ← creds.requireProject)])
-  match (arrayField reply "namespaces").find? (fun n => stringField n "name" == some name) with
+  match (arrayField reply "namespaces").find? (fun n => n.lookupText "name" == some name) with
   | none   => return .unknown
-  | some n => return match stringField n "description" with
+  | some n => return match n.lookupText "description" with
                      | some d => .known d
                      | none   => .known ""
 
@@ -746,8 +746,8 @@ def createNamespace (creds : Credentials) (name description markerValue : String
       [ ("name", .string name), ("description", .string description)
       , ("project_id", .string project)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
-  return ((stringField reply "id").getD "",
-          (stringField reply "registry_endpoint").getD "")
+  return ((reply.lookupText "id").getD "",
+          (reply.lookupText "registry_endpoint").getD "")
 
 def updateNamespace (creds : Credentials) (name description : String) : IO Unit := do
   let id ← namespaceIdOfName creds name

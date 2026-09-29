@@ -51,7 +51,7 @@ def listQueues (creds : Credentials) (ep : Endpoint) : IO (List (String × Strin
 def queueUrl (creds : Credentials) (ep : Endpoint) (name : String) : IO String := do
   let reply ← Json.call creds ep (target "GetQueueUrl")
     (.object [("QueueName", .string name)]) protocolVersion
-  match stringField reply "QueueUrl" with
+  match reply.lookupText "QueueUrl" with
   | some u => return u
   | none   => throw (IO.userError s!"GetQueueUrl: no URL for queue '{name}'")
 
@@ -69,7 +69,7 @@ def readVisibilityTimeout (creds : Credentials) (ep : Endpoint) (name : String) 
   match reply.lookup "Attributes" with
   | none => return .unknown
   | some attrs =>
-    match natField attrs "VisibilityTimeout" with
+    match attrs.lookupNat "VisibilityTimeout" with
     | some n => return .known n
     | none   => return .unknown
 
@@ -90,7 +90,7 @@ def createQueue (creds : Credentials) (ep : Endpoint) (name : String)
        ++ (if tags.isEmpty then [] else
             [("tags", .object (tags.map fun (k, v) => (k, .string v)))])))
     protocolVersion
-  match stringField reply "QueueUrl" with
+  match reply.lookupText "QueueUrl" with
   | some u => return u
   | none   => throw (IO.userError s!"CreateQueue: no URL returned for '{name}'")
 
