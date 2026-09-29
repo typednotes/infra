@@ -446,7 +446,7 @@ ORG=$(scw config get default-organization-id)
 scw iam rule create policy-id="$P" permission-set-names.0=RelationalDatabasesReadOnly project-ids.0="$CI"
 scw iam rule create policy-id="$P" permission-set-names.0=ServerlessSQLDatabaseReadOnly project-ids.0="$CI"
 scw iam rule create policy-id="$P" permission-set-names.0=IAMApplicationReadOnly organization-id="$ORG"
-# 0.19.0, for the scan's Kapsule listing — NOT YET ADDED to the CI policy.
+# 0.19.0, for the scan's Kapsule listing (added 2026-09-29, rule b49ea589-…).
 scw iam rule create policy-id="$P" permission-set-names.0=KubernetesReadOnly project-ids.0="$CI"
 ```
 
@@ -490,7 +490,7 @@ kinds it does not manage, or the run fails before creating anything:
     permissions
 
 A refused listing is not read as "nothing there", deliberately: one missing
-permission would then hide a whole kind. The three rules added on 2026-09-24,
+permission would then hide a whole kind. The three rules added on 2026-09-24 (and a fourth on 2026-09-29),
 each the narrowest set that covers what the scan calls:
 
 | Permission set | Scope | For |
@@ -498,7 +498,7 @@ each the narrowest set that covers what the scan calls:
 | `RelationalDatabasesReadOnly` | CI project | `postgres`, Managed Database half (`Postgres.Rdb.list`, `readOwnership`) |
 | `ServerlessSQLDatabaseReadOnly` | CI project | `postgres`, Serverless SQL half (`Postgres.ServerlessSql.list`) |
 | `IAMApplicationReadOnly` | **organization** | `iam`: the scan calls only `GET /iam/v1alpha1/applications` (`Iam.Scw.listRaw`, which `list` and `readOwnership` share) |
-| `KubernetesReadOnly` | CI project | `kubernetesCluster` (0.19.0): `GET /k8s/v1/regions/{region}/clusters` — `Kapsule.list`, which the ownership read shares. **Not yet added** |
+| `KubernetesReadOnly` | CI project | `kubernetesCluster` (0.19.0): `GET /k8s/v1/regions/{region}/clusters` — `Kapsule.list`, which the ownership read shares. Added 2026-09-29 |
 
 The last is the one organization-scoped rule, and it is **read-only and
 applications-only**: CI can see every IAM application in the organization —

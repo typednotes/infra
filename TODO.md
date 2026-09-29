@@ -77,8 +77,10 @@ tagged**; each infra half below waits for a linen release that carries it.
   verifying GKE's IP endpoint through `SSL_set1_host`, and a current Kapsule
   cluster's kubeconfig still carrying a usable token.
 - [ ] **Grant the CI identities the scan's new read access** before the next
-  live run of the ordinary legs: `eks:ListClusters`/`DescribeCluster`
-  (re-apply `ci/aws-permissions-policy.json`), `roles/container.clusterViewer`
-  and the Kubernetes Engine API on the GCP project, `KubernetesReadOnly` on
-  the Scaleway CI project (`ci/README.md` has the commands). Consumers
-  (`typednotes-infra`) need the same before upgrading.
+  live run of the ordinary legs (`ci/README.md` has the commands):
+  - [x] Scaleway: `KubernetesReadOnly` on the CI project (2026-09-29).
+  - [ ] AWS: re-apply `ci/aws-permissions-policy.json`
+    (`eks:ListClusters`/`DescribeCluster`).
+  - [ ] GCP: `roles/container.clusterViewer` and the Kubernetes Engine API on
+    the project.
+  Consumers (`typednotes-infra`) need the same before upgrading.
