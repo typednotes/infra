@@ -6,6 +6,7 @@ import Infra.Providers.Live
 import Infra.Providers.Placeholder
 import Infra.Providers.Snapshot
 import Infra.Providers.Kinds.Identity
+import Infra.Interop.KubernetesYaml
 import Infra.Providers
 
 /-
@@ -520,7 +521,8 @@ def parseReconcile : List String → Option Reconcile
 
 def usage (exe : String) : String := String.intercalate "\n"
   [ s!"usage: {exe} [check | plan [--destroy [--keep-data] | --refresh-secrets]"
-  , s!"       {String.pushn "" ' ' exe.length} | apply [--force] [--refresh-secrets] | destroy [--force] [--keep-data] | dump [FILE]]"
+  , s!"       {String.pushn "" ' ' exe.length} | apply [--force] [--refresh-secrets] | destroy [--force] [--keep-data] | dump [FILE]"
+  , s!"       {String.pushn "" ' ' exe.length} | render [CLOUD[/CLUSTER]]]"
   , ""
   , "  check                  run the offline self-checks (default)"
   , "  plan                   show what would change, without changing anything"
@@ -529,6 +531,10 @@ def usage (exe : String) : String := String.intercalate "\n"
   , "  apply --force          reconcile even if that destroys most of the fleet"
   , "  destroy                delete everything this fleet manages"
   , "  dump [FILE]            write what this fleet manages, as JSON, to FILE or stdout"
+  , "  render [CLOUD[/CLUSTER]]"
+  , "                         print the Kubernetes objects the fleet declares, as the"
+  , "                         YAML apply would send (like `helm template`); offline."
+  , "                         Secret-sourced values are placeholders"
   , ""
   , "  --refresh-secrets      (plan, apply) read every fromEnv and composed secret,"
   , "                         rewrite the ones whose stored value is not the declared"
@@ -612,7 +618,10 @@ def run (exe : String) (F : Fleet)
   let override := boundary.fleetName
   let name := override.getD F.name
   let boundary := { boundary with fleetName := some name }
-  let withLive (act : Backends → IO Unit) : IO Unit := do
+  -- The name is a marker value on every cloud and a label value in every
+  -- cluster, so it is checked before anything that writes it: every live
+  -- command, and `render`, which prints it on every object.
+  let requireName : IO Unit := do
     unless validFleetName name do
       let fix := match override with
         | none => s!"It comes from the declaration (`fleet {F.name}`): rename the declaration, \
@@ -621,6 +630,8 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
       throw (IO.userError (s!"'{name}' cannot be this fleet's name: it is the value of the \
 '{markerKey}' marker on every cloud, so it must be 1-63 characters of lowercase letters, digits, \
 '-' and '_', starting with a letter. " ++ fix))
+  let withLive (act : Backends → IO Unit) : IO Unit := do
+    requireName
     -- Every cloud `accounts` names is scanned, declared or not: removing a
     -- cloud's last line must still destroy what is left there, and the
     -- account check below is what makes scanning an undeclared cloud safe.
@@ -649,6 +660,25 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
       return 1
   match args with
   | [] | ["check"] => reporting selfCheck
+  -- The in-cluster objects, as the YAML `apply` would send — `helm template`
+  -- for a fleet. Offline: no cloud, cluster or credential is asked.
+  | ["render"] | ["render", _] =>
+    let scope := match args with
+      | ["render", s] => Infra.Interop.KubernetesYaml.Scope.parse? s
+      | _             => some .all
+    match scope with
+    | none =>
+      IO.eprintln s!"render: '{args.getLastD ""}' is not <cloud> or <cloud>/<cluster> \
+(clouds: {String.intercalate ", " ((Finite.elems (α := ProviderId)).map (·.name))})"
+      return 2
+    | some scope =>
+    reporting do
+      requireName
+      match Infra.Interop.KubernetesYaml.render F.plan name scope with
+      | .error e => throw (IO.userError e)
+      | .ok ""   => IO.eprintln (if scope == .all then "render: this fleet declares no Kubernetes objects"
+                                 else "render: no Kubernetes objects declared in that scope")
+      | .ok yaml => IO.print yaml
   -- A snapshot of what this fleet manages, as JSON: to stdout, or to the file
   -- named. Read-only, like `plan`.
   | ["dump"] | ["dump", _] =>

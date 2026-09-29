@@ -34,7 +34,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.20.1 covers
+## What 0.21.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -61,6 +61,11 @@ fails rather than return a prefix — before, most AWS and Scaleway listings
 read one, so past a page an orphan was invisible. A request body holding a
 number the JSON encoder would change is refused instead of sent, and a
 project scaffolded by 0.20.0, which did not build, builds again.
+
+**New in 0.21.0: `render`, `helm template` for a fleet** — the declared
+Kubernetes objects as the YAML `apply` sends, offline, secrets as
+placeholders (`docs/kubernetes.md`, "Rendering"). And EKS works: every kube
+API token had been signed the way S3 wants rather than STS, and was refused.
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -139,7 +144,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.20.1"
+rev = "v0.21.0"
 ```
 
 Then:

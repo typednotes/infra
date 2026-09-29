@@ -10,13 +10,62 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-Pending in `linen`, not a move: **`Data.Json.Encode.renderNumber` should
-round-trip.** It writes a non-integer through `Float.toString`, six digits
-after the point, so `1e-7` is sent as `0.000000`. infra refuses such a body
-(`Infra.Core.JsonExact`) rather than send it; once linen renders the shortest
-representation that reads back as the same `Float`, `lossyNumbers` of every
-value is `[]` and the guard costs nothing. (Not changed from here: a linen
-session was active on 2026-09-29.)
+Pending in `linen` — none changed from here, because a linen session was
+active on 2026-09-29:
+
+- **A move: the YAML emitter.** `Infra/Interop/Yaml.lean` writes a
+  `Data.Json.Value` as block YAML that YAML 1.1 and 1.2 readers both read
+  back unchanged; linen's `Data.Yaml` only parses. When it lands in linen,
+  infra's copy is deleted in the same change.
+- **`Crypto.SigV4.presign` should take the payload hash.** It always signs
+  `UNSIGNED-PAYLOAD`, which is botocore's S3 rule; a presigned STS URL (an EKS
+  token) needs the empty body's SHA-256. `Eks.stsTokenUrl` composes it from
+  linen's public pieces meanwhile, and goes when `presign` can say so.
+- **`Data.Json.Encode.renderNumber` should round-trip.** It writes a non-integer through `Float.toString`, six digits
+  after the point, so `1e-7` is sent as `0.000000`. infra refuses such a body
+  (`Infra.Core.JsonExact`) rather than send it; once linen renders the
+  shortest representation that reads back as the same `Float`,
+  `lossyNumbers` of every value is `[]` and the guard costs nothing.
+
+## [0.21.0] — 2026-09-29
+
+### Added: `infra render` — `helm template` for a fleet
+
+`render [CLOUD[/CLUSTER]]` prints every declared in-cluster object as the YAML
+`apply` would send — the same `renderManifest`, the fleet's label on every
+object — as `---`-separated documents headed `# Source: <plan-line id>`,
+offline. A secret-sourced value is a placeholder, `<secret NAME>`, and the
+document says so: a plaintext value never leaves `apply`. A declaration
+`kubernetesIsSound` refuses renders nothing; its problem is the error. The
+library form is `Infra.Interop.KubernetesYaml.render`.
+
+The YAML is for Kubernetes' reader, go-yaml, which follows YAML 1.1 — so a
+string is plain only if it is a string under 1.1 and 1.2 alike, and `on`,
+`yes`, `80` or `2026-09-29` are quoted (`Infra.Interop.Yaml`). Checked by
+round trip through linen's parser and, on 57 ambiguous strings, by PyYAML.
+
+### Fixed: every EKS token was refused
+
+The first live AWS Kubernetes run (after 0.20.1) created its cluster and then
+failed twice over:
+
+- **The kube API token was signed wrong.** linen's `presign` signs
+  `UNSIGNED-PAYLOAD`, which is botocore's S3 presigner's rule; the generic
+  `SigV4QueryAuth` that `aws eks get-token` uses signs over the empty body's
+  SHA-256. So STS answered `SignatureDoesNotMatch` and the cluster a bare 401,
+  for every token — and the module note had said, wrongly, that botocore
+  presigns `UNSIGNED-PAYLOAD` too. `Eks.stsTokenUrl` signs with the empty-body
+  hash; `checkSigning` pins it to botocore 1.43.104's own output, and a token
+  minted this way is accepted by STS.
+- **`CreateNodegroup` needs `iam:ListAttachedRolePolicies`** on the node role:
+  EKS calls it as the caller to validate the role. Granted to `infra-ci` and
+  applied; `docs/aws-operator-policy.json` and `docs/permissions.md` gain it
+  and `iam:GetRole`, which the template lacked, so a fleet built from it would
+  have failed the same way.
+
+The run's backstop teardown removed the cluster; the account was left clean.
+
+Scaffolded projects pin `v0.21.0` (`infraRev`).
 
 ## [0.20.1] — 2026-09-29
 

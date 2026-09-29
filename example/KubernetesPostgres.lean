@@ -26,6 +26,7 @@ import Infra
   ## Run
 
       lake exe kubernetes-postgres            -- offline: the plan, from placeholders
+      lake exe kubernetes-postgres render     -- offline: the objects, as YAML
       lake exe kubernetes-postgres plan       -- reads the Scaleway account
       lake exe kubernetes-postgres apply      -- creates a billable cluster
 
@@ -33,10 +34,11 @@ import Infra
   the objects; the StatefulSet's PersistentVolumeClaim outlives it either
   way — Kubernetes keeps claims, and infra never deletes one.
 
-  **Not run live yet.** Every backend call here is written against the
-  providers' generated SDKs and discovery documents (dates in
-  `Infra/Providers/Kinds/Kubernetes.lean`), and exercised offline only; see
-  `docs/coverage.md`.
+  **Run live on Scaleway and GCP** (2026-09-29, the Kubernetes leg of
+  `test/Live.lean`, four stages each); AWS's leg runs from the Live test
+  workflow. Every backend call is written against the providers' generated
+  SDKs and discovery documents (dates in `Infra/Providers/Kinds/Kubernetes.lean`);
+  see `docs/coverage.md`.
 -/
 open Infra.Core
 open Infra.Specs
@@ -182,6 +184,37 @@ fleet noNetwork in paris where
 #guard !noNetwork.plan.kubernetesIsSound
 #guard ((noNetwork.plan.kubernetesProblem.getD "").splitOn
   "network is required on scaleway").length > 1
+
+/-! ## Rendering: `helm template` for a fleet
+
+   `lake exe kubernetes-postgres render` prints the two objects as the YAML
+   `apply` sends — the same `renderManifest` — offline. Scoped with
+   `render scaleway` or `render scaleway/main`, it is what `kubectl apply -f -`
+   takes. The password is a placeholder: its value never leaves `apply`. -/
+
+open Infra.Interop.KubernetesYaml in
+def rendered (scope : Scope := .all) : String :=
+  (render kubernetesPostgres.plan "kubernetes-postgres" scope).toOption.getD "(refused)"
+
+private def mentions (s t : String) : Bool := (s.splitOn t).length > 1
+
+-- Two documents, headed by their plan-line ids, in declaration order.
+#guard (rendered.splitOn "---\n").length = 3
+#guard rendered.startsWith "---\n# Source: scaleway/kubernetes-object/main/default/statefulset.apps/postgres\n"
+#guard mentions rendered "---\n# Source: scaleway/kubernetes-object/main/default/service/postgres\n"
+-- The fleet's label, as applied; the secret as a placeholder, and said so.
+#guard mentions rendered "    managed-by-infra: kubernetes-postgres\n"
+#guard mentions rendered "value: \"<secret db-password>\""
+#guard mentions rendered "# Secret-sourced values are placeholders (db-password)"
+-- Scopes: the cluster is all of it; another cloud or cluster is nothing.
+#guard rendered (.cluster .scaleway "main") = rendered
+#guard rendered (.cloud .aws) = ""
+#guard rendered (.cluster .scaleway "other") = ""
+-- A declaration `kubernetesIsSound` refuses renders nothing: its problem is
+-- the error, word for word.
+#guard (Infra.Interop.KubernetesYaml.render crossCloudObject.plan "f").toOption.isNone
+#guard (match Infra.Interop.KubernetesYaml.render crossCloudObject.plan "f" with
+        | .error e => some e | .ok _ => none) = crossCloudObject.plan.kubernetesProblem
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "kubernetes-postgres" kubernetesPostgres

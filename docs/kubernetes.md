@@ -312,6 +312,39 @@ data outliving the workload is what `--keep-data` wants anyway. A fleet that
 wants a PVC gone deletes it by hand, or deletes the cluster (hard edge 1).
 Enumerated in `docs/coverage.md`'s limits, not left silent.
 
+## Rendering: `helm template` for a fleet
+
+`infra render` prints every in-cluster object the fleet declares as the YAML
+`apply` would send, offline — no cloud, cluster or credential is asked:
+
+    lake exe kubernetes-postgres render                  # every object
+    lake exe kubernetes-postgres render scaleway          # one cloud
+    lake exe kubernetes-postgres render scaleway/main \
+      | kubectl apply --dry-run=server -f -              # one cluster
+
+It is the same `Specs.renderManifest` the live backend applies, not a second
+rendering: the fleet's label is on every object (and on a StatefulSet's claim
+template, never on a pod template), the annotations infra reads back are
+there, and documents come in declaration order, each after `---` and headed
+`# Source: <plan-line id>`. Two things differ from what reaches a cluster,
+both said in the output: **a secret-sourced value is a placeholder**,
+`<secret NAME>`, because a plaintext value never leaves `apply` (the
+Terraform export's rule too); and nothing the cluster adds — defaults,
+status — is there, since this is the declaration, not a read. A declaration
+`kubernetesIsSound` refuses renders nothing, and its problem is the error.
+
+The YAML is written for Kubernetes' reader, which is go-yaml's **YAML 1.1**:
+a string is plain only if it is a string under 1.1 and 1.2 alike, so `on`,
+`yes`, `y`, `80`, `1.27` and `2026-09-29` are quoted (`Infra.Interop.Yaml`;
+checked by round trip through linen's parser, and against PyYAML — a 1.1
+reader — on 57 such strings, 2026-09-29). A number the JSON encoder would
+change is refused, as it is on the apply path.
+
+Applying the output with `kubectl` works — the objects carry this fleet's
+label, so the next `apply` finds them already there, as declared — but it is
+not the intended use: `render` is for reading, reviewing and diffing what a
+declaration means, as `helm template` is.
+
 ## Apply semantics
 
 - **Create and update are one call: server-side apply**

@@ -1,4 +1,4 @@
-# Coverage in 0.20.1
+# Coverage in 0.21.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-29.
@@ -141,7 +141,8 @@ clients for those kinds, not one.
 | Every fleet named — from the `fleet` identifier, validated before any live command | complete |
 | `forget` releases — the marker removed on apply, the resource left standing | every taggable pair; Scaleway calls verified live, AWS and GCP offline only |
 | Orphans found on every cloud the declaration or `accounts` names | complete |
-| `check` / `plan` / `apply` / `destroy` / `dump` | complete |
+| `check` / `plan` / `apply` / `destroy` / `dump` / `render` | complete |
+| `render` — the declared in-cluster objects as the YAML `apply` sends, like `helm template`; offline, secrets as placeholders | offline (`example/KubernetesPostgres.lean`'s guards; the YAML emitter round-tripped through linen's parser, and read by PyYAML on 57 ambiguous strings) |
 | `--refresh-secrets` — rewrite `fromEnv`/`composed` secrets whose stored value is stale, and every copy | offline only (`checkRefreshSecrets`); never run against an account. Not covered: `apiKeyFor`, a database's `masterPasswordSecret` — see below |
 | Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline (`checkKubernetes`, `example/KubernetesPostgres.lean`); live on **Scaleway and GCP**, all four stages (2026-09-29, by hand — opt-in, not in CI); AWS prepared for the Live test workflow, not yet run |
 | `destroy --keep-data` — a teardown that leaves databases, their histories, buckets, clusters and a database's password secret standing | offline only (`checkKeepData`); never run against an account |

@@ -103,9 +103,12 @@ cloud account.
   `Kubernetes…` statements in `ci/aws-permissions-policy.json`
   (`put-role-policy`) and a 7200-second session on `infra-ci`.
 - [ ] **Run the live leg on AWS**: `gh workflow run live-test.yml -f
-  provider=aws -f leg=kubernetes` — after the push, since the remote
-  `live-test.yml` is the 0.20.0 one, which GitHub cannot parse. Bills an EKS
-  cluster for roughly 45 minutes.
+  provider=aws -f leg=kubernetes`. Bills an EKS cluster for roughly 45
+  minutes. The first run (2026-09-29, on 0.20.1) created the cluster and found
+  two things, fixed in 0.21.0: `CreateNodegroup` needs
+  `iam:ListAttachedRolePolicies` (granted and applied), and every kube API
+  token was signed `UNSIGNED-PAYLOAD` and refused (now the empty-body hash,
+  pinned to botocore's output and accepted by STS). Re-run after the push.
 - [x] **Grant the CI identities the scan's new read access** (2026-09-29):
   `KubernetesReadOnly` on the Scaleway CI project, `ci/aws-permissions-policy.json`
   re-applied (`eks:ListClusters`/`DescribeCluster`), and on GCP the Kubernetes

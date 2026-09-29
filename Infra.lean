@@ -58,6 +58,8 @@ import Infra.Providers
 
 -- Interoperability with the tool this replaces, both directions.
 import Infra.Interop.Terraform
+import Infra.Interop.Yaml
+import Infra.Interop.KubernetesYaml
 
 -- The command-line front end, so a declaration repo's `Main` is a call rather
 -- than a copy of the dispatch.
