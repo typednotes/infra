@@ -273,8 +273,11 @@ credential differs (`Kinds.Kubernetes.access`):
 
 - **EKS**: the token is `k8s-aws-v1.` and the base64url (unpadded) of a
   presigned STS `GetCallerIdentity` URL signed with the header
-  `x-k8s-aws-id: <cluster>` — the format `aws eks get-token` emits. botocore
-  presigns with `UNSIGNED-PAYLOAD`, and so does linen's `presignedUrl`. The
+  `x-k8s-aws-id: <cluster>` — the format `aws eks get-token` emits, signed over
+  the empty body's SHA-256 as botocore's generic `SigV4QueryAuth` does.
+  `UNSIGNED-PAYLOAD` is only its S3 presigner's rule, and a token signed that
+  way — as linen's `presign` always signs, and as infra did until 0.20.2 — is
+  refused by STS (`SignatureDoesNotMatch`) and by the cluster (a bare 401). The
   identity that created the cluster is its admin
   (`bootstrapClusterCreatorAdminPermissions`); any other needs an EKS access
   entry.

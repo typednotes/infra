@@ -99,7 +99,10 @@
     {
       "Sid": "KubernetesReadTestRoles",
       "Effect": "Allow",
-      "Action": "iam:GetRole",
+      "Action": [
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies"
+      ],
       "Resource": "arn:aws:iam::616568506952:role/ci-tests-infra-eks-*"
     },
     {

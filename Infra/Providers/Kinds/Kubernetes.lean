@@ -35,8 +35,10 @@ import Infra.Core.Stage
     group requires `subnets` and `nodeRole`; both take `tags`. The kube API
     token is a presigned STS `GetCallerIdentity` URL with the signed header
     `x-k8s-aws-id: <cluster>`, prefixed `k8s-aws-v1.` and base64url-encoded
-    without padding — the format `aws eks get-token` emits; botocore presigns
-    with `UNSIGNED-PAYLOAD`, which linen's `presignedUrl` does too.
+    without padding — the format `aws eks get-token` emits. It is signed over
+    the empty body's SHA-256, as botocore's generic `SigV4QueryAuth` does, and
+    not `UNSIGNED-PAYLOAD`, which is its S3 presigner's rule (`Eks.stsTokenUrl`;
+    until 0.20.2 this said the opposite, and STS refused every token).
     `accessConfig.bootstrapClusterCreatorAdminPermissions` (default true)
     makes the identity that created the cluster its admin.
   * **GKE** (`container.googleapis.com` v1 discovery, revision 20260915):
@@ -626,23 +628,56 @@ def release (creds : Credentials) (name fleet : String) : IO Unit := do
   | .ok _    => pure ()
   | .error e => throw (IO.userError s!"eks DELETE /tags/{c.id}: {e}")
 
-/-- The kube API token: `k8s-aws-v1.` and the base64url of a presigned STS
-    `GetCallerIdentity` URL carrying the signed header `x-k8s-aws-id`. Valid
-    for fifteen minutes from signing, whatever the URL's own expiry says —
-    minted per call, so always fresh. -/
-def token (creds : Credentials) (cluster : String) : IO String := do
+open Crypto.SigV4 (Scope CanonicalRequest prepareHeaders signedHeaders algorithm
+  emptyPayloadHash signWith signingKey stringToSign hashStringHex) in
+/-- The presigned STS `GetCallerIdentity` URL behind a kube API token, signed
+    at `time`, carrying the signed header `x-k8s-aws-id: <cluster>`.
+
+    Signed over the SHA-256 of the **empty body**, not `UNSIGNED-PAYLOAD`.
+    botocore's generic `SigV4QueryAuth` — what `aws eks get-token` uses —
+    inherits `SigV4Auth.payload`, which hashes the body; only its S3
+    presigner, `S3SigV4QueryAuth`, substitutes `UNSIGNED-PAYLOAD`
+    (`botocore/auth.py`, read 2026-09-29). linen's `Crypto.SigV4.presign`
+    always writes `UNSIGNED-PAYLOAD`, which is S3's rule, so a token minted
+    through it was refused by STS with `SignatureDoesNotMatch` and by the
+    cluster with a bare 401 — the first live AWS Kubernetes run, 2026-09-29.
+    Built here from linen's own public pieces until `presign` takes the
+    payload hash (`CHANGELOG.md`, `[Unreleased]`); the vector in `Main.lean`'s
+    `checkSigning` is botocore's own output. -/
+def stsTokenUrl (creds : Credentials) (cluster : String) (time : Data.Time.UTCTime) :
+    IO String := do
   let host := s!"sts.{creds.region}.amazonaws.com"
-  let now ← Data.Time.getCurrentTime
-  match ← Crypto.SigV4.presignedUrl
-      { accessKeyId := creds.accessKey, secretAccessKey := creds.secretKey
-        sessionToken := creds.sessionToken }
-      creds.region "sts" now
-      { method := "GET", path := "/"
-        query := [("Action", some "GetCallerIdentity"), ("Version", some "2011-06-15")]
-        headers := [("host", host), ("x-k8s-aws-id", cluster)] }
-      60 s!"https://{host}" with
-  | .ok url  => return "k8s-aws-v1." ++ base64Url url.toUTF8
-  | .error e => throw (IO.userError s!"eks cluster {cluster}: could not sign a token: {e}")
+  let amzDate := Data.Time.ISO8601.basicDateTime time
+  let scope : Scope :=
+    { date := Data.Time.ISO8601.basicDate time, region := creds.region, service := "sts" }
+  let headers := prepareHeaders [("host", host), ("x-k8s-aws-id", cluster)]
+  let query : Network.HTTP.Types.Query :=
+    [ ("Action", some "GetCallerIdentity"), ("Version", some "2011-06-15")
+    , ("X-Amz-Algorithm", some algorithm)
+    , ("X-Amz-Credential", some s!"{creds.accessKey}/{scope.render}")
+    , ("X-Amz-Date", some amzDate)
+    , ("X-Amz-Expires", some "60")
+    , ("X-Amz-SignedHeaders", some (signedHeaders headers)) ]
+    ++ (match creds.sessionToken with
+        | some t => [("X-Amz-Security-Token", some t)]
+        | none   => [])
+  let canonicalQuery := Network.HTTP.Types.canonicalQuery query
+  let canonical : CanonicalRequest :=
+    { method := "GET"
+      uri := "/"
+      query := canonicalQuery
+      headers := headers
+      payloadHash := emptyPayloadHash }
+  let sig ← signWith (← signingKey creds.secretKey scope)
+    (stringToSign amzDate scope (← hashStringHex canonical.render))
+  return s!"https://{host}/?" ++
+    Network.HTTP.Types.canonicalQuery (query ++ [("X-Amz-Signature", some sig)])
+
+/-- The kube API token: `k8s-aws-v1.` and the base64url of `stsTokenUrl`.
+    Valid for fifteen minutes from signing, whatever the URL's own expiry
+    says — minted per call, so always fresh. -/
+def token (creds : Credentials) (cluster : String) : IO String := do
+  return "k8s-aws-v1." ++ base64Url (← stsTokenUrl creds cluster (← Data.Time.getCurrentTime)).toUTF8
 
 end Eks
 

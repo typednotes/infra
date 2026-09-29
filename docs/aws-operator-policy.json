@@ -82,6 +82,18 @@
       }
     },
     {
+      "Sid": "KubernetesReadRolesNotExercisedByCi",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT:role/EKS-CLUSTER-ROLE-NAME",
+        "arn:aws:iam::ACCOUNT:role/EKS-NODE-ROLE-NAME"
+      ]
+    },
+    {
       "Sid": "KubernetesServiceLinkedRolesNotExercisedByCi",
       "Effect": "Allow",
       "Action": "iam:CreateServiceLinkedRole",

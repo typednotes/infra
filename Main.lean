@@ -432,7 +432,25 @@ Signature=21cccf6f70b4372af8e137af9b15333d9485d91e393b87fc2b9e034f8ef7a77d"
     throw (IO.userError
       s!"Content-MD5 of \"abc\": {Infra.Providers.Aws.S3.contentMd5 "abc".toUTF8}")
 
-  IO.println "signing: ok (S3 and Query vectors, Content-MD5, both error dialects)"
+  -- The EKS token: a presigned STS URL signed over the empty body's hash.
+  -- The expected URL is botocore 1.43.104's own `SigV4QueryAuth` output for
+  -- these credentials, this session token and 2026-09-29T12:00:00Z — the
+  -- signer `aws eks get-token` uses. The first live AWS Kubernetes run was
+  -- refused with a 401 because the token was signed `UNSIGNED-PAYLOAD`,
+  -- which is S3's rule and not STS's.
+  let eksAt : Data.Time.UTCTime := Data.Time.UTCTime.ofNanosSinceEpoch (1790683200 * 1000000000)
+  let eksUrl ← Infra.Providers.Kinds.Kubernetes.Eks.stsTokenUrl
+    { creds with sessionToken := some "SESSIONTOKENEXAMPLE" } "ci-tests-infra-k8s" eksAt
+  let expectedEks := "https://sts.eu-west-1.amazonaws.com/?Action=GetCallerIdentity\
+&Version=2011-06-15&X-Amz-Algorithm=AWS4-HMAC-SHA256\
+&X-Amz-Credential=AKIDEXAMPLE%2F20260929%2Feu-west-1%2Fsts%2Faws4_request\
+&X-Amz-Date=20260929T120000Z&X-Amz-Expires=60&X-Amz-Security-Token=SESSIONTOKENEXAMPLE\
+&X-Amz-Signature=863d50163937ff28e0aedc112bf746bd26d544c67b86cb89549fa56a00d69e6e\
+&X-Amz-SignedHeaders=host%3Bx-k8s-aws-id"
+  unless eksUrl == expectedEks do
+    throw (IO.userError s!"EKS token URL mismatch:\n  got      {eksUrl}\n  expected {expectedEks}")
+
+  IO.println "signing: ok (S3, Query and EKS-token vectors, Content-MD5, both error dialects)"
 
 /- The principle this library rests on, checked end to end: **the marker
     decides what is managed.** A resource carrying this fleet's name that the
