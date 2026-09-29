@@ -441,7 +441,7 @@ scw iam policy create name=infra-ci-live-tests application-id="$APP" \
 
 # Read-only, for the scan (added 2026-09-24 — see "Read-only grants for the
 # scan" below). Two in the CI project, one at organization scope.
-P=$(scw iam policy list application-ids.0="$APP" name=infra-ci-live-tests -o json | jq -r '.[0].id')
+P=$(scw iam policy list application-ids.0="$APP" policy-name=infra-ci-live-tests -o json | jq -r '.[0].id')
 ORG=$(scw config get default-organization-id)
 scw iam rule create policy-id="$P" permission-set-names.0=RelationalDatabasesReadOnly project-ids.0="$CI"
 scw iam rule create policy-id="$P" permission-set-names.0=ServerlessSQLDatabaseReadOnly project-ids.0="$CI"
@@ -552,7 +552,7 @@ scw iam application list      # names them
 To see what an application currently has:
 
 ```sh
-scw iam policy list application-id="$APP_ID"
+scw iam policy list application-ids.0="$APP_ID"
 scw iam permission-set list
 ```
 
