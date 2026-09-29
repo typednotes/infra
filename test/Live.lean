@@ -1645,10 +1645,10 @@ def gcpIdentityCheck : IO Unit := do
   billed by the hour, which is not something to put on every pull request —
   and Scaleway's and GCP's CI identities have only cluster read grants.
   **Passed on Scaleway and GCP** (2026-09-29, by hand); AWS runs from the
-  Live test workflow (`-f leg=kubernetes`). Its control-plane create/delete
-  worked, but node-group IAM validation failed; the missing grants are now
-  applied — `ci/README.md`, "The Kubernetes leg". The complete AWS leg has
-  not passed yet.
+  Live test workflow (`-f leg=kubernetes`). Cluster, node-group and object
+  create/delete worked, but convergence failed on a false default-VPC
+  replacement; that alias is now read back — `ci/README.md`, "The Kubernetes
+  leg". The complete AWS leg has not passed yet.
 
   Four stages over one cluster, `ci-tests-infra-k8s`:
 
@@ -1706,6 +1706,8 @@ fleet k8sScalewayTrimmed in paris where
 
 fleet k8sAwsFull in ireland where
   provider aws where
+    -- Create resolves the default VPC; observation must carry its `default`
+    -- alias back from EC2's `isDefault`, not expect a Name tag to supply it.
     resource kubernetesCluster "ci-tests-infra-k8s"
       { nodeType := "t3.medium", nodeCount := 1, network := "default",
         clusterRole := "ci-tests-infra-eks-cluster", nodeRole := "ci-tests-infra-eks-nodes" }

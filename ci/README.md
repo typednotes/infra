@@ -656,6 +656,15 @@ created. This is a role-read check, not a check of every EKS permission.
 `ci/check-aws-policy.sh` runs its mocked regression cases offline.
 The complete leg still needs a passing rerun.
 
+Run [36632564973](https://github.com/typednotes/infra/actions/runs/36632564973)
+passed the role-read preflight and reached `ACTIVE` for the control plane
+(404 seconds) and node group (83 seconds). Its objects were created, but the
+first stage kept planning `REPLACE` for the cluster: the declared `default`
+network was read as a VPC id, without EC2's `isDefault` alias. The reader now
+includes it, with an XML/divergence regression in `checkEksNetwork`. The run
+cleaned up its node group, cluster and objects. The subsequent stages and the
+complete round trip still need a passing rerun.
+
 **Scaleway and GCP run by hand**, because their CI identities hold the scan's
 read grants for clusters and nothing that creates one; the workflow refuses
 `leg=kubernetes` for them up front. Both legs passed on 2026-09-29, run from a

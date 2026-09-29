@@ -469,23 +469,34 @@ def list (creds : Credentials) : IO (List String) :=
       ([("maxResults", some "100")] ++ (token.map fun t => [("nextToken", some t)]).getD [])
     return (stringArrayField reply "clusters", reply.lookupText "nextToken")
 
-/-- A VPC's id and, if it has one, its `Name` tag — both spellings a
-    declaration may use for it, newline-separated for
-    `Divergent .kubernetesCluster`. -/
+/-- The spellings of the requested VPC in a DescribeVpcs reply: its id,
+    an ordinary one-line `Name` tag, and `default` only when `isDefault` is
+    true. `default` is a reserved selector on create, not a tag name; a
+    non-default VPC tagged `Name=default` must still disagree with it.
+
+    The XML names are botocore's `ec2/2016-11-15/service-2.json` Vpc shape
+    (`IsDefault.locationName = isDefault`, checked 2026-09-29). The aliases
+    are newline-separated for `Divergent .kubernetesCluster`, so a multiline
+    tag cannot supply aliases (use the VPC id for such a tag). -/
+def vpcSpellingsOf (vpcId : String) (root : Text.XML.Element) : String :=
+  match (Query.listItems root "vpcSet" "item").find? (·.childText "vpcId" == some vpcId) with
+  | none => vpcId
+  | some v =>
+    let name := (Query.listItems v "tagSet" "item").findSome? fun t =>
+      if t.childText "key" == some "Name" then t.childText "value" else none
+    let ordinary := name.filter fun n => !n.isEmpty && n != "default" && !n.contains '\n'
+    String.intercalate "\n" ([vpcId] ++ ordinary.toList
+      ++ (if v.childText "isDefault" == some "true" then ["default"] else []))
+
+/-- Resolve the VPC's cloud-side aliases, including the default selector. -/
 private def vpcSpellings (creds : Credentials) (vpcId : String) : IO String := do
   match ← (Query.call creds (ec2 creds) "DescribeVpcs" "2016-11-15"
       [("VpcId.1", vpcId)]).toBaseIO with
   | .error _ => return vpcId
-  | .ok root =>
-    let name := (Query.listItems root "vpcSet" "item").head?.bind fun v =>
-      (Query.listItems v "tagSet" "item").findSome? fun t =>
-        if t.childText "key" == some "Name" then t.childText "value" else none
-    return match name with
-      | some n => s!"{vpcId}\n{n}"
-      | none   => vpcId
+  | .ok root => return vpcSpellingsOf vpcId root
 
 /-- `DescribeCluster`, or `none` on a not-found. `withNetwork` also reads the
-    VPC's `Name` tag (`ec2:DescribeVpcs`) — for `read`; the scan passes
+    VPC's `Name` tag and `isDefault` (`ec2:DescribeVpcs`) — for `read`; the scan passes
     `false` and needs only `eks:ListClusters` and `eks:DescribeCluster`. -/
 def describe (creds : Credentials) (name : String) (withNetwork : Bool := true) :
     IO (Option ClusterInfo) := do

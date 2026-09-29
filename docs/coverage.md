@@ -46,9 +46,10 @@ and Lean reports one as unreachable.
 
 **The two Kubernetes kinds (0.19.0) are implemented on all three clouds, and
 since 0.20.0 have passed the live leg on Scaleway and GCP; AWS's has run but
-not passed the complete round trip.** EKS control-plane creation and deletion
-worked; node-group creation failed on IAM validation (2026-09-29), with the
-missing grants fixed (`ci/README.md`). Every
+not passed the complete round trip.** EKS control plane, node group and
+in-cluster objects have been created and deleted (2026-09-29). The latest run
+failed first-stage convergence on a false `network` replacement: observation
+omitted the default-VPC alias, now fixed (`ci/README.md`). Every
 call is written against the providers' generated SDKs and discovery documents
 (checked 2026-09-29, recorded in `Infra/Providers/Kinds/Kubernetes.lean`);
 `Main.lean`'s `checkKubernetes`, the `#guard`s in `Infra/Specs/Kubernetes.lean`
@@ -146,9 +147,10 @@ clients for those kinds, not one.
 | `check` / `plan` / `apply` / `destroy` / `dump` / `render` | complete |
 | `render` — the declared in-cluster objects as the YAML `apply` sends, like `helm template`; offline, secrets as placeholders | offline (`example/KubernetesPostgres.lean`'s guards; the YAML emitter round-tripped through linen's parser, and read by PyYAML on 57 ambiguous strings) |
 | `--refresh-secrets` — rewrite `fromEnv`/`composed` secrets whose stored value is stale, and every copy | offline only (`checkRefreshSecrets`); never run against an account. Not covered: `apiKeyFor`, a database's `masterPasswordSecret` — see below |
-| Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline (`checkKubernetes`, `example/KubernetesPostgres.lean`); live on **Scaleway and GCP**, all four stages (2026-09-29, by hand — opt-in); AWS control-plane create/delete exercised in CI, complete leg not yet passed (node-group IAM validation grants fixed, 2026-09-29) |
+| Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline (`checkKubernetes`, `example/KubernetesPostgres.lean`); live on **Scaleway and GCP**, all four stages (2026-09-29, by hand — opt-in); AWS cluster/node-group/object create/delete exercised in CI, complete leg not yet passed (false default-VPC replacement fixed, 2026-09-29) |
+| EKS network aliases (unreleased) | id, ordinary one-line `Name` tag and `default` only for `isDefault=true`; multiline tags must be referenced by VPC id; EC2 XML plus cluster-divergence regression in `checkEksNetwork` |
 | Kubernetes provisioning waits (0.21.1) | all three clouds: elapsed-time deadlines and flushed status heartbeats; EKS's four cluster/node-group waiter targets use botocore's failure acceptors and report health issues; offline replay in `checkKubernetesWaiters` |
-| AWS Kubernetes role-read preflight (unreleased) | checks declared and service-linked role reads before provisioning; accepts authorised first-use absence only for service-linked roles; offline existing/cold-start/refusal/missing-prerequisite/transport regressions in `ci/test-eks-role-reads.sh`; CI rerun pending |
+| AWS Kubernetes role-read preflight (unreleased) | checks declared and service-linked role reads before provisioning; accepts authorised first-use absence only for service-linked roles; offline existing/cold-start/refusal/missing-prerequisite/transport regressions in `ci/test-eks-role-reads.sh`; passed in AWS CI, 2026-09-29 |
 | `destroy --keep-data` — a teardown that leaves databases, their histories, buckets, clusters and a database's password secret standing | offline only (`checkKeepData`); never run against an account |
 | `dump` snapshots replayed as offline test fixtures (`Snapshot.load`) | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
@@ -811,11 +813,13 @@ function — it is a number, so it tells the code the response was parsed at all
 
 ### AWS Kubernetes: the complete round trip has not passed
 
-The opt-in workflow leg has created and deleted an EKS control plane against
-the real account (2026-09-29). Its node-group creation failed on IAM validation:
-first the declared role's `iam:ListAttachedRolePolicies`, then the service-linked
-role's `iam:GetRole`. Both grants are now applied, but the complete
-cluster/node-group/object round trip still needs a passing rerun. The leg is
+The opt-in workflow leg has created and deleted an EKS control plane, managed
+node group and in-cluster objects against the real account (2026-09-29).
+Earlier runs failed node-group IAM validation; those grants and the role-read
+preflight now work. Run 36632564973 failed first-stage convergence because
+`network := "default"` did not match the VPC id observation: `isDefault` was
+not carried back as an alias. That false replacement is fixed, but the
+complete four-stage round trip still needs a passing rerun. The leg is
 `lake test -- aws kubernetes`, from the Live test workflow with
 `-f leg=kubernetes`; `ci/README.md` records its grants and two-hour session.
 Scaleway and GCP passed theirs on 2026-09-29, which settled the two facts only

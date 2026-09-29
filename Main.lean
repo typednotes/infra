@@ -1171,6 +1171,53 @@ def checkKubernetes : IO Unit := do
   | .error _ => pure ()
   IO.println "kubernetes: ok (an in-cluster orphan is destroyed, an unmarked declared object is refused, a service follows its workload, and keep-data keeps the cluster; an unreachable API server is an error, not absence)"
 
+/-- Reproduce the EKS live leg's false REPLACE: create resolved `default`,
+    but observation returned only a VPC id. Use the actual EC2 XML shape,
+    then the real cluster divergence, so aliases are not merely compared
+    against a second hand-written list. Real network changes still replace. -/
+def checkEksNetwork : IO Unit := do
+  let parse (xml : String) : IO Text.XML.Element :=
+    match Text.XML.parse xml with
+    | .ok root => pure root
+    | .error e => throw (IO.userError s!"bad EC2 fixture: {e}")
+  let response (flag name : String) : IO String := do
+    let root ← parse ("<DescribeVpcsResponse xmlns=\"http://ec2.amazonaws.com/doc/2016-11-15/\">" ++
+      "<vpcSet><item><vpcId>vpc-ci</vpcId>" ++ flag ++ "<tagSet>" ++ name ++
+      "</tagSet></item></vpcSet></DescribeVpcsResponse>")
+    return Infra.Providers.Kinds.Kubernetes.Eks.vpcSpellingsOf "vpc-ci" root
+  let tag (name : String) := s!"<item><key>Name</key><value>{name}</value></item>"
+  let spec (network : String) : ProviderSpec .kubernetesCluster :=
+    { name := "ci-tests-infra-k8s", version := "", nodeType := "t3.medium", nodeCount := 1
+      autoscale := (0, 0), network, clusterRole := "ci-tests-infra-eks-cluster"
+      nodeRole := "ci-tests-infra-eks-nodes" }
+  let seen (network : String) : Reported .kubernetesCluster :=
+    { name := "ci-tests-infra-k8s", version := .known "1.36", nodeType := "t3.medium"
+      nodeCount := .known 1, autoscale := .known (0, 0), network := .known network
+      clusterRole := .known "arn:aws:iam::616568506952:role/ci-tests-infra-eks-cluster"
+      nodeRole := .known "arn:aws:iam::616568506952:role/ci-tests-infra-eks-nodes" }
+  let agrees := fun declared report => (divergence .kubernetesCluster (spec declared) (seen report)).isEmpty
+  let untagged ← response "<isDefault>true</isDefault>" ""
+  unless agrees "default" untagged && agrees "vpc-ci" untagged do
+    throw (IO.userError "an untagged default EKS VPC still asks to REPLACE the cluster")
+  let named ← response "<isDefault>true</isDefault>" (tag "ci-network")
+  unless agrees "default" named && agrees "ci-network" named && agrees "vpc-ci" named do
+    throw (IO.userError "an EKS VPC lost its id, Name tag or default alias")
+  for (flag, name) in [("<isDefault>false</isDefault>", "default"), ("", "default"),
+      ("<isDefault>false</isDefault>", "ordinary&#10;default")] do
+    let aliases ← response flag (tag name)
+    unless divergence .kubernetesCluster (spec "default") (seen aliases) == [("network", .forcesReplace)] do
+      throw (IO.userError "a VPC's Name tag was mistaken for EC2's default selector")
+  let ordinary ← response "<isDefault>false</isDefault>" (tag "ci-network")
+  unless agrees "ci-network" ordinary && agrees "vpc-ci" ordinary do
+    throw (IO.userError "an ordinary EKS network stopped matching its name/id")
+  unless divergence .kubernetesCluster (spec "vpc-other") (seen ordinary) == [("network", .forcesReplace)] do
+    throw (IO.userError "a real EKS VPC change stopped forcing a replacement")
+  let other ← parse "<DescribeVpcsResponse><vpcSet><item><vpcId>vpc-other</vpcId>\
+<isDefault>true</isDefault></item></vpcSet></DescribeVpcsResponse>"
+  unless Infra.Providers.Kinds.Kubernetes.Eks.vpcSpellingsOf "vpc-ci" other == "vpc-ci" do
+    throw (IO.userError "a different VPC supplied the requested VPC's default evidence")
+  IO.println "eks network: ok (default VPC aliases converge, names/ids match, real network changes replace; a Name tag is not default evidence)"
+
 /-- Replay provider waits without sleeping: HTTP time counts toward the
     deadline, a stable status still has a heartbeat, and a failed EKS create
     does not spend thirty minutes polling or prevent its own deletion. -/
@@ -1446,6 +1493,7 @@ def selfCheck : IO Unit := do
   checkRefreshSecrets
   checkKeepData
   checkKubernetes
+  checkEksNetwork
   checkKubernetesWaiters
   checkGcpAssertion
   checkVanishingResource

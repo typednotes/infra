@@ -10,6 +10,21 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Fixed: EKS on the default VPC never converged
+
+The AWS Kubernetes leg reached an active control plane and node group, then
+kept planning `REPLACE` for the freshly created cluster. Create resolved
+`network := "default"` to the region's default VPC, but the reader reported
+only its id and `Name` tag, so the immutable network field always differed.
+Observation now includes `default` when EC2's `isDefault` is true. An ordinary
+VPC tagged `Name=default` is not the default selector; ids and ordinary names
+still match, and real network changes still force replacement.
+
+`checkEksNetwork` parses EC2 XML and exercises the real cluster divergence,
+including an untagged default VPC and negative cases. Run 36632564973 created
+the cluster, node group and in-cluster objects, then failed convergence and
+cleaned up; the full four-stage AWS round trip still needs a passing rerun.
+
 ### Fixed: the EKS service-linked-role read grant missed first use
 
 The 0.21.1 AWS Kubernetes run still failed `CreateNodegroup` after its control

@@ -194,9 +194,11 @@ use, with an `iam:PassedToService` condition — the template does.
 
 ### Rows without complete live verification
 
-**The AWS Kubernetes round trip has not passed yet.** Its 2026-09-29 workflow
-runs created and deleted the control plane, but failed on node-group IAM
-validation; Scaleway and GCP passed all four stages. AWS runs from the Live
+**The AWS Kubernetes round trip has not passed yet.** Its earlier 2026-09-29
+workflow runs failed on node-group IAM validation; the latest passed the
+role-read preflight and created/deleted the cluster, node group and objects,
+but failed convergence on a false default-VPC replacement, now fixed.
+Scaleway and GCP passed all four stages. AWS runs from the Live
 test workflow with `ci/aws-permissions-policy.json`'s matching statements
 (`ci/README.md`, "The Kubernetes leg"). EKS's first
 cluster and node group in an account create two service-linked roles

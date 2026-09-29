@@ -282,7 +282,8 @@ def divergesIfSetBy (name : String) (m : Mutability) (realises : String → Stri
     the number then, and comparing it would fight it on every plan.
 
     The reported `network` may carry several spellings of one network,
-    newline-separated — an EKS VPC's id and its `Name` tag — and matches if
+    newline-separated — an EKS VPC's id, its one-line `Name` tag and
+    `default` when EC2 reports `isDefault=true` — and matches if
     the declared one is among them. -/
 instance : Divergent .kubernetesCluster where
   divergence t r :=

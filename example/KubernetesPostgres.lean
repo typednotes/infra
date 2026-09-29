@@ -40,7 +40,9 @@ import Infra
 
   **Run live on Scaleway and GCP** (2026-09-29, the Kubernetes leg of
   `test/Live.lean`, four stages each); AWS's leg runs from the Live test
-  workflow. Every backend call is written against the providers' generated
+  workflow and has created/deleted the cluster, node group and objects;
+  the first-stage false default-VPC replacement is fixed, but the complete
+  AWS sequence has not passed yet. Every backend call is written against the providers' generated
   SDKs and discovery documents (dates in `Infra/Providers/Kinds/Kubernetes.lean`);
   see `docs/coverage.md`.
 -/

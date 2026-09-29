@@ -454,6 +454,14 @@ the pool autoscales. An object's StatefulSet `storage` forces a replace
 (`volumeClaimTemplates` are immutable); everything else is server-side
 applied in place.
 
+An EKS network can be declared by VPC id, ordinary one-line `Name` tag, or
+the reserved selector `default`. Observation carries those spellings of the
+same VPC, with `default` only when EC2 reports `isDefault=true`. Omitting that
+alias made the 2026-09-29 AWS Kubernetes run propose `REPLACE` for a freshly
+created cluster until convergence timed out. The reader now preserves the
+alias (`checkEksNetwork`); a genuinely different VPC still forces replacement.
+Multiline tags cannot fit the newline-separated alias list; use the VPC id.
+
 **Decidable, but not embeddable in the structure**: `PostgresSpec.hasCapacityChoice` — "at least
 one of `instanceClass` or `{minCapacity, maxCapacity}` is set" — is a decidable `Bool` function,
 same tier as the row above, but it cannot become a proof *field* on `PostgresSpec` the way

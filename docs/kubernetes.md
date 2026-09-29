@@ -1,9 +1,10 @@
 # Managed Kubernetes, and workloads as declared resources
 
 **Status: implemented in 0.19.0; run live in 0.20.0 on Scaleway and GCP
-(2026-09-29), all four stages each; AWS's workflow runs created and deleted the
-control plane but failed node-group IAM validation, with those grants now
-fixed; the complete round trip has not passed yet.** The first runs found four
+(2026-09-29), all four stages each; AWS's workflow has created and deleted the
+control plane, node group and in-cluster objects. Its latest run failed on a
+false default-VPC replacement, now fixed; the complete round trip has not
+passed yet.** The first runs found four
 things, fixed in 0.20.0:
 Kapsule requires a Private Network; its delete cascade deleted that network;
 Endpoints carry a Service's marker without an owner; the metrics groups answer
@@ -76,7 +77,12 @@ resource scaleway kubernetesCluster "main"
   Kapsule requires ("a Private Network is mandatory for this cluster type",
   the API's answer to the first live create, 2026-09-29) — so `network` is
   required there too, and `infra check` says so before any call. No cloud can move a live cluster to
-  another network, so a change is a `REPLACE`.
+  another network, so a change is a `REPLACE`. EKS observation reports the
+  VPC's id, an ordinary one-line `Name` tag and `default` when EC2 reports
+  `isDefault=true`. That last alias is independent of tags: an untagged
+  default VPC converges, and an ordinary VPC tagged `Name=default` does not
+  count as the default selector. For a multiline `Name`, reference the VPC by
+  id; newlines delimit the observation's alias list (`checkEksNetwork`).
 - `clusterRole` and `nodeRole` are AWS's: EKS requires an IAM role for the
   control plane and one for the nodes, as an ARN or a role name in the
   fleet's own account and partition. GCP and Scaleway have no counterpart and
