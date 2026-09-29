@@ -199,8 +199,8 @@ deliberately, as any refused listing does. What to grant, read-only:
 with the Kubernetes Engine API **enabled** (GCP — a disabled API is not read as
 "nothing there", the Cloud SQL rule); `KubernetesReadOnly` (Scaleway).
 `ci/aws-permissions-policy.json` and `docs/aws-operator-policy.json` carry the
-AWS half; `ci/README.md` the commands for GCP and Scaleway, marked not yet
-applied to this repository's CI identities. In-cluster objects are only listed
+AWS half; `ci/README.md` the commands for GCP and Scaleway. All three are
+applied to this repository's CI identities (2026-09-29). In-cluster objects are only listed
 inside declared clusters, so a fleet with none needs nothing more.
 
 ### Changed
