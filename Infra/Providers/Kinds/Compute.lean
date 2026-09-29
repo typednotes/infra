@@ -62,8 +62,8 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
     IO (Partial String × Partial Nat × Partial Nat × Partial (List (String × String))
         × String) := do
   let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
-  let cfg := (field whole "Configuration").getD whole
-  let image := match field whole "Code" with
+  let cfg := (whole.lookup "Configuration").getD whole
+  let image := match whole.lookup "Code" with
     | some c => (stringField c "ImageUri").getD ""
     | none   => ""
   let role := match stringField cfg "Role" with
@@ -75,8 +75,8 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
   let timeout := match natField cfg "Timeout" with
     | some t => Partial.known t
     | none   => .unknown
-  let env := match field cfg "Environment" with
-    | some e => match field e "Variables" with
+  let env := match cfg.lookup "Environment" with
+    | some e => match e.lookup "Variables" with
       | some vars => Partial.known (envOf vars)
       | none      => .known []
     | none => .unknown
@@ -92,7 +92,7 @@ private def requireRole (name role : String) : IO String := do
 
 /-- A `GetFunction` reply's top-level `Tags` map, as pairs. -/
 private def tagsOf (whole : Value) : List (String × String) :=
-  match field whole "Tags" with
+  match whole.lookup "Tags" with
   | some (.object fields) => fields.filterMap fun (k, v) =>
       match v with
       | .string s => some (k, s)
@@ -144,7 +144,7 @@ def readOwnership (creds : Credentials) (ep : Endpoint) (name : String) :
 def releaseMarker (creds : Credentials) (ep : Endpoint) (name fleet : String) : IO Unit := do
   let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
   if (Marker.releaseTags fleet (tagsOf whole)).isSome then
-    let cfg := (field whole "Configuration").getD whole
+    let cfg := (whole.lookup "Configuration").getD whole
     let some arn := stringField cfg "FunctionArn"
       | throw (IO.userError s!"lambda '{name}': GetFunction reported no FunctionArn")
     let signedPath := s!"/2017-03-31/tags/{arn}"
@@ -251,7 +251,7 @@ def read (creds : Credentials) (name : String) :
       | some t => Partial.known t
       | none   => .unknown
     | none => .unknown
-  let env := match field c "environment_variables" with
+  let env := match c.lookup "environment_variables" with
     | some e => Partial.known (envOf e)
     | none   => .unknown
   return (memory, timeout, env, (stringField c "registry_image").getD "")
@@ -360,7 +360,7 @@ def readFull (creds : Credentials) (name : String) :
     match natField c field with
     | some n => .known n
     | none   => .unknown
-  let env := match field c "environment_variables" with
+  let env := match c.lookup "environment_variables" with
     | some e => Partial.known (envOf e)
     | none   => .unknown
   -- The namespace, resolved from its id back to the name a fleet keys on.
@@ -553,7 +553,7 @@ def read (creds : Credentials) (name : String) :
   let f ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/functions/{id}")
   let runtime := (stringField f "runtime").getD ""
   -- The bucket comes back as the environment variable it was written into.
-  let bucket := match field f "environment_variables" with
+  let bucket := match f.lookup "environment_variables" with
     | some e => Partial.known (stringField e "SOURCE_BUCKET")
     | none   => .unknown
   -- The namespace, resolved from its id. Reported for the same reason

@@ -91,7 +91,7 @@ def createTopic (creds : Credentials) (project name markerValue : String) : IO S
 
 /-- A topic object's labels, as pairs. -/
 private def labelsOf (topic : Value) : List (String × String) :=
-  match field topic "labels" with
+  match topic.lookup "labels" with
   | some (.object fields) => fields.filterMap fun (k, v) =>
       match v with
       | .string s => some (k, s)

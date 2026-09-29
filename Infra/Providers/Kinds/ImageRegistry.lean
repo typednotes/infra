@@ -85,7 +85,7 @@ def create (creds : Credentials) (ep : Endpoint) (name markerValue : String)
               ("imageTagMutability", mutabilityValue immutable),
               ("tags", .array #[.object
                 [("Key", .string markerKey), ("Value", .string markerValue)]])])
-  match field reply "repository" with
+  match reply.lookup "repository" with
   | some r => return (stringField r "repositoryUri").getD ""
   | none   => return ""
 

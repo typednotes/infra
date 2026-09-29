@@ -50,7 +50,7 @@ private def secretPath (project name : String) : String :=
 
 /-- A secret object's labels, as `(key, value)` pairs. -/
 private def labelsOf (s : Value) : List (String × String) :=
-  match field s "labels" with
+  match s.lookup "labels" with
   | some (.object fields) => fields.filterMap fun (k, v) =>
       match v with
       | .string str => some (k, str)

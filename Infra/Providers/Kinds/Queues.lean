@@ -66,7 +66,7 @@ def readVisibilityTimeout (creds : Credentials) (ep : Endpoint) (name : String) 
     (.object [("QueueUrl", .string url),
               ("AttributeNames", .array #[.string "VisibilityTimeout"])])
     protocolVersion
-  match field reply "Attributes" with
+  match reply.lookup "Attributes" with
   | none => return .unknown
   | some attrs =>
     match natField attrs "VisibilityTimeout" with
@@ -99,7 +99,7 @@ private def queueTags (creds : Credentials) (ep : Endpoint) (url : String) :
     IO (List (String × String)) := do
   let reply ← Json.call creds ep (target "ListQueueTags")
     (.object [("QueueUrl", .string url)]) protocolVersion
-  return match field reply "Tags" with
+  return match reply.lookup "Tags" with
     | some (.object fields) => fields.filterMap fun (k, v) =>
         match v with
         | .string s => some (k, s)

@@ -82,7 +82,7 @@ after 50 pages; the list may be incomplete"
 def readImmutable (creds : Credentials) (project location name : String) :
     IO (Partial Bool) := do
   let reply ← Gcp.call creds "GET" host (repoPath project location name)
-  match field reply "dockerConfig" with
+  match reply.lookup "dockerConfig" with
   | none => return .unknown
   | some cfg =>
     match boolField cfg "immutableTags" with
@@ -91,7 +91,7 @@ def readImmutable (creds : Credentials) (project location name : String) :
 
 /-- A repository object's labels, as pairs. -/
 private def labelsOf (r : Value) : List (String × String) :=
-  match field r "labels" with
+  match r.lookup "labels" with
   | some (.object fields) => fields.filterMap fun (k, v) =>
       match v with
       | .string t => some (k, t)

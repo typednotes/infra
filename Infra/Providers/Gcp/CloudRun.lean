@@ -114,7 +114,7 @@ pages; the list may be incomplete"
       let here := (arrayField reply "services").filterMap fun s =>
         (stringField s "name").map fun n =>
           -- `terminalCondition.type` is the closest thing to a one-word status.
-          let status := (field s "terminalCondition").bind (stringField · "state")
+          let status := (s.lookup "terminalCondition").bind (stringField · "state")
           (Gcp.shortName n, status.getD "")
       let acc := acc ++ here
       match stringField reply "nextPageToken" with
@@ -125,7 +125,7 @@ pages; the list may be incomplete"
 /-- The first container of the service's template, which is the one this kind
     manages. A service with none is malformed rather than empty. -/
 private def firstContainer (svc : Value) : Option Value :=
-  (field svc "template").bind fun t => (arrayField t "containers").head?
+  (svc.lookup "template").bind fun t => (arrayField t "containers").head?
 
 /-- What `read` needs: image, memory, timeout, environment. -/
 def read (creds : Credentials) (project location name : String) :
@@ -135,14 +135,14 @@ def read (creds : Credentials) (project location name : String) :
   let container := firstContainer svc
   let image := (container.bind (stringField · "image")).getD ""
   let memory : Partial Nat :=
-    match container.bind (fun c => (field c "resources").bind (fun r =>
-        (field r "limits").bind (stringField · "memory"))) with
+    match container.bind (fun c => (c.lookup "resources").bind (fun r =>
+        (r.lookup "limits").bind (stringField · "memory"))) with
     | some m => match parseMemoryMi m with
                 | some n => .known n
                 | none   => .unknown
     | none   => .unknown
   let timeout : Partial Nat :=
-    match (field svc "template").bind (stringField · "timeout") with
+    match (svc.lookup "template").bind (stringField · "timeout") with
     | some t => match parseSeconds t with
                 | some n => .known n
                 | none   => .unknown
@@ -160,7 +160,7 @@ def read (creds : Credentials) (project location name : String) :
         -- a rule it cannot represent.
         | _,      _      => none)
   let serviceAccount : Partial String :=
-    match (field svc "template").bind (stringField · "serviceAccount") with
+    match (svc.lookup "template").bind (stringField · "serviceAccount") with
     | some sa => if sa.isEmpty then .unknown else .known sa
     | none    => .unknown
   return (image, memory, timeout, env, serviceAccount)
@@ -220,7 +220,7 @@ def update (creds : Credentials) (project location name image markerValue : Stri
 
 /-- A service object's top-level labels, as pairs. -/
 private def labelsOf (svc : Value) : List (String × String) :=
-  match field svc "labels" with
+  match svc.lookup "labels" with
   | some (.object fields) => fields.filterMap fun (k, v) =>
       match v with
       | .string s => some (k, s)

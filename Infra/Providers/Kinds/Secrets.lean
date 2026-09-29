@@ -134,7 +134,7 @@ def fetchValue (provider : ProviderId) (creds : Credentials) (secretName : Strin
     let project ← Gcp.requireProject creds
     let reply ← Gcp.call creds "GET" Gcp.SecretManager.host
       s!"/v1/projects/{project}/secrets/{secretName}/versions/latest:access"
-    match (field reply "payload").bind (stringField · "data") with
+    match (reply.lookup "payload").bind (stringField · "data") with
     | some encoded =>
       -- Base64 in the wire format: the API's encoding of a byte string, not
       -- an attempt to obscure anything.
@@ -202,7 +202,7 @@ def describeVersion (creds : Credentials) (ep : Endpoint) (name : String) : IO S
     (.object [("SecretId", .string name)])
   -- `VersionIdsToStages` is keyed by version id; any one identifies the
   -- current contents well enough to show a human.
-  match field reply "VersionIdsToStages" with
+  match reply.lookup "VersionIdsToStages" with
   | some (.object ((v, _) :: _)) => return v
   | _                            => return ""
 

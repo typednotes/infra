@@ -74,7 +74,7 @@ the list may be incomplete"
     what keeps an unspoken field from being diffed. -/
 def readVersioning (creds : Credentials) (bucket : String) : IO (Partial Bool) := do
   let reply ← Gcp.call creds "GET" host (bucketPath bucket)
-  match field reply "versioning" with
+  match reply.lookup "versioning" with
   | none => return .unknown
   | some v =>
     match boolField v "enabled" with
@@ -89,7 +89,7 @@ def readVersioning (creds : Credentials) (bucket : String) : IO (Partial Bool) :
 def readLabels (creds : Credentials) (bucket : String) :
     IO (Partial (List (String × String))) := do
   let reply ← Gcp.call creds "GET" host (bucketPath bucket)
-  match field reply "labels" with
+  match reply.lookup "labels" with
   | some (.object fields) =>
     return .known (fields.filterMap fun (k, v) =>
       match v with | .string s => some (k, s) | _ => none)

@@ -216,7 +216,7 @@ private def listRaw (creds : Credentials) : IO (List (String × String × String
   return (arrayField reply "instances").filterMap fun i =>
     match stringField i "name", stringField i "id" with
     | some n, some id =>
-      let host := match field i "endpoint" with
+      let host := match i.lookup "endpoint" with
         | some e => (stringField e "ip").getD ""
         | none   => ""
       some (n, id, host, stringArrayField i "tags")
@@ -249,7 +249,7 @@ def read (creds : Credentials) (name : String) :
       | some v => Partial.known v
       | none   => .unknown
     | none => .unknown
-  let storage := match field i "volume" with
+  let storage := match i.lookup "volume" with
     | some v => match natField v "size" with
       -- Reported in bytes; targets are written in gigabytes.
       | some bytes => Partial.known (bytes / 1000000000)
@@ -272,7 +272,7 @@ def create (creds : Credentials)
       , ("volume_type", .string "bssd")
       , ("project_id", .string project)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
-  return match field reply "endpoint" with
+  return match reply.lookup "endpoint" with
     | some e => (stringField e "ip").getD ""
     | none   => ""
 

@@ -171,7 +171,7 @@ private def getPolicy (creds : Credentials) (project : String) : IO Value :=
     Load-bearing: a conditional binding is a *different grant* from an
     unconditional one naming the same role, so the two must never be merged.
     Everything below either skips these or refuses because of them. -/
-private def isConditional (b : Value) : Bool := (field b "condition").isSome
+private def isConditional (b : Value) : Bool := (b.lookup "condition").isSome
 
 /-- The roles bound to this service account in the project's IAM policy.
 

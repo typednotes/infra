@@ -96,11 +96,11 @@ def awaitLro (creds : Credentials) (host version : String) (reply : Value)
   let rec go (fuel : Nat) (current : Value) : IO Value := do
     -- An operation carrying an error is a failure of the *work*, not of the
     -- call that reported it, so it has to be raised here or it is lost.
-    if let some err := field current "error" then
+    if let some err := current.lookup "error" then
       let msg := (stringField err "message").getD (Data.Json.Encode.encode err)
       throw (IO.userError s!"gcp {label}: the operation failed: {msg}")
     if (boolField current "done").getD false then
-      return (field current "response").getD current
+      return (current.lookup "response").getD current
     match fuel with
     | 0 =>
       let name := (stringField current "name").getD "(unnamed)"
@@ -129,7 +129,7 @@ def sqlAdminHost : String := "sqladmin.googleapis.com"
 def awaitSqlOperation (creds : Credentials) (project : String) (reply : Value)
     (label : String) (attempts : Nat := 600) : IO Unit := do
   let rec go (fuel : Nat) (current : Value) : IO Unit := do
-    if let some err := field current "error" then
+    if let some err := current.lookup "error" then
       let errs := arrayField err "errors"
       let msg := match errs.head? with
         | some e => (stringField e "message").getD "(no message)"

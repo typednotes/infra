@@ -83,13 +83,13 @@ def list (creds : Credentials) (project : String) : IO (List (String × String))
 def read (creds : Credentials) (project name : String) :
     IO (String × String × Partial String × Partial Nat) := do
   let i ← Gcp.call creds "GET" host (instancePath project name)
-  let tier := ((field i "settings").bind (stringField · "tier")).getD ""
+  let tier := ((i.lookup "settings").bind (stringField · "tier")).getD ""
   let version : Partial String :=
     match stringField i "databaseVersion" with
     | some v => .known v
     | none   => .unknown
   let storage : Partial Nat :=
-    match (field i "settings").bind (stringField · "dataDiskSizeGb") with
+    match (i.lookup "settings").bind (stringField · "dataDiskSizeGb") with
     -- Cloud SQL reports it as a *string* holding an integer, which is why this
     -- goes through `toNat?` rather than `natField`.
     | some g => match g.toNat? with
@@ -132,7 +132,7 @@ def readOwnership (creds : Credentials) (project name : String) :
   match attempt with
   | .error _ => return .unreadable
   | .ok i =>
-    let tags := match (field i "settings").bind (field · "userLabels") with
+    let tags := match (i.lookup "settings").bind (Data.Json.Value.lookup "userLabels") with
       | some (.object fields) => fields.filterMap fun (k, v) =>
           match v with
           | .string s => some (k, s)
