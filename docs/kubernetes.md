@@ -122,6 +122,16 @@ backstop, and eight for setup/build. Both jobs must outlast their live step
 sixty-minute step allowance. AWS's two-hour credentials cover the larger job.
 Changing the workflow affects subsequent runs, not a job already running.
 
+The AWS workflow also checks role reads before provisioning (unreleased):
+`ci/check-eks-role-reads.sh` reads the two declared roles, both service-linked
+roles and the declared roles' attached policies. A service-linked role may
+not exist yet, but that lookup must be authorised: IAM returns `NoSuchEntity`,
+not `AccessDenied`. Its grant must cover the pathless bootstrap ARN as well
+as its full `aws-service-role/...` ARN. A missing declared role or any other
+error fails the preflight. This catches the 0.21.1 cold-start failure before
+spending minutes creating a control plane; it does not prove every EKS
+permission (`ci/README.md`).
+
 Verification: `checkKubernetesWaiters` replays a stable status, a changing one,
 slow HTTP calls, all four EKS targets, failed-create cleanup and a failure with
 health issues, without sleeping or touching a cloud. `ci/check-workflows.sh`

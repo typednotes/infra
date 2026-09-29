@@ -166,6 +166,13 @@ jobs:
           # fails, before anything is created.
           role-duration-seconds: ${{ inputs.leg == 'kubernetes' && 7200 || 3600 }}
 
+      # EKS reads these roles as the caller. Check before creating the
+      # control plane; an absent service-linked role is valid, a denied read
+      # is not (the 0.21.1 cold-start run found that distinction).
+      - name: Check the AWS Kubernetes role reads
+        if: inputs.provider == 'aws' && inputs.leg == 'kubernetes'
+        run: bash ci/check-eks-role-reads.sh
+
       # GCP via Workload Identity Federation: no key material anywhere. GitHub
       # mints an OIDC token, GCP's STS trades it for a short-lived one for the
       # `infra-ci` service account. The provider's attribute-condition limits

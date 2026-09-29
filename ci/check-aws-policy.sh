@@ -13,7 +13,9 @@
 # belongs in `ci/README.md`; this check is what stops it drifting back into the
 # document.
 #
-# It is a grammar check, not an authorisation review. For the latter:
+# Policy validation is grammar-only, not an authorisation review. The script
+# also runs the EKS role-read preflight's offline failure cases. For a policy
+# authorisation review:
 #
 #     aws accessanalyzer validate-policy \
 #       --policy-document file://ci/aws-permissions-policy.json \
@@ -127,4 +129,7 @@ for path in "${PATHS[@]}"; do
   echo "$path: conforms to IAM's policy grammar ($count statements)"
 done
 
+if [ "$fail" -eq 0 ]; then
+  bash ci/test-eks-role-reads.sh
+fi
 exit "$fail"

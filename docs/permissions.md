@@ -202,10 +202,15 @@ test workflow with `ci/aws-permissions-policy.json`'s matching statements
 cluster and node group in an account create two service-linked roles
 (`AWSServiceRoleForAmazonEKS`, `…ForAmazonEKSNodegroup`), so the template
 carries `iam:CreateServiceLinkedRole` for exactly those two services **and
-`iam:GetRole` on their two exact ARNs**. Creating a role does not imply being
-allowed to check whether it already exists: the second run failed after eight
+`iam:GetRole` on their full and pathless bootstrap ARNs**. Creating a role does
+not imply being allowed to check whether it already exists: the second run failed after eight
 minutes creating its control plane because `CreateNodegroup` could not read
-`AWSServiceRoleForAmazonEKSNodegroup`. The `Kubernetes…NotExercisedByCi` Sids
+`AWSServiceRoleForAmazonEKSNodegroup`. The 0.21.1 rerun failed again because
+that role did not yet exist: authorisation of its pathless first-use lookup
+is needed as well as the full `aws-service-role/...` ARN after it exists.
+Both forms for both service-linked roles are now enumerated, without a
+wildcard over unrelated roles (`ci/README.md`, 2026-09-29). The
+`Kubernetes…NotExercisedByCi` Sids
 retain the caveat that the complete cluster/node-group/object round trip has
 not passed.
 

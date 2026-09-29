@@ -10,6 +10,24 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Fixed: the EKS service-linked-role read grant missed first use
+
+The 0.21.1 AWS Kubernetes run still failed `CreateNodegroup` after its control
+plane became `ACTIVE`: `AWSServiceRoleForAmazonEKSNodegroup` did not exist,
+and its first-use `GetRole` lookup was denied. The earlier grant and simulation
+covered only the full `aws-service-role/...` ARNs of existing roles, not their
+pathless bootstrap forms. Both forms for the two EKS service-linked roles are
+now allowed in the CI policy and operator template; no unrelated role is added.
+Applied to `infra-ci` on 2026-09-29 and simulated against all four forms plus
+an unrelated role. The failed run cleaned up; the complete leg is still
+awaiting a passing rerun.
+
+The workflow now checks its four role reads and the two declared roles'
+attached-policy reads before provisioning. A missing service-linked role is
+accepted only when IAM authorises the lookup and returns `NoSuchEntity`;
+access denied, a missing declared role, and any other error fail immediately.
+`ci/check-aws-policy.sh` replays these cases offline with a mocked AWS CLI.
+
 Pending in `linen` — none changed from here, because a linen session was
 active on 2026-09-29:
 

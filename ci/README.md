@@ -629,13 +629,32 @@ warnings):
 The subsequent run [36622819059](https://github.com/typednotes/infra/actions/runs/36622819059)
 exposed one more read grant: EKS checks whether its service-linked role exists
 **as the caller**, before creating a node group. `KubernetesReadServiceLinkedRoles`
-grants `iam:GetRole` on the two exact service-linked-role ARNs; it is separate
+grants `iam:GetRole` on the two service-linked-role names, in both their
+pathless bootstrap and full `aws-service-role/...` ARN forms; it is separate
 from the two declared roles and from `CreateServiceLinkedRole`. **Applied
 2026-09-29**: the other fourteen statements were unchanged, Access Analyzer
 reported no errors or security warnings, and IAM simulation allowed both
 reads while denying an unrelated role. The control plane took about eight
 minutes to create, then node-group creation failed on this missing read;
-teardown removed the cluster. The complete leg still needs a passing rerun.
+teardown removed the cluster.
+
+That first simulation checked only the full ARNs and missed first use. Run
+[36627226089](https://github.com/typednotes/infra/actions/runs/36627226089) on
+0.21.1 repeated the refusal: CloudTrail recorded `iam:GetRole` denied for the
+CI session, and the node-group service-linked role still did not exist. A
+pathless `role/AWSServiceRoleForAmazonEKSNodegroup` lookup was still denied.
+The two pathless forms were added and **applied 2026-09-29**, then all four
+ARNs were simulated as allowed while an unrelated role stayed denied.
+
+`bash ci/check-eks-role-reads.sh` is the read-only preflight the workflow now
+runs after AWS authentication, before provisioning. It reads the two declared
+roles and both service-linked-role names, then the declared roles' attached
+policies. `NoSuchEntity` is accepted only for a service-linked role: that is
+an authorised first-use lookup, and EKS creates the role itself. `AccessDenied`,
+a missing declared role, and transport errors fail before any cluster is
+created. This is a role-read check, not a check of every EKS permission.
+`ci/check-aws-policy.sh` runs its mocked regression cases offline.
+The complete leg still needs a passing rerun.
 
 **Scaleway and GCP run by hand**, because their CI identities hold the scan's
 read grants for clusters and nothing that creates one; the workflow refuses

@@ -110,6 +110,8 @@
       "Effect": "Allow",
       "Action": "iam:GetRole",
       "Resource": [
+        "arn:aws:iam::616568506952:role/AWSServiceRoleForAmazonEKS",
+        "arn:aws:iam::616568506952:role/AWSServiceRoleForAmazonEKSNodegroup",
         "arn:aws:iam::616568506952:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
         "arn:aws:iam::616568506952:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"
       ]

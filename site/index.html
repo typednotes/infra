@@ -641,7 +641,8 @@ would CREATE scaleway/secrets/db-url
       clouds, and how far — that is the coverage report, kept in the repo next
       to the tests it describes. Managed-cluster provisioning and deletion
       report elapsed time and the cloud's status while they wait; the opt-in
-      Kubernetes live test budgets time for teardown as well as creation.
+      Kubernetes live test budgets time for teardown as well as creation,
+      and checks AWS role reads before provisioning.
     </p>
     <div class="ctas">
       <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Read the coverage report</a>
