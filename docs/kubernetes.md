@@ -128,7 +128,7 @@ backstop, and eight for setup/build. Both jobs must outlast their live step
 sixty-minute step allowance. AWS's two-hour credentials cover the larger job.
 Changing the workflow affects subsequent runs, not a job already running.
 
-The AWS workflow also checks role reads before provisioning (unreleased):
+The AWS workflow also checks role reads before provisioning (0.21.2):
 `ci/check-eks-role-reads.sh` reads the two declared roles, both service-linked
 roles and the declared roles' attached policies. A service-linked role may
 not exist yet, but that lookup must be authorised: IAM returns `NoSuchEntity`,

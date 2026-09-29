@@ -10,6 +10,30 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+Pending in `linen` — none changed from here, because a linen session was
+active on 2026-09-29:
+
+- **A move: the YAML emitter.** `Infra/Interop/Yaml.lean` writes a
+  `Data.Json.Value` as block YAML that YAML 1.1 and 1.2 readers both read
+  back unchanged; linen's `Data.Yaml` only parses. When it lands in linen,
+  infra's copy is deleted in the same change.
+- **`Crypto.SigV4.presign` should take the payload hash.** It always signs
+  `UNSIGNED-PAYLOAD`, which is botocore's S3 rule; a presigned STS URL (an EKS
+  token) needs the empty body's SHA-256. `Eks.stsTokenUrl` composes it from
+  linen's public pieces meanwhile, and goes when `presign` can say so.
+- **`Data.Json.Encode.renderNumber` should round-trip.** It writes a non-integer through `Float.toString`, six digits
+  after the point, so `1e-7` is sent as `0.000000`. infra refuses such a body
+  (`Infra.Core.JsonExact`) rather than send it; once linen renders the
+  shortest representation that reads back as the same `Float`,
+  `lossyNumbers` of every value is `[]` and the guard costs nothing.
+
+## [0.21.2] — 2026-09-29
+
+### Changed: `linen` v1.9.0
+
+The dependency and resolved manifest now use `v1.9.0`, including the JSON encoder,
+cloud error-detail fixes and HTTP/TLS improvements documented in Linen's release.
+
 ### Fixed: EKS on the default VPC never converged
 
 The AWS Kubernetes leg reached an active control plane and node group, then
@@ -43,22 +67,7 @@ accepted only when IAM authorises the lookup and returns `NoSuchEntity`;
 access denied, a missing declared role, and any other error fail immediately.
 `ci/check-aws-policy.sh` replays these cases offline with a mocked AWS CLI.
 
-Pending in `linen` — none changed from here, because a linen session was
-active on 2026-09-29:
-
-- **A move: the YAML emitter.** `Infra/Interop/Yaml.lean` writes a
-  `Data.Json.Value` as block YAML that YAML 1.1 and 1.2 readers both read
-  back unchanged; linen's `Data.Yaml` only parses. When it lands in linen,
-  infra's copy is deleted in the same change.
-- **`Crypto.SigV4.presign` should take the payload hash.** It always signs
-  `UNSIGNED-PAYLOAD`, which is botocore's S3 rule; a presigned STS URL (an EKS
-  token) needs the empty body's SHA-256. `Eks.stsTokenUrl` composes it from
-  linen's public pieces meanwhile, and goes when `presign` can say so.
-- **`Data.Json.Encode.renderNumber` should round-trip.** It writes a non-integer through `Float.toString`, six digits
-  after the point, so `1e-7` is sent as `0.000000`. infra refuses such a body
-  (`Infra.Core.JsonExact`) rather than send it; once linen renders the
-  shortest representation that reads back as the same `Float`,
-  `lossyNumbers` of every value is `[]` and the guard costs nothing.
+Scaffolded projects pin `v0.21.2` (`infraRev`).
 
 ## [0.21.1] — 2026-09-29
 

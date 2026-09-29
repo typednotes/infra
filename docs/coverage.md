@@ -1,4 +1,4 @@
-# Coverage in 0.21.1
+# Coverage in 0.21.2
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Everything below is the state on 2026-09-29.
@@ -148,9 +148,9 @@ clients for those kinds, not one.
 | `render` — the declared in-cluster objects as the YAML `apply` sends, like `helm template`; offline, secrets as placeholders | offline (`example/KubernetesPostgres.lean`'s guards; the YAML emitter round-tripped through linen's parser, and read by PyYAML on 57 ambiguous strings) |
 | `--refresh-secrets` — rewrite `fromEnv`/`composed` secrets whose stored value is stale, and every copy | offline only (`checkRefreshSecrets`); never run against an account. Not covered: `apiKeyFor`, a database's `masterPasswordSecret` — see below |
 | Managed Kubernetes clusters and in-cluster objects (`kubernetesCluster`, `kubernetesObject`) | offline (`checkKubernetes`, `example/KubernetesPostgres.lean`); live on **Scaleway and GCP**, all four stages (2026-09-29, by hand — opt-in); AWS cluster/node-group/object create/delete exercised in CI, complete leg not yet passed (false default-VPC replacement fixed, 2026-09-29) |
-| EKS network aliases (unreleased) | id, ordinary one-line `Name` tag and `default` only for `isDefault=true`; multiline tags must be referenced by VPC id; EC2 XML plus cluster-divergence regression in `checkEksNetwork` |
+| EKS network aliases (0.21.2) | id, ordinary one-line `Name` tag and `default` only for `isDefault=true`; multiline tags must be referenced by VPC id; EC2 XML plus cluster-divergence regression in `checkEksNetwork` |
 | Kubernetes provisioning waits (0.21.1) | all three clouds: elapsed-time deadlines and flushed status heartbeats; EKS's four cluster/node-group waiter targets use botocore's failure acceptors and report health issues; offline replay in `checkKubernetesWaiters` |
-| AWS Kubernetes role-read preflight (unreleased) | checks declared and service-linked role reads before provisioning; accepts authorised first-use absence only for service-linked roles; offline existing/cold-start/refusal/missing-prerequisite/transport regressions in `ci/test-eks-role-reads.sh`; passed in AWS CI, 2026-09-29 |
+| AWS Kubernetes role-read preflight (0.21.2) | checks declared and service-linked role reads before provisioning; accepts authorised first-use absence only for service-linked roles; offline existing/cold-start/refusal/missing-prerequisite/transport regressions in `ci/test-eks-role-reads.sh`; passed in AWS CI, 2026-09-29 |
 | `destroy --keep-data` — a teardown that leaves databases, their histories, buckets, clusters and a database's password secret standing | offline only (`checkKeepData`); never run against an account |
 | `dump` snapshots replayed as offline test fixtures (`Snapshot.load`) | complete |
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
