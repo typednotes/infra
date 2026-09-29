@@ -34,7 +34,7 @@ surprise.
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.21.3 covers
+## What 0.21.4 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -81,6 +81,9 @@ checks role reads before provisioning, and that release moved to `linen` v1.9.0.
 
 **0.21.3 pins Linen v1.9.1**, which makes its HTTP/2 stream-state regression
 tests deterministic on faster CI runners.
+
+**0.21.4 pins Linen v1.9.2**, which accounts for libuv's millisecond
+resolution in its timer regression tests.
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -160,7 +163,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.21.3"
+rev = "v0.21.4"
 ```
 
 Then:

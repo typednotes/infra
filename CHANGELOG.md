@@ -27,6 +27,14 @@ active on 2026-09-29:
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
 
+## [0.21.4] — 2026-09-29
+
+### Changed: `linen` v1.9.2
+
+The dependency and resolved manifest now use `v1.9.2`, whose timer regressions
+account for libuv's millisecond resolution when measuring elapsed durations.
+Scaffolded projects pin `v0.21.4` (`infraRev`).
+
 ## [0.21.3] — 2026-09-29
 
 ### Changed: `linen` v1.9.1
