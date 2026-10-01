@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline behavioral checks for the shared release gate. Optional arguments are
 # other copies to exercise; no GitHub request, push or production checkout edit.
-# Identical in all eight publishing repositories; keep copies in sync.
+# Shared bounded-wait tests; keep publishing-repository copies identical.
 set -euo pipefail
 for tool in bash git gh jq mktemp; do
   command -v "$tool" >/dev/null 2>&1 \
@@ -21,13 +21,27 @@ set -euo pipefail
 [[ "$4" == "$EXPECTED_ENDPOINT" ]]
 printf '%s\n' "$4" >> "$MOCK_CALLS"
 [[ "${API_FAIL:-0}" == 0 ]] || exit 1
-printf '%s\n' "$API_RESPONSE"
+[[ "${API_NEXT_FAIL:-0}" != 1 || $(wc -l < "$MOCK_CALLS") -le 1 ]] || exit 1
+if [[ -n "${API_NEXT_RESPONSE:-}" && $(wc -l < "$MOCK_CALLS") -gt 1 ]]; then
+  printf '%s\n' "$API_NEXT_RESPONSE"
+else
+  printf '%s\n' "$API_RESPONSE"
+fi
 MOCK
+cat > "$scratch/bin/sleep" <<'MOCK'
+#!/usr/bin/env bash
+# Offline transition tests need no actual delay.
+if [[ "${CI_TEST_REAL_SLEEP:-0}" == 1 ]]; then exec /bin/sleep "$@"; fi
+exit 0
+MOCK
+chmod +x "$scratch/bin/sleep"
 chmod +x "$scratch/bin/gh"
 export PATH="$scratch/bin:$PATH" GH_TOKEN=offline-test GITHUB_REPOSITORY=typednotes/fixture
 export GIT_AUTHOR_NAME='CI fixture' GIT_AUTHOR_EMAIL=ci@example.invalid
 export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 export MOCK_CALLS="$scratch/calls"
+export CI_WAIT_SECONDS=0 CI_POLL_SECONDS=1
+unset API_NEXT_RESPONSE API_NEXT_FAIL CI_TEST_REAL_SLEEP
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 cd "$scratch/repo"
 git init -q -b main
@@ -69,6 +83,31 @@ for helper in "$@"; do
   expect pass 'annotated tag; actual checkout differs from dispatch GITHUB_SHA'
   expect pass 'Lean workflow identity' lean_action_ci.yml
   expect pass 'lightweight prerelease tag' ci.yml v1.2.3-rc.1
+  for change in '.workflow_runs = []' '.workflow_runs[0].status = "queued" | .workflow_runs[0].conclusion = null' '.workflow_runs[0].status = "in_progress" | .workflow_runs[0].conclusion = null' '.workflow_runs[0].status = "waiting" | .workflow_runs[0].conclusion = null' '.workflow_runs[0].status = "pending" | .workflow_runs[0].conclusion = null' '.workflow_runs[0].status = "requested" | .workflow_runs[0].conclusion = null'; do
+    export API_RESPONSE API_NEXT_RESPONSE="$good" CI_WAIT_SECONDS=5
+    API_RESPONSE=$(jq -c "$change" <<< "$good")
+    expect pass "wait for $change then exact-commit success"
+    [[ $(wc -l < "$MOCK_CALLS") == 2 ]]
+  done
+  unset API_NEXT_RESPONSE
+  pending=$(jq -c '.workflow_runs[0].status = "in_progress" | .workflow_runs[0].conclusion = null' <<< "$good")
+  for change in '.workflow_runs[0].conclusion = "failure"' '.workflow_runs[0].conclusion = "cancelled"' '.workflow_runs[0].head_sha = "another-commit"' '.workflow_runs[0].event = "workflow_dispatch"' '.workflow_runs[0].head_branch = "feature"' '.workflow_runs[0].status = "unknown"' '.workflow_runs = [{},{}]'; do
+    export API_RESPONSE="$pending" API_NEXT_RESPONSE CI_WAIT_SECONDS=5
+    API_NEXT_RESPONSE=$(jq -c "$change" <<< "$good")
+    expect fail "pending then $change"
+    [[ $(wc -l < "$MOCK_CALLS") == 2 ]]
+  done
+  export API_RESPONSE="$pending" API_NEXT_RESPONSE='not json'
+  expect fail 'pending then malformed API response'
+  unset API_NEXT_RESPONSE
+  export API_NEXT_FAIL=1
+  expect fail 'API access fails while waiting'
+  unset API_NEXT_FAIL
+  export CI_WAIT_SECONDS=1 CI_TEST_REAL_SLEEP=1
+  expect fail 'bounded timeout while valid exact-commit CI remains pending'
+  [[ $(wc -l < "$MOCK_CALLS") -ge 2 ]]
+  unset CI_TEST_REAL_SLEEP
+  export CI_WAIT_SECONDS=0
   for change in \
     '.workflow_runs[0].status = "queued"' \
     '.workflow_runs[0].status = "in_progress"' \
@@ -98,6 +137,15 @@ for helper in "$@"; do
   export API_RESPONSE="$good" API_FAIL=1
   expect fail 'API access refused/network failure'
   export API_FAIL=0
+  export CI_WAIT_SECONDS=invalid
+  expect fail 'invalid wait timeout'
+  export CI_WAIT_SECONDS=7201
+  expect fail 'wait timeout exceeds the bound'
+  export CI_WAIT_SECONDS=0 CI_POLL_SECONDS=61
+  expect fail 'poll interval exceeds the bound'
+  export CI_WAIT_SECONDS=0 CI_POLL_SECONDS=0
+  expect fail 'invalid poll interval'
+  export CI_POLL_SECONDS=1
   expect fail 'non-version manual input' ci.yml main
   expect fail 'missing version tag' ci.yml v9.9.9
   expect fail 'workflow path injection' '../ci.yml'

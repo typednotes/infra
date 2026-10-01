@@ -261,8 +261,8 @@ lake test              # the test driver, offline
 [`lean_action_ci.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/lean_action_ci.yml)
 runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
 Its Linux/macOS matrix includes offline checks, examples and scaffolded
-consumer builds. Push `main` and wait for CI on the exact release commit
-before pushing its version tag.
+consumer builds. The user may push the release commit and its new version tag
+together: `git push origin main vX.Y.Z`.
 
 [`release.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/release.yml)
 is triggered by a version-tag push or a manual retry naming an existing
@@ -271,7 +271,8 @@ job has only `contents: read` and `actions: read` permissions.
 [`ci/require-main-ci.sh`](https://github.com/typednotes/infra/blob/main/ci/require-main-ci.sh)
 requires the actual checkout to match the tag's commit, that commit to be
 reachable from `origin/main`, and its latest **push-to-main** CI run to be
-completed/success. Missing, pending or failed latest runs block publication;
+completed/success. Missing/pending CI is polled for up to two hours; failed or
+cancelled runs, invalid evidence, API errors and wait timeouts block publication.
 PR/manual CI and another commit's result do not qualify.
 
 The publisher checks out the verified SHA, checks release-version consistency
