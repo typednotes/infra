@@ -88,6 +88,17 @@ particular was silently routed to the S3 client until that was noticed.
 
 ## Every call names itself in a failure
 
+### Managed PostgreSQL endpoint and administrator observation
+
+Scaleway SDK `api/rdb/v1` was checked on 2026-10-01: public endpoints carry a
+host/IP and port in `endpoints`; `endpoint` is deprecated. The adapter validates
+that selection and preserves the port. It waits for ready state on creation.
+The initial username is not in the instance response, so observation resolves
+the sole administrator through its instance-scoped users listing. Multiple or
+missing administrators refuse comparison rather than propose a destructive
+replacement based on a guessed username. The first live compute-DB apply still
+needs to verify the provider's SQL role/schema privileges.
+
 Three clouds, three levels of helpfulness in an error, and the gap had to be
 closed in this library rather than waited out.
 

@@ -38,7 +38,14 @@ surprise.
 See [`docs/architecture.md`](https://github.com/typednotes/infra/blob/main/docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.22.0 covers
+## What 0.22.1 covers
+
+**Fixed in 0.22.1: classic PostgreSQL declarations and connection endpoints.**
+The fleet DSL selects the classic constructor when `instanceClass` is present.
+Scaleway Managed PostgreSQL endpoints preserve the reported TCP port, validate
+the public endpoint, and wait for readiness before dependent connection strings
+are composed. Administrator discovery refuses ambiguity instead of fabricating
+an empty username that would trigger a replacement.
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -174,7 +181,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.22.0"
+rev = "v0.22.1"
 ```
 
 Then:

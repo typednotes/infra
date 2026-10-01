@@ -213,6 +213,70 @@ namespace Rdb
 private def prefix' (region : String) : String :=
   Scaleway.regionalPrefix "rdb" "v1" region
 
+/-- A provider-reported public endpoint must carry a real bounded TCP port.
+    Constructors are private; URL composition consumes only validated endpoints.
+    Scaleway SDK `api/rdb/v1`, checked 2026-10-01: `endpoints` supersedes the
+    deprecated singular `endpoint`, and a public endpoint has `load_balancer`. -/
+private structure PublicEndpoint where
+  host : String
+  port : Nat
+  portBound : 0 < port ∧ port < 65536
+  safeHost : (!host.isEmpty && host.toList.all (fun c => decide (c.toNat < 128) && (c.isAlphanum || c == '.' || c == '-'))) = true
+
+private def PublicEndpoint.parse (value : Value) : Option PublicEndpoint := do
+  let host ← match value.lookupText "hostname", value.lookupText "ip" with
+    | some host, none | none, some host => some host
+    | _, _ => none
+  let port ← value.lookupNat "port"
+  if h : (!host.isEmpty && host.toList.all (fun c => decide (c.toNat < 128) && (c.isAlphanum || c == '.' || c == '-'))) = true then
+    if p : 0 < port ∧ port < 65536 then some ⟨host, port, p, h⟩ else none
+  else none
+
+private def PublicEndpoint.address (endpoint : PublicEndpoint) : String :=
+  s!"{endpoint.host}:{endpoint.port}"
+
+private def absentEndpointKind (value : Value) (field : String) : Bool :=
+  match value.lookup field with
+  | none | some .null => true
+  | _ => false
+
+private def publicEndpointKind (value : Value) : Bool :=
+  match value.lookup "load_balancer" with
+  | some (.object _) => true
+  | _ => false
+
+/-- No private-network endpoint, implicit port, or ambiguous public selector.
+    The legacy field is accepted only when the modern field is absent. -/
+def endpointAddress? (reply : Value) : Option String := do
+  let value ← match reply.lookup "endpoints" with
+    | some (.array endpoints) =>
+      match endpoints.toList.filter (fun e => publicEndpointKind e &&
+          absentEndpointKind e "private_network" && absentEndpointKind e "direct_access") with
+      | [endpoint] => some endpoint
+      | _ => none
+    | some _ => none
+    | none => do
+      let endpoint ← reply.lookup "endpoint"
+      if !absentEndpointKind endpoint "private_network" || !absentEndpointKind endpoint "direct_access" then none
+      else some endpoint
+  return (← PublicEndpoint.parse value).address
+
+private def endpointFixture (port : Nat) : Value := .object
+  [("ip", .string "192.0.2.7"), ("port", .number (Float.ofNat port)), ("load_balancer", .object [])]
+
+#guard endpointAddress? (.object [("endpoints", .array #[endpointFixture 25432])]) = some "192.0.2.7:25432"
+#guard endpointAddress? (.object [("endpoint", endpointFixture 5432)]) = some "192.0.2.7:5432"
+#guard endpointAddress? (.object [("endpoints", .array #[endpointFixture 0])]) = none
+#guard endpointAddress? (.object [("endpoints", .array #[endpointFixture 65536])]) = none
+#guard endpointAddress? (.object [("endpoints", .array #[endpointFixture 5432, endpointFixture 25432])]) = none
+#guard endpointAddress? (.object [("endpoints", .array #[]), ("endpoint", endpointFixture 5432)]) = none
+#guard endpointAddress? (.object [("endpoint", .object [("ip", .string "x/other"), ("port", .number 5432)])]) = none
+#guard endpointAddress? (.object [("endpoint", .object [("ip", .string "192.0.2.7"), ("port", .number 5432),
+  ("private_network", .object [])])]) = none
+#guard endpointAddress? (.object [("endpoints", .array #[.object [("hostname", .string "db.example.invalid"),
+  ("port", .number 25432), ("load_balancer", .object []), ("private_network", .null),
+  ("direct_access", .null)]])]) = some "db.example.invalid:25432"
+
 private def listRaw (creds : Credentials) : IO (List (String × String × String × List String)) := do
   let instances ← Scaleway.listAll creds "scaleway rdb instances"
       (prefix' creds.region ++ "/instances") "instances"
@@ -220,9 +284,7 @@ private def listRaw (creds : Credentials) : IO (List (String × String × String
   return instances.filterMap fun i =>
     match i.lookupText "name", i.lookupText "id" with
     | some n, some id =>
-      let host := match i.lookup "endpoint" with
-        | some e => (e.lookupText "ip").getD ""
-        | none   => ""
+      let host := (endpointAddress? i).getD ""
       some (n, id, host, stringArrayField i "tags")
     | _, _ => none
 
@@ -259,7 +321,18 @@ def read (creds : Credentials) (name : String) :
       | some bytes => Partial.known (bytes / 1000000000)
       | none       => .unknown
     | none => .unknown
-  return (cls, "", ver, storage)
+  -- Instance does not report its initial username. Returning "" fabricated
+  -- immutable drift and would replace a correctly configured compute DB.
+  -- Resolve the sole administrator from this project-bound instance instead;
+  -- ambiguity refuses the plan rather than guessing which user is the master.
+  let users ← Scaleway.listAll creds "scaleway rdb users"
+    (prefix' creds.region ++ s!"/instances/{id}/users") "users"
+  let admins := users.filterMap fun user =>
+    if user.lookupBool "is_admin" == some true then user.lookupText "name" else none
+  let username ← match admins with
+    | [name] => pure name
+    | _ => throw (IO.userError s!"scaleway rdb: '{name}' must have one unambiguous administrator to compare masterUsername")
+  return (cls, username, ver, storage)
 
 def create (creds : Credentials)
     (name nodeType masterUsername password engineVersion markerValue : String)
@@ -276,9 +349,22 @@ def create (creds : Credentials)
       , ("volume_type", .string "bssd")
       , ("project_id", .string project)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
-  return match reply.lookup "endpoint" with
-    | some e => (e.lookupText "ip").getD ""
-    | none   => ""
+  let id ← match reply.lookupText "id" with
+    | some id => pure id
+    | none => throw (IO.userError "scaleway rdb: create reply has no instance id")
+  let started ← IO.monoMsNow
+  repeat
+    let current ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/instances/{id}")
+    match current.lookupText "status" with
+    | some "ready" =>
+      match endpointAddress? current with
+      | some address => return address
+      | none => throw (IO.userError "scaleway rdb: ready instance has no unambiguous public host/port endpoint")
+    | some "error" => throw (IO.userError s!"scaleway rdb: instance '{name}' entered error during creation")
+    | _ => pure ()
+    if (← IO.monoMsNow) - started >= 900000 then
+      throw (IO.userError s!"scaleway rdb: instance '{name}' did not become ready within 15 minutes")
+    IO.sleep 2000
 
 def modify (creds : Credentials) (name nodeType : String) : IO Unit := do
   let id ← requireId creds name

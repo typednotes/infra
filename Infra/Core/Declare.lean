@@ -386,8 +386,16 @@ around it names a `{a.getId}` region; a region code belongs to one cloud"
             args := args.push
               (mkNamedArg (mkIdentFrom fid fid.getId.eraseMacroScopes) v)
           | _ => throwErrorAt f "malformed field"
+        -- Both capacity shapes are the same resource kind, but their smart
+        -- constructors have distinct arguments. A mixed shape is rejected by
+        -- named-argument elaboration instead of silently discarding a ceiling.
+        let classic := k.getId == `postgres && fields.any fun f =>
+          match f with
+          | `(fleetField| $fid:ident := $_:term) => fid.getId.eraseMacroScopes == `instanceClass
+          | _ => false
+        let builder := if classic then `postgresClassic else k.getId
         let call : Term := ⟨mkNode ``Lean.Parser.Term.app
-          #[mkIdent (`Infra.Specs.Build ++ k.getId), mkNullNode args]⟩
+          #[mkIdent (`Infra.Specs.Build ++ builder), mkNullNode args]⟩
         pairs := pairs.push (← `(($nm, Infra.Core.Status.present $call)))
       assignAlts := assignAlts.push (alt (← `(Lean.Parser.Term.matchAltExpr|
         | .$p:ident, .$k:ident =>
@@ -433,3 +441,33 @@ around it names a `{a.getId}` region; a region code belongs to one cloud"
       elabCommand c
 
 end Infra.Core
+
+namespace Infra.Core.DeclareRegression
+
+-- A classic PostgreSQL target must keep its instance/credential shape while
+-- serverless declarations retain their capacity shape. No cloud is contacted.
+fleet postgresShapes in paris where
+  provider scaleway where
+    resource postgres "classic"
+      { masterUsername := "compute"
+      , masterPasswordSecret := "compute-password"
+      , instanceClass := "db-dev-s" }
+    resource postgres "serverless"
+      { masterUsername := "iam-only"
+      , masterPasswordSecret := ""
+      , minCapacity := 0
+      , maxCapacity := 4 }
+
+#guard match postgresShapes.keys.keyOfName? .scaleway .postgres "classic" with
+  | some key => match postgresShapes.plan.assign .scaleway .postgres key with
+    | .present spec => spec.instanceClass.isKnown && !spec.minCapacity.isKnown && !spec.maxCapacity.isKnown
+    | _ => false
+  | none => false
+
+#guard match postgresShapes.keys.keyOfName? .scaleway .postgres "serverless" with
+  | some key => match postgresShapes.plan.assign .scaleway .postgres key with
+    | .present spec => !spec.instanceClass.isKnown && spec.minCapacity.isKnown && spec.maxCapacity.isKnown
+    | _ => false
+  | none => false
+
+end Infra.Core.DeclareRegression

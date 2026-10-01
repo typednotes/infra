@@ -1,4 +1,4 @@
-# Coverage in 0.22.0
+# Coverage in 0.22.1
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Container-image resolution was checked on 2026-10-01;
@@ -6,6 +6,19 @@ the existing cloud round-trip results retain their recorded dates below.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
+
+## Classic PostgreSQL deployment (0.22.1)
+
+The fleet DSL routes `instanceClass` to the existing classic smart constructor;
+mixed classic/serverless arguments are rejected. Scaleway endpoint parsing
+consumes private host/port validation evidence, preserves non-default ports,
+supports the current endpoint array and the legacy singular field, and refuses
+private, ambiguous or malformed selections. Creation waits for ready state.
+The administrator is resolved from the project-bound instance's users rather
+than compared with an invented empty username. Pure declaration/parser checks
+and the offline suite pass. Creating a new live Managed Database has not been
+exercised by this release preparation; API honesty and SQL admin privileges
+remain provider boundaries to verify on the first apply.
 
 ## Container-image content (0.22.0)
 

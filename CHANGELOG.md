@@ -27,6 +27,20 @@ active on 2026-09-29:
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
 
+## [0.22.1] — 2026-10-01
+
+### Fixed: classic PostgreSQL deployment wiring
+
+- Route fleet `postgres` declarations containing `instanceClass` through the
+  existing classic constructor; incompatible capacity arguments fail elaboration.
+- Preserve and validate Scaleway's public endpoint host and TCP port, including
+  non-default ports and the current `endpoints` array. Private or ambiguous
+  selectors refuse instead of producing an unusable connection string.
+- Wait for the newly created instance to be ready before resolving dependent
+  credentials. Resolve the sole administrator rather than returning an empty
+  username that would falsely request database replacement.
+- Scaffolded projects pin `v0.22.1`; dependency versions otherwise stay unchanged.
+
 ## [0.22.0] — 2026-10-01
 
 ### Added: container image content, not tag spelling, drives live diffs
