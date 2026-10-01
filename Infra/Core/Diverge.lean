@@ -43,6 +43,11 @@ def divergesReq {α : Type} [BEq α] (name : String) (m : Mutability)
     (target reported : α) : List (String × Mutability) :=
   if reported == target then [] else [(name, m)]
 
+/-- Live image references are resolved before this pure comparison. A tag
+    renamed to the same digest is not drift; a moved tag with new content is. -/
+def imageDivergence (target reported : String) : List (String × Mutability) :=
+  if Image.sameContent target reported then [] else [("image", .mutable)]
+
 /-- An optional field whose *target* being empty means "not chosen".
 
     `Field .optional` settles to `""` when the declaration omits it, so the
@@ -106,7 +111,7 @@ instance : Divergent .compute where
     -- `runtime` is advisory under the container-image model and neither cloud
     -- reports it, so it is not compared. `namespace'` is Scaleway placement,
     -- likewise not reported.
-    ++ divergesReq "image" .mutable t.image r.image
+    ++ imageDivergence t.image r.image
     ++ diverges "executionRole" .mutable t.executionRole r.executionRole
     ++ diverges "handler" .mutable t.handler r.handler
     ++ diverges "memoryMb" .mutable t.memoryMb r.memoryMb
@@ -317,11 +322,11 @@ instance : Divergent .kubernetesCluster where
 def objectShapeDivergence (objName : String) :
     Infra.Specs.ObjectShape → Infra.Specs.ObjectShape → List (String × Mutability)
   | .deployment i r p e, .deployment i' r' p' e' =>
-    divergesReq "image" .mutable i i' ++ divergesReq "replicas" .mutable r r'
+    imageDivergence i i' ++ divergesReq "replicas" .mutable r r'
     ++ divergesSet "ports" .mutable toString p (.known p')
     ++ divergesSet "env" .mutable Infra.Specs.EnvVar.key e (.known e')
   | .statefulSet i r p e st, .statefulSet i' r' p' e' st' =>
-    divergesReq "image" .mutable i i' ++ divergesReq "replicas" .mutable r r'
+    imageDivergence i i' ++ divergesReq "replicas" .mutable r r'
     ++ divergesSet "ports" .mutable toString p (.known p')
     ++ divergesSet "env" .mutable Infra.Specs.EnvVar.key e (.known e')
     -- Kubernetes refuses any change to `volumeClaimTemplates`.
@@ -335,7 +340,12 @@ def objectShapeDivergence (objName : String) :
     ++ divergesReq "targetPort" .mutable (eff p t) (eff p' t')
     ++ divergesSet "selector" .mutable pairKey (effSel sel) (.known (effSel sel'))
   | .raw av k m, .raw av' k' m' =>
+    let key (s : String) := (Image.digest? s).getD s
+    let normalized := Infra.Specs.ObjectShape.mapImages key
+    let text (s : Infra.Specs.ObjectShape) := match s with | .raw _ _ m => m | _ => ""
     let asJson (s : String) := (Data.Json.Decode.decode s).toOption
+    let m := text (normalized (.raw av k m))
+    let m' := text (normalized (.raw av' k' m'))
     divergesReq "apiVersion" .forcesReplace av av' ++ divergesReq "kind" .forcesReplace k k'
     ++ (if asJson m == asJson m' && (asJson m).isSome then [] else
         if m == m' then [] else [("manifest", .mutable)])
@@ -445,7 +455,7 @@ instance : Divergent .scalewayContainer where
     divergesReq "name" .forcesReplace t.name r.name
     -- A container cannot move namespace, same as `scalewayFunction`.
     ++ divergesReq "namespace" .forcesReplace t.namespace' r.namespace'
-    ++ divergesReq "image" .mutable t.image r.image
+    ++ imageDivergence t.image r.image
     ++ diverges "port" .mutable t.port r.port
     ++ diverges "minScale" .mutable t.minScale r.minScale
     ++ diverges "maxScale" .mutable t.maxScale r.maxScale

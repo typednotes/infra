@@ -70,7 +70,7 @@ def read (creds : Credentials) (ep : Endpoint) (name : String) :
   let whole ← RestJson.call creds ep "GET" s!"{base}/{name}"
   let cfg := (whole.lookup "Configuration").getD whole
   let image := match whole.lookup "Code" with
-    | some c => (c.lookupText "ImageUri").getD ""
+    | some c => (c.lookupText "ResolvedImageUri").getD ((c.lookupText "ImageUri").getD "")
     | none   => ""
   let role := match cfg.lookupText "Role" with
     | some r => Partial.known r

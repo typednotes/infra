@@ -20,6 +20,12 @@
       "Resource": "arn:aws:ecr:REGION:ACCOUNT:repository/PREFIX*"
     },
     {
+      "Sid": "RegistryImagePullAuthentication",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
       "Sid": "Buckets",
       "Effect": "Allow",
       "Action": "s3:*",

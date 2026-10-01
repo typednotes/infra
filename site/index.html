@@ -281,8 +281,8 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.21.4</strong> — Pins Linen 1.9.2, whose timer regression tests
-  account for libuv's millisecond resolution.
+  <strong>0.22.0</strong> — Container tags resolve to verified manifest digests:
+  changed content updates; unchanged content converges.
   <a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
@@ -648,6 +648,13 @@ would CREATE scaleway/secrets/db-url
     <div class="ctas">
       <a class="btn btn-primary" href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Read the coverage report</a>
     </div>
+    <p class="sub">
+      Since 0.22.0, container tags such as <code>:latest</code>
+      resolve to verified manifest digests before the live diff. Apply deploys
+      that frozen content; an unchanged digest converges. See the
+      <a href="https://github.com/typednotes/infra/blob/main/docs/images.md">image resolution guide</a>
+      for registry authentication and the Kubernetes scope.
+    </p>
   </div>
 </section>
 
@@ -687,7 +694,7 @@ would CREATE scaleway/secrets/db-url
 <span class="c">#   [[require]]</span>
 <span class="c">#   name = "infra"</span>
 <span class="c">#   git = "https://github.com/typednotes/infra"</span>
-<span class="c">#   rev = "v0.21.4"</span>
+<span class="c">#   rev = "v0.22.0"</span>
 
 lake update                <span class="c"># fetch infra</span>
 lake exe infra init        <span class="c"># turn this into an infra project</span>

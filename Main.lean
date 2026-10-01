@@ -1466,9 +1466,164 @@ def checkSqsCredentialMemo : IO Unit := do
 a live run would mint one per call")
   IO.println "scaleway sqs: the credential memo short-circuits (one mint per run)"
 
+private def testDigest (c : Char) : String :=
+  "sha256:" ++ String.ofList (List.replicate 64 c)
+
+/-- The real OCI resolver with a fake wire: a moving tag, anonymous token
+    exchange, mismatched hashes and failures; no registry is contacted. -/
+def checkRegistryImages : IO Unit := do
+  let manifest := "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\"}"
+  let response : Network.HTTP.Client.Response :=
+    { statusCode := Network.HTTP.Types.status200
+      headers := [(Data.CI.mk' "Content-Type", "application/vnd.oci.image.manifest.v1+json")]
+      body := manifest.toUTF8 }
+  let calls ← IO.mkRef (0 : Nat)
+  let first ← Infra.Providers.Images.resolveWith (fun _ => do
+    calls.modify (· + 1); pure response) "ghcr.io/org/app:latest"
+  let expected := "ghcr.io/org/app@sha256:" ++ Data.Hex.encode (← Crypto.SHA256.digest manifest.toUTF8)
+  unless first == expected && (← calls.get) == 1 do
+    throw (IO.userError "image resolution did not freeze the manifest content")
+  let second ← Infra.Providers.Images.resolveWith (fun _ => pure
+    { response with body := (manifest ++ " ").toUTF8 }) "ghcr.io/org/app:latest"
+  if Image.sameContent first second then
+    throw (IO.userError "a tag returning different content retained the same digest")
+  let pinned ← Infra.Providers.Images.resolveWith (fun _ =>
+    throw (IO.userError "a pinned image must not contact a registry")) first
+  unless pinned == first do throw (IO.userError "an explicit digest was changed")
+  let challenge : Network.HTTP.Client.Response :=
+    { statusCode := Network.HTTP.Types.status401
+      headers := [(Data.CI.mk' "WWW-Authenticate",
+        "Bearer realm=\"https://token.example/auth\",service=\"registry\",scope=\"repository:wrong:push\"")]
+      body := ByteArray.empty }
+  let authCalls ← IO.mkRef (0 : Nat)
+  let throughAuth ← Infra.Providers.Images.resolveWith (fun req => do
+    authCalls.modify (· + 1)
+    if req.host == "token.example" then
+      if req.headers.any (fun h => h.1 == Data.CI.mk' "Authorization") then
+        throw (IO.userError "registry credentials followed a foreign token realm")
+      unless mentions req.queryString "pull" && !mentions req.queryString "push" do
+        throw (IO.userError "registry token requested the challenge's write scope")
+      pure { response with body := "{\"access_token\":\"private-test-token\"}".toUTF8 }
+    else if (req.headers.find? fun h => h.1 == Data.CI.mk' "Authorization").map (·.2) ==
+        some "Bearer private-test-token" then pure response
+    else pure challenge) "ghcr.io/org/app:latest" (some "Basic private-test-password")
+  unless throughAuth == first && (← authCalls.get) == 3 do
+    throw (IO.userError "registry Bearer authentication did not round-trip")
+  let refreshChallenge : Network.HTTP.Client.Response :=
+    { challenge with headers := [(Data.CI.mk' "WWW-Authenticate",
+        "Bearer realm=\"https://ghcr.io/token\",service=\"ghcr.io\"")] }
+  let refreshed ← Infra.Providers.Images.resolveWith (fun req => do
+    if req.path == "/token" then
+      unless req.method == Network.HTTP.Types.parseMethod "POST" &&
+          req.queryString.isEmpty &&
+          mentions ((req.body.bind String.fromUTF8?).getD "") "grant_type=refresh_token" &&
+          mentions ((req.body.bind String.fromUTF8?).getD "") "client_id=infra" do
+        throw (IO.userError "Docker identity token was not exchanged with the OAuth refresh grant")
+      pure { response with body := "{\"token\":\"refreshed-test-token\"}".toUTF8 }
+    else if (req.headers.find? fun h => h.1 == Data.CI.mk' "Authorization").map (·.2) ==
+        some "Bearer refreshed-test-token" then pure response
+    else pure refreshChallenge) "ghcr.io/org/app:latest" none (some "private-refresh-token")
+  unless refreshed == first do throw (IO.userError "Docker identity-token exchange changed the image digest")
+  for failed in [ { response with headers := response.headers ++
+                      [(Data.CI.mk' "Docker-Content-Digest", testDigest '0')] }
+                , { response with statusCode := Network.HTTP.Types.status404 }
+                , { response with statusCode := Network.HTTP.Types.status403 }
+                , { response with headers := [(Data.CI.mk' "Content-Type", "text/html")] } ] do
+    match ← (Infra.Providers.Images.resolveWith (fun _ => pure failed)
+        "ghcr.io/org/app:latest").toBaseIO with
+    | .ok _ => throw (IO.userError "an invalid registry response was accepted")
+    | .error _ => pure ()
+  IO.println "registry images: ok (content hashes, moved tags, Bearer auth, pinned refs and failures)"
+
+fleet imageCheckFleet where
+  provider scaleway where
+    resource scalewayContainerNamespace "image-ns" as ns {}
+    resource compute "portable" { image := "ghcr.io/org/app:latest", namespace' := "image-ns" }
+    resource scalewayContainer "local"
+      { namespace' := ns, image := "ghcr.io/org/app:latest" }
+  provider aws where
+    resource compute "lambda" { image := "ghcr.io/org/app:latest" }
+  provider gcp where
+    resource compute "run" { image := "ghcr.io/org/app:latest" }
+
+/-- All container kinds reconcile the selected content, not tag spelling.
+    The cloud records a frozen reference, a later plan converges, and a failed
+    lookup or a foreign marker cannot mutate anything. -/
+def checkImageReconciliation : IO Unit := do
+  let snapshot := (Finite.elems (α := ProviderId)).flatMap fun p =>
+    (Finite.elems (α := Kind)).flatMap fun k =>
+      (Finite.elems (α := imageCheckFleet.keys.Key p k)).map fun key =>
+        Infra.Providers.Snapshot.marked p k (imageCheckFleet.keys.name p k key) "images"
+  let reported (digest : String) : (k : Kind) → String → Reported k
+    | .compute, nm => { Infra.Providers.placeholderReported .compute ⟨nm⟩ with
+        image := s!"ghcr.io/org/app:old-tag@{digest}" }
+    | .scalewayContainer, nm => { Infra.Providers.placeholderReported .scalewayContainer ⟨nm⟩ with
+        image := s!"ghcr.io/org/app:old-tag@{digest}", namespace' := ⟨"image-ns"⟩ }
+    | k, nm => Infra.Providers.placeholderReported k ⟨nm⟩
+  let current ← IO.mkRef (testDigest '0')
+  let wanted ← IO.mkRef (testDigest '1')
+  let writes ← IO.mkRef ([] : List String)
+  let lookups ← IO.mkRef (0 : Nat)
+  let deleted ← IO.mkRef ([] : List String)
+  let base := Infra.Providers.Snapshot.backends snapshot deleted
+  let bs : Backends := { backend := fun p =>
+    { base.backend p with
+      read := fun k h => do pure (reported (← current.get) k h.raw)
+      resolveImage := fun raw => do
+        if (Image.digest? raw).isSome then return raw
+        lookups.modify (· + 1)
+        return s!"ghcr.io/org/app@{← wanted.get}"
+      update := fun k h s => do
+        let image := match k, s with
+          | .compute, s => s.image
+          | .scalewayContainer, s => s.image
+          | _, _ => ""
+        unless (Image.digest? image) == some (← wanted.get) do
+          throw (IO.userError "apply did not write the planned digest")
+        writes.modify (h.raw :: ·)
+        current.set (← wanted.get)
+        pure (Infra.Providers.placeholderObserved k h.raw) } }
+  let boundary : Boundary := { fleetName := some "images" }
+  let entries ← pullEntries (κ := imageCheckFleet.keys) bs
+  let preview ← push bs imageCheckFleet.plan (worldOf entries) {} (boundary := boundary)
+  unless preview.countP (mentions · "UPDATE") == 4 && (← writes.get).isEmpty do
+    throw (IO.userError s!"a moved latest tag did not plan four non-mutating updates: {preview}")
+  unless (← lookups.get) == 3 do
+    throw (IO.userError "duplicate image selectors were not resolved once per cloud")
+  let _ ← push bs imageCheckFleet.plan (worldOf entries) { apply := true }
+    (boundary := boundary) (seen := some entries)
+  unless (← writes.get).length == 4 do throw (IO.userError "not every container kind updated")
+  let next ← pull (κ := imageCheckFleet.keys) bs
+  let converged ← push bs imageCheckFleet.plan next {} (boundary := boundary)
+  unless converged == ["nothing to do"] do
+    throw (IO.userError s!"digest-based reconciliation did not converge: {converged}")
+  let before ← writes.get
+  let broken : Backends := { backend := fun p =>
+    { bs.backend p with resolveImage := fun _ => throw (IO.userError "registry denied") } }
+  match ← (push broken imageCheckFleet.plan next { apply := true }
+      (boundary := boundary)).toBaseIO with
+  | .ok _ => throw (IO.userError "a failed registry lookup looked converged")
+  | .error _ => pure ()
+  unless (← writes.get) == before do throw (IO.userError "registry failure mutated a container")
+  let foreign : Backends := { backend := fun p =>
+    { broken.backend p with ownershipInfo := fun _ _ => pure (.tags [(markerKey, "other")] none) } }
+  let (_, _) ← IO.FS.withIsolatedStreams
+    (push foreign imageCheckFleet.plan next {} (boundary := boundary))
+  -- All typed and raw pod images are covered, including sidecars/init jobs.
+  let k8s : ProviderSpec .kubernetesObject :=
+    { name := "c/default/cronjob.batch/job"
+      shape := .raw "batch/v1" "CronJob"
+        "{\"spec\":{\"jobTemplate\":{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"a\",\"image\":\"a:latest\"},{\"name\":\"b\",\"image\":\"b:latest\"}],\"initContainers\":[{\"name\":\"init\",\"image\":\"c:latest\"}]}}}}}}" }
+  let pinned ← pinSpecImages (bs.backend .scaleway) .kubernetesObject k8s
+  unless pinned.shape.images.length == 3 && pinned.shape.images.all (Image.digest? · |>.isSome) do
+    throw (IO.userError "raw pod workloads omitted a sidecar or init-container image")
+  let same := pinned.shape.mapImages fun _ => s!"other:tag@{testDigest '1'}"
+  unless (objectShapeDivergence k8s.name pinned.shape same).isEmpty do
+    throw (IO.userError "a raw workload compared tag spelling instead of content")
+  IO.println "image reconciliation: ok (all compute clouds, Scaleway containers, raw pod images, convergence and refusals)"
+
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
-
 def selfCheck : IO Unit := do
   IO.println "infra: refinement core loaded"
   checkOwnershipGate
@@ -1499,6 +1654,8 @@ def selfCheck : IO Unit := do
   checkVanishingResource
   checkSecretsRequestToken
   checkSqsCredentialMemo
+  checkRegistryImages
+  checkImageReconciliation
 
 /-- `infra gcp-check <key.json>` — does this service-account key actually work?
 

@@ -30,11 +30,15 @@ surprise.
 - **Diffing is a Lean function, not a side effect.** Plan vs. observed state
   is compared structurally over the Lean values themselves; `plan` prints
   what it would do and only `apply` changes anything.
+- **Container tags can move.** `image := "ghcr.io/org/app:latest"`
+  is resolved to a verified manifest digest before a live diff; apply writes
+  that frozen reference. New content redeploys, an unchanged digest converges,
+  and offline checks still need no registry. See [image diffs](docs/diff-semantics.md#container-image-content).
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.21.4 covers
+## What 0.22.0 covers
 
 **3 clouds** (AWS, Scaleway, GCP) · **17 resource kinds** (10 portable, 7
 provider-local) · every `(provider, kind)` pair implemented.
@@ -84,6 +88,13 @@ tests deterministic on faster CI runners.
 
 **0.21.4 pins Linen v1.9.2**, which accounts for libuv's millisecond
 resolution in its timer regression tests.
+
+**New in 0.22.0: image content drives container diffs.** Tags such as
+`:latest` resolve to verified manifest digests on each live plan/apply.
+Unchanged content converges; changed content updates in place, and apply
+deploys the selected digest rather than re-reading a moving tag during rollout.
+The cloud's configured image records the digest, with no local state. See
+[`docs/images.md`](docs/images.md) for registry auth, Kubernetes scope and verification.
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -163,7 +174,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.21.4"
+rev = "v0.22.0"
 ```
 
 Then:

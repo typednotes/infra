@@ -27,6 +27,31 @@ active on 2026-09-29:
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
 
+## [0.22.0] — 2026-10-01
+
+### Added: container image content, not tag spelling, drives live diffs
+
+`image := "…:latest"` is resolved afresh to a verified OCI/Docker v2 manifest
+digest before a live diff. Apply writes the frozen digest reference; the cloud's
+own image field records it, without local state. A moved tag updates; the same
+digest under another tag converges. Tag-only deployments get one update, and
+explicit SHA-256 pins remain supported without registry lookup.
+
+Covered uniformly: portable compute on all clouds, Scaleway containers, typed
+Kubernetes workloads, and all container/init/ephemeral references in raw
+built-in pod-bearing shapes. Offline/render/teardown stay registry-free. Registry
+failures refuse reconciliation, foreign resources are skipped first, and late
+image expressions preserve their dependency edges. Docker auths/helpers and
+known native cloud registry auth are supported; `docs/images.md` states limits.
+
+Protocol tests and snapshot-based reconciliation run in `infra check`. The
+compiled resolver also passed read-only against all five Typednotes `latest`
+images on GHCR and Docker Hub (2026-10-01). Full cross-cloud rollout coverage
+is not claimed. Registry protocol building blocks remain a proposed move into
+linen when it publishes an OCI module.
+
+Scaffolded projects pin `v0.22.0` (`infraRev`). The Linen pin remains `v1.9.2`.
+
 ## [0.21.4] — 2026-09-29
 
 ### Changed: `linen` v1.9.2

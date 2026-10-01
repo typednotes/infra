@@ -15,6 +15,36 @@ of its state type, with each field widened to `Option`. **That framing is supers
 conflated two things that need to be kept apart, and it had no good answer to the second
 question.
 
+## Container image content
+
+Since 0.22.0, live container reconciliation compares **SHA-256 manifest
+digests**, not the spelling of a tag. A declaration can keep `:latest`: before
+deriving actions, `Engine.push` resolves its current content through
+`Backend.resolveImage`, then compares that with the digest in the cloud's
+reported image reference. It never resolves the *observed* tag against today's
+registry — that would compare the moving tag to itself and miss a rollout.
+
+Apply sends `registry/repository@sha256:…`, the digest selected by that run.
+The cloud's own image field is the durable record; there is no local cache or
+ledger. An older tag-only deployment gets one explicit update to establish
+that record. Lambda reports `ResolvedImageUri` where available. A new digest
+means `UPDATE`; a different tag or repository spelling with the same digest
+does not. Explicit digest pins remain supported and need no registry lookup.
+
+This covers `compute` on every cloud, `scalewayContainer`, typed Kubernetes
+workloads, and raw built-in Pod/Deployment/DaemonSet/StatefulSet/ReplicaSet/
+ReplicationController/Job/CronJob pod specs (sidecars, init and ephemeral
+containers included). Arbitrary CRD fields are opaque: an `image` key outside
+a known pod specification is not assumed to be a container reference.
+
+A registry failure is an error before any already-resolvable image is changed,
+not “unchanged” or “absent”. Foreign resources are excluded before registry
+lookups. Image expressions whose inputs do not exist yet retain their dependency
+edges and resolve when that action settles; an error there stops the remaining
+apply, just like any other newly-created dependency. Offline/replay backends
+keep their identity resolver, so pure/offline diffs never contact registries.
+Migration histories still name versioned SQL independently of an image tag.
+
 ## Two axes, kept apart
 
 - The **nominal** axis — `Kind`, and specs indexed by it (`Infra/Core/Kind.lean`,

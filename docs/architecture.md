@@ -14,6 +14,13 @@ An engine can call the remote service to sync the current state and implement th
 To implement a target, objects defining states should allow state diffs.
 This is an object-level, structural diff computed over the Lean values themselves (which fields/objects differ and how), not a text/source-code diff of the `.lean` files they are defined in.
 
+Container image names are selectors, not content identities. Live reconciliation
+resolves even `:latest` to a manifest digest before the pure comparison and writes
+that immutable reference during apply. The cloud therefore records what was
+selected, with no local state needed to detect a tag moving on the next run.
+`docs/diff-semantics.md`, “Container image content”, states the complete scope
+and the treatment of unknown inputs and registry failures (since 0.22.0).
+
 ## Remote services
 
 To start, we will target the following remote cloud providers:

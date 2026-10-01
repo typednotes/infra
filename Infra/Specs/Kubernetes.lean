@@ -2,6 +2,7 @@ import Linen.Data.Json.Encode
 import Linen.Data.Json.Decode
 import Lean.Data.Json
 import Infra.Core.JsonExact
+import Infra.Core.Image
 
 /-
   The pure half of the two Kubernetes kinds: what an in-cluster object is,
@@ -97,6 +98,32 @@ inductive ObjectShape where
   | service (port : Nat) (targetPort : Nat := 0) (selector : List (String × String) := [])
   | raw (apiVersion kind : String) (manifest : String)
   deriving Repr, DecidableEq, BEq
+
+/-- Every container image this shape declares. Raw built-in pod workloads
+    include sidecars and init containers; custom-resource fields stay opaque. -/
+def ObjectShape.images : ObjectShape → List String
+  | .deployment i .. | .statefulSet i .. => [i]
+  | .service .. => []
+  | .raw _ kind text => (do
+      let path ← Infra.Core.Image.podPath kind
+      let json ← (Data.Json.Decode.decode text).toOption
+      let pod ← Infra.Core.Image.atPath json path
+      pure (Infra.Core.Image.podImages pod)).getD []
+
+/-- Rewrite only actual container references, preserving the rest of a raw
+    manifest, including its numbers, through the exact encoder. -/
+def ObjectShape.mapImages (f : String → String) : ObjectShape → ObjectShape
+  | .deployment i r p e => .deployment (f i) r p e
+  | .statefulSet i r p e st => .statefulSet (f i) r p e st
+  | s@(.service ..) => s
+  | s@(.raw av kind text) =>
+    match Infra.Core.Image.podPath kind, Data.Json.Decode.decode text with
+    | some path, .ok json =>
+      let mapped := Infra.Core.Image.mapAtPath json (Infra.Core.Image.mapPodImages f) path
+      match Infra.Core.JsonExact.encodeExact "container images" mapped with
+      | .ok text' => .raw av kind text'
+      | .error _ => s -- the declaration's soundness check reports malformed/lossy JSON
+    | _, _ => s
 
 /-- The API group of an `apiVersion` — `apps` for `apps/v1`, `""` for the
     core group's `v1`. -/

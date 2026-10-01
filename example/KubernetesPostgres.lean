@@ -34,6 +34,11 @@ import Infra
   time on stderr, roughly every fifteen seconds while waiting. A cluster's
   API must be ready before its in-cluster objects can be applied.
 
+  The image selector `postgres:17` is resolved to its current manifest digest
+  by a live plan/apply (since 0.22.0), and the StatefulSet receives that frozen
+  reference. A new patch under the same tag is image drift; the same digest
+  converges. The offline plan/render leaves the selector as written.
+
   `destroy --keep-data` keeps the cluster (it holds the volumes) and removes
   the objects; the StatefulSet's PersistentVolumeClaim outlives it either
   way — Kubernetes keeps claims, and infra never deletes one.

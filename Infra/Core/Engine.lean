@@ -1,4 +1,5 @@
 import Infra.Core.Backend
+import Infra.Core.Images
 import Linen.System.Console.Ansi
 
 /-
@@ -737,7 +738,7 @@ private def settleFor {κ : Keys} (T : Plan κ) (bs : Backends) (entries : List 
       { base with secretValue := fun p' key' =>
           (values.find? fun v => v.1 == p' && v.2.1 == κ.name p' .secrets key').map (·.2.2) }
     match settleSpec k env authored with
-    | some spec => return spec
+    | some spec => pinSpecImages (bs.backendFor p k (κ.name p k key)) k spec
     | none => throw (IO.userError
         s!"{slotId p k (κ.name p k key)}: a referenced resource does not exist yet")
   | _ => throw (IO.userError s!"{slotId p k (κ.name p k key)}: nothing to apply")
@@ -1113,6 +1114,7 @@ a caller that builds its own backends must do the same (`Infra.Cli.fetchMigratio
     IO.eprintln s!"warning: {slot} is declared and exists, but is {why}. It will not be \
 changed or destroyed by this fleet, which therefore manages less than it declares. Either \
 exclude it deliberately, or delete it and let this fleet create it — see docs/persistence.md"
+  let T := withImagePins T (← fetchImagePins bs T W (foreign.map (·.1)))
   let planned := plan T W orphans releases
   -- `--refresh-secrets`: the one mode in which a plan reads secret values
   -- (`refreshSecrets`). It needs the entries to settle composed values

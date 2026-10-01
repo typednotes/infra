@@ -113,6 +113,10 @@ structure Backend where
   create : (k : Kind) → ProviderSpec k → IO (ObservedOf k)
   update : (k : Kind) → Handle k → ProviderSpec k → IO (ObservedOf k)
   delete : (k : Kind) → Handle k → IO Unit
+  /-- Freeze an image selector to a digest before diffing and writing it.
+      Real backends resolve OCI tags; offline/replay backends default to the
+      identity, so `check` never accesses a registry. No result is saved locally. -/
+  resolveImage : String → IO String := pure
   /-- Read one secret's value.
 
       The **only** inbound plaintext path in this interface, and deliberately

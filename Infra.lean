@@ -26,6 +26,8 @@ import Infra.Core.Diverge
 import Infra.Core.Settle
 import Infra.Core.Credentials
 import Infra.Core.JsonExact
+import Infra.Core.Image
+import Infra.Core.Images
 import Infra.Core.Ownership
 import Infra.Core.Engine
 
@@ -36,6 +38,7 @@ import Infra.Abstractions.Auth
 -- One backend per cloud.
 import Infra.Providers.JsonRead
 import Infra.Providers.Http
+import Infra.Providers.Images
 import Infra.Providers.Zip
 import Infra.Providers.Aws.Sign
 import Infra.Providers.Aws.Protocols

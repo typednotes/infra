@@ -153,6 +153,13 @@ none needs nothing more.
 
 ## AWS, per kind
 
+Container image resolution (since 0.22.0) also reads the selected registry.
+Public OCI images use anonymous authentication. Standard private ECR hosts can
+use the AWS credential's `ecr:GetAuthorizationToken`, which requires
+`Resource: "*"`; the operator template includes that separate read grant.
+Actual pull authorization still depends on the repository's permissions.
+Docker registry credentials/helpers can be used instead. See [`images.md`](images.md).
+
 Read off the call sites in `Infra/Providers/Kinds/` — the API each function
 calls is named in the source, so this table is derivable rather than
 remembered. Last checked against the code on 2026-09-19.

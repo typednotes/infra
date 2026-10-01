@@ -9,6 +9,7 @@ import Infra.Providers.Kinds.Migrations
 import Infra.Providers.Kinds.Kubernetes
 import Infra.Providers.Kinds.Ec2
 import Infra.Providers.Zip
+import Infra.Providers.Images
 import Infra.Providers.Scaleway.Sqs
 import Infra.Core.Backend
 import Infra.Providers.Gcp.PubSub
@@ -1166,6 +1167,7 @@ history left in place"
   -- The one inbound plaintext path; see `Backend.secretValue`. `fetchValue`
   -- already exists and is already the narrowly-scoped reader for both clouds.
   secretValue h := Secrets.fetchValue provider creds h.raw
+  resolveImage := Images.resolve provider creds
   -- ── Ownership evidence, one rung per `(cloud, kind)` ──
   --
   -- `Infra.Core.Ownership`'s ladder, made concrete. Most pairs are on the tag

@@ -1,10 +1,30 @@
-# Coverage in 0.21.4
+# Coverage in 0.22.0
 
 What this version actually does, and — more usefully — how far each part has
-been exercised. Everything below is the state on 2026-09-29.
+been exercised. Container-image resolution was checked on 2026-10-01;
+the existing cloud round-trip results retain their recorded dates below.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
+
+## Container-image content (0.22.0)
+
+Live targets resolve OCI/Docker v2 image tags to manifest/index digests before
+diffing and deploy frozen references. This includes `:latest`, `compute` on
+all clouds, Scaleway containers, typed Kubernetes workloads and raw built-in
+pod-bearing shapes, including sidecars/init containers. There is no local state;
+the configured image reference in the cloud carries the deployed digest. A
+legacy tag-only image gets one update. Explicit pins, offline checks and teardown
+need no registry lookup. Registry failures fail rather than look converged.
+
+Offline regressions exercise the protocol and actual engine through snapshots.
+Public GHCR/Docker Hub resolution passed live and read-only for the five
+Typednotes image repositories on 2026-10-01. New cross-cloud rollout coverage
+has not yet been run. Private registry auth
+reads Docker auths/helpers or uses the selected cloud's known registry hosts.
+HTTPS, v2 media types and SHA-256 are supported; arbitrary CRD image fields,
+legacy schema-1 and HTTP registries are not inferred. Complete scope:
+[`images.md`](images.md).
 
 ## Clouds
 

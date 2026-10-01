@@ -8,6 +8,29 @@ the shape of each piece. It is the document to read before changing the engine.
 Everything here is checked against the code rather than remembered; where a
 mechanism has a gap, the gap is named.
 
+## Image selectors before the diff (0.22.0)
+
+After ownership checking, `Engine.push` calls `fetchImagePins` and
+`withImagePins` (`Infra/Core/Images.lean`). The live backend's `resolveImage`
+is `Infra.Providers.Images.resolve`: GET the OCI/Docker v2 manifest/index,
+exchange a Bearer token if challenged, verify SHA-256 against any advertised
+digest, and return `registry/repository@sha256:…`. References already carrying
+a digest do not require a registry call. Each distinct selector is resolved
+once per cloud per push; nothing is cached across pushes.
+
+Expression rewrites are `Expr.map`, preserving the original dependency edges.
+`settleFor` also calls `pinSpecImages` so an image whose input only becomes known
+after an earlier creation is frozen before the backend writes it. Prepared
+references are already immutable, so the apply never re-reads a resolved tag
+halfway through its rollout. `imageDivergence` compares digest identity, and the
+cloud's image field remembers the selected content. Tag-only legacy resources
+get one update rather than having their unknown deployed content guessed from
+today's registry. Offline backends leave selectors alone.
+
+Private registry credentials come from Docker's config/helpers, then known native
+cloud registry hosts. Tokens/passwords are not included in diagnostics; credentials
+do not follow an arbitrary token realm. See `docs/images.md` for setup and limits.
+
 ## The whole pipeline
 
 One apply, end to end. Each box is a real function; the names are searchable.
