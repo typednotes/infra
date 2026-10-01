@@ -363,6 +363,7 @@ private def githubPlan (name : String) : String :=
 # is skipped on forks, where they are not available.
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:

@@ -1,23 +1,23 @@
 # CI policy documents
 
 The IAM policies the live-test workflow's AWS role uses, kept as files so the
-commands in [`../docs/ci-auth.md`](../docs/ci-auth.md) are runnable rather than
+commands in [`../docs/ci-auth.md`](https://github.com/typednotes/infra/blob/main/docs/ci-auth.md) are runnable rather than
 illustrative, and so a change to them shows up in a diff.
 
-- `aws-trust-policy.json` — **who may assume the role.** The `sub` condition is
+- [`aws-trust-policy.json`](https://github.com/typednotes/infra/blob/main/ci/aws-trust-policy.json) — **who may assume the role.** The `sub` condition is
   the security boundary: without it, any GitHub repository could. Scoped to
   `repo:typednotes/infra:*`.
-- `aws-trust-policy-environment.json` — the tighter variant, pinning `sub` to
+- [`aws-trust-policy-environment.json`](https://github.com/typednotes/infra/blob/main/ci/aws-trust-policy-environment.json) — the tighter variant, pinning `sub` to
   a GitHub *environment* rather than any branch. Stronger, because an
   environment can require reviewers and a branch cannot. Needs
   `environment: production` on the job as well; the policy alone rejects
   every run.
-- `aws-permissions-policy.json` — **what the role may do.** Full access to each
+- [`aws-permissions-policy.json`](https://github.com/typednotes/infra/blob/main/ci/aws-permissions-policy.json) — **what the role may do.** Full access to each
   product (`sqs:*`, `s3:*`, …) confined to resources named `ci-tests-infra-*`.
   Wide in verbs, narrow in resources: the prefix is what protects the account,
   and enumerating verbs only meant a 403 mid-run every time a test grew. Two
   exceptions, both explained in
-  [`../docs/permissions.md`](../docs/permissions.md): EC2, whose resources have
+  [`../docs/permissions.md`](https://github.com/typednotes/infra/blob/main/docs/permissions.md): EC2, whose resources have
   no names to scope by, and IAM, where `iam:*` is paired with a `Deny` on
   minting usable credentials.
 
@@ -32,7 +32,7 @@ of this document inert.** `PowerUserAccess` is
 — an *allow* of everything except IAM, not a deny of IAM. So while it is
 attached, `infra-ci` already holds `sqs:*`, `s3:*`, `ec2:*`, `lambda:*` and the
 rest across the **whole account, with no prefix**, and the only statements in
-`aws-permissions-policy.json` that grant anything the role did not already have
+[`aws-permissions-policy.json`](https://github.com/typednotes/infra/blob/main/ci/aws-permissions-policy.json) that grant anything the role did not already have
 are the IAM ones. That is why the `iam:TagUser` failure was the *first* thing
 to fail rather than the tenth.
 
@@ -78,7 +78,7 @@ only shape available.
 
 ### AWS
 
-`ci/aws-permissions-policy.json` in this repository is the policy document. It
+[`ci/aws-permissions-policy.json`](https://github.com/typednotes/infra/blob/main/ci/aws-permissions-policy.json) in this repository is the policy document. It
 is scoped to `ci-tests-infra-*` wherever the API lets a permission name a
 resource; the listing actions in the last statement cannot be scoped, and are
 read-only.
@@ -88,7 +88,7 @@ cannot carry a comment.** The grammar admits only `Version`, `Id` and
 `Statement`, JSON has no comments, and a `"Comment"` key makes
 `create-policy` fail — which then surfaces one command later as
 `NoSuchEntity … does not exist or is not attachable` from the *attach* step,
-naming neither the cause nor the file. `ci/check-aws-policy.sh` runs in CI to
+naming neither the cause nor the file. [`ci/check-aws-policy.sh`](https://github.com/typednotes/infra/blob/main/ci/check-aws-policy.sh) runs in CI to
 stop that recurring.
 
 Since 0.19.0 the read-only statement also names `eks:ListClusters` and
@@ -117,21 +117,21 @@ having.
 
 What the two spellings cost, concretely — this repository ran with **both** for
 a while, a managed policy and an inline policy of the same name, because
-`ci/README.md` documented one route and `docs/ci-auth.md` the other. IAM unions
+`ci/README.md` documented one route and [`docs/ci-auth.md`](https://github.com/typednotes/infra/blob/main/docs/ci-auth.md) the other. IAM unions
 their Allows, so nothing failed; it just meant two copies of one document, one
 of which was a release behind, and no way to tell from the role which was in
 force. The managed copy has been deleted. If you find it back, something
 re-followed the old instructions.
 
 The general, adaptable version of this policy — every kind, your account, your
-prefix — is a different document: [`../docs/permissions.md`](../docs/permissions.md)
-and [`../docs/aws-operator-policy.json`](../docs/aws-operator-policy.json).
+prefix — is a different document: [`../docs/permissions.md`](https://github.com/typednotes/infra/blob/main/docs/permissions.md)
+and [`../docs/aws-operator-policy.json`](https://github.com/typednotes/infra/blob/main/docs/aws-operator-policy.json).
 Do not start from this one; every ARN in it names the live test's own prefix.
 
 If `PowerUserAccess` is attached instead, note what it does **not** cover:
 `PowerUserAccess` explicitly denies almost all of IAM, so the `iam` resource in
 the live fleet will fail under it. Either attach the policy above alongside it,
-or drop `resource iam` from `awsFull` in `test/Live.lean`.
+or drop `resource iam` from `awsFull` in [`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean).
 
 To check what is actually attached:
 
@@ -280,7 +280,7 @@ gcloud projects add-iam-policy-binding typednotes \
 If the scan ever reads more of Cloud SQL, this role has to follow — the failure
 will name the missing permission.
 
-**This table is derived from `test/Live.lean`, and it went stale once already**
+**This table is derived from [`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean), and it went stale once already**
 — `roles/run.admin` was missing after `compute` joined the GCP fleet, and the
 first live run said so:
 
@@ -288,7 +288,7 @@ first live run said so:
     resource 'projects/typednotes/locations/europe-west9/services'
 
 Adding a kind to a live fleet means adding its permission here. The kinds each
-fleet declares — read off the `#guard`s at the foot of `test/Live.lean`,
+fleet declares — read off the `#guard`s at the foot of [`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean),
 which are what pin them. Last checked against them on 2026-09-20; a date
 rather than a release number on purpose, since this records when somebody
 looked rather than which version it belongs to, and a version here would
@@ -308,7 +308,7 @@ document now.
 
 A second one is easy to miss because it is not in any declaration at all: the
 **ownership marker**. Every AWS kind that can carry a tag has it written at
-create and read back on the next `push` (`Infra/Core/Ownership.lean`), so each
+create and read back on the next `push` ([`Infra/Core/Ownership.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Ownership.lean)), so each
 one needs *two* permissions beyond the create and the delete — one to tag, one
 to read tags. On AWS that is `sqs:TagQueue`/`sqs:ListQueueTags`,
 `secretsmanager:TagResource` (`DescribeSecret` carries the tags back),
@@ -474,7 +474,7 @@ granting CI org-wide IAM *management* — which the isolated project cannot
 contain, and which is the one grant that could reach production identities.
 
 So `resource iam` was **dropped from `scalewayFull`**, and CI cannot create,
-change or delete an identity. A `#guard` in `test/Live.lean` pins the absence,
+change or delete an identity. A `#guard` in [`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean) pins the absence,
 because adding the resource back would silently re-introduce the requirement.
 
 #### Read-only grants for the scan
@@ -505,7 +505,7 @@ names, ids, tags — but not users, groups, policies, and nothing it can change.
 `IAMApplicationReadOnly` rather than `IAMReadOnly`, which would add all of
 those. What the scan does with what it sees is claim the applications carrying
 *this* fleet's marker, `managed-by-infra=ci-tests-infra` (`liveBoundary` in
-`test/Live.lean`). On 2026-09-24 the organization's applications carried
+[`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean)). On 2026-09-24 the organization's applications carried
 either `managed-by-infra=typednotes` (another fleet's), no marker, or
 Serverless Containers' own tags — all left alone. And the permission set
 itself cannot delete anything, so the worst a wrong verdict could do here is
@@ -557,7 +557,7 @@ scw iam permission-set list
 
 ## Running the live test
 
-`.github/workflows/live-test.yml` is manual only. Nothing pushes to it: a job
+[`.github/workflows/live-test.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/live-test.yml) is manual only. Nothing pushes to it: a job
 that creates billable resources should be started by a person who meant to.
 
 ```sh
@@ -566,7 +566,7 @@ gh run list --workflow=live-test.yml --limit 3
 ```
 
 There is no `all` here, unlike the Cleanup workflow. Each fleet in
-`test/Live.lean` is single-cloud and a run authenticates only the provider it
+[`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean) is single-cloud and a run authenticates only the provider it
 was given — the AWS leg never reads Scaleway's secrets, which falls out of
 `Keys.providers` rather than out of the workflow's `if`s. Three clouds is three
 runs.
@@ -580,7 +580,7 @@ loosen the gate, it breaks OIDC entirely.
 ### The Kubernetes leg
 
 `lake test -- <provider> kubernetes` creates one managed cluster,
-`ci-tests-infra-k8s`, walks it through four stages (`test/Live.lean`) and
+`ci-tests-infra-k8s`, walks it through four stages ([`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean)) and
 destroys it. From the workflow, **AWS only**:
 
 ```sh
@@ -595,7 +595,7 @@ backstop and ten minutes for setup/build; the two-hour AWS session below
 covers it. Provider waits print flushed status heartbeats roughly every
 fifteen seconds, including provisioning and deletion, and EKS's waiter failure
 states fail immediately with the cloud's health issues. Details and offline
-regressions: [`../docs/kubernetes.md`](../docs/kubernetes.md#provisioning-waits-and-ci-budgets).
+regressions: [`../docs/kubernetes.md`](https://github.com/typednotes/infra/blob/main/docs/kubernetes.md#provisioning-waits-and-ci-budgets).
 
 What the AWS run needs — the first two **applied 2026-09-29** (after 0.20.1),
 checked first against the live policy (the other ten statements identical)
@@ -608,7 +608,7 @@ warnings):
    to EKS and EC2 only, and `iam:GetRole`, on the two roles below and nothing
    else) and `KubernetesServiceLinkedRoles` (EKS's two
    service-linked roles, created by the first cluster/node group in an
-   account) in `ci/aws-permissions-policy.json`, applied with
+   account) in [`ci/aws-permissions-policy.json`](https://github.com/typednotes/infra/blob/main/ci/aws-permissions-policy.json), applied with
    `put-role-policy` as above.
 2. A two-hour session: the workflow asks for `role-duration-seconds: 7200` on
    this leg, and fails before creating anything unless the role allows it —
@@ -653,7 +653,7 @@ policies. `NoSuchEntity` is accepted only for a service-linked role: that is
 an authorised first-use lookup, and EKS creates the role itself. `AccessDenied`,
 a missing declared role, and transport errors fail before any cluster is
 created. This is a role-read check, not a check of every EKS permission.
-`ci/check-aws-policy.sh` runs its mocked regression cases offline.
+[`ci/check-aws-policy.sh`](https://github.com/typednotes/infra/blob/main/ci/check-aws-policy.sh) runs its mocked regression cases offline.
 The complete leg still needs a passing rerun.
 
 Run [36632564973](https://github.com/typednotes/infra/actions/runs/36632564973)
@@ -716,13 +716,13 @@ empty; the `empty` stage *is* the teardown.
 Before any of that the job builds, runs the offline suite, and checks that the
 chosen provider's credentials are present — a missing repository secret fails
 there, naming the variable, rather than later as an opaque 403. What those
-credentials are and how they were provisioned is `docs/ci-auth.md`. For the
+credentials are and how they were provisioned is [`docs/ci-auth.md`](https://github.com/typednotes/infra/blob/main/docs/ci-auth.md). For the
 ordinary fleet the live step is capped at sixteen minutes and the job at
 thirty, including six minutes for backstop teardown and eight for setup/build.
 The live-step budget is sized from the
 driver's `settleSeconds := 180` polls plus create and delete of what stage 1
 declares — twelve resources on AWS and Scaleway, ten on GCP, pinned by `#guard`
-in `test/Live.lean`. Kubernetes has the larger budgets above; its provisioning
+in [`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean). Kubernetes has the larger budgets above; its provisioning
 waits run before the stage's convergence poll, and report progress separately.
 
 ### Repeating a run
@@ -758,7 +758,7 @@ Two verbs, and picking the wrong one is why this section exists:
 
 | | What it deletes | When it is the right one |
 |---|---|---|
-| `lake test -- <cloud> destroy` | every resource carrying the live fleet's **marker** (the fleet name `ci-tests-infra` — `liveFleet` in `test/Live.lean`, passed explicitly to `liveFor` and in `liveBoundary`'s `fleetName` — or the `ci-tests-infra-` name prefix where a kind can carry nothing else), then checks the account is clean | from any machine, a fresh runner included — the first thing to try |
+| `lake test -- <cloud> destroy` | every resource carrying the live fleet's **marker** (the fleet name `ci-tests-infra` — `liveFleet` in [`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean), passed explicitly to `liveFor` and in `liveBoundary`'s `fleetName` — or the `ci-tests-infra-` name prefix where a kind can carry nothing else), then checks the account is clean | from any machine, a fresh runner included — the first thing to try |
 | `lake test -- <cloud> sweep` | every resource named `ci-tests-infra-*` the credentials can **list**, marker or not | when `destroy` leaves something standing, and in the Cleanup workflow |
 
 `destroy` is the live test's last stage on its own: an empty declaration run
@@ -769,14 +769,14 @@ between creating a resource and marking it, or one from a version of this test
 that marked differently. `destroy` leaves those alone by design, and its final
 account check fails naming them. That is the reason `sweep` exists: it matches
 the name, not the marker. Every resource the live fleets declare is named
-`ci-tests-infra-*`, and a `#guard` in `test/Live.lean` holds that naming rule
+`ci-tests-infra-*`, and a `#guard` in [`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean) holds that naming rule
 precisely so a sweep can rely on it — `isDebris` is the only thing standing
 between a sweep and somebody else's resources, which is why it is one function
 used in one place.
 
 ### The normal route: the Cleanup workflow
 
-`.github/workflows/cleanup.yml` sweeps with CI's own credentials, one job per
+[`.github/workflows/cleanup.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/cleanup.yml) sweeps with CI's own credentials, one job per
 cloud, in the same concurrency group as that cloud's live test so a sweep can
 never race the run whose resources it would delete. It also runs weekly on a
 schedule, because debris costs money quietly.
@@ -805,9 +805,9 @@ did not clean up after itself, and the workflow says so in its step summary.
 
 Same code path, your credentials. Each cloud needs only its own variables, and
 the region has to match where the live fleet is placed — `awsFull in ireland`,
-`scalewayFull in paris`, `gcpFull in paris` (`test/Live.lean`), which
-`Infra/Core/Region.lean` maps to `eu-west-1`, `fr-par` and `europe-west9`.
-The variable names are `Infra/Core/Credentials.lean`'s, not the CLIs':
+`scalewayFull in paris`, `gcpFull in paris` ([`test/Live.lean`](https://github.com/typednotes/infra/blob/main/test/Live.lean)), which
+[`Infra/Core/Region.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Region.lean) maps to `eu-west-1`, `fr-par` and `europe-west9`.
+The variable names are [`Infra/Core/Credentials.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Credentials.lean)'s, not the CLIs':
 
 ```sh
 # AWS. AWS_SESSION_TOKEN only if the credentials are temporary.
@@ -849,7 +849,7 @@ concluding an account is clean:
   marker (the declaration's identifier by default, `boundary := { fleetName :=
   some "…" }` to override), so two fleets in one account with different names
   do not claim each other's resources at all — see
-  [`../docs/persistence.md`](../docs/persistence.md).
+  [`../docs/persistence.md`](https://github.com/typednotes/infra/blob/main/docs/persistence.md).
 - **Only kinds a lister covers, in regions the fleet declares.** A sweep
   enumerates `Kind` through `Backends.listers`, so a resource placed somewhere
   the declaration never mentions is out of reach. Concretely on Scaleway: the
@@ -866,5 +866,5 @@ concluding an account is clean:
 - **Unmarked resources are not the sweep's problem, but they look like it.**
   A resource that exists, matches a declared line and lacks the ownership
   marker is refused by `push` rather than adopted, so no teardown will remove
-  it and only a sweep will — see `docs/persistence.md`. If a live run fails
+  it and only a sweep will — see [`docs/persistence.md`](https://github.com/typednotes/infra/blob/main/docs/persistence.md). If a live run fails
   with *declared but not managed*, that is this case, and a sweep is the fix.

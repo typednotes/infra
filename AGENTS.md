@@ -237,8 +237,18 @@ Concretely, when a change lands:
   A consumer is pinned to a tag rather than to `main` on purpose — the front
   end's shape is part of what its `Main.lean` is written against — so a
   release that forgets `infraRev` scaffolds projects against the previous
-  one. Tag the commit, and push the tag: a pinned `require` cannot resolve
-  until the tag exists on the remote.
+  one. Have the user push `main` and wait for `lean_action_ci.yml` to pass on
+  the exact release commit before they push its version tag: a pinned
+  `require` cannot resolve until the tag exists on the remote.
+
+  Automatic CI runs on main and PRs targeting main, with manual dispatch
+  retained. `release.yml` runs only for version tags (or a manual retry naming
+  an existing version tag). `ci/require-main-ci.sh` requires that tag's actual
+  checkout to be reachable from main and its latest exact-commit **push-to-main**
+  CI run to be completed/success. Missing, pending, failed, PR/manual or
+  different-commit CI cannot publish. The full offline matrix is attested,
+  not repeated on tags; the version and CHANGELOG checks still run. Cloud
+  Plan/Apply/Destroy, live-test and cleanup workflows retain their own triggers.
 
   The last two were added after they had advertised **0.9.0 for two
   releases**. Neither is a `rev = ` line, so the checker did not know about

@@ -2,7 +2,9 @@ name: Lean Action CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -24,6 +26,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+      - name: Offline release gate regressions
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        run: bash ci/test-require-main-ci.sh
       # Linen's FFI is a single `extern_lib`, so building it compiles *every*
       # `.c` under its `ffi/` — libpq, OpenSSL, libsecret, SQLite, DuckDB —
       # whether or not this package imports the corresponding module. `infra`

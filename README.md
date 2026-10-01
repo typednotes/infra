@@ -5,8 +5,8 @@
 <p align="center">
   <em>Infrastructure as code, in Lean 4 — an unrealisable target is a compile error.</em><br>
   <a href="https://typednotes.github.io/infra/">Website</a> ·
-  <a href="docs/tutorial.md">Tutorial</a> ·
-  <a href="docs/coverage.md">Coverage</a>
+  <a href="https://github.com/typednotes/infra/blob/main/docs/tutorial.md">Tutorial</a> ·
+  <a href="https://github.com/typednotes/infra/blob/main/docs/coverage.md">Coverage</a>
 </p>
 
 [![CI](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml/badge.svg)](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml)
@@ -33,9 +33,9 @@ surprise.
 - **Container tags can move.** `image := "ghcr.io/org/app:latest"`
   is resolved to a verified manifest digest before a live diff; apply writes
   that frozen reference. New content redeploys, an unchanged digest converges,
-  and offline checks still need no registry. See [image diffs](docs/diff-semantics.md#container-image-content).
+  and offline checks still need no registry. See [image diffs](https://github.com/typednotes/infra/blob/main/docs/diff-semantics.md#container-image-content).
 
-See [`docs/architecture.md`](docs/architecture.md) for the full design and
+See [`docs/architecture.md`](https://github.com/typednotes/infra/blob/main/docs/architecture.md) for the full design and
 the portability rules.
 
 ## What 0.22.0 covers
@@ -54,7 +54,7 @@ for a Service — the workload it fronts. **Run live in 0.20.0 on Scaleway and
 GCP**, four stages each — create, updates in place, orphans destroyed inside
 a cluster that stays, teardown; AWS cluster, node-group and object
 creation/deletion has run, but the complete leg has not passed yet
-(`example/KubernetesPostgres.lean`, `docs/kubernetes.md`).
+([`example/KubernetesPostgres.lean`](https://github.com/typednotes/infra/blob/main/example/KubernetesPostgres.lean), [`docs/kubernetes.md`](https://github.com/typednotes/infra/blob/main/docs/kubernetes.md)).
 
 **New in 0.20.0: infra runs on `linen`'s `Linen.Cloud`** — credentials,
 transport, signing and error classification — and deletes its own copies.
@@ -69,7 +69,7 @@ project scaffolded by 0.20.0, which did not build, builds again.
 
 **New in 0.21.0: `render`, `helm template` for a fleet** — the declared
 Kubernetes objects as the YAML `apply` sends, offline, secrets as
-placeholders (`docs/kubernetes.md`, "Rendering"). EKS tokens now sign the way
+placeholders ([`docs/kubernetes.md`](https://github.com/typednotes/infra/blob/main/docs/kubernetes.md#rendering-helm-template-for-a-fleet), "Rendering"). EKS tokens now sign the way
 STS requires; they had been signed the way S3 wants, and were refused.
 
 **Fixed in 0.21.1: Kubernetes live-test timeouts and silent provisioning** —
@@ -94,7 +94,7 @@ resolution in its timer regression tests.
 Unchanged content converges; changed content updates in place, and apply
 deploys the selected digest rather than re-reading a moving tag during rollout.
 The cloud's configured image records the digest, with no local state. See
-[`docs/images.md`](docs/images.md) for registry auth, Kubernetes scope and verification.
+[`docs/images.md`](https://github.com/typednotes/infra/blob/main/docs/images.md) for registry auth, Kubernetes scope and verification.
 
 All the portable kinds have live clients on **all three clouds** — on GCP:
 Pub/Sub, Cloud Storage, Secret Manager, Artifact Registry, Cloud Run, IAM
@@ -106,7 +106,7 @@ down, a version with resources dropped, then one that declares nothing. After
 every stage the account must hold exactly what that stage declares, so a
 dropped resource has to be *destroyed* rather than abandoned. The five-stage
 sequence has not yet been passed honestly on any cloud: the 2026-09-08 runs
-found two defects, both fixed and neither re-verified — `docs/coverage.md`
+found two defects, both fixed and neither re-verified — [`docs/coverage.md`](https://github.com/typednotes/infra/blob/main/docs/coverage.md)
 says what each run showed. All three
 dependency patterns are exercised live: a
 chain, a fan-out, and a fan-in through both key and expression references.
@@ -141,7 +141,7 @@ It converts both ways: `toHcl` writes `.tf` from a fleet (with real HCL
 references, and a `# TODO` for anything HCL cannot express), and
 `fleetOfState` reads `terraform show -json` back into a fleet declaration.
 
-[`docs/coverage.md`](docs/coverage.md) is the full breakdown — kinds, features,
+[`docs/coverage.md`](https://github.com/typednotes/infra/blob/main/docs/coverage.md) is the full breakdown — kinds, features,
 what is verified how, and the known defects. It is kept current deliberately,
 including the parts that are embarrassing.
 
@@ -155,7 +155,7 @@ a first tagged release.
   (`leanprover/lean4:v4.34.0`).
 - Linux or macOS. Native FFI dependencies for `libpq`, OpenSSL headers, and
   the OS keychain (`libsecret` on Linux, Keychain on macOS) — see the
-  `lean_action_ci.yml` install steps for the exact packages if `lake build`
+  [`lean_action_ci.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/lean_action_ci.yml) install steps for the exact packages if `lake build`
   fails looking for a header.
 
 ## Start a project
@@ -221,7 +221,7 @@ Your declaration is a Lean program, so `lake exe my_infra` *is* the CLI —
 there is no separate binary to keep in step with your code, and no state file
 to commit: what is managed is marked on the resources themselves and read from
 the cloud on every run, and nothing is stored locally. `dump` writes what a run
-sees, without secret values. See `docs/persistence.md`.
+sees, without secret values. See [`docs/persistence.md`](https://github.com/typednotes/infra/blob/main/docs/persistence.md).
 
 ### Starting from nothing
 
@@ -244,10 +244,34 @@ lake exe infra check   # offline self-checks; no cloud, no credentials needed
 lake test              # the test driver, offline
 ```
 
+### CI and releases
+
+[`lean_action_ci.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/lean_action_ci.yml)
+runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
+Its Linux/macOS matrix includes offline checks, examples and scaffolded
+consumer builds. Push `main` and wait for CI on the exact release commit
+before pushing its version tag.
+
+[`release.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/release.yml)
+is triggered by a version-tag push or a manual retry naming an existing
+version tag; successful CI alone does not trigger publication. Its verification
+job has only `contents: read` and `actions: read` permissions.
+[`ci/require-main-ci.sh`](https://github.com/typednotes/infra/blob/main/ci/require-main-ci.sh)
+requires the actual checkout to match the tag's commit, that commit to be
+reachable from `origin/main`, and its latest **push-to-main** CI run to be
+completed/success. Missing, pending or failed latest runs block publication;
+PR/manual CI and another commit's result do not qualify.
+
+The publisher checks out the verified SHA, checks release-version consistency
+and extracts that version's CHANGELOG notes, then uses `contents: write` to
+create or update the GitHub release. It attests the full offline main CI
+matrix without repeating builds/tests on tags. Prerelease tags create
+prereleases. Live-cloud tests and cleanup retain their separate workflows.
+
 ## Running against real accounts
 
 `infra` needs credentials for both clouds — see
-[`docs/authentication.md`](docs/authentication.md) for the config file /
+[`docs/authentication.md`](https://github.com/typednotes/infra/blob/main/docs/authentication.md) for the config file /
 keychain / environment-variable chain it tries, in that order.
 
 ```sh
@@ -298,13 +322,13 @@ depends on.
 
 Nothing about that needs committing, which is deliberate: membership is a
 consequence of applying, not a statement of intent, so CI never has to write
-back to your branch. `Infra/Core/Ownership.lean` records the reasoning, and
+back to your branch. [`Infra/Core/Ownership.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Ownership.lean) records the reasoning, and
 which way each rule fails. `dump` writes what a run sees — every resource with
 its ownership evidence and observed state, the undeclared ones the next apply
 destroys, the forgotten ones it releases, the foreign ones, the warnings,
 never a secret value — and the same JSON replays as in-memory backends for
 tests. It is a record, never an input. The cases that can still strand an
-orphan are enumerated in `docs/coverage.md`: a resource on the name rung named
+orphan are enumerated in [`docs/coverage.md`](https://github.com/typednotes/infra/blob/main/docs/coverage.md): a resource on the name rung named
 outside the fleet's prefix (there is no marker on it), and anything on a cloud
 named neither in the declaration nor in `accounts` — that cloud is not
 scanned. So to retire a cloud, delete its lines but keep it in `accounts`
@@ -338,7 +362,7 @@ codes. `NO_COLOR` disables it, `FORCE_COLOR` forces it on.
 
 ### Pulling Scaleway state alone
 
-`example/ScalewayPull.lean` is a smaller, self-contained slice: authenticate
+[`example/ScalewayPull.lean`](https://github.com/typednotes/infra/blob/main/example/ScalewayPull.lean) is a smaller, self-contained slice: authenticate
 to **Scaleway only** (no AWS credentials read or required), pull whatever the
 account reports for every `Kind`, and write it to `out/scaleway/` — once as
 JSON, once as elaborable Lean source.
@@ -354,12 +378,12 @@ done: 3 resource(s) across every kind Scaleway reported
 
 Only Scaleway credentials are needed for this one — `~/.config/scw/config.yaml`,
 the OS keychain, or `SCW_ACCESS_KEY`/`SCW_SECRET_KEY` (see
-`docs/authentication.md`). Output lands under the gitignored `out/`, so it is
+[`docs/authentication.md`](https://github.com/typednotes/infra/blob/main/docs/authentication.md)). Output lands under the gitignored `out/`, so it is
 safe to inspect and delete.
 
 ### Declaring and pushing a Scaleway queue
 
-`example/ScalewayQueue.lean` is the counterpart to the one above: instead of
+[`example/ScalewayQueue.lean`](https://github.com/typednotes/infra/blob/main/example/ScalewayQueue.lean) is the counterpart to the one above: instead of
 listing what already exists, it declares a target and reconciles it. It is also
 the shortest file in the repo, and deliberately so — the whole declaration is:
 
@@ -388,7 +412,7 @@ unmarked, that line stays for as long as the queue exists.
 
 ### Two instances behind a security group
 
-`example/ParisInstances.lean` is the one to read for what the types actually
+[`example/ParisInstances.lean`](https://github.com/typednotes/infra/blob/main/example/ParisInstances.lean) is the one to read for what the types actually
 buy. `AwsInstanceSpec.securityGroup` is a **required** reference, so an
 instance with no security group, one naming a group outside the fleet, and one
 naming something that is not a group are all compile errors — the file quotes
@@ -410,7 +434,7 @@ for each operator who runs it.
 
 ### One fleet across four regions
 
-`example/MultiRegion.lean` places resources per *resource* rather than per
+[`example/MultiRegion.lean`](https://github.com/typednotes/infra/blob/main/example/MultiRegion.lean) places resources per *resource* rather than per
 cloud, with blocks that nest and scope like a `with` in Python:
 
 ```lean
@@ -432,7 +456,7 @@ still lists once.
 
 ### One fleet across both clouds
 
-`example/CrossCloud.lean` puts the same portable `objectStore` declaration
+[`example/CrossCloud.lean`](https://github.com/typednotes/infra/blob/main/example/CrossCloud.lean) puts the same portable `objectStore` declaration
 under both clouds, Object Lock on the AWS-only `s3Bucket`, and a Scaleway
 function that reads the AWS bucket — a reference crossing clouds, which is what
 orders the bucket first.
@@ -473,9 +497,9 @@ scaleway: organization 4d7c630f-… ok
 
 Start here:
 
-- [`docs/coverage.md`](docs/coverage.md) — **what this version actually does**,
+- [`docs/coverage.md`](https://github.com/typednotes/infra/blob/main/docs/coverage.md) — **what this version actually does**,
   and how far each part has been exercised
-- [`docs/tutorial.md`](docs/tutorial.md) — **getting started**: an empty
+- [`docs/tutorial.md`](https://github.com/typednotes/infra/blob/main/docs/tutorial.md) — **getting started**: an empty
   directory to a fleet in two clouds, with the commands, credentials,
   placement, references and secrets explained in order. Every snippet in it
   compiles.
@@ -483,41 +507,41 @@ Start here:
 Then the design documents, which explain *why* and are worth reading before
 extending anything:
 
-- [`docs/architecture.md`](docs/architecture.md) — overall design and the portability rules
-- [`docs/internals.md`](docs/internals.md) — **how it works**: the pipeline
+- [`docs/architecture.md`](https://github.com/typednotes/infra/blob/main/docs/architecture.md) — overall design and the portability rules
+- [`docs/internals.md`](https://github.com/typednotes/infra/blob/main/docs/internals.md) — **how it works**: the pipeline
   from source to API call, the type stack, the scheduler, and the membership
   mechanism, with diagrams. The one to read before changing the engine
-- [`docs/authentication.md`](docs/authentication.md) — where credentials come from
-- [`docs/permissions.md`](docs/permissions.md) — **what those credentials must
+- [`docs/authentication.md`](https://github.com/typednotes/infra/blob/main/docs/authentication.md) — where credentials come from
+- [`docs/permissions.md`](https://github.com/typednotes/infra/blob/main/docs/permissions.md) — **what those credentials must
   be allowed to do**: the AWS actions each kind calls, an adaptable operator
   policy, and why the ownership marker needs two grants per kind rather than one
-- [`docs/persistence.md`](docs/persistence.md) — why nothing is stored
+- [`docs/persistence.md`](https://github.com/typednotes/infra/blob/main/docs/persistence.md) — why nothing is stored
   locally, the two local records that used to be, and why membership is not
   intent
-- [`docs/branding.md`](docs/branding.md) — the logo, the colours, and the
+- [`docs/branding.md`](https://github.com/typednotes/infra/blob/main/docs/branding.md) — the logo, the colours, and the
   trademark policies that constrain them
-- [`docs/ci-auth.md`](docs/ci-auth.md) — how CI authenticates without storing
-  a key, for AWS and GCP, with the policies in [`ci/`](ci/)
-- [`CHANGELOG.md`](CHANGELOG.md) — what changed, and when
-- [`docs/providers.md`](docs/providers.md) — how each `Kind` maps onto each cloud's API, and what is actually verified live
-- [`docs/diff-semantics.md`](docs/diff-semantics.md) — how target vs. observed state is compared
+- [`docs/ci-auth.md`](https://github.com/typednotes/infra/blob/main/docs/ci-auth.md) — how CI authenticates without storing
+  a key, for AWS and GCP, with the policies in [`ci/`](https://github.com/typednotes/infra/tree/main/ci/)
+- [`CHANGELOG.md`](https://github.com/typednotes/infra/blob/main/CHANGELOG.md) — what changed, and when
+- [`docs/providers.md`](https://github.com/typednotes/infra/blob/main/docs/providers.md) — how each `Kind` maps onto each cloud's API, and what is actually verified live
+- [`docs/diff-semantics.md`](https://github.com/typednotes/infra/blob/main/docs/diff-semantics.md) — how target vs. observed state is compared
 
 ## Contributing
 
 Issues and PRs are welcome — this is early-stage, so a design discussion
 before a large PR will save rework. When extending a `Kind`, grep for its
 existing cases first: every provider/kind pair is a total match across
-several files by design (`Infra/Core/Kind.lean`, `Infra/Specs/Basic.lean`,
-`Infra/Core/Action.lean`, `Infra/Core/Diverge.lean`,
-`Infra/Core/Settle.lean`, `Infra/Providers/Live.lean`,
-`Infra/Providers/Placeholder.lean`), so a missed site is a compile error
+several files by design ([`Infra/Core/Kind.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Kind.lean), [`Infra/Specs/Basic.lean`](https://github.com/typednotes/infra/blob/main/Infra/Specs/Basic.lean),
+[`Infra/Core/Action.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Action.lean), [`Infra/Core/Diverge.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Diverge.lean),
+[`Infra/Core/Settle.lean`](https://github.com/typednotes/infra/blob/main/Infra/Core/Settle.lean), [`Infra/Providers/Live.lean`](https://github.com/typednotes/infra/blob/main/Infra/Providers/Live.lean),
+[`Infra/Providers/Placeholder.lean`](https://github.com/typednotes/infra/blob/main/Infra/Providers/Placeholder.lean)), so a missed site is a compile error
 rather than a silent gap.
 
-This project depends on [`linen`](https://github.com/typednotes/linen) for
+This project depends on [`linen`](https://github.com/typednotes/linen/tree/main) for
 its native (FFI-backed) building blocks — SigV4 signing, TLS, the OS
 keychain. If something you need is missing there, propose the addition to
 `linen` directly rather than working around it here.
 
 ## License
 
-Apache License 2.0 — see [`LICENSE`](LICENSE).
+Apache License 2.0 — see [`LICENSE`](https://github.com/typednotes/infra/blob/main/LICENSE).
