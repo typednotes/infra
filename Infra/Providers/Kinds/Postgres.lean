@@ -334,21 +334,40 @@ def read (creds : Credentials) (name : String) :
     | _ => throw (IO.userError s!"scaleway rdb: '{name}' must have one unambiguous administrator to compare masterUsername")
   return (cls, username, ver, storage)
 
+/-- Classic instances use SBS 5K block storage. Scaleway rejects new `bssd`
+    volumes as deprecated (Typednotes apply, 2026-10-01). The RDB v1 create
+    schema names the replacement `sbs_5k`; the live `fr-par` node catalogue
+    confirmed it supports `db-dev-s` with 10 GB on the same date. Size stays
+    in decimal GB, independently of node size, as with the old block volume. -/
+private def createPayload
+    (project name nodeType masterUsername password engineVersion markerValue : String)
+    (storageGb : Nat) : Value :=
+  .object
+    [ ("name", .string name)
+    , ("engine", .string s!"PostgreSQL-{engineVersion}")
+    , ("node_type", .string nodeType)
+    , ("user_name", .string masterUsername)
+    , ("password", .string password)
+    , ("volume_size", .number (Float.ofNat (storageGb * 1000000000)))
+    , ("volume_type", .string "sbs_5k")
+    , ("project_id", .string project)
+    , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]
+
+-- The actual request builder must select supported block storage and retain
+-- the declared size; default local storage would silently use the node's size.
+#guard
+  let payload := createPayload "project" "typednotes-compute-db" "db-dev-s"
+    "typednotes_compute" "unused-test-password" "16" "typednotes" 10
+  payload.lookupText "volume_type" == some "sbs_5k" &&
+    payload.lookupNat "volume_size" == some 10000000000
+
 def create (creds : Credentials)
     (name nodeType masterUsername password engineVersion markerValue : String)
     (storageGb : Nat) : IO String := do
   let project ← creds.requireProject
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/instances")
-    (payload := some (.object
-      [ ("name", .string name)
-      , ("engine", .string s!"PostgreSQL-{engineVersion}")
-      , ("node_type", .string nodeType)
-      , ("user_name", .string masterUsername)
-      , ("password", .string password)
-      , ("volume_size", .number (Float.ofNat (storageGb * 1000000000)))
-      , ("volume_type", .string "bssd")
-      , ("project_id", .string project)
-      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
+    (payload := some (createPayload project name nodeType masterUsername password
+      engineVersion markerValue storageGb))
   let id ← match reply.lookupText "id" with
     | some id => pure id
     | none => throw (IO.userError "scaleway rdb: create reply has no instance id")

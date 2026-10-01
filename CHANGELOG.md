@@ -27,6 +27,20 @@ active on 2026-09-29:
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
 
+## [0.22.2] — 2026-10-01
+
+### Fixed: Scaleway Managed PostgreSQL storage creation
+
+- Request `sbs_5k` block volumes for new classic PostgreSQL instances instead of
+  deprecated `bssd`. The Typednotes compute database apply failed with HTTP 400
+  on the old volume type; its existing 10 GB declaration remains valid.
+- A pure request-builder regression checks the supported volume type and exact
+  byte size. The live `fr-par` node catalogue confirms `db-dev-s` supports SBS
+  5K, with a 5 GB minimum and 5 GB increments (2026-10-01).
+- Existing instances are not migrated or replaced; only creation changes.
+  Live creation with the replacement volume type still needs a passing apply.
+- Scaffolded projects pin `v0.22.2`; dependency versions stay unchanged.
+
 ## [0.22.1] — 2026-10-01
 
 ### Fixed: classic PostgreSQL deployment wiring

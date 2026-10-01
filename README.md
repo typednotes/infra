@@ -38,7 +38,12 @@ surprise.
 See [`docs/architecture.md`](https://github.com/typednotes/infra/blob/main/docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.22.1 covers
+## What 0.22.2 covers
+
+**Fixed in 0.22.2: Scaleway Managed PostgreSQL creation uses SBS 5K storage.**
+New classic instances request `sbs_5k` block volumes at the declared size;
+Scaleway now rejects the previously hard-coded `bssd` type as deprecated.
+Existing instances are not migrated or replaced by this change.
 
 **Fixed in 0.22.1: classic PostgreSQL declarations and connection endpoints.**
 The fleet DSL selects the classic constructor when `instanceClass` is present.
@@ -181,7 +186,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.22.1"
+rev = "v0.22.2"
 ```
 
 Then:

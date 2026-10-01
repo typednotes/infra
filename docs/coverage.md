@@ -1,4 +1,4 @@
-# Coverage in 0.22.1
+# Coverage in 0.22.2
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Container-image resolution was checked on 2026-10-01;
@@ -6,6 +6,16 @@ the existing cloud round-trip results retain their recorded dates below.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
+
+## Scaleway Managed PostgreSQL storage (0.22.2)
+
+New classic instances request `sbs_5k` block storage at the declared size.
+Scaleway rejected the old hard-coded `bssd` type during the Typednotes apply
+(2026-10-01). The RDB v1 schema and a read-only live `fr-par` node catalogue
+confirm `sbs_5k` supports `db-dev-s` at 10 GB (5 GB minimum/increments).
+A pure check exercises the actual creation payload's volume type and byte size.
+Existing instances are not migrated or replaced. Creating an instance with the
+new volume type has not yet been exercised; the next apply verifies that path.
 
 ## Classic PostgreSQL deployment (0.22.1)
 
