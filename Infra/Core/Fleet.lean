@@ -398,6 +398,83 @@ nodeCount := {asc.1} instead"] else [])
     `#guard myFleet.plan.kubernetesIsSound`. -/
 def Plan.kubernetesIsSound {κ : Keys} (T : Plan κ) : Bool := T.kubernetesProblem.isNone
 
+/-- Access policy is explicit and literal: unsupported clouds/products and
+    proxy bypasses are rejected before a plan can imply they will be enforced. -/
+def Plan.accessProblem {κ : Keys} (T : Plan κ) : Option String := Id.run do
+  let mut problems : List String := []
+  for p in Finite.elems (α := ProviderId) do
+    for key in Finite.elems (α := κ.Key p .postgres) do
+      match T.assign p .postgres key with
+      | .present spec =>
+        let slot := slotId p .postgres (κ.name p .postgres key)
+        match spec.scalewayAccess with
+        | .unknown => pure ()
+        | .known expression => match expression.asLit with
+          | none => problems := problems ++ [s!"{slot}: scalewayAccess must be a literal"]
+          | some none => pure ()
+          | some (some access) =>
+            if p != .scaleway then
+              problems := problems ++ [s!"{slot}: scalewayAccess is supported only on Scaleway classic PostgreSQL"]
+            if (spec.instanceClass.asKnown.bind Expr.asLit).getD "" == "" then
+              problems := problems ++ [s!"{slot}: Serverless SQL has no private-network endpoint or endpoint visibility controls"]
+            if let some problem := access.problem then problems := problems ++ [s!"{slot}: {problem}"]
+            if !access.publicEndpoint && !access.privateEndpoint then
+              problems := problems ++ [s!"{slot}: PostgreSQL requires at least one endpoint"]
+            if access.privateNetworkId.isSome != access.privateEndpoint then
+              problems := problems ++ [s!"{slot}: PostgreSQL network attachment is its private endpoint"]
+      | _ => pure ()
+    for key in Finite.elems (α := κ.Key p .scalewayContainer) do
+      match T.assign p .scalewayContainer key with
+      | .present spec =>
+        let slot := slotId p .scalewayContainer (κ.name p .scalewayContainer key)
+        if p != .scaleway then
+          problems := problems ++ [s!"{slot}: scalewayContainer is a Scaleway-only resource"]
+        let access := spec.access.asKnown.bind Expr.asLit
+        if spec.access.isKnown && access.isNone then
+          problems := problems ++ [s!"{slot}: access must be a literal"]
+        if let some (some access) := access then
+          if let some problem := access.problem then problems := problems ++ [s!"{slot}: {problem}"]
+        match spec.proxy with
+        | .unknown => pure ()
+        | .known expression => match expression.asLit with
+          | none => problems := problems ++ [s!"{slot}: proxy must be a literal with a typed backend reference"]
+          | some none => pure ()
+          | some (some proxy) =>
+            if let some problem := proxy.problem then problems := problems ++ [s!"{slot}: {problem}"]
+            if !Infra.Specs.isNginxImage (spec.image.asLit.getD "") then
+              problems := problems ++ [s!"{slot}: managed proxy requires the official docker.io/library/nginx image"]
+            if spec.command.isKnown || spec.args.isKnown then
+              problems := problems ++ [s!"{slot}: managed proxy owns command/args; do not override them"]
+            if spec.privacy.asKnown.bind Expr.asLit == some (some .authenticated) ||
+                spec.httpsOnly.asKnown.bind Expr.asLit == some (some false) then
+              problems := problems ++ [s!"{slot}: managed proxy requires public privacy and HTTPS"]
+            let port := (spec.port.asKnown.bind Expr.asLit).getD 8080
+            if port == 0 || port ≥ 65536 then
+              problems := problems ++ [s!"{slot}: managed proxy requires a bounded TCP port"]
+            if (spec.env.asKnown.bind Expr.asLit).getD [] |>.any (fun pair =>
+                ["NGINX_CONFIG", "INFRA_PROXY_POLICY"].contains pair.1) then
+              problems := problems ++ [s!"{slot}: managed proxy reserves NGINX_CONFIG and INFRA_PROXY_POLICY"]
+            match access with
+            | some (some gatewayAccess) =>
+              if !gatewayAccess.publicEndpoint || gatewayAccess.privateNetworkId.isNone then
+                problems := problems ++ [s!"{slot}: proxy needs a public endpoint and a Private Network"]
+              match T.assign .scaleway .scalewayContainer proxy.backend with
+              | .present backend =>
+                match backend.access.asKnown.bind Expr.asLit with
+                | some (some backendAccess) =>
+                  if backendAccess.publicEndpoint || !backendAccess.privateEndpoint ||
+                      backendAccess.privateNetworkId != gatewayAccess.privateNetworkId then
+                    problems := problems ++ [s!"{slot}: proxy backend must be private-only on the same network"]
+                | _ => problems := problems ++ [s!"{slot}: proxy backend needs explicit private-only access"]
+                if backend.privacy.asKnown.bind Expr.asLit == some (some .authenticated) then
+                  problems := problems ++ [s!"{slot}: proxy cannot inject Scaleway IAM credentials into an authenticated backend"]
+              | _ => problems := problems ++ [s!"{slot}: proxy backend must be a managed present resource"]
+            | _ => problems := problems ++ [s!"{slot}: proxy requires explicit access policy"]
+      | _ => pure ()
+  return if problems.isEmpty then none else some (String.intercalate "\n" problems)
+
+def Plan.accessIsSound {κ : Keys} (T : Plan κ) : Bool := T.accessProblem.isNone
+
 /-- The key carrying this name, if this fleet has one.
 
     Decidable because every key type is `Finite`. The membership test below

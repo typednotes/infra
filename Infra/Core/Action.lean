@@ -213,7 +213,8 @@ instance : HasDeps ImageRegistrySpec where
 instance : HasDeps PostgresSpec where
   deps s := depsReq s.name ++ depsOpt s.instanceClass ++ depsReq s.masterUsername
             ++ depsReq s.masterPasswordSecret ++ depsOpt s.version ++ depsOpt s.storageGb
-            ++ depsOpt s.minCapacity ++ depsOpt s.maxCapacity
+             ++ depsOpt s.minCapacity ++ depsOpt s.maxCapacity
+            ++ depsOpt s.scalewayAccess
 
 /-- The migrations kind holds only names, so every edge here is expression
     deps over literals — which is `[]` — and the real edges come from
@@ -275,6 +276,13 @@ instance : HasDeps ScalewayContainerSpec where
     ++ depsOpt s.memoryMb ++ depsOpt s.cpuLimit ++ depsOpt s.timeoutSec
     ++ depsOpt s.env ++ depsOpt s.secretEnv ++ depsKeys s.secretEnv
     ++ depsOpt s.migrations ++ depsKeyList s.migrations
+    ++ depsOpt s.access ++ depsOpt s.privacy ++ depsOpt s.httpsOnly
+    ++ depsOpt s.command ++ depsOpt s.args ++ depsOpt s.proxy
+    ++ (match s.proxy with
+      | .known expression => match expression.asLit with
+        | some (some proxy) => [⟨.scaleway, .scalewayContainer, proxy.backend, .handle⟩]
+        | _ => []
+      | .unknown => [])
 
 /-- Total over `Kind`, so a new kind cannot silently contribute no edges. -/
 @[reducible] def hasDepsOf : (k : Kind) → HasDeps (SpecOf.{1} k)

@@ -247,7 +247,7 @@ def composedAppliedWorld : World composedKeys :=
           reported := { name := "main", instanceClass := .unknown
                         masterUsername := "dbadmin", masterPasswordSecret := ""
                         version := .unknown, storageGb := .unknown
-                        minCapacity := .unknown, maxCapacity := .unknown } }⟩ ]
+                        minCapacity := .unknown, maxCapacity := .unknown, scalewayAccess := .unknown } }⟩ ]
 
 /-! ## A third fleet: an identity, its key, and a database that only IAM opens
 
@@ -377,7 +377,7 @@ def identityAppliedWorld : World identityKeys :=
           reported := { name := "reports", instanceClass := .unknown
                         masterUsername := "", masterPasswordSecret := ""
                         version := .unknown, storageGb := .unknown
-                        minCapacity := .unknown, maxCapacity := .unknown } }⟩ ]
+                        minCapacity := .unknown, maxCapacity := .unknown, scalewayAccess := .unknown } }⟩ ]
 
 section IdentityGuards
 
@@ -1078,5 +1078,32 @@ private def orphan (k : Kind) (nm : String) : Orphan :=
       with another's placement, and built it in the wrong region. -/
 
 end OrphanGuards
+
+/- Native access policy test fleet. Its public caller observes the private
+   backend URL; its composed secret observes the database endpoint. -/
+def accessNetwork := "00000000-0000-4000-8000-000000000000"
+
+fleet networkPermissions in paris where
+  provider scaleway where
+    resource scalewayContainerNamespace "permissions" as ns { description := "access fixture" }
+    resource secrets "db-password" as password { valueFrom := fromEnv "ACCESS_FIXTURE_PASSWORD" }
+    resource postgres "db" as database
+      { instanceClass := "db-dev-s", masterUsername := "admin", masterPasswordSecret := "db-password"
+      , scalewayAccess := some (ScalewayAccess.internalOnly accessNetwork) }
+    resource secrets "db-url"
+      { valueFrom := composed expr!"postgres://admin:{secretValueOf password}@{endpointOf database}/rdb?sslmode=require" }
+    resource scalewayContainer "api" as api
+      { namespace' := ns, image := "docker.io/library/httpd:latest", port := 80
+      , access := some (ScalewayAccess.internalOnly accessNetwork) }
+    resource scalewayContainer "app"
+      { namespace' := ns, image := "docker.io/library/httpd:latest", port := 80
+      , access := some (ScalewayAccess.publicInNetwork accessNetwork)
+      , env := (privateUrlOf api).map fun url => [("API_URL", url)] }
+    resource scalewayContainer "admin"
+      { namespace' := ns, image := "docker.io/library/nginx:alpine", port := 8080
+      , access := some (ScalewayAccess.publicInNetwork accessNetwork)
+      , proxy := proxyTo api ["203.0.113.10/32", "2001:db8::10/128"] }
+
+#guard networkPermissions.plan.accessIsSound
 
 end Infra.Demo

@@ -159,7 +159,7 @@ run_cmd do
 -- ⟪native-link-flags:end⟫
 
 package infra where
-  version := v!"0.22.2"
+  version := v!"0.23.0"
   -- Metadata Reservoir (the Lake package index) surfaces on the package page.
   -- Reservoir indexes public Lean repos automatically — no submission — but it
   -- only shows what is declared here, and the repo link is all it can infer.
@@ -269,3 +269,8 @@ lean_exe «postgres-migrations» where
 lean_exe «kubernetes-postgres» where
   srcDir := "example"
   root := `KubernetesPostgres
+
+@[default_target]
+lean_exe «private-services» where
+  srcDir := "example"
+  root := `PrivateServices

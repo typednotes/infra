@@ -1,4 +1,4 @@
-# Coverage in 0.22.2
+# Coverage in 0.23.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Container-image resolution was checked on 2026-10-01;
@@ -6,6 +6,22 @@ the existing cloud round-trip results retain their recorded dates below.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
+
+## Declarative access policies (0.23.0)
+
+Scaleway containers declare network/endpoint visibility, IAM privacy, HTTPS and
+entrypoint properties. A managed single-upstream NGINX proxy enforces IP CIDRs,
+checks actual enforcement on readback and rejects public backend bypasses.
+Classic PostgreSQL declares `scalewayAccess`, including private IPAM and public
+endpoint removal without replacing data. Endpoint changes update callers and,
+with `--refresh-secrets`, connection recipes/copies. Unsupported clouds and
+Serverless SQL are explicitly refused.
+
+Offline checks and the `private-services` example pass. Generated container/v1
+and rdb/v1 SDKs were checked 2026-10-11. Read-only native policy observation
+passed for all eight Typednotes containers and private compute PostgreSQL,
+including omitted nullable fields. Native live create/update round-trip
+coverage is not claimed. Full scope and creation caveats: [access.md](access.md).
 
 ## Scaleway Managed PostgreSQL storage (0.22.2)
 
@@ -23,7 +39,8 @@ The fleet DSL routes `instanceClass` to the existing classic smart constructor;
 mixed classic/serverless arguments are rejected. Scaleway endpoint parsing
 consumes private host/port validation evidence, preserves non-default ports,
 supports the current endpoint array and the legacy singular field, and refuses
-private, ambiguous or malformed selections. Creation waits for ready state.
+ambiguous or malformed selections. Since 0.23.0, private-only instances also
+report their private host/port. Creation waits for ready state.
 The administrator is resolved from the project-bound instance's users rather
 than compared with an invented empty username. Pure declaration/parser checks
 and the offline suite pass. Creating a new live Managed Database has not been
@@ -168,7 +185,7 @@ clients for those kinds, not one.
 | `scalewayFunctionNamespace` | Scaleway | Functions and Containers are different products with different API prefixes |
 | `scalewayFunction` | Scaleway | as above |
 | `scalewayContainerNamespace` | Scaleway | as above |
-| `scalewayContainer` | Scaleway | binds secret-backed environment variables, which `compute` cannot |
+| `scalewayContainer` | Scaleway | binds secret-backed env vars and native access/proxy policy, which `compute` cannot |
 
 ## Language and engine features
 

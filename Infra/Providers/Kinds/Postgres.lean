@@ -33,6 +33,7 @@ import Infra.Providers.Marker
 namespace Infra.Providers.Kinds.Postgres
 
 open Infra.Core
+open Infra.Specs
 open Infra.Providers
 open Infra.Providers.Aws
 open Infra.Providers.JsonRead
@@ -247,7 +248,7 @@ private def publicEndpointKind (value : Value) : Bool :=
 
 /-- No private-network endpoint, implicit port, or ambiguous public selector.
     The legacy field is accepted only when the modern field is absent. -/
-def endpointAddress? (reply : Value) : Option String := do
+private def publicEndpointAddress? (reply : Value) : Option String := do
   let value ← match reply.lookup "endpoints" with
     | some (.array endpoints) =>
       match endpoints.toList.filter (fun e => publicEndpointKind e &&
@@ -260,6 +261,37 @@ def endpointAddress? (reply : Value) : Option String := do
       if !absentEndpointKind endpoint "private_network" || !absentEndpointKind endpoint "direct_access" then none
       else some endpoint
   return (← PublicEndpoint.parse value).address
+
+def privateEndpointAddress? (reply : Value) : Option String := do
+  let endpoints ← match reply.lookup "endpoints" with
+    | some (.array endpoints) => some endpoints.toList
+    | _ => none
+  let value ← match endpoints.filter (fun endpoint =>
+      absentEndpointKind endpoint "load_balancer" && absentEndpointKind endpoint "direct_access" &&
+      ((endpoint.lookup "private_network").bind (·.lookupText "private_network_id")).any (!·.isEmpty)) with
+    | [endpoint] => some endpoint
+    | _ => none
+  return (← PublicEndpoint.parse value).address
+
+/-- Preserve public endpoint preference for dual-endpoint instances; private-only
+    instances expose their provider-assigned host/port instead of a blank value. -/
+def endpointAddress? (reply : Value) : Option String :=
+  if (arrayField reply "endpoints").any publicEndpointKind || (reply.lookup "endpoints").isNone then
+    publicEndpointAddress? reply
+  else privateEndpointAddress? reply
+
+def accessFromJson (reply : Value) : Option ScalewayAccess := do
+  let endpoints ← match reply.lookup "endpoints" with
+    | some (.array endpoints) => some endpoints.toList
+    | _ => none
+  let networks := endpoints.filterMap fun endpoint =>
+    (endpoint.lookup "private_network").bind (·.lookupText "private_network_id")
+  let privateNetworkId ← match networks with
+    | [] => some none
+    | [id] => if id.isEmpty then none else some (some id)
+    | _ => none
+  return { privateNetworkId, publicEndpoint := endpoints.any publicEndpointKind
+           privateEndpoint := privateNetworkId.isSome }
 
 private def endpointFixture (port : Nat) : Value := .object
   [("ip", .string "192.0.2.7"), ("port", .number (Float.ofNat port)), ("load_balancer", .object [])]
@@ -295,6 +327,69 @@ private def requireId (creds : Credentials) (name : String) : IO String := do
   match (← listRaw creds).find? (·.1 == name) with
   | some (_, id, _, _) => return id
   | none                => throw (IO.userError s!"scaleway rdb: no instance named '{name}'")
+
+def get (creds : Credentials) (name : String) : IO Value := do
+  Scaleway.call creds "GET" (prefix' creds.region ++ s!"/instances/{← requireId creds name}")
+
+def readAccess (creds : Credentials) (name : String) : IO (Partial (Option ScalewayAccess)) := do
+  let current ← get creds name
+  let some policy := accessFromJson current | throw (IO.userError "RDB did not report an unambiguous endpoint policy")
+  return .known (some policy)
+
+def observed (creds : Credentials) (name : String) : IO PostgresObserved := do
+  let current ← get creds name
+  let some endpoint := endpointAddress? current | throw (IO.userError "RDB has no unambiguous endpoint")
+  return { handle := ⟨name⟩, endpoint }
+
+def privateEndpointSpec (networkId : String) : Value :=
+  .object [("private_network", .object [("private_network_id", .string networkId), ("ipam_config", .object [])])]
+
+private def validateAccess (access : ScalewayAccess) : IO Unit := do
+  if let some problem := access.problem then throw (IO.userError problem)
+  unless access.publicEndpoint || access.privateEndpoint do
+    throw (IO.userError "PostgreSQL requires at least one endpoint")
+  unless access.privateNetworkId.isSome == access.privateEndpoint do
+    throw (IO.userError "PostgreSQL network attachment is its private endpoint")
+
+private def deleteEndpoint (creds : Credentials) (endpoint : Value) : IO Unit := do
+  let some id := endpoint.lookupText "id" | throw (IO.userError "RDB endpoint has no id")
+  discard <| Scaleway.call creds "DELETE" (prefix' creds.region ++ s!"/endpoints/{id}")
+
+private def waitPolicy (creds : Credentials) (id : String) (policy : ScalewayAccess) : IO Value := do
+  let start ← IO.monoMsNow
+  repeat
+    let current ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/instances/{id}")
+    if current.lookupText "status" == some "error" then throw (IO.userError "RDB entered error while reconciling endpoints")
+    if current.lookupText "status" == some "ready" && accessFromJson current == some policy &&
+        (endpointAddress? current).isSome then return current
+    if (← IO.monoMsNow) - start > 900000 then throw (IO.userError "RDB endpoint policy did not converge within 15 minutes")
+    IO.sleep 2000
+
+/-- Reconcile child endpoints, never replace the data instance. A public
+    endpoint is never invented to rescue a failed private-only transition. -/
+private def reconcileAccessId (creds : Credentials) (id : String) (policy : ScalewayAccess) : IO Value := do
+  validateAccess policy
+  if let some network := policy.privateNetworkId then Scaleway.requirePrivateNetwork creds network
+  let current ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/instances/{id}")
+  let endpoints := arrayField current "endpoints"
+  if policy.publicEndpoint && !endpoints.any publicEndpointKind then
+    discard <| Scaleway.call creds "POST" (prefix' creds.region ++ s!"/instances/{id}/endpoints")
+      (payload := some (.object [("load_balancer", .object [])]))
+  let networks := endpoints.filter fun endpoint => (endpoint.lookup "private_network").isSome &&
+    !absentEndpointKind endpoint "private_network"
+  let desiredPresent := networks.any fun endpoint =>
+    (endpoint.lookup "private_network").bind (·.lookupText "private_network_id") == policy.privateNetworkId
+  for endpoint in networks do
+    if !policy.privateEndpoint || !desiredPresent then deleteEndpoint creds endpoint
+  if policy.privateEndpoint && !desiredPresent then
+    discard <| Scaleway.call creds "POST" (prefix' creds.region ++ s!"/instances/{id}/endpoints")
+      (payload := some (privateEndpointSpec (policy.privateNetworkId.getD "")))
+  if !policy.publicEndpoint then
+    for endpoint in endpoints.filter publicEndpointKind do deleteEndpoint creds endpoint
+  waitPolicy creds id policy
+
+def reconcileAccess (creds : Credentials) (name : String) (policy : Option ScalewayAccess) : IO Unit := do
+  if let some policy := policy then discard <| reconcileAccessId creds (← requireId creds name) policy
 
 /-- Tags, for `Ownership.ownershipOf`. -/
 def readOwnership (creds : Credentials) (name : String) :
@@ -341,7 +436,7 @@ def read (creds : Credentials) (name : String) :
     in decimal GB, independently of node size, as with the old block volume. -/
 private def createPayload
     (project name nodeType masterUsername password engineVersion markerValue : String)
-    (storageGb : Nat) : Value :=
+    (storageGb : Nat) (access : Option ScalewayAccess := none) : Value :=
   .object
     [ ("name", .string name)
     , ("engine", .string s!"PostgreSQL-{engineVersion}")
@@ -351,7 +446,9 @@ private def createPayload
     , ("volume_size", .number (Float.ofNat (storageGb * 1000000000)))
     , ("volume_type", .string "sbs_5k")
     , ("project_id", .string project)
-    , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]
+    , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))])
+    , ("init_endpoints", .array ((access.bind (·.privateNetworkId)).map
+        (fun network => #[privateEndpointSpec network]) |>.getD #[])) ]
 
 -- The actual request builder must select supported block storage and retain
 -- the declared size; default local storage would silently use the node's size.
@@ -363,11 +460,14 @@ private def createPayload
 
 def create (creds : Credentials)
     (name nodeType masterUsername password engineVersion markerValue : String)
-    (storageGb : Nat) : IO String := do
+    (storageGb : Nat) (access : Option ScalewayAccess := none) : IO String := do
+  if let some policy := access then
+    validateAccess policy
+    if let some network := policy.privateNetworkId then Scaleway.requirePrivateNetwork creds network
   let project ← creds.requireProject
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/instances")
     (payload := some (createPayload project name nodeType masterUsername password
-      engineVersion markerValue storageGb))
+      engineVersion markerValue storageGb access))
   let id ← match reply.lookupText "id" with
     | some id => pure id
     | none => throw (IO.userError "scaleway rdb: create reply has no instance id")
@@ -376,9 +476,12 @@ def create (creds : Credentials)
     let current ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/instances/{id}")
     match current.lookupText "status" with
     | some "ready" =>
+      let current ← match access with
+        | some policy => reconcileAccessId creds id policy
+        | none => pure current
       match endpointAddress? current with
       | some address => return address
-      | none => throw (IO.userError "scaleway rdb: ready instance has no unambiguous public host/port endpoint")
+      | none => throw (IO.userError "scaleway rdb: ready instance has no unambiguous host/port endpoint")
     | some "error" => throw (IO.userError s!"scaleway rdb: instance '{name}' entered error during creation")
     | _ => pure ()
     if (← IO.monoMsNow) - started >= 900000 then
@@ -387,8 +490,10 @@ def create (creds : Credentials)
 
 def modify (creds : Credentials) (name nodeType : String) : IO Unit := do
   let id ← requireId creds name
-  discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/instances/{id}")
-    (payload := some (.object [("node_type", .string nodeType)]))
+  let current ← get creds name
+  unless current.lookupText "node_type" == some nodeType do
+    discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/instances/{id}")
+      (payload := some (.object [("node_type", .string nodeType)]))
 
 /-- Whether a Managed Database instance by this name exists — how `release`
     tells this product (tag rung) from Serverless SQL (name rung) behind one

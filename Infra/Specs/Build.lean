@@ -92,20 +92,22 @@ def postgres (name : Expr K String) (masterUsername : Expr K String)
     (masterPasswordSecret : Expr K String)
     (minCapacity : Expr K Nat) (maxCapacity : Expr K Nat)
     (version : Partial (Expr K String) := .unknown)
-    (storageGb : Partial (Expr K Nat) := .unknown) :
+    (storageGb : Partial (Expr K Nat) := .unknown)
+    (scalewayAccess : Partial (Expr K (Option ScalewayAccess)) := .unknown) :
     PostgresSpec K Partial (Expr K) :=
   PostgresSpec.serverless name masterUsername masterPasswordSecret
-    minCapacity maxCapacity version storageGb
+    minCapacity maxCapacity version storageGb scalewayAccess
 
 /-- A classic, fixed-capacity managed instance. Named apart from `postgres`
     because the two capacity shapes are genuinely different targets. -/
 def postgresClassic (name : Expr K String) (masterUsername : Expr K String)
     (masterPasswordSecret : Expr K String) (instanceClass : Expr K String)
     (version : Partial (Expr K String) := .unknown)
-    (storageGb : Partial (Expr K Nat) := .unknown) :
+    (storageGb : Partial (Expr K Nat) := .unknown)
+    (scalewayAccess : Partial (Expr K (Option ScalewayAccess)) := .unknown) :
     PostgresSpec K Partial (Expr K) :=
   PostgresSpec.classic name masterUsername masterPasswordSecret instanceClass
-    version storageGb
+    version storageGb scalewayAccess
 
 /-- A declared migration set. `migrations` is the full history, newest last —
     the same order `NNNN_*.sql` files apply in — each inline
@@ -188,10 +190,16 @@ def scalewayContainer (name : Expr K String)
     (timeoutSec : Partial (Expr K Nat) := .unknown)
     (env : Partial (Expr K (List (String × String))) := .unknown)
     (secretEnv : Partial (Expr K (List (String × K .scaleway .secrets))) := .unknown)
-    (migrations : Partial (Expr K (List (K .scaleway .postgresMigrations))) := .unknown) :
+    (migrations : Partial (Expr K (List (K .scaleway .postgresMigrations))) := .unknown)
+    (access : Partial (Expr K (Option ScalewayAccess)) := .unknown)
+    (privacy : Partial (Expr K (Option ScalewayContainerPrivacy)) := .unknown)
+    (httpsOnly : Partial (Expr K (Option Bool)) := .unknown)
+    (command : Partial (Expr K (Option (List String))) := .unknown)
+    (args : Partial (Expr K (Option (List String))) := .unknown)
+    (proxy : Partial (Expr K (Option (ScalewayContainerProxy K))) := .unknown) :
     ScalewayContainerSpec K Partial (Expr K) :=
   { name, namespace', image, port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec,
-    env, secretEnv, migrations }
+    env, secretEnv, migrations, access, privacy, httpsOnly, command, args, proxy }
 
 /-- Total over `Kind`, and checking the *correspondence* rather than just that
     the names exist.
@@ -220,7 +228,7 @@ def scalewayContainer (name : Expr K String)
   | .imageRegistry     => let _ : ∀ {K}, Expr K String → _ →
                             ImageRegistrySpec K Partial (Expr K) := @imageRegistry; ()
   | .postgres          => let _ : ∀ {K}, Expr K String → Expr K String → Expr K String →
-                            Expr K Nat → Expr K Nat → _ → _ →
+                             Expr K Nat → Expr K Nat → _ → _ → _ →
                             PostgresSpec K Partial (Expr K) := @postgres; ()
   | .postgresMigrations =>
       let _ : ∀ {K}, Expr K String → Expr K String → Expr K String → Expr K String →
@@ -249,7 +257,8 @@ def scalewayContainer (name : Expr K String)
                             ScalewayFunctionSpec K Partial (Expr K) := @scalewayFunction; ()
   | .scalewayContainer => let _ : ∀ {K}, Expr K String →
                             Expr K (K .scaleway .scalewayContainerNamespace) →
-                            Expr K String → _ → _ → _ → _ → _ → _ → _ → _ → _ →
-                            ScalewayContainerSpec K Partial (Expr K) := @scalewayContainer; ()
+                             Expr K String → _ → _ → _ → _ → _ → _ → _ → _ → _ →
+                             _ → _ → _ → _ → _ → _ →
+                             ScalewayContainerSpec K Partial (Expr K) := @scalewayContainer; ()
 
 end Infra.Specs.Build

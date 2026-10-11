@@ -843,6 +843,63 @@ structure Refresh (κ : Keys) where
   actions : List (Action κ) := []
   reasons : List String := []
 
+/-- Updating native endpoint policy can change a post-apply URL/IP without
+    replacing the parent resource. Consumers must be re-materialised against
+    the new observation, not the old world used to compute this plan. -/
+def endpointChangingSlots {κ : Keys} (T : Plan κ) (W : World κ)
+    (planned : List (Action κ)) : List String :=
+  planned.filterMap fun action =>
+    match action with
+    | .update p .postgres key =>
+      match T.assign p .postgres key, W.sighting p .postgres key with
+      | .present spec, some old =>
+        let target := (spec.scalewayAccess.asKnown.bind Expr.asLit).getD none
+        if !(divergesChosen "scalewayAccess" target old.reported.scalewayAccess).isEmpty then some action.slot else none
+      | _, _ => none
+    | .update p .scalewayContainer key =>
+      match T.assign p .scalewayContainer key, W.sighting p .scalewayContainer key with
+      | .present spec, some old =>
+        let target := (spec.access.asKnown.bind Expr.asLit).getD none
+        if !(divergesChosen "access" target old.reported.access).isEmpty then some action.slot else none
+      | _, _ => none
+    | _ => none
+
+def refreshEndpointConsumers {κ : Keys} (T : Plan κ) (W : World κ)
+    (planned : List (Action κ)) (foreign : List String) : Refresh κ := Id.run do
+  let changed := endpointChangingSlots T W planned ++ planned.filterMap (fun action => match action with
+    | .create .. | .replace .. => some action.slot
+    | _ => none)
+  let touched := planned.map (·.slot)
+  let mut result : Refresh κ := {}
+  for p in Finite.elems (α := ProviderId) do
+    for k in [.compute, .scalewayContainer] do
+      for key in Finite.elems (α := κ.Key p k) do
+        let slot := slotId p k (κ.name p k key)
+        if touched.contains slot || foreign.contains slot then continue
+        match T.assign p k key, W.sighting p k key with
+        | .present spec, some _ =>
+          let inputs := ((hasDepsOf k).deps spec).map fun dependency =>
+            slotId dependency.provider dependency.kind (κ.name dependency.provider dependency.kind dependency.key)
+          if let some input := inputs.find? changed.contains then
+            result := { actions := result.actions ++ [.update p k key]
+                        reasons := result.reasons ++ [s!"{slot}: re-materialise its input {input}, which changes"] }
+        | _, _ => pure ()
+  return result
+
+private def endpointSecretConsumers {κ : Keys} (T : Plan κ) (W : World κ)
+    (planned : List (Action κ)) (foreign : List String) : List String :=
+  let changed := endpointChangingSlots T W planned
+  (Finite.elems (α := ProviderId)).flatMap fun p =>
+    (Finite.elems (α := κ.Key p .secrets)).filterMap fun key =>
+      let slot := slotId p .secrets (κ.name p .secrets key)
+      if foreign.contains slot then none else
+      match T.assign p .secrets key, W.sighting p .secrets key with
+      | .present spec, some _ =>
+        if ((hasDepsOf .secrets).deps spec).any (fun dependency => changed.contains
+          (slotId dependency.provider dependency.kind (κ.name dependency.provider dependency.kind dependency.key)))
+        then some slot else none
+      | _, _ => none
+
 /-- The secrets whose stored value is not the one the declaration would write
     now, and everything that holds a copy of one — as `update` actions, with
     the reason for each. See the section note for what is covered.
@@ -862,9 +919,10 @@ def refreshSecrets {κ : Keys} (bs : Backends) (T : Plan κ) (entries : List (En
     (planned : List (Action κ)) (foreign : List String) : IO (Refresh κ) := do
   let world := worldOf entries
   let touched := planned.map (·.slot)
-  let rebuilt := planned.filterMap fun a => match a with
+  let endpointUpdates := endpointChangingSlots T world planned
+  let rebuilt := endpointUpdates ++ planned.filterMap (fun a => match a with
     | .create .. | .replace .. => some a.slot
-    | _ => none
+    | _ => none)
   -- The covered secrets: slot, the secrets it reads, the non-secret input
   -- this run rebuilds (if any), the comparison, and its update. The
   -- comparison is a thunk because it may only run once the row's inputs are
@@ -916,7 +974,9 @@ def refreshSecrets {κ : Keys} (bs : Backends) (T : Plan κ) (entries : List (En
       if let some input := reads.find? isChanged then
         changed := changed ++ [(slot, s!"it is composed from {input}, which is rewritten")]
       else if let some input := rebuiltInput then
-        changed := changed ++ [(slot, s!"it is composed from {input}, which this run creates or replaces")]
+        changed := changed ++ [(slot, if endpointUpdates.contains input then
+          s!"it is composed from {input}, whose endpoint this run changes" else
+          s!"it is composed from {input}, which this run creates or replaces")]
       else if ← differs then
         changed := changed ++ [(slot, "its stored value differs from the declared one")]
     pending := rest
@@ -1103,6 +1163,8 @@ a caller that builds its own backends must do the same (`Infra.Cli.fetchMigratio
   -- same reason: a plan that cannot be carried out is not shown as work.
   if let some msg := T.kubernetesProblem then
     throw (IO.userError msg)
+  if let some msg := T.accessProblem then
+    throw (IO.userError msg)
   if let some msg := T.migrationsAppendOnly W then
     throw (IO.userError msg)
   -- Only resources carrying this fleet's marker are changed or destroyed —
@@ -1116,6 +1178,11 @@ changed or destroyed by this fleet, which therefore manages less than it declare
 exclude it deliberately, or delete it and let this fleet create it — see docs/persistence.md"
   let T := withImagePins T (← fetchImagePins bs T W (foreign.map (·.1)))
   let planned := plan T W orphans releases
+  let endpointRefresh := refreshEndpointConsumers T W planned (foreign.map (·.1))
+  let planned := planned ++ endpointRefresh.actions
+  let endpointSecrets := endpointSecretConsumers T W planned (foreign.map (·.1))
+  unless opts.refreshSecrets || endpointSecrets.isEmpty do
+    throw (IO.userError s!"endpoint policies change inputs of {String.intercalate ", " endpointSecrets}; use --refresh-secrets to recompose their connection values in this apply")
   -- `--refresh-secrets`: the one mode in which a plan reads secret values
   -- (`refreshSecrets`). It needs the entries to settle composed values
   -- against, which a dry run otherwise never pulls.
@@ -1124,8 +1191,9 @@ exclude it deliberately, or delete it and let this fleet create it — see docs/
   let refreshed ← match opts.refreshSecrets, seen with
     | true, some es => refreshSecrets bs T es planned (foreign.map (·.1))
     | _, _          => pure {}
-  let reasons := refreshed.reasons.map fun r =>
-    Ansi.style opts.colour Ansi.faintCode s!"refresh-secrets: {r}"
+  let reasons := (endpointRefresh.reasons.map fun r =>
+    Ansi.style opts.colour Ansi.faintCode s!"refresh-endpoints: {r}") ++ (refreshed.reasons.map fun r =>
+    Ansi.style opts.colour Ansi.faintCode s!"refresh-secrets: {r}")
   let work ← match orderActions T (planned ++ refreshed.actions) edges with
     | .ok o    => pure o
     | .error e => throw (IO.userError e)

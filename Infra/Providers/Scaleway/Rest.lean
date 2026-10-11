@@ -85,6 +85,13 @@ def call (creds : Credentials) (method path : String)
 
 -- ── Listing every page ──
 
+/-- Network attachments reference existing, same-project Private Networks.
+    Verify scope before a container/database update can move any endpoint. -/
+def requirePrivateNetwork (creds : Credentials) (id : String) : IO Unit := do
+  let network ← call creds "GET" (regionalPrefix "vpc" "v2" creds.region ++ s!"/private-networks/{id}")
+  unless network.lookupText "project_id" == some (← creds.requireProject) do
+    throw (IO.userError "Private Network belongs to another project")
+
 /-- The page size every listing asks for. Scaleway's list endpoints default to
     a smaller page (commonly 20 or 50), and the stop rule below does not depend
     on the server honouring this: it counts what actually came back. -/

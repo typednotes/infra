@@ -2,6 +2,7 @@ import Infra.Core.Spec
 import Infra.Core.Coe
 import Infra.Core.InstanceType
 import Infra.Specs.Kubernetes
+import Infra.Specs.Access
 
 open Lean (ToJson FromJson)
 
@@ -251,6 +252,9 @@ structure PostgresSpec (K : ProviderId → Kind → Type) (o : Type u → Type u
   minCapacity          : Field .optional o f Nat
   /-- Serverless capacity ceiling — see `minCapacity`. -/
   maxCapacity          : Field .optional o f Nat
+  /-- Scaleway classic RDB endpoint policy; none leaves the provider's policy
+      unchanged. Explicitly refused on Serverless SQL, AWS and GCP. -/
+  scalewayAccess       : Field .optional o f (Option ScalewayAccess)
 
 /-- `valueFrom := fromEnv "SECRETS_MASTER_KEY"`.
 
@@ -320,7 +324,8 @@ def PostgresSpec.hasCapacityChoice {K : ProviderId → Kind → Type}
 def PostgresSpec.classic {K : ProviderId → Kind → Type}
     (name masterUsername masterPasswordSecret instanceClass : Expr K String)
     (version : Partial (Expr K String) := .unknown)
-    (storageGb : Partial (Expr K Nat) := .unknown) :
+    (storageGb : Partial (Expr K Nat) := .unknown)
+    (scalewayAccess : Partial (Expr K (Option ScalewayAccess)) := .unknown) :
     PostgresSpec K Partial (Expr K) where
   name := name
   instanceClass := .known instanceClass
@@ -330,6 +335,7 @@ def PostgresSpec.classic {K : ProviderId → Kind → Type}
   storageGb := storageGb
   minCapacity := .unknown
   maxCapacity := .unknown
+  scalewayAccess := scalewayAccess
 
 /-- A serverless instance: capacity bounds instead of a fixed `instanceClass`. The complement of
     `PostgresSpec.classic` — see `hasCapacityChoice`. -/
@@ -337,7 +343,8 @@ def PostgresSpec.serverless {K : ProviderId → Kind → Type}
     (name masterUsername masterPasswordSecret : Expr K String)
     (minCapacity maxCapacity : Expr K Nat)
     (version : Partial (Expr K String) := .unknown)
-    (storageGb : Partial (Expr K Nat) := .unknown) :
+    (storageGb : Partial (Expr K Nat) := .unknown)
+    (scalewayAccess : Partial (Expr K (Option ScalewayAccess)) := .unknown) :
     PostgresSpec K Partial (Expr K) where
   name := name
   instanceClass := .unknown
@@ -347,6 +354,7 @@ def PostgresSpec.serverless {K : ProviderId → Kind → Type}
   storageGb := storageGb
   minCapacity := .known minCapacity
   maxCapacity := .known maxCapacity
+  scalewayAccess := scalewayAccess
 
 /-- A Postgres schema migration whose SQL is known: what a database has
     applied, and what a declared migration becomes once its source is read.
@@ -739,6 +747,12 @@ structure ScalewayContainerSpec (K : ProviderId → Kind → Type) (o : Type u �
       handles the backend ignores, reported `unknown`, and never compared.
       See `docs/migrations.md`, "Ordering against the container". -/
   migrations : Field .optional o f (List (K .scaleway .postgresMigrations))
+  access     : Field .optional o f (Option ScalewayAccess)
+  privacy    : Field .optional o f (Option ScalewayContainerPrivacy)
+  httpsOnly  : Field .optional o f (Option Bool)
+  command    : Field .optional o f (Option (List String))
+  args       : Field .optional o f (Option (List String))
+  proxy      : Field .optional o f (Option (ScalewayContainerProxy K))
 
 /-! ## Dispatch -/
 
@@ -875,7 +889,8 @@ instance : Fillable PostgresSpec where
       version              := s.version.getD (.lit "16")
       storageGb            := s.storageGb.getD (.lit 10)
       minCapacity          := s.minCapacity.getD (.lit 0)
-      maxCapacity          := s.maxCapacity.getD (.lit 0) }
+      maxCapacity          := s.maxCapacity.getD (.lit 0)
+      scalewayAccess       := s.scalewayAccess.getD (.lit none) }
 
 /-- Every field is required, so `fill` copies field for field with no
     defaults to fill: a target with a missing field was a structure-literal
@@ -946,7 +961,13 @@ instance : Fillable ScalewayContainerSpec where
       timeoutSec := s.timeoutSec.getD (.lit 30)
       env        := s.env.getD (.lit [])
       secretEnv  := s.secretEnv.getD (.lit [])
-      migrations := s.migrations.getD (.lit []) }
+      migrations := s.migrations.getD (.lit [])
+      access     := s.access.getD (.lit none)
+      privacy    := s.privacy.getD (.lit none)
+      httpsOnly  := s.httpsOnly.getD (.lit none)
+      command    := s.command.getD (.lit none)
+      args       := s.args.getD (.lit none)
+      proxy      := s.proxy.getD (.lit none) }
 
 /-- `ingress := []` is the safe default: a group that lets nothing in. -/
 instance : Fillable SecurityGroupSpec where
@@ -1002,7 +1023,7 @@ private def NoKeys : ProviderId → Kind → Type := fun _ _ => Nothing
   (.lit "db") (.lit "admin") (.lit "master-pw") (.lit 1) (.lit 4)).hasCapacityChoice
 #guard ¬ ({ name := .lit "db", instanceClass := .unknown, masterUsername := .lit "admin"
             masterPasswordSecret := .lit "master-pw", version := .unknown, storageGb := .unknown
-            minCapacity := .unknown, maxCapacity := .unknown } :
+            minCapacity := .unknown, maxCapacity := .unknown, scalewayAccess := .unknown } :
     PostgresSpec NoKeys Partial (Expr NoKeys)).hasCapacityChoice
 
 /-! ### Authoring a field without naming its wrappers

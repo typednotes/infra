@@ -130,7 +130,8 @@ instance : Settleable .postgres where
              version := ← settleField env s.version
              storageGb := ← settleField env s.storageGb
              minCapacity := ← settleField env s.minCapacity
-             maxCapacity := ← settleField env s.maxCapacity }
+             maxCapacity := ← settleField env s.maxCapacity
+             scalewayAccess := ← settleField env s.scalewayAccess }
 
 /-- Names only, so settling cannot fail on a reference: the edges are
     `Engine.impliedByName`'s, and the backend — not the scheduler — is what
@@ -219,6 +220,10 @@ instance : Settleable .scalewayContainer where
     let refs ← settleField env s.secretEnv
     let nsKey ← settleField env s.namespace'
     let migKeys ← settleField env s.migrations
+    let proxy ← settleField env s.proxy
+    let proxy : Option (ScalewayContainerProxy Resolved) ← proxy.mapM fun proxy => do
+      return { backend := ← settleRefReq env .scaleway .scalewayContainer proxy.backend
+               allowedCidrs := proxy.allowedCidrs, pathPrefix := proxy.pathPrefix }
     return { name := ← settleField env s.name
              namespace' := ← settleRefReq env .scaleway .scalewayContainerNamespace nsKey
              image := ← settleField env s.image
@@ -230,7 +235,13 @@ instance : Settleable .scalewayContainer where
              timeoutSec := ← settleField env s.timeoutSec
              env := ← settleField env s.env
              secretEnv := ← settleRefs env .scaleway .secrets refs
-             migrations := ← migKeys.mapM (settleRefReq env .scaleway .postgresMigrations) }
+             migrations := ← migKeys.mapM (settleRefReq env .scaleway .postgresMigrations)
+             access := ← settleField env s.access
+             privacy := ← settleField env s.privacy
+             httpsOnly := ← settleField env s.httpsOnly
+             command := ← settleField env s.command
+             args := ← settleField env s.args
+             proxy := proxy }
 
 /-- Total over `Kind`, so a new kind cannot be forgotten here. -/
 @[reducible] def settleableOf : (k : Kind) → Settleable k

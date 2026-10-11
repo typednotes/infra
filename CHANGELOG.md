@@ -27,6 +27,27 @@ active on 2026-09-29:
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
 
+## [0.23.0] — 2026-10-11
+
+### Added: access policy is a resource property
+
+- Scaleway containers declare private networks, public/private endpoints,
+  privacy, HTTPS, command/args and an IP-restricted proxy to a typed private
+  backend. Validation, dependency scheduling, diff, readback and apply are wired.
+- Classic PostgreSQL declares `scalewayAccess`: IPAM private endpoints and
+  public endpoint removal are reconciled without replacing the data instance.
+- Endpoint changes re-materialise callers and, with `--refresh-secrets`,
+  connection recipes and their copies in the same apply.
+- Proxy readback checks actual enforcement, not just metadata. Bypasses,
+  unsafe CIDRs and unsupported products/clouds are refused. Serverless SQL
+  still has no private endpoint.
+- The container adapter now uses v1 schema fields and environment maps.
+  New observed fields decode older snapshots compatibly.
+- New `private-services` example and `checkNetworkAccess` self-check. Complete
+  scope: `docs/access.md`. No new native live create/update round-trip is claimed.
+- API change: direct raw database/container spec literals need the new fields;
+  DSL/builders supply defaults. Scaffolded projects pin v0.23.0.
+
 ## [0.22.2] — 2026-10-01
 
 ### Fixed: Scaleway Managed PostgreSQL storage creation

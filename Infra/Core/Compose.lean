@@ -63,6 +63,11 @@ def observedOf {p : ProviderId} {k : Kind} (key : K p k) : Expr K (ObservedOf k)
 def endpointOf {p : ProviderId} (key : K p .postgres) : Expr K String :=
   (observedOf key).map (·.endpoint)
 
+/-- The provider-reported native private URL. Available after the upstream
+    container's network/endpoints have been reconciled; creates a dependency. -/
+def privateUrlOf (key : K .scaleway .scalewayContainer) : Expr K String :=
+  (observedOf key).map (·.privateUrl)
+
 /-- The **public** half of an API key minted by a `SecretSource.apiKeyFor`
     secret — an AWS access key id, a Scaleway access key, a GCP key id.
 

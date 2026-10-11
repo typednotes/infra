@@ -38,7 +38,14 @@ surprise.
 See [`docs/architecture.md`](https://github.com/typednotes/infra/blob/main/docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.22.2 covers
+## What 0.23.0 covers
+
+**New in 0.23.0: declarative access policies.** Scaleway containers declare
+private networks, endpoint visibility, HTTPS and IP-restricted ingress to a
+typed private backend. Classic PostgreSQL declares private/public endpoints.
+Plan detects policy drift and apply reconciles it in place. Endpoint changes
+refresh dependent service configuration and connection recipes. Serverless SQL
+and unsupported clouds are refused. See [access policies](docs/access.md).
 
 **Fixed in 0.22.2: Scaleway Managed PostgreSQL creation uses SBS 5K storage.**
 New classic instances request `sbs_5k` block volumes at the declared size;
@@ -186,7 +193,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.22.2"
+rev = "v0.23.0"
 ```
 
 Then:

@@ -102,6 +102,14 @@ def isKnown {α : Type u} : Partial α → Bool
   | unknown => false
   | known _ => true
 
+def asKnown {α : Type u} : Partial α → Option α
+  | unknown => none
+  | known value => some value
+
+def map {α β : Type u} (f : α → β) : Partial α → Partial β
+  | unknown => unknown
+  | known value => known (f value)
+
 /-- Fill a hole with a default. -/
 def getD {α : Type u} : Partial α → α → α
   | unknown, d => d

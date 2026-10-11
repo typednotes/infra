@@ -251,6 +251,8 @@ def attrsOf (nameOf : (p : ProviderId) → (k : Kind) → K p k → String) :
     ++ strOpt "instance_class" s.instanceClass ++ strOpt "engine_version" s.version
     ++ natOpt "allocated_storage" s.storageGb
     ++ [.missing "password" "held as a secret reference, not a value"]
+    ++ (if s.scalewayAccess.isKnown then
+      [.missing "scalewayAccess" "native endpoint policy — declare the corresponding Scaleway endpoint resources explicitly"] else [])
   -- Data-plane state in a data-plane resource: no Terraform type
   -- expresses it (see `resourceType`), so the exported block says so rather
   -- than exporting an empty history that would import back as truth.
@@ -328,6 +330,12 @@ in Terraform yourself"])
       | none => .missing "namespace_id" "computed reference")]
     ++ natOpt "port" s.port ++ natOpt "min_scale" s.minScale ++ natOpt "max_scale" s.maxScale
     ++ natOpt "memory_limit" s.memoryMb ++ natOpt "cpu_limit" s.cpuLimit
+    ++ (if s.access.isKnown || s.privacy.isKnown || s.httpsOnly.isKnown then
+      [.missing "access" "copy the native network, endpoint visibility, privacy and HTTPS policy explicitly"] else [])
+    ++ (if s.command.isKnown || s.args.isKnown then
+      [.missing "command/args" "copy container command/args explicitly"] else [])
+    ++ (if s.proxy.isKnown then
+      [.missing "proxy" "infra-managed IP-restricted NGINX ingress is not a Terraform round-trip"] else [])
 
 /-! ## Export -/
 

@@ -285,7 +285,22 @@ structure ScalewayFunctionObserved where
 structure ScalewayContainerObserved where
   handle : Handle .scalewayContainer
   url    : String
-  deriving Repr, DecidableEq, ToJson, FromJson
+  containerId : String := ""
+  /-- Native private URL, including its scheme; never reconstructed from a
+      fleet handle (which is the name, not the provider's UUID). -/
+  privateUrl : String := ""
+  deriving Repr, DecidableEq, ToJson
+
+instance : FromJson ScalewayContainerObserved where
+  fromJson? j := do
+    let optionalString (field : String) : Except String String :=
+      match j.getObjVal? field with
+      | .error _ => pure ""
+      | .ok value => fromJson? value
+    return { handle := ← j.getObjValAs? _ "handle"
+             url := ← j.getObjValAs? _ "url"
+             containerId := ← optionalString "containerId"
+             privateUrl := ← optionalString "privateUrl" }
 
 /-- Dispatch. Total over `Kind`, so adding a kind without observed state is a compile error. -/
 @[reducible] def ObservedOf : Kind → Type

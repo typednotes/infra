@@ -65,6 +65,12 @@ def divergesIfSet (name : String) (m : Mutability)
     (target : String) (reported : Partial String) : List (String × Mutability) :=
   if target.isEmpty then [] else diverges name m target reported
 
+/-- None preserves a provider choice, rather than overwriting undeclared access
+    settings during an unrelated image/resource update. Some is fully managed. -/
+def divergesChosen {α} [BEq α] (name : String) (target : Option α)
+    (reported : Partial (Option α)) : List (String × Mutability) :=
+  if target.isNone then [] else diverges name .mutable target reported
+
 /-- An optional list field, compared as a set.
 
     Sorting first is not cosmetic: without it a service returning the same tags
@@ -162,6 +168,7 @@ instance : Divergent .postgres where
     -- `docs/providers.md`.
     ++ diverges "minCapacity" .mutable t.minCapacity r.minCapacity
     ++ diverges "maxCapacity" .mutable t.maxCapacity r.maxCapacity
+    ++ divergesChosen "scalewayAccess" t.scalewayAccess r.scalewayAccess
 
 /-- The append-only comparison: the first point at which `applied` stops
     being a prefix of `target` (matching `id` *and* `sql`), if it does.
@@ -463,6 +470,12 @@ instance : Divergent .scalewayContainer where
     ++ diverges "cpuLimit" .mutable t.cpuLimit r.cpuLimit
     ++ diverges "timeoutSec" .mutable t.timeoutSec r.timeoutSec
     ++ divergesSet "env" .mutable pairKey t.env r.env
+    ++ divergesChosen "access" t.access r.access
+    ++ divergesChosen "privacy" t.privacy r.privacy
+    ++ divergesChosen "httpsOnly" t.httpsOnly r.httpsOnly
+    ++ divergesChosen "command" t.command r.command
+    ++ divergesChosen "args" t.args r.args
+    ++ diverges "proxy" .mutable t.proxy r.proxy
     -- `secretEnv` is read once at apply and handed straight to the API (see
     -- `docs/providers.md`); nothing reports whether the currently-bound value
     -- differs from the target, so it is not compared — same limitation as

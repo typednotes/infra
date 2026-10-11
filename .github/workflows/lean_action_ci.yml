@@ -176,7 +176,7 @@ jobs:
       # the placeholder backends.
       - name: Run the examples (offline)
         run: |
-          for e in scaleway-queue paris-instances cross-cloud multi-region kubernetes-postgres; do
+          for e in scaleway-queue paris-instances cross-cloud multi-region serverless-sql-iam postgres-migrations kubernetes-postgres private-services; do
             echo "── $e ──"
             lake exe "$e" > /dev/null
           done

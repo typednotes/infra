@@ -415,9 +415,12 @@ def liveRead (provider : ProviderId) (creds : Credentials)
     -- nor either Scaleway read distinguishes them, so both read as `unknown`
     -- here, same as every other field this backend cannot see.
     let instanceClass : Partial String := if cls.isEmpty then .unknown else .known cls
+    let scalewayAccess ← if provider == .scaleway && !cls.isEmpty then
+        Postgres.Rdb.readAccess creds h.raw
+      else pure .unknown
     return { name := h.raw, instanceClass, masterUsername := user
              masterPasswordSecret := "", version := ver, storageGb := storage
-             minCapacity := .unknown, maxCapacity := .unknown }
+             minCapacity := .unknown, maxCapacity := .unknown, scalewayAccess }
   | .scalewayFunctionNamespace, h => do
     return { name := h.raw, description := ← Compute.Functions.readNamespace creds h.raw }
   | .scalewayContainerNamespace, h => do
@@ -454,18 +457,13 @@ def liveRead (provider : ProviderId) (creds : Credentials)
     match provider with
     | .gcp => notOnGcp "scalewayContainer"
     | .scaleway =>
-      let (port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env, image, ns) ←
-        Compute.Containers.readFull creds h.raw
-      -- The namespace is reported, not blanked. Blanking it made `namespace`
-      -- — which `forcesReplace` — diverge on every pull, so the fleet never
-      -- converged and proposed `REPLACE` for ever.
-      return { name := h.raw, namespace' := ⟨ns⟩, image
-               port, minScale, maxScale, memoryMb, cpuLimit, timeoutSec, env
-               secretEnv := .unknown, migrations := .unknown }
+      Compute.Containers.readFull creds h.raw
     | .aws => return { name := h.raw, namespace' := ⟨""⟩, image := ""
                        port := .unknown, minScale := .unknown, maxScale := .unknown
                        memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
-                       env := .unknown, secretEnv := .unknown, migrations := .unknown }
+                       env := .unknown, secretEnv := .unknown, migrations := .unknown
+                       access := .unknown, privacy := .unknown, httpsOnly := .unknown
+                       command := .unknown, args := .unknown, proxy := .unknown }
   -- The applied history, verbatim, from the route's own read-only URL. The
   -- `sql` in a reported migration is exactly what the database holds --
   -- not redacted, because the declaration already contains it and the
@@ -661,7 +659,7 @@ def liveBackend (provider : ProviderId) (creds : Credentials)
       -- *successful* listing that found nothing, not a skipped one.
       | .gcp | .aws => return []
       | .scaleway =>
-        return (← Compute.Containers.listFull creds).map fun (n, url) => { handle := ⟨n⟩, url }
+        Compute.Containers.listFull creds
     -- Route-driven by construction: the only migration sets this backend can
     -- even name are the ones the declaration names. See `Kinds.Migrations.list`.
     | .postgresMigrations => Migrations.list provider creds routes
@@ -832,6 +830,8 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
         let id ← Iam.Scw.create creds spec.name marker spec.policies
         return { handle := ⟨spec.name⟩, arn := id }
     | .postgres, spec => do
+      if spec.scalewayAccess.isSome && (provider != .scaleway || spec.instanceClass.isEmpty) then
+        throw (IO.userError "scalewayAccess requires Scaleway classic PostgreSQL; Serverless SQL has no private endpoints")
       let marker := fleet
       -- Routed on `instanceClass` being set, not on a separate spec flag: `Fillable`'s `""`
       -- sentinel is what `PostgresSpec.serverless` leaves behind, same convention as every
@@ -867,7 +867,7 @@ for the latest Amazon Linux 2023 image and {creds.region} reported none")
           | .aws => Postgres.Rds.create creds (rdsFor creds) spec.name spec.instanceClass
                       spec.masterUsername password spec.version marker spec.storageGb
           | .scaleway => Postgres.Rdb.create creds spec.name spec.instanceClass
-                           spec.masterUsername password spec.version marker spec.storageGb
+                           spec.masterUsername password spec.version marker spec.storageGb spec.scalewayAccess
       return { handle := ⟨spec.name⟩, endpoint := host }
     | .scalewayFunctionNamespace, spec => do
       let marker := fleet
@@ -903,16 +903,13 @@ invocation, which is a worse failure than this one")
         (Infra.Providers.Zip.archive [⟨file, spec.code.toUTF8⟩])
       return { handle := ⟨spec.name⟩, url }
     | .scalewayContainer, spec => do
+      unless provider == .scaleway do throw (IO.userError "scalewayContainer is supported only on Scaleway")
       let marker := fleet
       -- The one place a `.scalewayContainer` reads a secret's value; see
       -- `Kinds.Secrets.fetchValue`.
       let secretVals ← spec.secretEnv.mapM fun (name, h) => do
         return (name, ← Secrets.fetchValue .scaleway creds h.raw)
-      let ns : Handle .scalewayContainerNamespace := spec.namespace'
-      let url ← Compute.Containers.createFull creds spec.name spec.image ns.raw marker
-                  spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
-                  spec.timeoutSec spec.env secretVals
-      return { handle := ⟨spec.name⟩, url }
+      Compute.Containers.createFull creds spec marker secretVals
     | .postgresMigrations, spec => Migrations.apply provider creds spec
     | .kubernetesCluster, spec => Kubernetes.create provider creds spec fleet
     -- Server-side apply: create and update are one call.
@@ -1037,6 +1034,8 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
         Iam.Scw.setPolicies creds h.raw marker spec.policies
         return { handle := h, arn := ← Iam.Scw.requireId creds h.raw }
     | .postgres, h, spec => do
+      if spec.scalewayAccess.isSome && (provider != .scaleway || spec.instanceClass.isEmpty) then
+        throw (IO.userError "scalewayAccess requires Scaleway classic PostgreSQL")
       if spec.instanceClass.isEmpty then
         match provider with
         | .gcp => discard <| Gcp.CloudSql.createServerless h.raw
@@ -1049,7 +1048,10 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
           Gcp.CloudSql.update creds (← Gcp.requireProject creds) h.raw
             spec.instanceClass spec.storageGb
         | .aws => Postgres.Rds.modify creds (rdsFor creds) h.raw spec.instanceClass spec.storageGb
-        | .scaleway => Postgres.Rdb.modify creds h.raw spec.instanceClass
+        | .scaleway =>
+          Postgres.Rdb.modify creds h.raw spec.instanceClass
+          Postgres.Rdb.reconcileAccess creds h.raw spec.scalewayAccess
+      if provider == .scaleway && !spec.instanceClass.isEmpty then return ← Postgres.Rdb.observed creds h.raw
       return { handle := h, endpoint := "" }
     | .scalewayFunctionNamespace, h, spec => do
       Compute.Functions.updateNamespace creds h.raw spec.description
@@ -1060,13 +1062,11 @@ unreferenced. To rotate, delete this secret (which deletes its key) and apply ag
     | .scalewayFunction, h, spec => do
       Compute.Functions.update creds h.raw spec.sourceBucket
       return { handle := h, url := "" }
-    | .scalewayContainer, h, spec => do
+    | .scalewayContainer, _h, spec => do
+      unless provider == .scaleway do throw (IO.userError "scalewayContainer is supported only on Scaleway")
       let secretVals ← spec.secretEnv.mapM fun (name, sh) => do
         return (name, ← Secrets.fetchValue .scaleway creds sh.raw)
-      let url ← Compute.Containers.updateFull creds h.raw spec.image
-                  spec.port spec.minScale spec.maxScale spec.memoryMb spec.cpuLimit
-                  spec.timeoutSec spec.env secretVals
-      return { handle := h, url }
+      Compute.Containers.updateFull creds spec secretVals
     -- The same body as `create`: the resource *is* its history, so
     -- "update" is "apply the pending suffix" and the backend says which.
     | .postgresMigrations, _, spec => Migrations.apply provider creds spec

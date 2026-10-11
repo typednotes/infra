@@ -938,7 +938,9 @@ private def refreshBackends (values : IO.Ref (List (String × String)))
               { name := h.raw, namespace' := ⟨"ns"⟩, image := "i", port := .unknown
                 minScale := .unknown, maxScale := .unknown, memoryMb := .unknown
                 cpuLimit := .unknown, timeoutSec := .unknown, env := .unknown
-                secretEnv := .unknown, migrations := .unknown }
+                secretEnv := .unknown, migrations := .unknown
+                access := .unknown, privacy := .unknown, httpsOnly := .unknown
+                command := .unknown, args := .unknown, proxy := .unknown }
           | k, h => base.read k h
         secretValue := fun h => do
           let slot := slotId p .secrets h.raw
@@ -1622,6 +1624,131 @@ def checkImageReconciliation : IO Unit := do
     throw (IO.userError "a raw workload compared tag spelling instead of content")
   IO.println "image reconciliation: ok (all compute clouds, Scaleway containers, raw pod images, convergence and refusals)"
 
+open Infra.Specs Infra.Providers.Kinds in
+def checkNetworkAccess : IO Unit := do
+  let policy := ScalewayAccess.internalOnly accessNetwork
+  let privateReply : Data.Json.Value := .object
+    [("name", .string "api"), ("id", .string "provider-id"),
+     ("public_endpoint", .string "https://api.public.invalid"),
+     ("default_public_endpoint_enabled", .bool false),
+     ("private_network_id", .string accessNetwork),
+     ("private_endpoint", .string "http://provider-id.network.internal")]
+  unless Compute.Containers.accessFromJson privateReply == some policy do
+    throw (IO.userError "native container access readback disagrees with its declared policy")
+  let omittedPrivate : Data.Json.Value := .object [("default_public_endpoint_enabled", .bool true)]
+  unless Compute.Containers.accessFromJson omittedPrivate == some ({ publicEndpoint := true } : ScalewayAccess) do
+    throw (IO.userError "omitted nullable native fields did not decode like the generated SDK")
+  let observed := Compute.Containers.observedFromJson privateReply
+  unless observed.handle.raw == "api" && observed.containerId == "provider-id" &&
+      observed.privateUrl == "http://provider-id.network.internal" do
+    throw (IO.userError "private endpoint was reconstructed from a fleet name rather than provider state")
+  let createFields : Data.Json.Value := .object
+    (Compute.Containers.nativeFields (some policy) none (some true) none none true)
+  let updateFields : Data.Json.Value := .object
+    (Compute.Containers.nativeFields (some policy) none (some true) none none)
+  unless createFields.lookupBool "enable_default_public_endpoint" == some false &&
+      createFields.lookupBool "enable_private_endpoint" == some true &&
+      createFields.lookupBool "https_connections_only" == some true &&
+      updateFields.lookupBool "https_connection_only" == some true &&
+      (Compute.Containers.nativeFields none none none none none).isEmpty do
+    throw (IO.userError "native payload omits/changes declared access or overwrites unspecified choices")
+  let proxy : ScalewayContainerProxy Resolved :=
+    { backend := ⟨"api"⟩, allowedCidrs := ["203.0.113.10/32", "2001:db8::10/128"], pathPrefix := "/admin/" }
+  let config := nginxProxyConfig 8080 proxy.allowedCidrs proxy.pathPrefix "api.network.internal"
+  let runtime (configuration : String) : Data.Json.Value := .object
+    [("image", .string "docker.io/library/nginx:alpine"), ("port", .number 8080),
+     ("privacy", .string "public"), ("https_connections_only", .bool true),
+     ("command", .array (nginxProxyCommand.map Data.Json.Value.string).toArray),
+     ("args", .array (nginxProxyArgs.map Data.Json.Value.string).toArray),
+     ("environment_variables", .object
+       [("INFRA_PROXY_POLICY", .string (Compute.Containers.proxyMetadata proxy)),
+        ("NGINX_CONFIG", .string configuration)])]
+  unless Compute.Containers.proxyFromRuntime (runtime config) "api.network.internal" == some proxy &&
+      (Compute.Containers.proxyFromRuntime (runtime (config ++ "tampered")) "api.network.internal").isNone &&
+      (Compute.Containers.proxyFromRuntime (runtime config) "new-backend.network.internal").isNone do
+    throw (IO.userError "proxy metadata hid tampered enforcement or a stale upstream endpoint")
+  unless mentions config "real_ip_recursive on" && mentions config "if ($operator_allowed = 0)" do
+    throw (IO.userError "proxy lost recursive client-IP filtering")
+  let privateDatabase : Data.Json.Value := .object [("endpoints", .array #[.object
+    [("ip", .string "172.16.0.15"), ("port", .number 5432),
+     ("private_network", .object [("private_network_id", .string accessNetwork)])]])]
+  unless Postgres.Rdb.endpointAddress? privateDatabase == some "172.16.0.15:5432" &&
+      Postgres.Rdb.accessFromJson privateDatabase == some policy do
+    throw (IO.userError "private-only PostgreSQL lost its address/policy in observed state")
+  let invalid : Plan networkPermissions.keys :=
+    { assign
+      | .scaleway, .postgres, key => match networkPermissions.plan.assign .scaleway .postgres key with
+        | .present spec => .present { spec with instanceClass := .unknown }
+        | other => other
+      | p, k, key => networkPermissions.plan.assign p k key }
+  unless invalid.accessProblem.any (fun problem => mentions problem "Serverless SQL") do
+    throw (IO.userError "Serverless SQL accepted a private network policy it cannot implement")
+  let bypass : Plan networkPermissions.keys :=
+    { assign
+      | .scaleway, .scalewayContainer, key => match networkPermissions.plan.assign .scaleway .scalewayContainer key with
+        | .present spec => if networkPermissions.keys.name .scaleway .scalewayContainer key == "api" then
+            .present { spec with access := some ({ publicEndpoint := true } : ScalewayAccess) }
+          else .present spec
+        | other => other
+      | p, k, key => networkPermissions.plan.assign p k key }
+  unless bypass.accessProblem.any (fun problem => mentions problem "proxy backend must be private-only") do
+    throw (IO.userError "a proxy backend retained a public bypass")
+  let some apiKey := networkPermissions.keys.keyOfName? .scaleway .scalewayContainer "api"
+    | throw (IO.userError "missing api fixture")
+  let some appKey := networkPermissions.keys.keyOfName? .scaleway .scalewayContainer "app"
+    | throw (IO.userError "missing app fixture")
+  let some databaseKey := networkPermissions.keys.keyOfName? .scaleway .postgres "db"
+    | throw (IO.userError "missing database fixture")
+  let some passwordKey := networkPermissions.keys.keyOfName? .scaleway .secrets "db-password"
+    | throw (IO.userError "missing password fixture")
+  let some urlKey := networkPermissions.keys.keyOfName? .scaleway .secrets "db-url"
+    | throw (IO.userError "missing URL fixture")
+  let entries : List (Entry networkPermissions.keys) :=
+    [ ⟨.scaleway, .scalewayContainer, apiKey,
+        { observed, reported := { Infra.Providers.placeholderReported .scalewayContainer ⟨"api"⟩ with
+            namespace' := ⟨"permissions"⟩, image := "docker.io/library/httpd:latest"
+            access := .known (some { publicEndpoint := true }) } }⟩
+    , ⟨.scaleway, .scalewayContainer, appKey,
+        { observed := { handle := ⟨"app"⟩, url := "app.public.invalid" }
+          reported := { Infra.Providers.placeholderReported .scalewayContainer ⟨"app"⟩ with
+            namespace' := ⟨"permissions"⟩, image := "docker.io/library/httpd:latest" } }⟩
+    , ⟨.scaleway, .postgres, databaseKey,
+        { observed := { handle := ⟨"db"⟩, endpoint := "public-db.invalid:5432" }
+          reported := { Infra.Providers.placeholderReported .postgres ⟨"db"⟩ with
+            masterUsername := "admin", scalewayAccess := .known (some { publicEndpoint := true }) } }⟩
+    , ⟨.scaleway, .secrets, passwordKey,
+        { observed := { handle := ⟨"db-password"⟩, version := "1" }
+          reported := { name := "db-password", valueFrom := .fromEnv "" } }⟩
+    , ⟨.scaleway, .secrets, urlKey,
+        { observed := { handle := ⟨"db-url"⟩, version := "1" }
+          reported := { name := "db-url", valueFrom := .fromEnv "" } }⟩ ]
+  let world := worldOf entries
+  let planned := [Action.update .scaleway .scalewayContainer apiKey, .update .scaleway .postgres databaseKey]
+  let endpointChanges := endpointChangingSlots networkPermissions.plan world planned
+  unless endpointChanges.length == 2 do throw (IO.userError "mutable endpoint changes were not tracked")
+  let propagated := refreshEndpointConsumers networkPermissions.plan world planned []
+  unless propagated.actions.any (fun action => action.slot == "scaleway/scaleway-container/app") do
+    throw (IO.userError "private endpoint change did not re-materialise its caller")
+  let noReads : Backends :=
+    { backend := fun cloud => { ownedBackends.backend cloud with
+        secretValue := fun _ => throw (IO.userError "compared a secret against stale endpoint state") } }
+  let refresh ← refreshSecrets noReads networkPermissions.plan entries
+    (planned ++ [.update .scaleway .secrets passwordKey]) []
+  unless refresh.actions.any (fun action => action.slot == "scaleway/secrets/db-url") do
+    throw (IO.userError "connection secret was not recomposed after a mutable endpoint change")
+  let result ← (push ownedBackends networkPermissions.plan world {} (boundary := demo) (seen := some entries)).toBaseIO
+  match result with
+  | .error error => unless mentions (toString error) "--refresh-secrets" do
+      throw (IO.userError s!"endpoint plan failed for the wrong reason: {error}")
+  | .ok _ => throw (IO.userError "endpoint-changing plan silently kept a stale composed connection secret")
+  let legacy : Lean.Json := .mkObj
+    [("handle", .mkObj [("raw", .str "old")]), ("url", .str "old.public.invalid")]
+  match Lean.fromJson? (α := ScalewayContainerObserved) legacy with
+  | .ok old => unless old.handle.raw == "old" && old.containerId.isEmpty && old.privateUrl.isEmpty do
+      throw (IO.userError "legacy container snapshot changed identity")
+  | .error error => throw (IO.userError s!"legacy container snapshot no longer loads: {error}")
+  IO.println "network access: ok (native fields, private PostgreSQL, proxy enforcement drift, bypass refusals and dependent URL refresh)"
+
 /-- Self-checks, run when no subcommand is given. Everything here works
     offline; nothing touches a cloud. -/
 def selfCheck : IO Unit := do
@@ -1656,6 +1783,7 @@ def selfCheck : IO Unit := do
   checkSqsCredentialMemo
   checkRegistryImages
   checkImageReconciliation
+  checkNetworkAccess
 
 /-- `infra gcp-check <key.json>` — does this service-account key actually work?
 

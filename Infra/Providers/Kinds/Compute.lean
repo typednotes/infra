@@ -27,6 +27,7 @@ import Infra.Providers.Marker
 namespace Infra.Providers.Kinds.Compute
 
 open Infra.Core
+open Infra.Specs
 open Infra.Providers
 open Infra.Providers.Aws
 open Infra.Providers.JsonRead
@@ -186,7 +187,7 @@ end Lambda
 namespace Containers
 
 private def prefix' (region : String) : String :=
-  Scaleway.regionalPrefix "containers" "v1beta1" region
+  Scaleway.regionalPrefix "containers" "v1" region
 
 private def listRaw (creds : Credentials) : IO (List (String × String × List String)) := do
   let containers ← Scaleway.listAll creds "scaleway containers"
@@ -251,18 +252,18 @@ def read (creds : Credentials) (name : String) :
     IO (Partial Nat × Partial Nat × Partial (List (String × String)) × String) := do
   let id ← requireId creds name
   let c ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{id}")
-  let memory := match c.lookupNat "memory_limit" with
-    | some m => Partial.known m
+  let memory := match c.lookupNat "memory_limit_bytes" with
+    | some m => Partial.known (m / 1000000)
     | none   => .unknown
-  let timeout := match c.lookupNat "max_concurrency" with
-    | some _ => match c.lookupNat "timeout" with
-      | some t => Partial.known t
-      | none   => .unknown
+  let timeout := match c.lookupText "timeout" with
+    | some duration => match (duration.dropEnd 1).toString.toNat? with
+      | some seconds => Partial.known seconds
+      | none => .unknown
     | none => .unknown
   let env := match c.lookup "environment_variables" with
     | some e => Partial.known (envOf e)
     | none   => .unknown
-  return (memory, timeout, env, (c.lookupText "registry_image").getD "")
+  return (memory, timeout, env, (c.lookupText "image").getD "")
 
 /-- `markerValue` is written as a flat tag (`Scaleway.encodeTag`) at create —
     see the 2026-09-10 incident in `AGENTS.md`. -/
@@ -273,8 +274,8 @@ def create (creds : Credentials) (name image ns markerValue : String)
     (payload := some (.object
       [ ("namespace_id", .string nsId)
       , ("name", .string name)
-      , ("registry_image", .string image)
-      , ("memory_limit", .number (Float.ofNat memoryMb))
+      , ("image", .string image)
+      , ("memory_limit_bytes", .number (Float.ofNat (memoryMb * 1000000)))
       , ("timeout", .string s!"{timeoutSec}s")
       , ("environment_variables", envObject env)
       , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
@@ -284,8 +285,8 @@ def update (creds : Credentials) (name image : String)
   let id ← requireId creds name
   discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/containers/{id}")
     (payload := some (.object
-      [ ("registry_image", .string image)
-      , ("memory_limit", .number (Float.ofNat memoryMb))
+      [ ("image", .string image)
+      , ("memory_limit_bytes", .number (Float.ofNat (memoryMb * 1000000)))
       , ("timeout", .string s!"{timeoutSec}s")
       , ("environment_variables", envObject env) ]))
 
@@ -332,27 +333,194 @@ def releaseNamespaceMarker (creds : Credentials) (name fleet : String) : IO Unit
   names to ids a second way. `delete` above is already enough; there is nothing kind-specific
   to add to it.
 
-  **Unconfirmed against the real API**: `port`/`min_scale`/`max_scale`/`cpu_limit` follow the
-  naming convention `memory_limit`/`timeout`/`environment_variables`/`registry_image` above
-  already assume, but none of this has been checked against a real deployment — see
-  `docs/providers.md`. Secret-bound environment variables are even less certain: this assumes
-  Scaleway wants the plaintext value at `secret_environment_variables`, following the
-  plaintext-at-set-time assumption `Kinds.Secrets.fetchValue` documents. -/
+  The v1 generated SDK (checked 2026-10-11) uses `image`, byte-valued memory,
+  `mvcpu_limit`, duration strings and maps for both environment collections. -/
 
-/-- Render secret-backed environment variables as a JSON array. Each value has already been
+/-- Render secret-backed environment variables as a JSON map. Each value has already been
     read once by `Kinds.Secrets.fetchValue` and is passed straight through. -/
-private def secretEnvArray (secretEnv : List (String × String)) : Value :=
-  .array (secretEnv.map fun (k, v) => .object [("key", .string k), ("value", .string v)]).toArray
+private def secretEnvObject (secretEnv : List (String × String)) : Value := envObject secretEnv
+
+private def addFields (body : Value) (extra : List (String × Value)) : Value :=
+  match body with
+  | .object fields => .object (fields ++ extra)
+  | _ => .object extra
+
+def get (creds : Credentials) (name : String) : IO Value := do
+  Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{← requireId creds name}")
+
+def observedFromJson (c : Value) : ScalewayContainerObserved :=
+  { handle := ⟨(c.lookupText "name").getD ""⟩
+    url := ((c.lookupText "public_endpoint").getD "").replace "https://" ""
+    containerId := (c.lookupText "id").getD ""
+    privateUrl := (c.lookupText "private_endpoint").getD "" }
+
+def accessFromJson (c : Value) : Option ScalewayAccess := do
+  let publicEndpoint ← c.lookupBool "default_public_endpoint_enabled"
+  -- Optional v1 fields are omitted, not necessarily emitted as JSON null.
+  let privateValue := (c.lookup "private_endpoint").getD .null
+  let networkValue := (c.lookup "private_network_id").getD .null
+  let network ← match networkValue with
+    | .null => some none
+    | .string id => some (some id)
+    | _ => none
+  let privateEndpoint ← match privateValue with
+    | .null => some false
+    | .string url => some (!url.isEmpty)
+    | _ => none
+  return { privateNetworkId := network, publicEndpoint, privateEndpoint }
+
+private def hasIngressBypass (creds : Credentials) (id : String) : IO Bool := do
+  let domains ← Scaleway.listAll creds "container domains" (prefix' creds.region ++ "/domains") "domains"
+    (query := [("project_id", ← creds.requireProject), ("container_id", some id)])
+  let triggers ← Scaleway.listAll creds "container triggers" (prefix' creds.region ++ "/triggers") "triggers"
+    (query := [("project_id", ← creds.requireProject), ("container_id", some id)])
+  return (domains ++ triggers).any fun item => item.lookupText "container_id" == some id
+
+private def requireNoIngressBypass (creds : Credentials) (id name : String) : IO Unit := do
+  if ← hasIngressBypass creds id then
+    throw (IO.userError s!"scaleway container '{name}': a custom domain or trigger bypasses private-only access; remove it before applying")
+
+private def checkNetwork (creds : Credentials) (id : String) : IO Unit := do
+  Scaleway.requirePrivateNetwork creds id
+
+private def privateHost (url : String) : Option String := do
+  if !url.startsWith "http://" then none else
+  let host := (url.drop 7).toString
+  if host.isEmpty || !host.endsWith ".internal" ||
+      !host.toList.all (fun c => c.isAlphanum || c == '-' || c == '.') then none
+  else some host
+
+private def proxyHost (creds : Credentials) (proxy : ScalewayContainerProxy Resolved)
+    (network : Option String) : IO String := do
+  let upstream ← get creds proxy.backend.raw
+  let some access := accessFromJson upstream
+    | throw (IO.userError "proxy backend endpoint policy could not be read")
+  unless access.privateEndpoint && !access.publicEndpoint &&
+      access.privateNetworkId == network && network.isSome do
+    throw (IO.userError "proxy backend must be private-only on the same Private Network")
+  unless upstream.lookupText "privacy" == some "public" do
+    throw (IO.userError "proxy backend requires Scaleway IAM credentials, which this proxy does not inject")
+  requireNoIngressBypass creds (upstream.lookupText "id" |>.getD "") proxy.backend.raw
+  let some host := privateHost ((upstream.lookupText "private_endpoint").getD "")
+    | throw (IO.userError "proxy backend has no usable native private HTTP endpoint")
+  return host
+
+def proxyMetadata (proxy : ScalewayContainerProxy Resolved) : String :=
+  Data.Json.Encode.encode (.object
+    [("backend", .string proxy.backend.raw),
+     ("allowedCidrs", .array (proxy.allowedCidrs.map Value.string).toArray),
+     ("pathPrefix", .string proxy.pathPrefix)])
+
+private def parseProxy (text : String) : Option (ScalewayContainerProxy Resolved) := do
+  let json ← (Data.Json.Decode.decode text).toOption
+  let backend ← json.lookupText "backend"
+  let pathPrefix ← json.lookupText "pathPrefix"
+  let proxy : ScalewayContainerProxy Resolved :=
+    { backend := ⟨backend⟩, allowedCidrs := stringArrayField json "allowedCidrs", pathPrefix }
+  if backend.isEmpty || proxy.problem.isSome then none else some proxy
+
+/-- Metadata never substitutes for actual enforcement: config, command, image,
+    privacy and HTTPS readback must agree, and current upstream DNS is checked.
+    Malformed/stale policy reads as no enforced proxy, so the plan repairs it. -/
+def proxyFromRuntime (c : Value) (host : String) : Option (ScalewayContainerProxy Resolved) := do
+  let environment := (c.lookup "environment_variables").getD (.object [])
+  let text ← environment.lookupText "INFRA_PROXY_POLICY"
+  let proxy ← parseProxy text
+  if !isNginxImage ((c.lookupText "image").getD "") ||
+      stringArrayField c "command" != nginxProxyCommand || stringArrayField c "args" != nginxProxyArgs ||
+      c.lookupText "privacy" != some "public" || c.lookupBool "https_connections_only" != some true then
+    none
+  else
+    let expected := nginxProxyConfig ((c.lookupNat "port").getD 8080) proxy.allowedCidrs proxy.pathPrefix host
+    if environment.lookupText "NGINX_CONFIG" == some expected then some proxy else none
+
+private def readProxy (creds : Credentials) (c : Value) : IO (Option (ScalewayContainerProxy Resolved)) := do
+  let environment := (c.lookup "environment_variables").getD (.object [])
+  let some text := environment.lookupText "INFRA_PROXY_POLICY" | return none
+  let some proxy := parseProxy text | return none
+  if !((← listRaw creds).any fun entry => entry.1 == proxy.backend.raw) then return none
+  let upstream ← get creds proxy.backend.raw
+  let some upstreamAccess := accessFromJson upstream | return none
+  if upstreamAccess.publicEndpoint || !upstreamAccess.privateEndpoint ||
+      upstreamAccess.privateNetworkId != (accessFromJson c |>.bind (·.privateNetworkId)) ||
+      upstream.lookupText "privacy" != some "public" ||
+      (← hasIngressBypass creds ((upstream.lookupText "id").getD "")) then return none
+  let some host := privateHost ((upstream.lookupText "private_endpoint").getD "") | return none
+  return proxyFromRuntime c host
+
+private def waitReady (creds : Credentials) (id : String) : IO Value := do
+  let start ← IO.monoMsNow
+  repeat
+    let current ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{id}")
+    match current.lookupText "status" with
+    | some "ready" => return current
+    | some "error" => throw (IO.userError s!"container deployment failed: {(current.lookupText "error_message").getD "unknown error"}")
+    | _ => pure ()
+    if (← IO.monoMsNow) - start > 900000 then throw (IO.userError "container did not become ready within 15 minutes")
+    IO.sleep 2000
+
+/-- Pure native fields shared by create/update; none omits rather than resets.
+    The POST request includes visibility immediately, before any secrets serve. -/
+def nativeFields (access : Option ScalewayAccess) (privacy : Option ScalewayContainerPrivacy)
+    (httpsOnly : Option Bool) (command args : Option (List String)) (creating : Bool := false) : List (String × Value) :=
+  (access.map (fun policy =>
+    [("private_network_id", .string (policy.privateNetworkId.getD "")),
+     ("enable_default_public_endpoint", .bool policy.publicEndpoint),
+     ("enable_private_endpoint", .bool policy.privateEndpoint)])).getD [] ++
+  (privacy.map fun p => [("privacy", .string p.apiValue)]).getD [] ++
+  (httpsOnly.map fun only => [(if creating then "https_connections_only" else "https_connection_only", .bool only)]).getD [] ++
+  (command.map fun values => [("command", .array (values.map Value.string).toArray)]).getD [] ++
+  (args.map fun values => [("args", .array (values.map Value.string).toArray)]).getD []
+
+private def payload (creds : Credentials) (spec : ProviderSpec .scalewayContainer)
+    (secretEnv : List (String × String)) (clearingProxy : Bool := false) (creating : Bool := false) : IO Value := do
+  if let some access := spec.access then
+    if let some problem := access.problem then throw (IO.userError problem)
+    if let some network := access.privateNetworkId then checkNetwork creds network
+  let mut environment := spec.env
+  let mut command := spec.command
+  let mut args := spec.args
+  let mut privacy := spec.privacy
+  let mut httpsOnly := spec.httpsOnly
+  match spec.proxy with
+  | none =>
+    if clearingProxy then
+      command := command.orElse (fun _ => some [])
+      args := args.orElse (fun _ => some [])
+  | some proxy =>
+    if let some problem := proxy.problem then throw (IO.userError problem)
+    unless isNginxImage spec.image && spec.port > 0 && spec.port < 65536 do
+      throw (IO.userError "managed proxy requires official NGINX and a bounded port")
+    unless command.isNone && args.isNone && privacy != some .authenticated && httpsOnly != some false do
+      throw (IO.userError "managed proxy owns command/args and requires public privacy and HTTPS")
+    let some access := spec.access | throw (IO.userError "managed proxy requires explicit access")
+    unless access.publicEndpoint && access.privateNetworkId.isSome do
+      throw (IO.userError "managed proxy requires a public endpoint and Private Network")
+    if environment.any (fun pair => ["NGINX_CONFIG", "INFRA_PROXY_POLICY"].contains pair.1) then
+      throw (IO.userError "managed proxy reserves NGINX_CONFIG and INFRA_PROXY_POLICY")
+    let host ← proxyHost creds proxy access.privateNetworkId
+    environment := environment ++
+      [("INFRA_PROXY_POLICY", proxyMetadata proxy),
+       ("NGINX_CONFIG", nginxProxyConfig spec.port proxy.allowedCidrs proxy.pathPrefix host)]
+    command := some nginxProxyCommand
+    args := some nginxProxyArgs
+    privacy := some .openAccess
+    httpsOnly := some true
+  return .object
+    ([("image", .string spec.image), ("port", .number (Float.ofNat spec.port)),
+      ("min_scale", .number (Float.ofNat spec.minScale)), ("max_scale", .number (Float.ofNat spec.maxScale)),
+      ("memory_limit_bytes", .number (Float.ofNat (spec.memoryMb * 1000000))),
+      ("mvcpu_limit", .number (Float.ofNat spec.cpuLimit)), ("timeout", .string s!"{spec.timeoutSec}s"),
+      ("environment_variables", envObject environment), ("secret_environment_variables", secretEnvObject secretEnv)] ++
+     nativeFields spec.access privacy httpsOnly command args creating)
 
 /-- The domain alongside the name, which `list` above does not need. -/
-def listFull (creds : Credentials) : IO (List (String × String)) := do
+def listFull (creds : Credentials) : IO (List ScalewayContainerObserved) := do
   let containers ← Scaleway.listAll creds "scaleway containers"
       (prefix' creds.region ++ "/containers") "containers"
       (query := [("project_id", ← creds.requireProject)])
   return containers.filterMap fun c =>
-    match c.lookupText "name" with
-    | some n => some (n, (c.lookupText "domain_name").getD "")
-    | none   => none
+    if (c.lookupText "name").isSome then some (observedFromJson c) else none
 
 /-- Every namespace, as `(name, id)`. -/
 def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
@@ -360,18 +528,21 @@ def listNamespaces (creds : Credentials) : IO (List (String × String)) := do
 
 /-- Every field `.scalewayContainer` can report, beyond what `read` above needs for the
     portable `.compute` kind. -/
-def readFull (creds : Credentials) (name : String) :
-    IO (Partial Nat × Partial Nat × Partial Nat × Partial Nat × Partial Nat × Partial Nat ×
-        Partial (List (String × String)) × String × String) := do
+def readFull (creds : Credentials) (name : String) : IO (Reported .scalewayContainer) := do
   let id ← requireId creds name
   let c ← Scaleway.call creds "GET" (prefix' creds.region ++ s!"/containers/{id}")
   let optNat (field : String) : Partial Nat :=
     match c.lookupNat field with
     | some n => .known n
     | none   => .unknown
+  let proxy ← readProxy creds c
+  let proxy := if ((c.lookup "environment_variables").bind (·.lookup "INFRA_PROXY_POLICY")).isSome then
+      proxy.orElse (fun _ => some { backend := ⟨""⟩, allowedCidrs := [], pathPrefix := "" })
+    else none
   let env := match c.lookup "environment_variables" with
-    | some e => Partial.known (envOf e)
-    | none   => .unknown
+    | some e => Partial.known ((envOf e).filter fun pair =>
+        !(e.lookup "INFRA_PROXY_POLICY").isSome || !["NGINX_CONFIG", "INFRA_PROXY_POLICY"].contains pair.1)
+    | none => .unknown
   -- The namespace, resolved from its id back to the name a fleet keys on.
   --
   -- This used to be reported as `""` by the caller, and the consequence was
@@ -393,50 +564,50 @@ def readFull (creds : Credentials) (name : String) :
       -- A namespace the credential cannot list is not the same as no
       -- namespace, but there is nothing truer to say from here.
       | none        => pure ""
-  return (optNat "port", optNat "min_scale", optNat "max_scale", optNat "memory_limit",
-          optNat "cpu_limit", optNat "timeout", env,
-          (c.lookupText "registry_image").getD "", nsName)
+  let some access := accessFromJson c | throw (IO.userError "container API did not report endpoint visibility")
+  let access ← if !access.publicEndpoint && (← hasIngressBypass creds id) then
+      pure { access with publicEndpoint := true }
+    else pure access
+  let privacy := match c.lookupText "privacy" with
+    | some "public" => Partial.known (some ScalewayContainerPrivacy.openAccess)
+    | some "private" => Partial.known (some ScalewayContainerPrivacy.authenticated)
+    | _ => .unknown
+  let timeout := match (c.lookupText "timeout").bind (fun duration => (duration.dropEnd 1).toString.toNat?) with
+    | some seconds => Partial.known seconds
+    | none => .unknown
+  return { name, namespace' := ⟨nsName⟩, image := (c.lookupText "image").getD ""
+           port := optNat "port", minScale := optNat "min_scale", maxScale := optNat "max_scale"
+           memoryMb := (optNat "memory_limit_bytes").map (· / 1000000)
+           cpuLimit := optNat "mvcpu_limit", timeoutSec := timeout, env
+           secretEnv := .unknown, migrations := .unknown, access := .known (some access), privacy
+           httpsOnly := (c.lookupBool "https_connections_only").map (fun b => Partial.known (some b)) |>.getD .unknown
+           command := .known (some (stringArrayField c "command")), args := .known (some (stringArrayField c "args"))
+           proxy := .known proxy }
 
 /-- `markerValue` is written as a flat tag (`Scaleway.encodeTag`) at create —
     see the 2026-09-10 incident in `AGENTS.md`. This is the exact create path
     `.scalewayContainer` uses, i.e. the resource kind involved in that
     incident. -/
-def createFull (creds : Credentials) (name image ns markerValue : String)
-    (port minScale maxScale memoryMb cpuLimit timeoutSec : Nat)
-    (env secretEnv : List (String × String)) : IO String := do
-  let nsId ← namespaceId creds ns
+def createFull (creds : Credentials) (spec : ProviderSpec .scalewayContainer) (markerValue : String)
+    (secretEnv : List (String × String)) : IO ScalewayContainerObserved := do
+  let nsHandle : Handle .scalewayContainerNamespace := spec.namespace'
+  let nsId ← namespaceId creds nsHandle.raw
+  let body ← payload creds spec secretEnv (creating := true)
   let reply ← Scaleway.call creds "POST" (prefix' creds.region ++ "/containers")
-    (payload := some (.object
-      [ ("namespace_id", .string nsId)
-      , ("name", .string name)
-      , ("registry_image", .string image)
-      , ("port", .number (Float.ofNat port))
-      , ("min_scale", .number (Float.ofNat minScale))
-      , ("max_scale", .number (Float.ofNat maxScale))
-      , ("memory_limit", .number (Float.ofNat memoryMb))
-      , ("cpu_limit", .number (Float.ofNat cpuLimit))
-      , ("timeout", .string s!"{timeoutSec}s")
-      , ("environment_variables", envObject env)
-      , ("secret_environment_variables", secretEnvArray secretEnv)
-      , ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
-  return (reply.lookupText "domain_name").getD ""
+    (payload := some (addFields body [("namespace_id", .string nsId), ("name", .string spec.name),
+      ("tags", .array #[.string (Scaleway.encodeTag (markerKey, markerValue))]) ]))
+  let some id := reply.lookupText "id" | throw (IO.userError "container create reply has no id")
+  return observedFromJson (← waitReady creds id)
 
-def updateFull (creds : Credentials) (name image : String)
-    (port minScale maxScale memoryMb cpuLimit timeoutSec : Nat)
-    (env secretEnv : List (String × String)) : IO String := do
-  let id ← requireId creds name
-  let reply ← Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/containers/{id}")
-    (payload := some (.object
-      [ ("registry_image", .string image)
-      , ("port", .number (Float.ofNat port))
-      , ("min_scale", .number (Float.ofNat minScale))
-      , ("max_scale", .number (Float.ofNat maxScale))
-      , ("memory_limit", .number (Float.ofNat memoryMb))
-      , ("cpu_limit", .number (Float.ofNat cpuLimit))
-      , ("timeout", .string s!"{timeoutSec}s")
-      , ("environment_variables", envObject env)
-      , ("secret_environment_variables", secretEnvArray secretEnv) ]))
-  return (reply.lookupText "domain_name").getD ""
+def updateFull (creds : Credentials) (spec : ProviderSpec .scalewayContainer)
+    (secretEnv : List (String × String)) : IO ScalewayContainerObserved := do
+  let id ← requireId creds spec.name
+  if spec.access.any (fun policy => !policy.publicEndpoint) then requireNoIngressBypass creds id spec.name
+  let current ← get creds spec.name
+  let clearing := ((current.lookup "environment_variables").bind (·.lookup "INFRA_PROXY_POLICY")).isSome
+  discard <| Scaleway.call creds "PATCH" (prefix' creds.region ++ s!"/containers/{id}")
+    (payload := some (← payload creds spec secretEnv clearing))
+  return observedFromJson (← waitReady creds id)
 
 /-! ### Namespace CRUD
 

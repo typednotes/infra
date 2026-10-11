@@ -703,7 +703,7 @@ before applying anything. Cheap at every tier, fatal at none.
   where they differ. The copies follow: a composed secret built from a
   rewritten one is rewritten after it (not compared: settled against the old
   input it would give the old answer), and so is one built from a resource
-  this run creates or replaces; a `compute` or `scalewayContainer` holding a
+  this run creates, replaces or changes endpoints; a `compute` or `scalewayContainer` holding a
   copy (`env` through `secretValueOf`, `secretEnv`) is updated after that. A
   `secretValueOf` in any other kind's field is never re-sent, and the plan
   says so by name (`resendsSecretsOnUpdate`). A plan without the flag reads no

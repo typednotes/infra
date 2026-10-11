@@ -772,6 +772,20 @@ sighting or a snapshot.)
              JSON Snapshot to FILE or stdout. Read-only, like plan.
 ```
 
+## Native access reconciliation
+
+`Plan.accessProblem` runs before deriving work. Access properties settle with
+the resource; proxy references resolve to backend handles and scheduling edges.
+The container v1 provider sends visibility on initial POST and manages proxy
+config/entrypoint together. Readback checks actual config against the current
+private URL and exposes malformed/stale/bypassed policy as drift. PostgreSQL
+reconciles child endpoints in place and returns the assigned address.
+
+`endpointChangingSlots` tracks mutable policy changes. Caller updates are added
+before ordering; secret refresh treats those resources as changed inputs and
+evaluates recipes after their updates. A plan requiring connection-secret
+rewrites is refused without `--refresh-secrets`. Native boundaries: [access.md](access.md).
+
 ## Reading order
 
 - `docs/architecture.md` — what the design is, and why

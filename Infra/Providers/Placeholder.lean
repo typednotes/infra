@@ -63,7 +63,7 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .postgres,         h => { name := h.raw, instanceClass := .unknown, masterUsername := ""
                               masterPasswordSecret := "", version := .unknown
                               storageGb := .unknown, minCapacity := .unknown
-                              maxCapacity := .unknown }
+                              maxCapacity := .unknown, scalewayAccess := .unknown }
   | .s3Bucket,         h => { name := h.raw, versioning := .unknown,
                               objectLock := .unknown }
   | .securityGroup,    h => { name := h.raw, description := "", ingress := .unknown }
@@ -79,7 +79,9 @@ def placeholderReported : (k : Kind) → Handle k → Reported k
   | .scalewayContainer, h => { name := h.raw, namespace' := ⟨""⟩, image := ""
                                port := .unknown, minScale := .unknown, maxScale := .unknown
                                memoryMb := .unknown, cpuLimit := .unknown, timeoutSec := .unknown
-                               env := .unknown, secretEnv := .unknown, migrations := .unknown }
+                               env := .unknown, secretEnv := .unknown, migrations := .unknown
+                               access := .unknown, privacy := .unknown, httpsOnly := .unknown
+                               command := .unknown, args := .unknown, proxy := .unknown }
   -- The reported shape shares the spec structure, and the placeholder has
   -- no routes to consult -- so the names are blank and nothing has been
   -- applied. `list` returns `[]` regardless, so this only matters to

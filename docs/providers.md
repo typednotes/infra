@@ -86,6 +86,17 @@ token. Pub/Sub is not SQS in any sense. So both kinds have a second
 implementation for GCP (`Gcp.Storage`, `Gcp.PubSub`), and `objectStore` in
 particular was silently routed to the S3 client until that was noticed.
 
+## Native Scaleway access properties
+
+Container `access`, `privacy`, `httpsOnly`, `command`, `args` and `proxy` map to
+v1 API fields. `postgres.scalewayAccess` manages classic RDB child endpoints;
+Serverless SQL and other clouds refuse it. Networks are verified against the
+selected project. Defaults preserve unspecified choices. Observation includes
+native private addresses and detects custom-domain/trigger bypasses.
+
+Proxy readback compares actual config/entrypoint, not just metadata. SDKs were
+checked 2026-10-11. Full scope and verification: [access.md](access.md).
+
 ## Every call names itself in a failure
 
 ### Managed PostgreSQL endpoint and administrator observation

@@ -124,6 +124,19 @@ listed in `docs/providers.md`; the shapes are:
 The alternative to naming these is a spec that looks portable and silently does
 the wrong thing on one cloud.
 
+### Access belongs to the target
+
+Network visibility and ingress permission are resource properties, rather than
+consumer scripts. Container `access` manages native endpoints; `proxy` binds a
+typed private backend to a CIDR-restricted gateway. `postgres.scalewayAccess` is
+an explicit provider-specific extension to the portable shape, rejected on
+AWS/GCP and Serverless SQL instead of accepted without enforcement. Existing
+networks are prerequisites; VPC lifecycle is outside this feature.
+
+Readback checks actual enforcement. References remain dependency edges, and
+mutable endpoint changes re-materialise dependent service URLs and connection
+recipes. Complete scope: [access.md](access.md).
+
 ### Secrets never live in a target
 
 Two decisions follow from the target being the committed source of truth:
