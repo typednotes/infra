@@ -7,6 +7,7 @@ import Infra.Providers.Placeholder
 import Infra.Providers.Snapshot
 import Infra.Providers.Kinds.Identity
 import Infra.Interop.KubernetesYaml
+import Infra.Interop.HelmChart
 import Infra.Providers
 
 /-
@@ -519,10 +520,73 @@ def parseReconcile : List String → Option Reconcile
 #guard parseReconcile ["apply", "--refresh-secret"] == none
 #guard parseReconcile ["dump"] == none
 
+/-- What `render` was asked for: the YAML (`scope` only), a chart written to
+    `chart`, or the YAML `helm template` renders from that chart's defaults. -/
+structure Render where
+  scope     : Option String := none
+  chart     : Option String := none
+  chartName : Option String := none
+  version   : Option String := none
+  defaults  : Bool := false
+  deriving BEq, Repr
+
+/-- Read `render`'s arguments, or `none` for a usage error: a repeated or
+    unknown flag, a flag missing its value, `--name`/`--version` without
+    `--chart`, or `--chart` with `--chart-defaults`.
+
+    * `render [CLOUD[/CLUSTER]]`
+    * `render --chart DIR [--name NAME] [--version VERSION] [CLOUD[/CLUSTER]]`
+    * `render --chart-defaults [CLOUD[/CLUSTER]]` -/
+def parseRender (args : List String) : Option Render :=
+  let rec go : List String → Render → Option Render
+    | [], r => some r
+    | "--chart" :: d :: rest, r =>
+      if r.chart.isSome || d.startsWith "-" then none else go rest { r with chart := some d }
+    | "--name" :: n :: rest, r =>
+      if r.chartName.isSome || n.startsWith "-" then none else go rest { r with chartName := some n }
+    | "--version" :: v :: rest, r =>
+      if r.version.isSome || v.startsWith "-" then none else go rest { r with version := some v }
+    | "--chart-defaults" :: rest, r => if r.defaults then none else go rest { r with defaults := true }
+    | a :: rest, r =>
+      if a.startsWith "-" || r.scope.isSome then none else go rest { r with scope := some a }
+  match go args {} with
+  | some r =>
+    if (r.chart.isNone && (r.chartName.isSome || r.version.isSome))
+        || (r.chart.isSome && r.defaults) then none
+    else some r
+  | none => none
+
+#guard parseRender [] == some {}
+#guard parseRender ["scaleway/main"] == some { scope := some "scaleway/main" }
+#guard parseRender ["--chart", "out", "--version", "1.2.3", "aws"] ==
+  some { chart := some "out", version := some "1.2.3", scope := some "aws" }
+#guard parseRender ["--chart-defaults"] == some { defaults := true }
+#guard parseRender ["--version", "1.2.3"] == none
+#guard parseRender ["--chart", "out", "--chart-defaults"] == none
+#guard parseRender ["--chart"] == none
+#guard parseRender ["--chart", "out", "--chart", "again"] == none
+#guard parseRender ["aws", "scaleway"] == none
+#guard parseRender ["--force"] == none
+
+/-- Write a chart's files into `dir`, which must be new or empty: a chart is
+    regenerated whole, and a template left from an earlier export would be
+    installed with the rest. -/
+def writeChart (dir : String) (files : List (String × String)) : IO Unit := do
+  let d : System.FilePath := dir
+  if ← d.pathExists then
+    unless ← d.isDir do throw (IO.userError s!"{dir} exists and is not a directory")
+    unless (← d.readDir).isEmpty do
+      throw (IO.userError s!"{dir} is not empty: a chart is written into a new or empty \
+directory, so that no template from an earlier export survives. Remove it, or name another")
+  for (path, content) in files do
+    let p := d / path
+    if let some parent := p.parent then IO.FS.createDirAll parent
+    IO.FS.writeFile p content
+
 def usage (exe : String) : String := String.intercalate "\n"
   [ s!"usage: {exe} [check | plan [--destroy [--keep-data] | --refresh-secrets]"
   , s!"       {String.pushn "" ' ' exe.length} | apply [--force] [--refresh-secrets] | destroy [--force] [--keep-data] | dump [FILE]"
-  , s!"       {String.pushn "" ' ' exe.length} | render [CLOUD[/CLUSTER]]]"
+  , s!"       {String.pushn "" ' ' exe.length} | render [--chart DIR [--name NAME] [--version V] | --chart-defaults] [CLOUD[/CLUSTER]]]"
   , ""
   , "  check                  run the offline self-checks (default)"
   , "  plan                   show what would change, without changing anything"
@@ -535,6 +599,12 @@ def usage (exe : String) : String := String.intercalate "\n"
   , "                         print the Kubernetes objects the fleet declares, as the"
   , "                         YAML apply would send (like `helm template`); offline."
   , "                         Secret-sourced values are placeholders"
+  , "  render --chart DIR      write the objects of one cluster as a Helm chart into DIR"
+  , "                         (new or empty): images, replicas and secret references"
+  , "                         are values, typed by values.schema.json. --name defaults"
+  , "                         to the fleet's name, --version to 0.1.0"
+  , "  render --chart-defaults print what `helm template` renders from that chart's"
+  , "                         default values"
   , ""
   , "  --refresh-secrets      (plan, apply) read every fromEnv and composed secret,"
   , "                         rewrite the ones whose stored value is not the declared"
@@ -662,18 +732,32 @@ or pass `(boundary := \{ fleetName := some \"...\" })` to `Infra.Cli.run`."
   | [] | ["check"] => reporting selfCheck
   -- The in-cluster objects, as the YAML `apply` would send — `helm template`
   -- for a fleet. Offline: no cloud, cluster or credential is asked.
-  | ["render"] | ["render", _] =>
-    let scope := match args with
-      | ["render", s] => Infra.Interop.KubernetesYaml.Scope.parse? s
-      | _             => some .all
+  | "render" :: rest =>
+    match parseRender rest with
+    | none => IO.eprintln (usage exe); return 2
+    | some r =>
+    let scope := match r.scope with
+      | some s => Infra.Interop.KubernetesYaml.Scope.parse? s
+      | none   => some .all
     match scope with
     | none =>
-      IO.eprintln s!"render: '{args.getLastD ""}' is not <cloud> or <cloud>/<cluster> \
+      IO.eprintln s!"render: '{r.scope.getD ""}' is not <cloud> or <cloud>/<cluster> \
 (clouds: {String.intercalate ", " ((Finite.elems (α := ProviderId)).map (·.name))})"
       return 2
     | some scope =>
     reporting do
       requireName
+      match r.chart, r.defaults with
+      | some dir, _ =>
+        let files ← IO.ofExcept (Infra.Interop.HelmChart.chart F.plan name scope
+          (r.chartName.getD name) (r.version.getD "0.1.0") |>.mapError IO.userError)
+        writeChart dir files
+        IO.eprintln s!"wrote the {r.chartName.getD name} chart to {dir} ({files.length} files)"
+      | none, true =>
+        let (_, _, objs) ← IO.ofExcept (Infra.Interop.HelmChart.chartObjects F.plan scope
+          |>.mapError IO.userError)
+        IO.print (← IO.ofExcept (Infra.Interop.HelmChart.defaults objs |>.mapError IO.userError))
+      | none, false =>
       match Infra.Interop.KubernetesYaml.render F.plan name scope with
       | .error e => throw (IO.userError e)
       | .ok ""   => IO.eprintln (if scope == .all then "render: this fleet declares no Kubernetes objects"

@@ -27,6 +27,7 @@ import Infra
 
       lake exe kubernetes-postgres            -- offline: the plan, from placeholders
       lake exe kubernetes-postgres render     -- offline: the objects, as YAML
+      lake exe kubernetes-postgres render --chart out/chart  -- offline: a Helm chart
       lake exe kubernetes-postgres plan       -- reads the Scaleway account
       lake exe kubernetes-postgres apply      -- creates a billable cluster
 
@@ -226,6 +227,41 @@ private def mentions (s t : String) : Bool := (s.splitOn t).length > 1
 #guard (Infra.Interop.KubernetesYaml.render crossCloudObject.plan "f").toOption.isNone
 #guard (match Infra.Interop.KubernetesYaml.render crossCloudObject.plan "f" with
         | .error e => some e | .ok _ => none) = crossCloudObject.plan.kubernetesProblem
+
+/-! ## As a Helm chart
+
+   `render --chart DIR` writes the same two objects as a chart for installs
+   where Helm is the deploy path: the image and replicas, and the Secret the
+   password comes from, are values; the fleet's marker is not in it.
+   `ci/check-helm-chart.sh` checks it against the real `helm`. -/
+
+open Infra.Interop.HelmChart in
+private def chartFiles : List (String × String) :=
+  (chart kubernetesPostgres.plan "kubernetes-postgres" .all "kubernetes-postgres" "0.1.0").toOption.getD []
+
+#guard chartFiles.map (·.1) =
+  [ "Chart.yaml", "values.yaml", "values.schema.json"
+  , "templates/default_statefulset.apps_postgres.yaml", "templates/default_service_postgres.yaml" ]
+#guard (chartFiles.lookup "values.yaml").any fun v =>
+  mentions v "  default/statefulset.apps/postgres:\n    image: postgres:17\n    replicas: 1\n"
+    && mentions v "  db-password:\n    name: db-password\n    key: value\n"
+#guard chartFiles.all fun (_, text) => !mentions text "managed-by-infra"
+-- A declaration `kubernetesIsSound` refuses makes no chart.
+#guard (Infra.Interop.HelmChart.chart crossCloudObject.plan "f" .all "f" "0.1.0") matches .error _
+
+/- One chart is one cluster: a fleet with objects in two is told to name one,
+   and a scope that names one makes its chart. -/
+fleet twoClusters in paris where
+  resource scaleway kubernetesCluster "a" { nodeType := "GP1-S", network := "pn-typednotes" }
+  resource scaleway kubernetesCluster "b" { nodeType := "GP1-S", network := "pn-typednotes" }
+  resource scaleway kubernetesObject "a/default/service/web" { shape := service 80 }
+  resource scaleway kubernetesObject "b/default/service/web" { shape := service 80 }
+
+#guard match Infra.Interop.HelmChart.chart twoClusters.plan "f" .all "f" "0.1.0" with
+  | .error e => mentions e "scaleway/a, scaleway/b: name one"
+  | .ok _ => false
+#guard (Infra.Interop.HelmChart.chart twoClusters.plan "f" (.cluster .scaleway "a") "f" "0.1.0")
+  matches .ok _
 
 def main (args : List String) : IO UInt32 := do
   Infra.Cli.run "kubernetes-postgres" kubernetesPostgres

@@ -91,6 +91,14 @@ Kubernetes objects as the YAML `apply` sends, offline, secrets as
 placeholders ([`docs/kubernetes.md`](https://github.com/typednotes/infra/blob/main/docs/kubernetes.md#rendering-helm-template-for-a-fleet), "Rendering"). EKS tokens now sign the way
 STS requires; they had been signed the way S3 wants, and were refused.
 
+**Unreleased: Kubernetes YAML and Helm charts, both ways** — `lake exe infra
+import kubernetes FILE` and `import helm CHART` write `kubernetesObject`
+declarations, typed only where they render back exactly and raw otherwise,
+skipping and listing Secrets, owned objects and hooks. `render --chart DIR`
+writes one cluster's objects as a Helm chart with typed values, checked
+against the real `helm` in CI. The fleet stays the deploy path
+([`docs/kubernetes.md`](https://github.com/typednotes/infra/blob/main/docs/kubernetes.md#interop-kubernetes-yaml-and-helm-charts), "Interop").
+
 **Fixed in 0.21.1: Kubernetes live-test timeouts and silent provisioning** —
 the job budgets the test plus cleanup; waits report status and elapsed time,
 include HTTP time in their deadline, and stop on EKS waiter failure states.

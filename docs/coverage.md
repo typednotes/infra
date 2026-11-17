@@ -216,6 +216,9 @@ clients for those kinds, not one.
 | Scoping — manage some resources, leave the rest alone | complete, via the key family |
 | Terraform/OpenTofu export (`toHcl`) | works; not a round trip — see below |
 | Terraform/OpenTofu import (`fleetOfState`) | works, from `terraform show -json` |
+| Kubernetes YAML import (`infra import kubernetes`) — `kubernetesObject` declarations, typed only when they render back exactly, otherwise raw | offline (`KubernetesImport` guards: render → import round trip, `kubectl get -o yaml` cleaning, skips, refusals; `ci/check-helm-chart.sh`). An import has never been applied to a cluster |
+| Helm chart import (`infra import helm`) — `helm template` with chosen values, then the YAML import | offline, through the real `helm` (`ci/check-helm-chart.sh`); templates, hooks and chart dependencies are not translated |
+| Helm chart export (`render --chart`, `--chart-defaults`) — one cluster's objects; images, replicas and secret references as typed values | offline: `helm lint --strict`, `helm template` ≡ `--chart-defaults`, schema refusal (`ci/check-helm-chart.sh`). A generated chart has never been installed on a cluster |
 | `lake test` — offline by default, live per provider on request | complete |
 
 ### What `--refresh-secrets` and `--keep-data` cover, enumerated
@@ -966,6 +969,21 @@ The `(provider, kind) → resource type` table is **unverified against either
 registry**, and the attribute names inside each block are a looser guess
 still. Same standing as the endpoint shapes in `Kinds/*.lean`.
 
+## Interoperability with Kubernetes YAML and Helm
+
+Unlike Terraform's, the Kubernetes import is exact where it types, by
+construction: an imported declaration renders back the object it was read
+from (`KubernetesImport.faithful`, a proof field on every `Imported`), and
+whatever a typed shape cannot say imports as `raw`, whole. What neither can
+carry fails the import by name; Secrets, owned objects, cluster-maintained
+objects and Helm hooks are skipped and listed. The export writes a Helm
+chart whose values are the typed fields (images, replicas, secret
+references) and whose templates `ci/check-helm-chart.sh` checks against the
+real `helm`. Not covered, and said: Go template logic, `lookup`, chart
+dependencies and hooks (an import is one rendering); images inside raw
+objects (literal in a chart); applying an import, or installing a chart, on
+a live cluster. Full statement: `docs/kubernetes.md`, "Interop".
+
 ### `infra` is a reserved credential name on Scaleway Queues
 
 Scaleway's SQS-compatible endpoint refuses the main API key and needs a
@@ -1496,8 +1514,9 @@ mechanism, and the disagreement is now unrepresentable rather than documented.
 ## Not in this version
 
 More clouds, more kinds, and more of each cloud's surface — networking beyond
-security groups, DNS, load balancers. (Kubernetes is in since 0.19.0; Helm
-charts are not, and will not be — see `docs/kubernetes.md`.) Also: checking an instance
+security groups, DNS, load balancers. (Kubernetes is in since 0.19.0. Helm is
+not a deploy path and will not be, but charts convert both ways — see
+`docs/kubernetes.md`, "Interop".) Also: checking an instance
 type against the region it is placed in, which is now *possible* because both
 facts are declared, and is not done because a stale availability table would
 reject valid fleets.

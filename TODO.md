@@ -113,6 +113,18 @@ cloud account.
   `KubernetesReadOnly` on the Scaleway CI project, `ci/aws-permissions-policy.json`
   re-applied (`eks:ListClusters`/`DescribeCluster`), and on GCP the Kubernetes
   Engine API enabled with `roles/container.clusterViewer`.
+- [x] **YAML and Helm interop** (unreleased): `infra import kubernetes`,
+  `infra import helm`, `render --chart`/`--chart-defaults`; offline, checked
+  through the real `helm` (`ci/check-helm-chart.sh`). See docs/kubernetes.md,
+  "Interop".
+- [ ] **Grow the typed shapes, so imports type more and charts parameterise
+  more**: container resources, probes, named ports and protocols,
+  nodeSelector/tolerations/`runtimeClassName`; typed `Ingress`,
+  `NetworkPolicy`, `ConfigMap`, `Job`. Each new field must keep the
+  `faithful` round trip (render → import gives back the shape) and say in
+  `HelmChart` whether it becomes a value.
+- [ ] **Apply an import, and install a generated chart, on a live cluster**:
+  the interop is checked offline only.
 - [ ] **Consumers need the same before upgrading** (`typednotes-infra`): on
   GCP its service account holds `roles/editor` in the same project, which
   already covers the cluster listing now the API is enabled; its AWS and

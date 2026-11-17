@@ -79,13 +79,13 @@ def document (p : ProviderId) (name : String) (n : ObjectName) (shape : ObjectSh
   return String.intercalate "\n"
     (["---", s!"# Source: {slotId p .kubernetesObject name}"] ++ note ++ [body])
 
-/-- Every declared object `scope` admits, rendered, in declaration order; or
-    the declaration's Kubernetes problem. Empty when there is nothing to
-    render — the caller says so. -/
-def render {κ : Keys} (T : Plan κ) (fleet : String) (scope : Scope := .all) :
-    Except String String := do
+/-- Every declared object `scope` admits, in declaration order — its cloud,
+    fleet name, parsed address and shape — or the declaration's Kubernetes
+    problem. What `render` and the chart export (`HelmChart`) both walk. -/
+def declaredObjects {κ : Keys} (T : Plan κ) (scope : Scope := .all) :
+    Except String (List (ProviderId × String × ObjectName × ObjectShape)) := do
   if let some problem := T.kubernetesProblem then throw problem
-  let docs ← (Finite.elems (α := ProviderId)).flatMapM fun p =>
+  (Finite.elems (α := ProviderId)).flatMapM fun p =>
     (Finite.elems (α := κ.Key p .kubernetesObject)).filterMapM fun key => do
       let name := κ.name p .kubernetesObject key
       match T.assign p .kubernetesObject key, ObjectName.parse? name with
@@ -93,9 +93,17 @@ def render {κ : Keys} (T : Plan κ) (fleet : String) (scope : Scope := .all) :
         if !scope.admits p n.cluster then return none
         -- `kubernetesIsSound` has just required the shape to be a literal.
         match s.shape.asLit with
-        | some shape => return some (← document p name n shape fleet)
+        | some shape => return some (p, name, n, shape)
         | none       => throw s!"{slotId p .kubernetesObject name}: the shape is not a literal"
       | _, _ => return none
+
+/-- Every declared object `scope` admits, rendered, in declaration order; or
+    the declaration's Kubernetes problem. Empty when there is nothing to
+    render — the caller says so. -/
+def render {κ : Keys} (T : Plan κ) (fleet : String) (scope : Scope := .all) :
+    Except String String := do
+  let docs ← (← declaredObjects T scope).mapM fun (p, name, n, shape) =>
+    document p name n shape fleet
   return String.intercalate "\n" docs ++ (if docs.isEmpty then "" else "\n")
 
 end Infra.Interop.KubernetesYaml

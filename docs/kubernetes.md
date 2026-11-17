@@ -403,6 +403,158 @@ label, so the next `apply` finds them already there, as declared — but it is
 not the intended use: `render` is for reading, reviewing and diffing what a
 declaration means, as `helm template` is.
 
+## Interop: Kubernetes YAML and Helm charts
+
+**Status: implemented after 0.23.0 (unreleased); offline. Checked through the
+real `helm` by `ci/check-helm-chart.sh`, never applied to a cluster from an
+import or through a generated chart.**
+
+The fleet stays the source of truth. YAML and Helm charts are formats at its
+edges, the way `toHcl`/`fleetOfState` treat Terraform: an import *writes a
+declaration* to review and compile, and a chart is an export to regenerate,
+not to edit and read back. Neither makes Helm a deploy path for infra, so
+the reasons under "Alternatives considered" still stand.
+
+| Direction | Command | Code |
+|---|---|---|
+| fleet → YAML | `render [CLOUD[/CLUSTER]]` | `Interop.KubernetesYaml` (above) |
+| YAML → fleet | `lake exe infra import kubernetes FILE\|-` | `Interop.KubernetesImport` |
+| fleet → chart | `render --chart DIR [--name N] [--version V]` | `Interop.HelmChart` |
+| chart → fleet | `lake exe infra import helm CHART [--values F]…` | `helm template`, then the YAML import |
+
+### Import: typed only when exact
+
+An import prints Lean source: a `fleet` with a cluster stub and one
+`kubernetesObject` per object, or, with `--objects-only`, just the resource
+lines to paste into a fleet that already declares the cluster. `--cluster`
+(default `main`) names the cluster every address uses; `--namespace`
+(default `default`) is the namespace of an object that does not name one.
+The cluster stub has no fields: its node type, network and roles are not in
+any manifest, so the declaration does not compile until they are supplied,
+and each error names a field. That is the `fleetOfState` convention.
+
+Each object is offered first to its kind's typed shape, read the way the
+live backend reads it back (`shapeOfLive`), then to `raw`. A shape is
+accepted only if **rendering it gives back the input** (`faithful`): the
+`renderManifest` output and the cleaned input are compared as JSON, ignoring
+key order, the marker label and the raw-manifest annotation, and treating an
+empty `labels`/`annotations` as absent. `Imported.faithful` is that check as
+a proof field, so no imported object skipped it. A Deployment with a probe,
+a resource limit or a named port therefore imports as `raw`, whole. In
+practice most hand-written or chart-rendered workloads are `raw` until the
+typed shapes grow (TODO.md). Output of `render` reads back typed.
+
+What neither shape can carry **fails the import**, naming the object:
+metadata other than `name`, `namespace`, `labels` and `annotations` (such as
+`finalizers` or `generateName`), a number the JSON encoder would change, a
+namespace on a cluster-scoped kind, two objects at one address. Unparseable
+YAML fails too. linen's parser rejects anchors, aliases and merge keys
+rather than misreading them.
+
+Some objects are not declarations. They are **skipped and listed**, never
+declared:
+
+- a core `Secret`, because its values would be written into Lean source.
+  Declare a `secrets` resource and reference it with `.secret`;
+- an object with `ownerReferences`, which its controller recreates;
+- `Endpoints`, `EndpointSlice` and `Event`, which the cluster maintains;
+- an object annotated `helm.sh/hook`, since a declared object has no
+  lifecycle point.
+
+`kubectl get -o yaml` output is cleaned first, by an enumerated list:
+`status`, the server-set metadata (`uid`, `resourceVersion`,
+`creationTimestamp`, `generation`, `managedFields`, `selfLink`, deletion
+fields) and the `last-applied-configuration` and `deployment…/revision`
+annotations. Other server defaults (a Service's `clusterIP`) are kept and
+make the object `raw`, because infra cannot tell a default from a choice.
+
+`render` output reads back as declared. The marker label is dropped, on the
+object and on claim templates, so no other fleet's marker is carried over.
+A raw object's manifest annotation is its shape. The `secret-env`
+annotation maps placeholders back to `.secret`, and a workload that carries
+the annotation but is not exactly typed is **refused**, because as `raw`
+its secret values would be in the declaration.
+
+Scope: a built-in cluster-scoped kind (`KubernetesImport.clusterScopedKinds`,
+from the Kubernetes 1.31 API reference) gets namespace `_`. So does a custom
+kind whose `CustomResourceDefinition` in the same input says
+`scope: Cluster`. A custom kind with no CRD in the input is assumed
+namespaced, and a comment above it says so.
+
+**Adopting running objects:** an imported object is applied like any
+declared one. If an object of that address already exists without this
+fleet's marker (a Helm release's, a `kubectl apply`'s), infra warns and
+leaves it alone (ownership principle 3). Remove the old owner first.
+
+### `import helm`
+
+`import helm CHART` runs `helm template RELEASE CHART --namespace NS
+--include-crds --no-hooks`, with `--release` (default `release`) and each
+`--values`/`--set`/`--version` passed through, then imports the output. One
+chart with one set of values is one import. Go templates, `lookup`, chart
+dependencies and hooks are Helm's and are not translated. An object the
+chart renders without a namespace takes `--namespace`.
+
+### Export: `render --chart`
+
+`render --chart DIR` writes `Chart.yaml`, `values.yaml`,
+`values.schema.json` and one template per object, for the objects of
+**one cluster**. If the fleet's objects span several clusters, name one as
+`<cloud>/<cluster>`. `DIR` must be new or empty, so a stale template cannot
+survive a regeneration. `--name` defaults to the fleet's name (a chart name
+is a DNS-1123 label, so a fleet name with `_` needs `--name`), and
+`--version` defaults to `0.1.0`, checked as SemVer 2.
+
+A fleet's parameters are Lean functions, which `values.yaml` cannot carry.
+So the values are read off the declaration mechanically:
+
+- per Deployment and StatefulSet, `image` and `replicas`, under
+  `objects."<namespace>/<kind>/<name>"`;
+- per secret a workload reads, the Kubernetes Secret `name` (default: the
+  secret's fleet name) and `key` (default `value`), under `secrets."<secret>"`.
+  That Secret must exist in the workload's namespace. A chart never holds a
+  secret value.
+
+Everything else is literal: Services, every field of a raw object (images
+inside it included), ports, literal environment, namespaces.
+`values.schema.json` closes both maps and types each value (a non-empty
+string, an integer ≥ 0, a DNS-1123 Secret name, a Secret key), so Helm
+refuses a value the fleet could not have declared.
+
+Two differences from `render`, both deliberate. First, there is **no marker
+label and no `infra.typednotes.org/*` annotation**: Helm owns these objects,
+and an object carrying a fleet's marker inside that fleet's cluster would be
+claimed as its orphan and deleted. Second, a secret-sourced variable is a
+`valueFrom.secretKeyRef`.
+
+Templating: each object is rendered by `renderManifest` with a sentinel
+string at every value position, encoded by the YAML emitter, and the
+sentinels are then replaced by `{{ index .Values… }}` actions (`| quote` for
+strings, `| int` for replicas). An object's own `{{` is escaped as
+`{{"{{"}}` first. An object containing the sentinel prefix is refused.
+
+`render --chart-defaults` prints what `helm template` renders from the chart
+with its default values. `ci/check-helm-chart.sh` runs the real `helm` on
+the example fleet and checks four things: `helm lint --strict` accepts the
+chart; `helm template` equals `--chart-defaults` object for object; the
+schema refuses `replicas: -1` and a Secret override reaches its
+`secretKeyRef`; and both imports read the example back. Go's template
+engine is Helm's, so this test, not a proof, is the evidence that the
+templates mean what `--chart-defaults` says. It is the stated trusted
+boundary.
+
+### What is proved, what is checked
+
+- **By construction:** every imported object satisfies `faithful` (a proof
+  field). So an import never declares a typed shape, or a raw manifest,
+  that renders differently from the object it read.
+- **Checked, not proved:** the render → import round trip for each typed
+  shape, a secret, raw and cluster-scoped objects (`#guard`s in
+  `KubernetesImport`); the template text and its escaping (`#guard`s in
+  `HelmChart`); and the chart against real Helm (`ci/check-helm-chart.sh`).
+  The YAML reader is linen's, and Helm's template engine and schema
+  validator are Helm's. Both are trusted boundaries.
+
 ## Apply semantics
 
 - **Create and update are one call: server-side apply**
@@ -520,7 +672,10 @@ Checked against generated SDKs and discovery documents — not prose docs, the
   resource type that most needs it. `helm install` remains usable *alongside*
   (a consumer can point `rawObject` at rendered output), but this replaces it
   as the deploy path, and says so — the two-step skew of a CI step outside the
-  declaration is what the migrations kind already abolished once.
+  declaration is what the migrations kind already abolished once. Converting
+  to and from charts is a different thing and exists ("Interop" above): an
+  import writes a declaration, an export is regenerated from one, and the
+  fleet stays the deploy path.
 - **One `Kind` per object type.** Per-object `Diverge` tables for free, at the
   price of an enum that grows with every object type ("etc." is open-ended)
   and a checklist per addition. The shape sum keeps the totality guarantee —

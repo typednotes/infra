@@ -63,10 +63,13 @@ import Infra.Providers
 import Infra.Interop.Terraform
 import Infra.Interop.Yaml
 import Infra.Interop.KubernetesYaml
+import Infra.Interop.KubernetesImport
+import Infra.Interop.HelmChart
 
 -- The command-line front end, so a declaration repo's `Main` is a call rather
 -- than a copy of the dispatch.
 import Infra.Cli
 import Infra.Cli.New
+import Infra.Cli.Import
 
 import Infra.Demo

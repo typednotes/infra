@@ -180,3 +180,18 @@ jobs:
             echo "── $e ──"
             lake exe "$e" > /dev/null
           done
+      # The Helm interop, through the real `helm`: the example's chart lints,
+      # `helm template` renders what `render --chart-defaults` prints, the
+      # values schema refuses a bad value, and both imports read it back.
+      # Offline; one leg is enough, since nothing here is platform-specific.
+      - name: Install helm and PyYAML (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y python3-yaml
+      - uses: azure/setup-helm@v4
+        if: runner.os == 'Linux'
+        with:
+          # The version the check was verified with locally (2026-11-17).
+          version: v4.3.2
+      - name: Check the Helm chart export and the imports
+        if: runner.os == 'Linux'
+        run: ./ci/check-helm-chart.sh

@@ -1844,6 +1844,9 @@ def main (args : List String) : IO UInt32 :=
   -- Defaults to `.`, which is the only argument anyone passes it.
   | ["init"] => Infra.Cli.New.scaffold "." (inPlace := true)
   | ["init", dir] => Infra.Cli.New.scaffold dir (inPlace := true)
+  -- Kubernetes YAML, or a rendered Helm chart, as declarations: Lean source
+  -- on stdout. Fleet-independent, like `new`. See `Infra.Cli.Import`.
+  | "import" :: rest => Infra.Cli.Import.run rest
   | ["gcp-check"] =>
     IO.eprintln "usage: lake exe infra gcp-check <service-account-key.json>" *> pure 2
   | ["gcp-check", path] => gcpCheck path

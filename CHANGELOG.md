@@ -10,6 +10,32 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Added: Kubernetes YAML and Helm charts, both ways
+
+- `lake exe infra import kubernetes FILE|-` prints `kubernetesObject`
+  declarations as Lean source (`Interop.KubernetesImport`). An object gets a
+  typed shape only if rendering it gives back the input; otherwise it is
+  `raw`, whole. `Imported.faithful` carries that check as a proof. Secrets,
+  owned objects, Endpoints/EndpointSlices/Events and Helm hooks are skipped
+  and listed. Undeclarable metadata, lossy numbers and duplicate addresses
+  fail the import, naming the object. `kubectl get -o yaml` output is
+  cleaned by an enumerated list, and `render` output reads back typed,
+  secrets included.
+- `lake exe infra import helm CHART` runs `helm template` (`--no-hooks`,
+  `--include-crds`, with values passed through) and imports the result.
+- `render --chart DIR [--name N] [--version V] [CLOUD[/CLUSTER]]` writes one
+  cluster's objects as a Helm chart (`Interop.HelmChart`). Images, replicas
+  and secret references (`secretKeyRef`) are values, typed by a generated
+  `values.schema.json`. There is no fleet marker in the chart.
+  `render --chart-defaults` prints what `helm template` renders from the
+  defaults.
+- `ci/check-helm-chart.sh`, run in CI, checks the example's chart with the
+  real `helm` (lint, `template` ≡ `--chart-defaults`, schema refusal) and
+  both imports.
+- `KubernetesYaml.declaredObjects` is the object walk shared by `render` and
+  the chart. `docs/kubernetes.md` gains "Interop"; `docs/coverage.md`'s "Helm
+  charts will not be" now reads "not a deploy path, but convertible".
+
 Pending in `linen` — none changed from here, because a linen session was
 active on 2026-09-29:
 
