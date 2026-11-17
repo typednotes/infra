@@ -113,7 +113,7 @@ cloud account.
   `KubernetesReadOnly` on the Scaleway CI project, `ci/aws-permissions-policy.json`
   re-applied (`eks:ListClusters`/`DescribeCluster`), and on GCP the Kubernetes
   Engine API enabled with `roles/container.clusterViewer`.
-- [x] **YAML and Helm interop** (unreleased): `infra import kubernetes`,
+- [x] **YAML and Helm interop** (0.24.0): `infra import kubernetes`,
   `infra import helm`, `render --chart`/`--chart-defaults`; offline, checked
   through the real `helm` (`ci/check-helm-chart.sh`). See docs/kubernetes.md,
   "Interop".

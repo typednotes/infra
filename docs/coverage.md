@@ -1,4 +1,4 @@
-# Coverage in 0.23.0
+# Coverage in 0.24.0
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Container-image resolution was checked on 2026-10-01;
@@ -6,6 +6,17 @@ the existing cloud round-trip results retain their recorded dates below.
 
 This page is the canonical answer; the README and `docs/tutorial.md` link here
 rather than repeating it, so there is one place to correct.
+
+## Kubernetes YAML and Helm chart interop (0.24.0)
+
+`infra import kubernetes` and `infra import helm` write `kubernetesObject`
+declarations, typed only where they render back exactly (a proof on every
+imported object) and raw otherwise; `render --chart` exports one cluster's
+objects as a Helm chart with typed values. Offline only: checked through the
+real `helm` by `ci/check-helm-chart.sh` (lint, `template` against
+`--chart-defaults`, schema refusal, both imports). No import has been applied
+to a cluster and no generated chart installed. Full statement:
+[Interoperability with Kubernetes YAML and Helm](#interoperability-with-kubernetes-yaml-and-helm).
 
 ## Declarative access policies (0.23.0)
 

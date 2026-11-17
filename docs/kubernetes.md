@@ -405,7 +405,7 @@ declaration means, as `helm template` is.
 
 ## Interop: Kubernetes YAML and Helm charts
 
-**Status: implemented after 0.23.0 (unreleased); offline. Checked through the
+**Status: implemented in 0.24.0; offline. Checked through the
 real `helm` by `ci/check-helm-chart.sh`, never applied to a cluster from an
 import or through a generated chart.**
 
