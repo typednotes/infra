@@ -10,3 +10,8 @@ out/
 .DS_Store
 # Playwright MCP scratch output
 .playwright-mcp/
+
+# agents-md standard: local, generated and cached content
+reviews/
+output/
+.cache/
