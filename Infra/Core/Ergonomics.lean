@@ -20,6 +20,8 @@ import Infra.Core.Fleet
 
 namespace Infra.Core
 
+universe u
+
 open Infra.Specs (SpecOf)
 
 /-! ## `NamedKey` — a generic, list-backed key type -/

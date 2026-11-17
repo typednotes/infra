@@ -197,7 +197,7 @@ jobs:
           echo "GOOGLE_CLOUD_PROJECT=typednotes" >> "$GITHUB_ENV"
 
       - name: Build
-        run: lake build live-test
+        run: lake build --wfail live-test
 
       # The offline leg always runs, whichever provider was chosen. It costs
       # nothing and it fails fast on anything that would also break the live

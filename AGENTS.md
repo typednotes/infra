@@ -12,17 +12,17 @@ dependently-typed Lean values, so an unrealisable target is a compile error. The
 ships the `Infra` library, the `infra` executable (offline self-checks, the `new`/`init`
 scaffolder, and `plan`/`apply`/`destroy`/`dump`/`render` over a demo fleet) and the example
 fleets under `example/`. Consumers such as `typednotes-infra` pin it to a version tag and get
-the same CLI through `Infra.Cli.run`. Done means: `lake build`, the offline self-checks, the
+the same CLI through `Infra.Cli.run`. Done means: `lake build --wfail`, the offline self-checks, the
 test driver, every example and the `ci/` checks pass, and code, `docs/`, examples and
 `site/` agree (see "Code, docs, examples and the page move together" below).
 
 | Task | Command |
 | --- | --- |
 | Install | toolchain from `lean-toolchain` via `elan`; native FFI deps: `sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config` (Linux) or `brew install libpq openssl pkg-config` with `PKG_CONFIG_PATH` set to their `lib/pkgconfig` (macOS) — see `.github/workflows/lean_action_ci.yml` |
-| Type-check | `lake build` (also runs every `#guard`) |
+| Type-check | `lake build --wfail` (also runs every `#guard`; warnings fail it) |
 | Test | `lake exe infra check && lake test` (offline), then every example executable — see "The examples must work" |
 | Lint / format | `./ci/check-aws-policy.sh && ./ci/check-scaleway-scoping.sh && ./ci/check-lakefile-sync.sh && ./ci/check-site-assets-sync.sh`; `./ci/check-workflows.sh <path-to-actionlint>` (pinned actionlint 1.7.7 in CI); no Lean formatter or linter is configured |
-| Build / release | `lake build`; release: `ci/check-release-version.sh <version>`, then a `vX.Y.Z` tag — `release.yml` publishes when the tag is pushed, and the push is the user's |
+| Build / release | `lake build --wfail`; release: `ci/check-release-version.sh <version>`, then a `vX.Y.Z` tag — `release.yml` publishes when the tag is pushed, and the push is the user's |
 | CLI (applications) | `lake exe infra` (bare invocation runs the offline `check`; there is no `--help` flag yet — an unrecognised argument prints the usage) |
 
 Before declaring a change done, run type-check, tests and lint, and report their real output.
@@ -158,14 +158,13 @@ experiments are logged too.
 ### Types: use the strongest standard checking the language offers, maximally
 
 - Use the standard type-checker of the language/framework in its strictest practical mode, run it in
-  CI, and keep it at zero errors. Examples: Python `mypy --strict` or `pyright` strict, with
-  `py.typed`; TypeScript `"strict": true` plus `noUncheckedIndexedAccess` and
-  `exactOptionalPropertyTypes`; Rust `clippy -D warnings`; Go `go vet` + `staticcheck`; Haskell
-  `-Wall -Werror`; Kotlin/Swift/Scala with warnings as errors.
-  In this project: Lean 4 (`leanprover/lean4:v4.34.0`), checked by `lake build` on the
-  ubuntu-24.04/macos-latest matrix of `.github/workflows/lean_action_ci.yml`; `lakefile.lean`
-  sets no `leanOptions` or `moreLeanArgs`, so Lean's defaults apply: `autoImplicit` is on and
-  warnings are not errors (no `--wfail` in CI).
+  CI, and keep it at zero errors.
+  In this project: Lean 4 (`leanprover/lean4:v4.34.0`) with `autoImplicit` and
+  `relaxedAutoImplicit` off for the package (`lakefile.lean`'s `leanOptions`), and
+  `lake build --wfail` in CI (the ubuntu-24.04/macos-latest matrix of
+  `.github/workflows/lean_action_ci.yml`, plus the live-test and cleanup workflows): warnings,
+  including `sorry`, fail the build. `infra new` scaffolds projects with the same options and
+  `--wfail` CI (`Infra/Cli/New.lean`); the scaffold step in CI builds one with `--wfail`.
 - Make illegal states unrepresentable: precise types, enums/sum types over strings and flags, new
   types for identifiers and units, immutable data by default. Avoid `Any`, casts and ignores; when
   one is unavoidable, scope it narrowly and justify it in a comment.
@@ -552,7 +551,7 @@ facts that would otherwise only fail against a real cloud, and the headers are
 the tutorial. After any change to the library, build everything and run every
 executable:
 
-    lake build
+    lake build --wfail
     lake exe infra              # the offline self-check suite
     lake exe scaleway-queue     # bare invocation: offline, free
     lake exe paris-instances    # bare invocation: offline, free

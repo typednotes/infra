@@ -57,7 +57,10 @@ jobs:
           # explicit PKG_CONFIG_PATH to find their .pc files — which is also
           # how `lakefile.lean` resolves OpenSSL's link flags.
           echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix openssl)/lib/pkgconfig" >> "$GITHUB_ENV"
+      # `--wfail`: a warning, including `sorry`, fails the build.
       - uses: leanprover/lean-action@v1
+        with:
+          build-args: "--wfail"
       # `lake build` compiles the library and runs every `#guard`. This step
       # additionally runs the offline self-checks: SigV4 against AWS's
       # published vectors, the credential chain and its redaction, divergence,
@@ -169,7 +172,7 @@ jobs:
           # rather than to the commit the manifest names. Pointing at the
           # packages this checkout already resolved uses that exact revision.
           export LAKE_PACKAGES_DIR="$GITHUB_WORKSPACE/.lake/packages"
-          lake build
+          lake build --wfail
           ./.lake/build/bin/scaffold_check
       # Every example is test surface, per AGENTS.md. All but `scaleway-pull`
       # are offline and free, so CI runs them; a bare invocation plans against

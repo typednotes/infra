@@ -144,7 +144,7 @@ jobs:
           echo "GOOGLE_CLOUD_PROJECT=typednotes" >> "$GITHUB_ENV"
 
       - name: Build
-        run: lake build live-test
+        run: lake build --wfail live-test
 
       - name: Sweep ${{ matrix.cloud }}
         env:

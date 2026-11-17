@@ -380,9 +380,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+      # `--wfail`: a warning, including `sorry`, fails the build.
       - uses: leanprover/lean-action@v1
-
-
+        with:
+          build-args: \"--wfail\"
 
       # Compiles the fleet and runs every `#guard` in it — including that no
       # plaintext secret is committed. No credentials needed.
@@ -430,9 +431,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+      # `--wfail`: a warning, including `sorry`, fails the build.
       - uses: leanprover/lean-action@v1
-
-
+        with:
+          build-args: \"--wfail\"
 
       - name: Check the required secrets are present
         env:
@@ -505,6 +507,7 @@ check:
   stage: check
   script:
     - export PATH=\"$HOME/.elan/bin:$PATH\"
+    - lake build --wfail   # a warning, including `sorry`, fails the build
     - lake exe " ++ name ++ " check
 
 plan:
@@ -553,7 +556,7 @@ commands:
             curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz
             ./elan-init -y --default-toolchain none
             echo 'export PATH=\"$HOME/.elan/bin:$PATH\"' >> \"$BASH_ENV\"
-      - run: lake build
+      - run: lake build --wfail
 
 jobs:
   # Compiles the fleet and runs every `#guard`, including that no plaintext
@@ -676,7 +679,7 @@ steps:
       key: 'lake | \"$(Agent.OS)\" | lake-manifest.json'
       path: .lake
     displayName: Cache .lake
-  - script: lake build
+  - script: lake build --wfail
     displayName: Build
 "
 
@@ -709,7 +712,7 @@ pipeline {
       }
     }
 
-    stage('Build') { steps { sh 'lake build' } }
+    stage('Build') { steps { sh 'lake build --wfail' } }
 
     // Compiles the fleet and runs every `#guard`, including that no plaintext
     // secret is committed. Needs no credentials.
@@ -851,6 +854,9 @@ open System Lake DSL
 package «" ++ name ++ "» where
   version := v!\"0.1.0\"
   moreLinkArgs := nativeLinkArgs
+  -- Strict elaboration: every variable is bound explicitly. The CI files
+  -- build with `--wfail`, so a warning (including `sorry`) fails the build.
+  leanOptions := #[⟨`autoImplicit, false⟩, ⟨`relaxedAutoImplicit, false⟩]
 
 " ++ requireInfra ++ "
 

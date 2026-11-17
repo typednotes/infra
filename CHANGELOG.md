@@ -36,6 +36,15 @@ been exercised; this file is what changed and when.
   the chart. `docs/kubernetes.md` gains "Interop"; `docs/coverage.md`'s "Helm
   charts will not be" now reads "not a deploy path, but convertible".
 
+### Changed: strict elaboration and warnings as errors
+
+- `infra` itself builds with `autoImplicit` and `relaxedAutoImplicit` off, and
+  CI builds with `lake build --wfail`: a warning, including `sorry`, fails it.
+- `infra new` (and `init` on a directory without a lakefile) writes a
+  `lakefile.lean` with the same two options off, and its GitHub, GitLab,
+  CircleCI, Azure and Jenkins CI files build with `--wfail`. A project
+  converted from `lakefile.toml` by `init` keeps Lean's defaults.
+
 Pending in `linen` — none changed from here, because a linen session was
 active on 2026-09-29:
 

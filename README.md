@@ -263,10 +263,15 @@ cd my_infra && lake update && lake build
 Both commands produce the same project. `new` is the shortcut when there is
 nothing there yet; `init` is the one to use on a project that already exists.
 
+The generated `lakefile.lean` turns `autoImplicit` and `relaxedAutoImplicit`
+off, and the generated CI builds with `lake build --wfail`, so a warning
+(including `sorry`) fails the build. A `lakefile.toml` that `init` converts
+keeps Lean's defaults, because its existing code was not written for them.
+
 ## Build this repository
 
 ```sh
-lake build
+lake build --wfail     # strict: as CI, a warning fails the build
 lake exe infra check   # offline self-checks; no cloud, no credentials needed
 lake test              # the test driver, offline
 ```
