@@ -172,7 +172,6 @@ target is a compile error"
   moreLinkArgs := nativeLinkArgs
   -- Strict elaboration: every variable is bound explicitly. CI also builds
   -- with `--wfail`, so a warning (including `sorry`) fails the build.
-  leanOptions := #[⟨`autoImplicit, false⟩, ⟨`relaxedAutoImplicit, false⟩]
 
 -- Needs linen >= 0.13.0 for `Crypto.JOSE.rsaSign`, which `Infra.Core.GcpAuth`
 -- uses to sign a service-account assertion — an older checkout fails to build

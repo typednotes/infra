@@ -1,6 +1,6 @@
 # AGENTS.md — infra
 
-<!-- agents-md standard v3 — github.com/ngrislain/agents. Refresh with the agents-md skill. -->
+<!-- agents-md standard v4 — github.com/ngrislain/agents. Refresh with the agents-md skill. -->
 
 Instructions for coding agents (Claude Code, Codex, pi, opencode, …) and for humans working on
 this project. `CLAUDE.md` imports this file; edit this one.
@@ -22,7 +22,7 @@ test driver, every example and the `ci/` checks pass, and code, `docs/`, example
 | Type-check | `lake build --wfail` (also runs every `#guard`; warnings fail it) |
 | Test | `lake exe infra check && lake test` (offline), then every example executable — see "The examples must work" |
 | Lint / format | `./ci/check-aws-policy.sh && ./ci/check-scaleway-scoping.sh && ./ci/check-lakefile-sync.sh && ./ci/check-site-assets-sync.sh`; `./ci/check-workflows.sh <path-to-actionlint>` (pinned actionlint 1.7.7 in CI); no Lean formatter or linter is configured |
-| Build / release | `lake build --wfail`; release: `ci/check-release-version.sh <version>`, then a `vX.Y.Z` tag — `release.yml` publishes when the tag is pushed, and the push is the user's |
+| Build / release | `lake build --wfail`; release: `ci/check-release-version.sh <version>`, then a `vX.Y.Z` tag — `release.yml` publishes when the tag is pushed; push only when explicitly requested |
 | CLI (applications) | `lake exe infra` (bare invocation runs the offline `check`; there is no `--help` flag yet — an unrecognised argument prints the usage) |
 
 Before declaring a change done, run type-check, tests and lint, and report their real output.
@@ -48,7 +48,11 @@ Before declaring a change done, run type-check, tests and lint, and report their
 
 **Confirm explicitly every time**, even if a similar action was approved earlier — approval does
 not carry over to a new context:
-- `git push` of any kind; never force-push, and never push to `main`/`master` directly;
+- `git push` only when explicitly requested by the user for that operation. Direct pushes to
+  `main`/`master` are permitted only when explicitly specified. A request specifying the push
+  scope (repositories, remote, branches and any tags), including an explicit command or batch,
+  counts as confirmation; do not ask again for the same operation. Approval does not extend to
+  later pushes. Never force-push or rewrite pushed history;
 - opening, merging or closing a PR/MR, posting review comments, tagging, releasing, publishing a
   package or image;
 - deploying to any environment (dev, staging, prod);
@@ -159,11 +163,10 @@ experiments are logged too.
 
 - Use the standard type-checker of the language/framework in its strictest practical mode, run it in
   CI, and keep it at zero errors.
-  In this project: Lean 4 (`leanprover/lean4:v4.34.0`) with `autoImplicit` and
-  `relaxedAutoImplicit` off for the package (`lakefile.lean`'s `leanOptions`), and
-  `lake build --wfail` in CI (the ubuntu-24.04/macos-latest matrix of
+  In this project: Lean 4 (`leanprover/lean4:v4.34.0`) with `autoImplicit` on (Lean's default: it only automates implicit binders, which are still fully checked),
+  and `lake build --wfail` in CI (the ubuntu-24.04/macos-latest matrix of
   `.github/workflows/lean_action_ci.yml`, plus the live-test and cleanup workflows): warnings,
-  including `sorry`, fail the build. `infra new` scaffolds projects with the same options and
+  including `sorry`, fail the build. `infra new` scaffolds projects with
   `--wfail` CI (`Infra/Cli/New.lean`); the scaffold step in CI builds one with `--wfail`.
 - Make illegal states unrepresentable: precise types, enums/sum types over strings and flags, new
   types for identifiers and units, immutable data by default. Avoid `Any`, casts and ignores; when
@@ -280,22 +283,18 @@ Look out for tasks the user does by hand again and again, and propose to automat
 
 ### Overrides of the standard rules above
 
-This project rule **takes precedence** over the standard Permissions section above, which allows
-a push after explicit confirmation: a push is never the agent's to make, even once confirmed.
+Pushes follow the explicit-request rule in the Permissions section above.
 Commits and tags follow the standard: commit only when the user asks, and confirm every tag.
 
-**Never push.** Pushing is the human's, always — not "unless approved", not
-"unless it seems expected", not "unless the previous step was approved and
-this is obviously the next one". When the user asks for a release, prepare
-the work so that a push is the only thing left: run the checks, commit and
-tag as asked, and say what is ready and what the push will trigger.
+**Push only when explicitly requested by the user.** A release request or version bump
+does not itself authorize a push. Without an explicit push request, prepare the work
+so that a push is the only thing left: run the checks, commit and tag as asked, and
+say what is ready and what the push will trigger.
 
-Written this strongly because the weaker version ("do not push without
-approval") did not hold. Approval for one release was carried forward into
-the next on the reasoning that a version bump implies a release — which is
-plausible, and wrong, and exactly the kind of reasoning an explicit rule
-exists to stop. A tag under this repository's ruleset is immutable and a push
-to `main` is public; neither is the assistant's to decide the timing of.
+Approval for one release was previously carried forward into the next on the reasoning
+that a version bump implies a release. Do not repeat that mistake: require an explicit
+request for each push operation. A tag under this repository's ruleset is immutable and
+a push to `main` is public; neither is the assistant's to decide the timing of.
 
 ### Code: features, ownership and markers
 

@@ -49,7 +49,7 @@ against the real `helm` in CI. The fleet stays the deploy path
 ([`docs/kubernetes.md`](https://github.com/typednotes/infra/blob/main/docs/kubernetes.md#interop-kubernetes-yaml-and-helm-charts), "Interop").
 
 Also in 0.24.0: `infra` and the projects `infra new` scaffolds build with
-`autoImplicit` off and `lake build --wfail` in CI.
+`lake build --wfail` in CI, so a warning (including `sorry`) fails the build.
 
 **New in 0.23.0: declarative access policies.** Scaleway containers declare
 private networks, endpoint visibility, HTTPS and IP-restricted ingress to a
@@ -266,10 +266,9 @@ cd my_infra && lake update && lake build
 Both commands produce the same project. `new` is the shortcut when there is
 nothing there yet; `init` is the one to use on a project that already exists.
 
-The generated `lakefile.lean` turns `autoImplicit` and `relaxedAutoImplicit`
-off, and the generated CI builds with `lake build --wfail`, so a warning
-(including `sorry`) fails the build. A `lakefile.toml` that `init` converts
-keeps Lean's defaults, because its existing code was not written for them.
+The generated CI builds with `lake build --wfail`, so a warning (including
+`sorry`) fails the build. `autoImplicit` keeps Lean's default (on): it only
+automates implicit binders, which are still fully checked.
 
 ## Build this repository
 

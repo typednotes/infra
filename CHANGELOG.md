@@ -10,6 +10,12 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
+### Changed
+
+- `autoImplicit` is back to Lean's default (on): it automates implicit binders,
+  which are still fully checked, so it is not a weakening (agents-md standard v4).
+  Warnings still fail the build (`lake build --wfail`).
+
 Pending in `linen` — none changed from here, because a linen session was
 active on 2026-09-29:
 

@@ -854,9 +854,6 @@ open System Lake DSL
 package «" ++ name ++ "» where
   version := v!\"0.1.0\"
   moreLinkArgs := nativeLinkArgs
-  -- Strict elaboration: every variable is bound explicitly. The CI files
-  -- build with `--wfail`, so a warning (including `sorry`) fails the build.
-  leanOptions := #[⟨`autoImplicit, false⟩, ⟨`relaxedAutoImplicit, false⟩]
 
 " ++ requireInfra ++ "
 
