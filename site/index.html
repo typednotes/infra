@@ -281,8 +281,7 @@
 <a class="skip" href="#top">Skip to content</a>
 
 <div class="banner">
-  <strong>0.24.0</strong> — Import Kubernetes YAML and Helm charts as typed
-  declarations, and export a cluster's objects as a Helm chart.
+  <strong>0.24.2</strong> uses Linen 4.0.0 for native resource support and linking.
   <a href="https://github.com/typednotes/infra/blob/main/CHANGELOG.md">What's new →</a>
 </div>
 
@@ -667,8 +666,7 @@ would CREATE scaleway/secrets/db-url
       fleet that compiles, and CI for GitHub <em>and</em> GitLab with the
       plan/apply split already wired. It builds on <code>lake init</code>, so
       Lake still owns the toolchain pin — what it adds is the part Lake cannot
-      know about, chiefly the native link flags every consumer needs and would
-      otherwise copy by hand — and it converts <code>lakefile.toml</code> to
+      know about, and it converts <code>lakefile.toml</code> to
       Lean, because those flags cannot be expressed in TOML. It writes only
       what is absent, so it is safe to re-run and safe on a project with work
       in it. Your declaration is a Lean program, so
@@ -694,7 +692,7 @@ would CREATE scaleway/secrets/db-url
 <span class="c">#   [[require]]</span>
 <span class="c">#   name = "infra"</span>
 <span class="c">#   git = "https://github.com/typednotes/infra"</span>
-<span class="c">#   rev = "v0.24.0"</span>
+<span class="c">#   rev = "v0.24.2"</span>
 
 lake update                <span class="c"># fetch infra</span>
 lake exe infra init        <span class="c"># turn this into an infra project</span>

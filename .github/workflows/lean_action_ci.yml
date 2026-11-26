@@ -30,33 +30,9 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         shell: bash
         run: bash ci/test-require-main-ci.sh
-      # Linen's FFI is a single `extern_lib`, so building it compiles *every*
-      # `.c` under its `ffi/` — libpq, OpenSSL, libsecret, SQLite, DuckDB —
-      # whether or not this package imports the corresponding module. `infra`
-      # therefore needs Linen's whole native dependency set to build at all,
-      # not merely the parts it uses (`System.Keychain` for credentials,
-      # `Crypto.SigV4` and TLS for the providers).
-      #
-      # These mirror linen's own CI, and keeping them in step matters: this job
-      # started failing the moment `Infra.Core.Credentials` pulled in
-      # `System.Keychain`, with `keychain.c` unable to find
-      # `libsecret/secret.h`.
-      #
-      # OpenSSL is needed for its *headers* only. Lean's toolchain bundles
-      # static `libssl.a`/`libcrypto.a` and links them into every executable
-      # itself, so `lakefile.lean` deliberately passes no OpenSSL link flags —
-      # see the comment there on why naming the system `.so` breaks the link.
-      - name: Install native FFI dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
-      - name: Install native FFI dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install libpq openssl pkg-config
-          # libpq/openssl are keg-only on Homebrew, so pkg-config needs an
-          # explicit PKG_CONFIG_PATH to find their .pc files — which is also
-          # how `lakefile.lean` resolves OpenSSL's link flags.
-          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix openssl)/lib/pkgconfig" >> "$GITHUB_ENV"
+      - uses: typednotes/linen/.github/actions/setup-native-deps@037925bc5068c54efd86690b78b258b9c6787959
+        with:
+          keyring: false
       # `--wfail`: a warning, including `sorry`, fails the build.
       - uses: leanprover/lean-action@v1
         with:
@@ -75,12 +51,6 @@ jobs:
       # see `.github/workflows/live-test.yml`, which is manual only.
       - name: Run the test driver (offline)
         run: lake test
-      # The native link-flag block exists in two places — this repo's lakefile
-      # and the copy `infra new` writes into a scaffolded project — because
-      # Lake cannot propagate `moreLinkArgs` from a dependency. They drifted
-      # once, and the drift broke the link on Linux in every scaffolded
-      # project while this repo itself kept building. Cheap to check, so it is
-      # checked.
       # An IAM policy document cannot carry a comment, and one shipped with a
       # top-level "Comment" key. `create-policy` rejected it, and the failure
       # showed up one command later as `NoSuchEntity … is not attachable` from
@@ -110,7 +80,7 @@ jobs:
       # unscoped when this check was written.
       - name: Check Scaleway listings are scoped to a project
         run: ./ci/check-scaleway-scoping.sh
-      - name: Check the scaffolder's lakefile copy has not drifted
+      - name: Check the scaffolder's legacy link helper
         run: ./ci/check-lakefile-sync.sh
       # `pages.yml` publishes `site/` alone, so the page carries its own copy
       # of the artwork and there are two copies of every file. They drifted
