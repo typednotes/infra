@@ -10,7 +10,7 @@
 </p>
 
 [![CI](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml/badge.svg)](https://github.com/typednotes/infra/actions/workflows/lean_action_ci.yml)
-[![Lean](https://img.shields.io/badge/Lean-v4.34.0-blue)](https://leanprover.github.io/)
+[![Lean](https://img.shields.io/badge/Lean-v4.36.0-blue)](https://leanprover.github.io/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 Terraform/OpenTofu-style infrastructure as code, defined in Lean instead of a
@@ -38,7 +38,7 @@ surprise.
 See [`docs/architecture.md`](https://github.com/typednotes/infra/blob/main/docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.24.0 covers
+## What 0.24.2 covers
 
 **New in 0.24.0: Kubernetes YAML and Helm charts, both ways** — `lake exe infra
 import kubernetes FILE` and `import helm CHART` write `kubernetesObject`
@@ -182,7 +182,7 @@ a first tagged release.
 
 - [`elan`](https://github.com/leanprover/elan) (Lean's toolchain manager) —
   `lean-toolchain` pins the exact version this project builds with
-  (`leanprover/lean4:v4.34.0`).
+  (`leanprover/lean4:v4.36.0`).
 - Linux or macOS. Native FFI dependencies for `libpq`, OpenSSL headers, and
   the OS keychain (`libsecret` on Linux, Keychain on macOS) — see the
   [`lean_action_ci.yml`](https://github.com/typednotes/infra/blob/main/.github/workflows/lean_action_ci.yml) install steps for the exact packages if `lake build`
@@ -204,7 +204,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.24.0"
+rev = "v0.24.2"
 ```
 
 Then:
@@ -239,13 +239,10 @@ version of `infra` you actually depend on. Delete the file when it stops being
 useful; nothing imports it.
 
 It also **converts `lakefile.toml` to `lakefile.lean`**, keeping the original
-as `lakefile.toml.replaced-by-infra`. That conversion is not cosmetic: the
-native link flags are computed on the build machine by running `pkg-config`,
-which TOML cannot express, and they are not optional because Lake does not
-propagate a dependency's `moreLinkArgs`. Without them the link fails on
-undefined symbols from the FFI. If the TOML contains anything the converter
-does not recognise it refuses and says so, rather than rewriting a lakefile on
-a guess.
+as `lakefile.toml.replaced-by-infra`. With Linen 4.0, the generated project
+gets native link configuration from its imports. Projects that retain a legacy
+Infra pin keep the old link flags. The converter reports unsupported TOML
+settings before it writes a replacement.
 
 Your declaration is a Lean program, so `lake exe my_infra` *is* the CLI —
 there is no separate binary to keep in step with your code, and no state file

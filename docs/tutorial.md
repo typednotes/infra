@@ -65,7 +65,7 @@ Three files:
 `lean-toolchain`
 
 ```
-leanprover/lean4:v4.34.0
+leanprover/lean4:v4.36.0
 ```
 
 `lakefile.lean`
@@ -79,7 +79,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.24.0"
+require infra from git "https://github.com/typednotes/infra" @ "v0.24.2"
 
 @[default_target]
 lean_exe «my-infra» where
@@ -87,10 +87,7 @@ lean_exe «my-infra» where
 ```
 
 > **Note.** `infra` links native code (SigV4, TLS, the OS keychain) through
-> [`linen`](https://github.com/typednotes/linen). Lake does not propagate a
-> dependency's `moreLinkArgs` to a dependent's executable, so you will need to
-> copy the platform link-flag block from `infra`'s own `lakefile.lean`. See
-> that file's header comment — it explains what each flag is for.
+> Linen 4.0 supplies the native link configuration through the imported modules.
 
 Then `lake update` once to fetch the dependency.
 

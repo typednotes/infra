@@ -1,4 +1,4 @@
-# Coverage in 0.24.0
+# Coverage in 0.24.2
 
 What this version actually does, and — more usefully — how far each part has
 been exercised. Container-image resolution was checked on 2026-10-01;

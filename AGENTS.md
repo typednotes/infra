@@ -191,7 +191,7 @@ experiments are logged too.
 
 - Use the standard type-checker of the language/framework in its strictest practical mode, run it in
   CI, and keep it at zero errors.
-  In this project: Lean 4 (`leanprover/lean4:v4.34.0`) with `autoImplicit` on (Lean's default: it only automates implicit binders, which are still fully checked),
+  In this project: Lean 4 (`leanprover/lean4:v4.36.0`) with `autoImplicit` on (Lean's default: it only automates implicit binders, which are still fully checked),
   and `lake build --wfail` in CI (the ubuntu-24.04/macos-latest matrix of
   `.github/workflows/lean_action_ci.yml`, plus the live-test and cleanup workflows): warnings,
   including `sorry`, fail the build. `infra new` scaffolds projects with
@@ -529,12 +529,9 @@ Concretely, when a change lands:
 - **A removed defect is deleted from the ledger, not softened.** If it is gone,
   say it is gone and say what replaced it; `docs/diff-semantics.md`'s ledger is
   only useful while it is true.
-- **`Infra/Cli/New.lean` embeds a copy of the lakefile's native link-flag
-  block and of the CI workflows.** Lake cannot propagate `moreLinkArgs` from a
-  dependency, so every consumer needs that block; if this repo's own
-  `lakefile.lean` link flags or workflows change, the scaffolder's copies have
-  to change with them. `lake exe infra new /tmp/x` and building the result is
-  the check.
+- **Build a project produced by `infra new`.** Its pinned Infra dependency
+  selects Linen, which supplies the native link configuration. Keep the
+  generated CI templates in sync with this checkout.
 - **A release bumps the version everywhere it is written down.** Nine places:
   `lakefile.lean`'s `version`, `Infra/Cli/New.lean`'s `infraRev` (the tag a
   scaffolded project is pinned to), the `rev`/`@` in `README.md`,

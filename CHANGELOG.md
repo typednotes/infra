@@ -10,12 +10,6 @@ been exercised; this file is what changed and when.
 
 ## [Unreleased]
 
-### Changed
-
-- `autoImplicit` is back to Lean's default (on): it automates implicit binders,
-  which are still fully checked, so it is not a weakening (agents-md standard v4).
-  Warnings still fail the build (`lake build --wfail`).
-
 Pending in `linen` — none changed from here, because a linen session was
 active on 2026-09-29:
 
@@ -32,6 +26,14 @@ active on 2026-09-29:
   (`Infra.Core.JsonExact`) rather than send it; once linen renders the
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
+
+## [0.24.2] — 2026-11-27
+
+### Changed
+
+- Upgrade to Linen 4.0.0 at its [release commit](https://github.com/typednotes/linen/commit/037925bc5068c54efd86690b78b258b9c6787959). Generated projects link native libraries through
+  Linen imports, and existing TOML projects retain explicitly pinned dependencies.
+- Restored Lean’s default implicit binders. CI continues to reject compiler warnings.
 
 ## [0.24.0] — 2026-11-17
 
