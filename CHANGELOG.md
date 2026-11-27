@@ -27,10 +27,6 @@ active on 2026-09-29:
   shortest representation that reads back as the same `Float`,
   `lossyNumbers` of every value is `[]` and the guard costs nothing.
 
-### Changed
-
-- Build with [Linen 5.0.0](https://github.com/typednotes/linen/commit/bcfec9a81d6e738ecb273f89e2102b4712d8e160).
-
 ## [0.24.3] — 2026-11-27
 
 ### Changed
