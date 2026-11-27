@@ -30,7 +30,7 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         shell: bash
         run: bash ci/test-require-main-ci.sh
-      - uses: typednotes/linen/.github/actions/setup-native-deps@v4.1.0
+      - uses: typednotes/linen/.github/actions/setup-native-deps@bcfec9a81d6e738ecb273f89e2102b4712d8e160
         with:
           keyring: false
       # `--wfail`: a warning, including `sorry`, fails the build.
@@ -125,23 +125,9 @@ jobs:
           mv "$lakefile.tmp" "$lakefile"
           cp lean-toolchain /tmp/scaffold-check/
           cd /tmp/scaffold-check
-          # Reuse this checkout's package directory rather than resolving a
-          # fresh one. Two reasons, and the second is the important one.
-          #
-          # Cost: without it the scaffolded project builds the whole of `linen`
-          # a second time — the job above has already built it once — which
-          # locally was killed by the OOM killer (`Lean exited with code 137`)
-          # part-way through `Linen.PostgREST.App`.
-          #
-          # Reproducibility: `lake update` resolves `linen` afresh from the
-          # lakefile's `require`. That is a pinned tag now rather than `main`,
-          # so the risk is smaller than it was when this comment was written —
-          # but it is not gone: a re-resolve still ignores `lake-manifest.json`,
-          # which is the file recording the revision this commit was actually
-          # tested against, and an annotated tag resolves through a tag object
-          # rather than to the commit the manifest names. Pointing at the
-          # packages this checkout already resolved uses that exact revision.
-          export LAKE_PACKAGES_DIR="$GITHUB_WORKSPACE/.lake/packages"
+          # Reuse the exact Linen checkout already tested in this job.
+          mkdir -p .lake/packages
+          ln -s "$GITHUB_WORKSPACE/.lake/packages/linen" .lake/packages/linen
           lake build --wfail
           ./.lake/build/bin/scaffold_check
       # Every example is test surface, per AGENTS.md. All but `scaleway-pull`

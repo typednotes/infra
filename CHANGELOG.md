@@ -31,7 +31,8 @@ active on 2026-09-29:
 
 ### Changed
 
-- Update the Linen dependency to [4.1.0](https://github.com/typednotes/linen/releases/tag/v4.1.0).
+- Build with [Linen 5.0.0](https://github.com/typednotes/linen/releases/tag/v5.0.0).
+- Pin Linen explicitly in new projects and reuse that checkout in the scaffold CI test.
 
 ## [0.24.2] — 2026-11-27
 
