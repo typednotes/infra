@@ -38,7 +38,7 @@ surprise.
 See [`docs/architecture.md`](https://github.com/typednotes/infra/blob/main/docs/architecture.md) for the full design and
 the portability rules.
 
-## What 0.24.2 covers
+## What 0.24.3 covers
 
 **New in 0.24.0: Kubernetes YAML and Helm charts, both ways** — `lake exe infra
 import kubernetes FILE` and `import helm CHART` write `kubernetesObject`
@@ -204,7 +204,7 @@ Add `infra` to the `lakefile.toml` Lake just wrote:
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
-rev = "v0.24.2"
+rev = "v0.24.3"
 ```
 
 Then:
@@ -239,7 +239,7 @@ version of `infra` you actually depend on. Delete the file when it stops being
 useful; nothing imports it.
 
 It also **converts `lakefile.toml` to `lakefile.lean`**, keeping the original
-as `lakefile.toml.replaced-by-infra`. With Linen 4.0, the generated project
+as `lakefile.toml.replaced-by-infra`. With Linen 4.1, the generated project
 gets native link configuration from its imports. Projects that retain a legacy
 Infra pin keep the old link flags. The converter reports unsupported TOML
 settings before it writes a replacement.

@@ -30,7 +30,7 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         shell: bash
         run: bash ci/test-require-main-ci.sh
-      - uses: typednotes/linen/.github/actions/setup-native-deps@037925bc5068c54efd86690b78b258b9c6787959
+      - uses: typednotes/linen/.github/actions/setup-native-deps@v4.1.0
         with:
           keyring: false
       # `--wfail`: a warning, including `sorry`, fails the build.
