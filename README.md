@@ -190,21 +190,25 @@ a first tagged release.
 
 ## Start a project
 
-An infra project is an ordinary Lean project with one dependency, so it starts
-the ordinary way. `lake init`, add the dependency, then one command turns it
-into a declaration repository:
+Start with an ordinary Lean project, add the two dependency pins, then run
+`infra init` to turn it into a declaration repository:
 
 ```sh
 lake init my_infra && cd my_infra
 ```
 
-Add `infra` to the `lakefile.toml` Lake just wrote:
+Add Infra and Linen to the generated `lakefile.toml`:
 
 ```toml
 [[require]]
 name = "infra"
 git = "https://github.com/typednotes/infra"
 rev = "v0.24.3"
+
+[[require]]
+name = "linen"
+git = "https://github.com/typednotes/linen"
+rev = "bcfec9a81d6e738ecb273f89e2102b4712d8e160"
 ```
 
 Then:
@@ -239,7 +243,7 @@ version of `infra` you actually depend on. Delete the file when it stops being
 useful; nothing imports it.
 
 It also **converts `lakefile.toml` to `lakefile.lean`**, keeping the original
-as `lakefile.toml.replaced-by-infra`. With Linen 4.1, the generated project
+as `lakefile.toml.replaced-by-infra`. New projects pin Linen 5.0.0 explicitly. The generated project
 gets native link configuration from its imports. Projects that retain a legacy
 Infra pin keep the old link flags. The converter reports unsupported TOML
 settings before it writes a replacement.
