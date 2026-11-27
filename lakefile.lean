@@ -2,7 +2,7 @@ import Lake
 open System Lake DSL
 
 package infra where
-  version := v!"0.24.2"
+  version := v!"0.24.3"
   -- Metadata Reservoir (the Lake package index) surfaces on the package page.
   -- Reservoir indexes public Lean repos automatically — no submission — but it
   -- only shows what is declared here, and the repo link is all it can infer.
@@ -15,7 +15,7 @@ target is a compile error"
   -- Strict elaboration: every variable is bound explicitly. CI also builds
   -- with `--wfail`, so a warning (including `sorry`) fails the build.
 
-require linen from git "https://github.com/typednotes/linen" @ "037925bc5068c54efd86690b78b258b9c6787959"
+require linen from git "https://github.com/typednotes/linen" @ "v4.1.0"
 
 @[default_target]
 lean_lib Infra

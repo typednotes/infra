@@ -79,7 +79,7 @@ package «my-infra» where
 
 -- A tag, not `main`: the front end's shape is part of what your `Main.lean`
 -- is written against, and moving forward should be a deliberate edit.
-require infra from git "https://github.com/typednotes/infra" @ "v0.24.2"
+require infra from git "https://github.com/typednotes/infra" @ "v0.24.3"
 
 @[default_target]
 lean_exe «my-infra» where
@@ -87,7 +87,7 @@ lean_exe «my-infra» where
 ```
 
 > **Note.** `infra` links native code (SigV4, TLS, the OS keychain) through
-> Linen 4.0 supplies the native link configuration through the imported modules.
+> Linen 4.1 supplies the native link configuration through the imported modules.
 
 Then `lake update` once to fetch the dependency.
 
