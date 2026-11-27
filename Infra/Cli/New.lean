@@ -59,6 +59,10 @@ private def infraRev : String := "v0.24.3"
 private def requireInfra : String :=
   "require infra from git \"https://github.com/typednotes/infra\" @ \"" ++ infraRev ++ "\""
 
+/-- The Linen revision written into a new project. Keep it in sync with the root Lake dependency. -/
+private def requireLinen : String :=
+  "require linen from git \"https://github.com/typednotes/linen\" @ \"bcfec9a81d6e738ecb273f89e2102b4712d8e160\""
+
 /-- Compatibility flags for TOML projects that explicitly retain an older Infra dependency. -/
 private def linkFlags : String :=
 "-- ── Native link flags ──
@@ -838,7 +842,7 @@ open System Lake DSL
 package «" ++ name ++ "» where
   version := v!\"0.1.0\"
 
-" ++ requireInfra ++ "
+" ++ requireInfra ++ "\n" ++ requireLinen ++ "
 
 @[default_target]
 lean_lib Fleet
@@ -1170,6 +1174,8 @@ private def lakefileFromToml (p : Ported) : String :=
   let existingInfra := p.requires.find? (·.startsWith "require «infra»")
   let requires := if existingInfra.isSome then p.requires else p.requires ++ [requireInfra]
   let legacyFlags := existingInfra.any (!·.endsWith (s!"@ \"{infraRev}\""))
+  let hasLinen := p.requires.any (·.startsWith "require «linen»")
+  let requires := if legacyFlags || hasLinen then requires else requires ++ [requireLinen]
   let libs := (p.libs ++ ["Fleet", "Catalogue"]).eraseDups
   let exes := if p.exes.isEmpty then [(p.name, "Main")] else p.exes
   "import Lake\nopen System Lake DSL\n\n" ++
@@ -1183,6 +1189,9 @@ private def lakefileFromToml (p : Ported) : String :=
   String.intercalate "\n\n" (exes.map fun (n, r) =>
     "@[default_target]\nlean_exe «" ++ n ++ "» where\n  root := `" ++ r) ++ "\n"
 
+-- Fresh scaffolds use the same Linen pin as this checkout.
+#guard ((lakefile "demo").splitOn requireLinen).length == 2
+#guard ((lakefileFromToml { name := "demo" }).splitOn requireLinen).length == 2
 -- Fresh scaffolds receive the link settings through their Infra imports.
 #guard ((lakefile "demo").splitOn "moreLinkArgs := nativeLinkArgs").length == 1
 #guard ((lakefileFromToml { name := "demo" }).splitOn "moreLinkArgs := nativeLinkArgs").length == 1
@@ -1337,8 +1346,9 @@ lake exe infra init {dir}"
       IO.println "The original lakefile.toml is in place. Add the Infra dependency"
       IO.println "and the Fleet target before building."
     else
-      IO.println "Add this dependency to your existing lakefile.lean:"
+      IO.println "Check these dependencies in your existing lakefile.lean:"
       IO.println s!"  {requireInfra}"
+      IO.println s!"  {requireLinen}"
     IO.println ""
   IO.println "Next:"
   IO.println ""

@@ -15,7 +15,7 @@ target is a compile error"
   -- Strict elaboration: every variable is bound explicitly. CI also builds
   -- with `--wfail`, so a warning (including `sorry`) fails the build.
 
-require linen from git "https://github.com/typednotes/linen" @ "v4.1.0"
+require linen from git "https://github.com/typednotes/linen" @ "bcfec9a81d6e738ecb273f89e2102b4712d8e160"
 
 @[default_target]
 lean_lib Infra
